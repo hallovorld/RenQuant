@@ -175,6 +175,50 @@ class TestSellWithT1Settlement:
             regime_counts=adapter._regime_counts,                                # noqa: SLF001
         )
 
+    def test_full_exit_without_executable_price_does_not_drop_position(self):
+        """A skipped sell is not a fill; sim must not ghost-delete holdings."""
+        from kernel.exits import ExitSignal
+        from kernel.pipeline.context import InferenceContext
+
+        adapter, spy = _build_min_adapter(execution_enabled=False)
+        today = spy.index[10]
+        self._put_a_lot(adapter, "AAA", shares=10.0, price=100.0,
+                        today=spy.index[5])
+        ctx = InferenceContext(
+            config=adapter._config, today=today.date(),  # noqa: SLF001
+            ohlcv={}, spy_returns=[], models={}, gmm=None, corr_matrix={},
+            earnings_calendar={}, holdings=dict(adapter._holdings),  # noqa: SLF001
+            last_sell_dates={}, portfolio_value=1_000.0, cash=0.0,
+            prices={}, hwm=1_000.0, skip_buys=False,
+            regime_state=adapter._regime_state,      # noqa: SLF001
+            regime_counts=adapter._regime_counts,    # noqa: SLF001
+        )
+        ctx.exits = [
+            ("AAA", ExitSignal(
+                should_exit=True,
+                reason="unit_missing_price",
+                exit_type="model_sell",
+                quantity=None,
+            ))
+        ]
+        ctx.orders = []
+        ctx.candidates = []
+        ctx.counters = {}
+        ctx.rotations = []
+        ctx.monitor_state = {}
+        ctx.regime = "BULL_CALM"
+        ctx.confidence = 0.8
+        ctx.buy_blocked = False
+        ctx.bear_only = False
+        before_cash = adapter._cash  # noqa: SLF001
+
+        adapter.commit(ctx)
+
+        assert "AAA" in adapter._holdings  # noqa: SLF001
+        assert adapter._pos_shares["AAA"] == pytest.approx(10.0)  # noqa: SLF001
+        assert adapter._cash == pytest.approx(before_cash)  # noqa: SLF001
+        assert adapter._trade_log == []  # noqa: SLF001
+
     def test_sell_with_tn_queues_proceeds_not_cash(self):
         from kernel.exits import ExitSignal
         adapter, spy = _build_min_adapter(execution_enabled=True)

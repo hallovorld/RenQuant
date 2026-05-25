@@ -1292,9 +1292,15 @@ class SimAdapter:
                 self._apply_short_open(ticker, sig, today_ts, ctx)
                 continue
             cur = self._pos_shares.get(ticker, 0)
-            if is_full_liquidate_signal(sig, cur):
+            is_full_exit = is_full_liquidate_signal(sig, cur)
+            executed = self._apply_sell(ticker, sig, today_ts, ctx)
+            # SIM-SELL-EXEC-CONTRACT (2026-05-25): only mutate full-exit
+            # ownership after the execution primitive proves a fill happened.
+            # Missing same-bar prices/OHLCV can make _apply_sell skip safely;
+            # pre-fix, commit() still popped holdings, creating ghost exits
+            # and corrupting APY/Sharpe/trade attribution.
+            if is_full_exit and executed:
                 full_exit_tickers.add(ticker)
-            self._apply_sell(ticker, sig, today_ts, ctx)
 
         for ticker in full_exit_tickers:
             self._holdings.pop(ticker, None)
@@ -1474,20 +1480,22 @@ class SimAdapter:
 
     # ── Sim-side execution primitives ───────────────────────────────────────
 
-    def _apply_sell(self, ticker: str, sig, today_ts: pd.Timestamp, ctx) -> None:
+    def _apply_sell(self, ticker: str, sig, today_ts: pd.Timestamp, ctx) -> bool:
         """Apply a sell — full liquidation (default) or partial when sig.quantity set.
 
         When sig.quantity is None or ≥ current shares, sells everything (caller's
         commit() then pops the ticker from holdings/pos_shares). When sig.quantity
         is a positive float < current shares, sells exactly that many shares and
         reduces _pos_shares in place; the caller then skips the pop step.
+
+        Returns True only when a simulated fill was actually applied.
         """
         from kernel.portfolio import (  # noqa: PLC0415
             compute_disposed_lot_tax,
             compute_trade_tax,
         )
         if ticker not in self._holdings or ticker not in self._pos_shares:
-            return
+            return False
         hs = self._holdings[ticker]
         total_shares = self._pos_shares[ticker]
 
@@ -1514,7 +1522,11 @@ class SimAdapter:
         if price is None:
             df = self._ohlcv.get(ticker)
             if df is None or today_ts not in df.index:
-                return
+                log.warning(
+                    "SimAdapter: sell skipped for %s on %s — no executable price",
+                    ticker, today_ts.date(),
+                )
+                return False
             price = float(df.loc[today_ts, "close"])
 
         # ── Execution model: apply slippage to fill price (Track Batch A) ───
@@ -1827,6 +1839,7 @@ class SimAdapter:
         trade_event["decision_inputs"]["tax_cash_debited"] = tax_cash_debited
         trade_event["decision_inputs"]["tax_cash_debit_mode"] = tax_cash_debit_mode
         self._trade_log.append(trade_event)
+        return True
 
     def _apply_buy(self, order: dict, today_ts: pd.Timestamp, ctx) -> None:
         # Audit fix SAB-1..SAB-4 (Round 2 deep audit, 2026-04-25): pre-fix,
