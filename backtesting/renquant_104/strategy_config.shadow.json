@@ -775,6 +775,10 @@
                 "enabled": true,
                 "threshold": 0.1
             },
+            "regime_admission": {
+                "enabled": false,
+                "_shadow_reason": "2026-05-25 Codex fix: PatchTST shadow is readonly diagnostic/trace generation, not promotion. Its current HF checkpoint sidecar has no strict WF trade_monotonicity/sanity_regime_ic metadata, so the production regime-admission gate would clear all candidates inside the runtime pipeline even after shadow preflight is intentionally non-strict. Production XGB/full remains fail-closed through preflight/runtime regime evidence; shadow must keep emitting comparable decision traces until PatchTST has a true WF manifest."
+            },
             "kind": "hf_patchtst",
             "sentiment": {
                 "enabled": true,

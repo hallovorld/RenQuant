@@ -208,6 +208,24 @@ class TestP0_11_ShadowConfigPathsExistOnDisk:
                 == prod["regime_params"][regime].get("max_sector_weight_pct")
             )
 
+    def test_patchtst_shadow_keeps_runtime_regime_admission_diagnostic(self):
+        """Readonly PatchTST shadow must generate decision traces.
+
+        Production full/buy stays fail-closed through preflight/runtime
+        evidence gates. Shadow is different: it is a no-order diagnostic
+        challenger whose current HF checkpoint sidecar does not yet carry
+        strict WF regime metadata. If the runtime regime-admission gate
+        defaults on here, it clears every candidate after non-strict
+        preflight and the shadow run becomes a no-signal no-op.
+        """
+        strategy_dir = REPO / "backtesting/renquant_104"
+        shadow = json.loads((strategy_dir / "strategy_config.shadow.json").read_text())
+        panel = shadow["ranking"]["panel_scoring"]
+
+        assert panel["kind"] == "hf_patchtst"
+        assert panel["regime_admission"]["enabled"] is False
+        assert "shadow" in panel["regime_admission"]["_shadow_reason"].lower()
+
 
 class TestP0_12_DryRunHardFailuresFailClosed:
     """Training dry-run must not return success when any HARD preflight fails."""
