@@ -284,6 +284,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
   The `rotations` table is now written by sim/live/LEAN through one shared
   persistence helper, classifying accepted pairs from emitted rotation buy
   orders and blocked pairs from `ctx.rotations_blocked`.
+- Ticker daily-state coverage repair 2026-05-25: `ticker_daily_state` still
+  covers the full configured decision universe, but now also appends any ticker
+  that appears in executed/attempted trade rows. Strict integrity allows such
+  extra rows only when backed by a trade/attempt fact; unexplained extras still
+  fail. This closes the gap where `trades` could show an attempted off-universe
+  ticker while the same run had no per-ticker state row explaining it.
 
 ## Pushed Progress
 
@@ -301,6 +307,21 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_policy_alignment.py tests/test_sim_execution_integration.py
     tests/test_joint_actions.py tests/test_rotation_atomic.py
     tests/test_kelly_sizing.py` (`523 passed`).
+- `7981b5b fix(renquant104): cover attempted tickers in daily state`
+  - Extends the shared decision-trace helper with `trade_event_tickers()` and
+    `trade_event_blocked_map()` so sim/live/LEAN all add attempted trade
+    tickers to `ticker_daily_state` with the actual broker/adapter blocked
+    reason.
+  - Tightens integrity semantics: expected decision-universe rows must still
+    all exist, and extra rows are accepted only if the `trades` table contains
+    that ticker in the same run.
+  - Mainline bundle passed:
+    `tests/test_persistence.py tests/test_lean_trace_persistence.py
+    tests/test_runner_sell_attribution.py tests/test_runner_state_fixes.py
+    tests/test_adapter_context_contract.py tests/test_universe_alignment.py
+    tests/test_policy_alignment.py tests/test_sim_execution_integration.py
+    tests/test_joint_actions.py tests/test_rotation_atomic.py
+    tests/test_kelly_sizing.py` (`524 passed`).
 - `3779e5c fix(renquant104): persist live execution attempts`
   - Adds live audit events for non-filled broker attempts instead of only
     writing confirmed fills.
