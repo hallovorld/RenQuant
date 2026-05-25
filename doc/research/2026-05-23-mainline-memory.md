@@ -278,9 +278,29 @@ Make RenQuant 104 scientifically trustworthy end to end:
   (`buy_pending`, `buy_skipped`, `sell_pending`, `sell_rejected`) with
   order id/status/error, score snapshot, source metadata, and decision inputs.
   They do not count as selected buys or realized exits.
+- LEAN execution-attempt and rotation trace repair 2026-05-25: LEAN buy/sell
+  attempts that are skipped, rejected, pending, or missing a confirmed fill now
+  persist as distinct audit rows instead of disappearing into `Debug()` logs.
+  The `rotations` table is now written by sim/live/LEAN through one shared
+  persistence helper, classifying accepted pairs from emitted rotation buy
+  orders and blocked pairs from `ctx.rotations_blocked`.
 
 ## Pushed Progress
 
+- `fd47188 fix(renquant104): persist lean attempts and rotations`
+  - Adds LEAN audit events for adapter-side skips and non-filled order tickets:
+    `buy_skipped`, `buy_rejected`, `buy_pending`, `sell_skipped`,
+    `sell_rejected`, and `sell_pending`.
+  - Adds `record_rotations()` and wires it into sim/live/LEAN decision-trace
+    commits so the existing `rotations` table is no longer dead schema.
+  - Regression tests cover non-filled LEAN attempts and accepted-vs-blocked
+    rotation rows. Mainline bundle passed:
+    `tests/test_persistence.py tests/test_lean_trace_persistence.py
+    tests/test_runner_sell_attribution.py tests/test_runner_state_fixes.py
+    tests/test_adapter_context_contract.py tests/test_universe_alignment.py
+    tests/test_policy_alignment.py tests/test_sim_execution_integration.py
+    tests/test_joint_actions.py tests/test_rotation_atomic.py
+    tests/test_kelly_sizing.py` (`523 passed`).
 - `3779e5c fix(renquant104): persist live execution attempts`
   - Adds live audit events for non-filled broker attempts instead of only
     writing confirmed fills.
