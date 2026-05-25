@@ -132,6 +132,20 @@ class TestShortCoverStopLoss:
             "Phase 2b (buy scan)"
         )
 
+    def test_short_holding_excluded_from_regular_sell_universe(self):
+        from kernel.pipeline.pp_inference import _sell_universe
+
+        ctx = SimpleNamespace(
+            config={},
+            holdings={
+                "LONG": _short(qty=10, entry=100.0),
+                "SHORT": _short(qty=-10, entry=100.0),
+            },
+            counters={},
+        )
+
+        assert _sell_universe(ctx) == ["LONG"]
+
 
 class TestIRC1233TaxMarker:
 

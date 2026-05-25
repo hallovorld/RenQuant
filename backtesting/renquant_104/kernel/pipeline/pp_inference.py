@@ -211,7 +211,14 @@ def _sell_universe(ctx: InferenceContext) -> list[str]:
         benchmark_sleeve_ticker(ctx) if exclude_benchmark_sleeve_from_alpha(ctx)
         else None
     )
-    held = list(ctx.holdings.keys())
+    # SHORT-SELL-UNIVERSE-CONTRACT (2026-05-25): ordinary sell jobs emit
+    # sell-to-close ExitSignals. A negative-share holding must instead be
+    # managed by ShortCoverStopLossTask, which emits buy-to-cover orders.
+    # Mixing the two can turn a short stop into an additional SELL.
+    held = [
+        ticker for ticker, holding in ctx.holdings.items()
+        if _holding_share_count(holding) > 0
+    ]
     if sleeve_ticker is None:
         return held
     blocked_map = getattr(ctx, "_blocked_by_ticker", None)
@@ -224,6 +231,18 @@ def _sell_universe(ctx: InferenceContext) -> list[str]:
             ctx.counters.get("benchmark_sleeve_alpha_sell_exempt", 0) + 1
         )
     return [t for t in held if t != sleeve_ticker]
+
+
+def _holding_share_count(holding) -> float:
+    import math
+
+    total_shares = getattr(holding, "total_shares", None)
+    try:
+        shares = float(total_shares() if callable(total_shares)
+                       else getattr(holding, "shares", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return shares if math.isfinite(shares) else 0.0
 
 
 # ── InferencePipeline ──────────────────────────────────────────────────────────

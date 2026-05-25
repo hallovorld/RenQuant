@@ -14,7 +14,11 @@ if str(STRATEGY_DIR) not in sys.path:
 
 from kernel.exits import ExitSignal, HoldingState  # noqa: E402
 from kernel.decision_trace import selected_buy_tickers  # noqa: E402
-from kernel.trade_events import build_buy_trade_event, build_sell_trade_event  # noqa: E402
+from kernel.trade_events import (  # noqa: E402
+    build_buy_trade_event,
+    build_sell_trade_event,
+    build_short_open_trade_event,
+)
 
 
 def test_build_buy_trade_event_computes_invest_and_audit_payload():
@@ -70,6 +74,63 @@ def test_build_buy_trade_event_promotes_snapshot_expected_return():
     assert row["expected_return"] == 0.025
     assert row["expected_return_horizon_days"] == 60
     assert row["mu_horizon_days"] == 60
+
+
+def test_build_short_open_trade_event_carries_qp_and_score_attribution():
+    sig = ExitSignal(
+        should_exit=True,
+        reason="qp_dw=-0.05 target_w=-0.05",
+        exit_type="qp_short_open",
+        quantity=12.0,
+    )
+    sig.source_job = "JointPortfolioQPJob"
+    sig.source_task = "EmitOrdersFromQPSolutionTask"
+    sig.decision_inputs = {
+        "delta_w": -0.05,
+        "target_w": -0.05,
+        "solver_status": "optimal",
+        "expected_return_horizon_days": 60,
+        "mu_horizon_days": 60,
+    }
+
+    class ShortCandidate:
+        ticker = "BAD"
+        rank_score = 0.12
+        panel_score = -0.42
+        expected_return = -0.03
+        expected_return_horizon_days = 60
+        mu = -0.025
+        mu_horizon_days = 60
+        sigma = 0.18
+        sector = "financials"
+        model_type = "panel_ltr"
+
+    row = build_short_open_trade_event(
+        ticker="BAD",
+        sig=sig,
+        price=100.0,
+        shares=12.0,
+        proceeds=1199.0,
+        today="2026-05-24",
+        regime="BULL_CALM",
+        confidence=0.8,
+        source_obj=ShortCandidate(),
+    )
+
+    assert row["action"] == "short_open"
+    assert row["order_type"] == "SHORT_OPEN_qp_short_open"
+    assert row["source_job"] == "JointPortfolioQPJob"
+    assert row["qp_delta_w"] == -0.05
+    assert row["qp_target_w"] == -0.05
+    assert row["qp_status"] == "optimal"
+    assert row["panel_score"] == -0.42
+    assert row["expected_return"] == -0.03
+    assert row["expected_return_horizon_days"] == 60
+    assert row["mu_horizon_days"] == 60
+    assert row["sector"] == "financials"
+    assert row["model_type"] == "panel_ltr"
+    assert row["decision_inputs"]["side"] == "sell_to_open"
+    assert row["decision_inputs"]["solver_status"] == "optimal"
 
 
 def test_selected_buy_tickers_uses_normalized_trade_events():

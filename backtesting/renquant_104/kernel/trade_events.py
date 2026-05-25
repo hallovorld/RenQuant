@@ -147,6 +147,113 @@ def build_buy_trade_event(
     }
 
 
+def _fill_payload_from_source(payload: dict[str, Any], source_obj: Any) -> None:
+    if source_obj is None:
+        return
+    for key in (
+        "rank_score", "panel_score", "rs_score", "mu", "mu_horizon_days",
+        "sigma", "expected_return", "expected_return_horizon_days",
+        "kelly_target_pct", "model_type", "sector", "blocked_by",
+    ):
+        if payload.get(key) is None:
+            value = getattr(source_obj, key, None)
+            if value is not None:
+                payload[key] = value
+
+
+def build_short_open_trade_event(
+    *,
+    ticker: str,
+    sig: Any,
+    price: float,
+    shares: float,
+    proceeds: float,
+    today: Any,
+    regime: str | None,
+    confidence: float | None,
+    source_obj: Any = None,
+    attribution_version: str = "short_open_decision_v1",
+) -> dict[str, Any]:
+    """Normalize an executed short-open event for DB/audit writers."""
+    raw_inputs = getattr(sig, "decision_inputs", None)
+    payload = dict(raw_inputs) if isinstance(raw_inputs, dict) else {}
+    _fill_payload_from_source(payload, source_obj)
+    payload.update({
+        "ticker": ticker,
+        "action": "short_open",
+        "shares": shares,
+        "price": price,
+        "proceeds": proceeds,
+        "side": "sell_to_open",
+        "exit_reason": getattr(sig, "exit_type", None) or "short_open",
+        "signal_reason": getattr(sig, "reason", None),
+        "source_job": getattr(sig, "source_job", None) or payload.get("source_job"),
+        "source_task": getattr(sig, "source_task", None) or payload.get("source_task"),
+    })
+    payload.setdefault(
+        "order_source",
+        getattr(sig, "order_source", None)
+        or (
+            f"{payload.get('source_job')}.{payload.get('source_task')}"
+            if payload.get("source_job") and payload.get("source_task")
+            else None
+        ),
+    )
+    payload.setdefault(
+        "acceptance_reason",
+        getattr(sig, "exit_type", None)
+        or payload.get("order_source")
+        or "short_open",
+    )
+    snap = _score_snapshot(payload, regime, confidence)
+    source_job = str(payload.get("source_job") or "JointPortfolioQPJob")
+    source_task = str(payload.get("source_task") or "short_open")
+    order_source = str(payload.get("order_source") or f"{source_job}.{source_task}")
+    exit_type = getattr(sig, "exit_type", None) or "short_open"
+    return {
+        "ticker": ticker,
+        "action": "short_open",
+        "date": today,
+        "shares": shares,
+        "price": price,
+        "invest": -abs(proceeds),
+        "target_pct": payload.get("target_w"),
+        "exit_reason": exit_type,
+        "pnl_pct": 0.0,
+        "hold_days": 0,
+        "tax": 0.0,
+        "rank_score": _score_field(payload, snap, "rank_score"),
+        "conviction": payload.get("conviction"),
+        "sigma_mult": payload.get("sigma_mult"),
+        "mu": _score_field(payload, snap, "mu"),
+        "mu_horizon_days": _score_field(payload, snap, "mu_horizon_days"),
+        "sigma": _score_field(payload, snap, "sigma"),
+        "panel_score": _score_field(payload, snap, "panel_score"),
+        "rs_score": _score_field(payload, snap, "rs_score"),
+        "expected_return": _score_field(payload, snap, "expected_return"),
+        "expected_return_horizon_days": _score_field(
+            payload, snap, "expected_return_horizon_days",
+        ),
+        "kelly_target_pct": _score_field(payload, snap, "kelly_target_pct"),
+        "model_type": _score_field(payload, snap, "model_type"),
+        "sector": _score_field(payload, snap, "sector"),
+        "blocked_by": _score_field(payload, snap, "blocked_by"),
+        "order_type": f"SHORT_OPEN_{exit_type}",
+        "source": "qp",
+        "source_job": source_job,
+        "source_task": source_task,
+        "order_source": order_source,
+        "attribution_version": attribution_version,
+        "score_snapshot": snap,
+        "decision_inputs": payload,
+        "qp_delta_w": _decision_field(payload, "delta_w"),
+        "qp_target_w": _decision_field(payload, "target_w"),
+        "qp_status": _decision_field(payload, "solver_status"),
+        "confidence": confidence,
+        "regime": regime,
+    }
+
+
 def _date_obj(value: Any) -> datetime.date | None:
     if value is None:
         return None
@@ -413,4 +520,8 @@ def _tax_lot_method(config: dict) -> str:
     ).lower()
 
 
-__all__ = ["build_buy_trade_event", "build_sell_trade_event"]
+__all__ = [
+    "build_buy_trade_event",
+    "build_sell_trade_event",
+    "build_short_open_trade_event",
+]

@@ -3078,8 +3078,15 @@ def _holding_score_snapshot(hs) -> dict:
         "rs_score": getattr(hs, "rs_score", None),
         "panel_score": getattr(hs, "panel_score", None),
         "mu": getattr(hs, "mu", None),
+        "mu_horizon_days": getattr(hs, "mu_horizon_days", None),
         "sigma": getattr(hs, "sigma", None),
         "expected_return": getattr(hs, "expected_return", None),
+        "expected_return_horizon_days": getattr(
+            hs, "expected_return_horizon_days", None,
+        ),
+        "kelly_target_pct": getattr(hs, "kelly_target_pct", None),
+        "model_type": getattr(hs, "model_type", None),
+        "sector": getattr(hs, "sector", None),
     }
 
 
@@ -3120,6 +3127,7 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
     from kernel.exits import ExitSignal
     target_w = float(sol.target_w[i])
     hs = (ctx.holdings or {}).get(ticker)
+    source_obj = (getattr(ctx, "_qp_mu_source_map", None) or {}).get(ticker, hs)
     held = int(getattr(hs, "shares", 0) or 0) if hs is not None else 0
     requested = int(shares)  # always positive; sign comes from target_w
 
@@ -3139,7 +3147,7 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
         sig.decision_inputs = _qp_sell_decision_inputs(
-            ctx, ticker, qty, held, dw, target_w, sol, i, hs,
+            ctx, ticker, qty, held, dw, target_w, sol, i, source_obj,
         )
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=%s",
                  ticker, dw, qty, exit_type)
@@ -3162,7 +3170,7 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
         sig.decision_inputs = _qp_sell_decision_inputs(
-            ctx, ticker, long_close, held, dw, target_w, sol, i, hs,
+            ctx, ticker, long_close, held, dw, target_w, sol, i, source_obj,
         )
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=qp_close",
                  ticker, dw, long_close)
@@ -3180,7 +3188,7 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
         sig.decision_inputs = _qp_sell_decision_inputs(
-            ctx, ticker, short_open, held, dw, target_w, sol, i, hs,
+            ctx, ticker, short_open, held, dw, target_w, sol, i, source_obj,
         )
         log.info("QP_SHORT_OPEN %-6s  Δw=%+.4f  shares=%d  target_w=%+.4f",
                  ticker, dw, short_open, target_w)

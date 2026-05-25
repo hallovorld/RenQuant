@@ -923,6 +923,42 @@ class TestTrades:
         assert report["sell_economic_gaps"] == 0
         conn.close()
 
+    def test_decision_trace_integrity_report_checks_short_cover_economics(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "held_no_new_buy",
+                "in_universe": 0,
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "short_cover",
+            "shares": 1,
+            "price": 100.0,
+            "gross_pnl": 100.0,
+            "tax": 25.0,
+            "net_pnl_after_tax": 999.0,
+            "score_snapshot": {"rank_score": 0.40},
+            "decision_inputs": {"exit_reason": "short_cover"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["sell_economic_gaps"] == 1
+        conn.close()
+
     def test_decision_trace_integrity_report_flags_qp_attribution_gap(self, tmp_path):
         conn = get_connection(_cfg(tmp_path))
         rid = record_pipeline_run(

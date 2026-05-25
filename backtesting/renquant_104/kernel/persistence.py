@@ -1097,7 +1097,8 @@ def record_trades(
     """Insert rows into trades from a list of trade dicts.
 
     Expected keys (all optional except ticker + action):
-      ticker, action ('buy'|'sell'), shares, price, invest, target_pct,
+      ticker, action ('buy'|'sell'|'short_open'|'short_cover'), shares, price,
+      invest, target_pct,
       exit_reason, pnl_pct, hold_days, tax, gross_pnl, proceeds_basis,
       net_pnl_after_tax, tax_cash_debited, tax_cash_debit_mode,
       tax_lot_method, rank_score, conviction, sigma_mult, mu,
@@ -1689,7 +1690,8 @@ def decision_trace_integrity_report(
         score_json,
         inputs_json,
     ) in trade_rows:
-        if str(action or "").lower() == "sell":
+        action_l = str(action or "").lower()
+        if action_l in {"sell", "short_cover"}:
             try:
                 sh = float(shares)
             except (TypeError, ValueError):

@@ -62,7 +62,11 @@ from kernel.pipeline.task_execution import (
     dedupe_exit_signals,
     is_full_liquidate_signal,
 )
-from kernel.trade_events import build_buy_trade_event, build_sell_trade_event
+from kernel.trade_events import (
+    build_buy_trade_event,
+    build_sell_trade_event,
+    build_short_open_trade_event,
+)
 
 log = logging.getLogger("adapters.sim")
 
@@ -2185,21 +2189,24 @@ class SimAdapter:
         if hasattr(self, "_total_fees"):
             self._total_fees += fees["total"]
 
-        # 2026-05-14 audit Bug B fix: log short opens in _trade_log so
-        # downstream summaries (Avg P&L/trade, total trades, etc.) include
-        # them. Pre-fix shorts were invisible to the trade-level analytics.
-        self._trade_log.append({
-            "action":      "short_open",
-            "ticker":      ticker,
-            "date":        today_ts,
-            "price":       fill_price,
-            "shares":      shares,         # positive magnitude (short side)
-            "pnl_pct":     0.0,            # P&L realized only on cover
-            "hold_days":   0,
-            "tax":         0.0,
-            "exit_reason": "short_open",
-            "partial":     False,
-        })
+        source_obj = (getattr(ctx, "_qp_mu_source_map", None) or {}).get(ticker)
+        if source_obj is None:
+            for cand in getattr(ctx, "short_candidates", None) or []:
+                if getattr(cand, "ticker", None) == ticker:
+                    source_obj = cand
+                    break
+        short_event = build_short_open_trade_event(
+            ticker=ticker,
+            sig=sig,
+            price=fill_price,
+            shares=shares,
+            proceeds=proceeds,
+            today=today_ts,
+            regime=getattr(ctx, "regime", None),
+            confidence=getattr(ctx, "confidence", None),
+            source_obj=source_obj,
+        )
+        self._trade_log.append(short_event)
 
         # Create or update the HoldingState with NEGATIVE shares
         if ticker in self._holdings:
@@ -2215,6 +2222,7 @@ class SimAdapter:
                 entry_date=today_ts.date() if hasattr(today_ts, "date") else today_ts,
                 high_watermark=fill_price,
             )
+        _stamp_holding_audit_fields(self._holdings.get(ticker), short_event)
         self._pos_shares[ticker] = self._holdings[ticker].shares
         log.info("SHORT_OPEN %s shares=-%d px=%.2f proceeds=$%.0f",
                  ticker, int(shares), fill_price, proceeds)
