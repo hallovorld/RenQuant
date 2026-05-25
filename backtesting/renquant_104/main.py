@@ -26,10 +26,42 @@ from kernel.walk_forward import (
     assert_lean_panel_no_leakage,
     parse_correlation_artifact,
 )
+from kernel.execution.slippage import SlippageConfig, slip_fill_price
 from kernel.preflight    import run_preflight
 from adapters.lean       import LeanAdapter
 
 CONFIG = load_config()
+
+
+class LeanHalfSpreadSlippageModel:
+    """LEAN slippage adapter backed by kernel.execution.slippage.
+
+    LEAN expects a positive price-distance; its fill model applies the buy/sell
+    sign. Sim computes the signed fill price directly through the same helper.
+    """
+
+    def __init__(self, cfg: SlippageConfig):
+        self._cfg = cfg
+
+    def GetSlippageApproximation(self, asset, order):  # noqa: N802 - LEAN API
+        try:
+            price = float(getattr(asset, "Price", 0.0) or 0.0)
+            qty = abs(float(getattr(order, "Quantity", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(price) or price <= 0.0 or qty <= 0.0:
+            return 0.0
+        side = "buy" if float(getattr(order, "Quantity", 0.0) or 0.0) > 0 else "sell"
+        fill = slip_fill_price(
+            market_price=price,
+            side=side,
+            shares=qty,
+            adv_shares=None,
+            cfg=self._cfg,
+        )
+        if not math.isfinite(fill) or fill <= 0.0:
+            return 0.0
+        return abs(fill - price)
 
 
 class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
@@ -86,16 +118,11 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                     self.SetBrokerageModel(BrokerageName.InteractiveBrokers, AccountType.Margin)
                 except Exception:
                     pass
-            # Slippage: VolumeShareSlippageModel approximates the linear
-            # impact term of Almgren-Chriss. priceImpact=2e-4 ≈ 2 bps for
-            # an order at the volumeLimit (10% of bar volume); typical
-            # retail order at < 0.1% ADV → effective slippage ≪ 2 bps,
-            # matching sim's `impact_bps_per_pct_adv=0` default. The
-            # half-spread piece is implicit in LEAN's fill-at-mid + impact.
-            try:
-                self.SetSlippageModel(VolumeShareSlippageModel(0.1, 2.0e-4))
-            except Exception:
-                pass
+            slip_cfg = SlippageConfig(
+                half_spread_bps=float(exec_cfg.get("half_spread_bps", 2.0)),
+                impact_bps_per_pct_adv=float(exec_cfg.get("impact_bps_per_adv", 0.0)),
+            )
+            self.SetSlippageModel(LeanHalfSpreadSlippageModel(slip_cfg))
 
         self._config       = CONFIG
         self._strategy_dir = Path(__file__).resolve().parent

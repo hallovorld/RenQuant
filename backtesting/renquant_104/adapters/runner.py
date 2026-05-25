@@ -259,6 +259,46 @@ def effective_live_holdings_after_orders(
     return current
 
 
+def live_post_execution_snapshot(
+    ctx: Any,
+    broker: Any,
+    currently_held: set[str],
+) -> dict[str, Any]:
+    """Best-effort post-order account snapshot for persistence metrics."""
+    import math
+
+    def _finite(value: Any) -> float | None:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        return out if math.isfinite(out) else None
+
+    pv = None
+    if hasattr(broker, "get_account_value"):
+        try:
+            pv = _finite(broker.get_account_value())
+        except Exception:
+            pv = None
+    if pv is None:
+        pv = _finite(getattr(ctx, "portfolio_value", None))
+
+    cash = None
+    if hasattr(broker, "get_cash"):
+        try:
+            cash = _finite(broker.get_cash())
+        except Exception:
+            cash = None
+    if cash is None:
+        cash = _finite(getattr(ctx, "cash", None))
+
+    return {
+        "portfolio_value": pv,
+        "cash": cash,
+        "n_holdings": len(currently_held),
+    }
+
+
 def _preopen_cancel_symbols(strategy_dir: Path, broker_name: str | None, today_str: str) -> set[str]:
     """Symbols whose queued orders were cancelled by the pre-open gate today."""
     if broker_name != "alpaca":
@@ -1691,6 +1731,7 @@ class RunnerAdapter:
             full_exit_tickers,
             getattr(ctx, "orders_placed", []) or [],
         )
+        post_snapshot = live_post_execution_snapshot(ctx, broker, currently_held)
 
         # ── Manual / external disposition detection (Z2, 2026-04-28) ──────
         # Invariant: ANY position that disappears between bars must stamp
@@ -1967,8 +2008,8 @@ class RunnerAdapter:
                 strategy        = str(self._config.get("model_name", "")),
                 regime          = ctx.regime,
                 confidence      = float(ctx.confidence) if ctx.confidence is not None else None,
-                portfolio_value = float(ctx.portfolio_value) if ctx.portfolio_value else None,
-                cash            = float(ctx.cash) if ctx.cash is not None else None,
+                portfolio_value = post_snapshot["portfolio_value"],
+                cash            = post_snapshot["cash"],
                 n_candidates    = len(ctx.candidates),
                 n_exits         = len(exits_for_db),
                 # Audit fix ROT-COUNTER (Bug L, 2026-04-25): use EMITTED
@@ -2081,9 +2122,9 @@ class RunnerAdapter:
                 run_date        = ctx.today,
                 strategy        = str(self._config.get("model_name", "")),
                 state           = self._state,
-                cash            = float(ctx.cash) if ctx.cash is not None else None,
-                portfolio_value = float(ctx.portfolio_value) if ctx.portfolio_value else None,
-                n_holdings      = len(ctx.holdings),
+                cash            = post_snapshot["cash"],
+                portfolio_value = post_snapshot["portfolio_value"],
+                n_holdings      = int(post_snapshot["n_holdings"]),
             )
             validate_decision_trace_integrity(
                 self._db,

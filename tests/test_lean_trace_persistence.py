@@ -36,6 +36,8 @@ def test_lean_adapter_records_full_watchlist_trace(tmp_path):
         _strategy_dir=_STRATEGY_DIR,
         _models={"AAA": {"_metadata": {"model_type": "xgb"}}},
         _universe_rejections={"BBB": "ic_missing"},
+        Portfolio=SimpleNamespace(TotalPortfolioValue=101_000.0, Cash=88_000.0),
+        _holdings={},
     )
     adapter = LeanAdapter.__new__(LeanAdapter)
     adapter._algo = algo
@@ -73,9 +75,9 @@ def test_lean_adapter_records_full_watchlist_trace(tmp_path):
 
     conn = sqlite3.connect(tmp_path / "runs.db")
     run = conn.execute(
-        "SELECT run_type, regime FROM pipeline_runs",
+        "SELECT run_type, regime, portfolio_value, cash FROM pipeline_runs",
     ).fetchone()
-    assert run == ("lean", "BULL_CALM")
+    assert run == ("lean", "BULL_CALM", 101_000.0, 88_000.0)
     rows = conn.execute(
         """SELECT ticker, in_universe, blocked_by, rank_score, expected_return
              FROM ticker_daily_state

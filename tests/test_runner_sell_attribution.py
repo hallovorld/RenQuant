@@ -17,6 +17,7 @@ if str(STRATEGY_DIR) not in sys.path:
 
 from adapters.runner import (  # noqa: E402
     build_sell_trade_event_for_db,
+    live_post_execution_snapshot,
     model_type_from_artifact,
     sell_event_price,
 )
@@ -95,6 +96,29 @@ def test_live_sql_sell_uses_broker_fill_price_when_available():
     sig.sell_price = 95.0
 
     assert sell_event_price(sig, 100.0) == 95.0
+
+
+def test_live_post_execution_snapshot_uses_broker_state_and_confirmed_holdings():
+    class _Broker:
+        def get_account_value(self):
+            return 101_000.0
+
+        def get_cash(self):
+            return 77_000.0
+
+    ctx = type("Ctx", (), {"portfolio_value": 100_000.0, "cash": 90_000.0})()
+
+    out = live_post_execution_snapshot(
+        ctx,
+        _Broker(),
+        currently_held={"AAA", "BBB"},
+    )
+
+    assert out == {
+        "portfolio_value": 101_000.0,
+        "cash": 77_000.0,
+        "n_holdings": 2,
+    }
 
 
 def test_live_sell_trade_persists_applied_exit_params_from_signal():

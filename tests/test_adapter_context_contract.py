@@ -309,6 +309,127 @@ def test_lean_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     assert ctx.last_stop_exit_dates == {"AAA": today.date() - dt.timedelta(days=2)}
 
 
+def test_lean_adapter_uses_non_marginable_buying_power_contract(tmp_path):
+    from adapters.lean import LeanAdapter
+
+    class _Data:
+        def ContainsKey(self, _sym):
+            return False
+
+    class _Portfolio:
+        TotalPortfolioValue = 100_000.0
+        Cash = 80_000.0
+        NonMarginableBuyingPower = 95_000.0
+
+    today = dt.datetime(2026, 5, 22)
+    cfg = _minimal_config(tmp_path)
+    cfg["execution"] = {"buying_power_mode": "non_marginable_buying_power"}
+    algo = SimpleNamespace(
+        _config=cfg,
+        _strategy_dir=tmp_path,
+        Time=today,
+        _spy_sym="SPY",
+        _benchmark="SPY",
+        _prev_closes={},
+        _spy_returns=[],
+        _models={},
+        _sector_etf_symbols={},
+        symbols={},
+        _holdings={},
+        _last_sell_dates={},
+        _last_sell_pls={},
+        _last_stop_exit_dates={},
+        Portfolio=_Portfolio(),
+        _skip_buys=False,
+        _regime_state=None,
+        _regime_counts={},
+        _gmm=None,
+        _corr={},
+        _earnings={},
+        _hwm=100_000.0,
+        History=lambda *args, **kwargs: SimpleNamespace(empty=True),
+    )
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = algo
+    adapter._db = None
+    adapter._universe_rejections = {}
+    adapter._panel_cache_ff = None
+    adapter._panel_cache_fac = None
+    adapter._panel_cache_macro = None
+    adapter._panel_cache_emb = None
+    adapter._panel_cache_last_date = None
+    adapter._meta_label_logger = None
+    adapter._meta_label_predictor = None
+
+    ctx = adapter.make_context(_Data())
+
+    assert ctx.cash == pytest.approx(95_000.0)
+    assert ctx.settled_cash == pytest.approx(80_000.0)
+    assert ctx.pending_settle_cash == pytest.approx(15_000.0)
+    assert ctx.buying_power_mode == "non_marginable_buying_power"
+    assert ctx.buying_power_source == "portfolio_non_marginable_buying_power"
+
+
+def test_lean_adapter_settled_cash_mode_ignores_non_marginable_buying_power(tmp_path):
+    from adapters.lean import LeanAdapter
+
+    class _Data:
+        def ContainsKey(self, _sym):
+            return False
+
+    class _Portfolio:
+        TotalPortfolioValue = 100_000.0
+        Cash = 80_000.0
+        NonMarginableBuyingPower = 95_000.0
+
+    today = dt.datetime(2026, 5, 22)
+    cfg = _minimal_config(tmp_path)
+    cfg["execution"] = {"buying_power_mode": "settled_cash"}
+    algo = SimpleNamespace(
+        _config=cfg,
+        _strategy_dir=tmp_path,
+        Time=today,
+        _spy_sym="SPY",
+        _benchmark="SPY",
+        _prev_closes={},
+        _spy_returns=[],
+        _models={},
+        _sector_etf_symbols={},
+        symbols={},
+        _holdings={},
+        _last_sell_dates={},
+        _last_sell_pls={},
+        _last_stop_exit_dates={},
+        Portfolio=_Portfolio(),
+        _skip_buys=False,
+        _regime_state=None,
+        _regime_counts={},
+        _gmm=None,
+        _corr={},
+        _earnings={},
+        _hwm=100_000.0,
+        History=lambda *args, **kwargs: SimpleNamespace(empty=True),
+    )
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = algo
+    adapter._db = None
+    adapter._universe_rejections = {}
+    adapter._panel_cache_ff = None
+    adapter._panel_cache_fac = None
+    adapter._panel_cache_macro = None
+    adapter._panel_cache_emb = None
+    adapter._panel_cache_last_date = None
+    adapter._meta_label_logger = None
+    adapter._meta_label_predictor = None
+
+    ctx = adapter.make_context(_Data())
+
+    assert ctx.cash == pytest.approx(80_000.0)
+    assert ctx.settled_cash == pytest.approx(80_000.0)
+    assert ctx.pending_settle_cash == pytest.approx(0.0)
+    assert ctx.buying_power_mode == "settled_cash"
+
+
 def test_lean_adapter_prices_unheld_model_candidates(tmp_path):
     """LEAN must price candidates, not just current holdings.
 

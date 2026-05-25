@@ -3074,6 +3074,14 @@ decision-path bugs:
   sell ledgers, tax totals, or trade events. Rejected/cancelled/invalid orders
   fail closed and only leave a debug message; filled orders use actual filled
   quantity and average fill price for state and tax attribution.
+- LEAN context now honors `execution.buying_power_mode`: settled-cash mode
+  uses `Portfolio.Cash`, while non-marginable mode prefers LEAN/broker
+  non-marginable buying power and records settled/pending/source fields.
+- LEAN slippage now routes through the same `kernel.execution.slippage`
+  half-spread model as sim instead of a separate VolumeShare approximation,
+  and slippage wiring fails loudly instead of swallowing configuration errors.
+- Live and LEAN persistence now write pipeline-run cash/PV from a post-
+  execution account snapshot, not the pre-trade decision context.
 
 Validation:
 
@@ -3087,6 +3095,8 @@ Validation:
   attribution/emit-helper/min-share-floor neighborhood.
 - `14 passed`: LEAN trace persistence neighborhood, including rejected buy/sell
   tickets not mutating state.
+- `39 passed`: runner sell attribution + LEAN trace/context + LEAN execution
+  model + slippage neighborhoods after execution-parity hardening.
 
 ## Stop Conditions
 
