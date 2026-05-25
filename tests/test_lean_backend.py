@@ -4,8 +4,7 @@ LEAN's brokerage layer is the source of truth for cash + position state
 in the backtest path; the adapter must NOT maintain a parallel mirror
 (§5.13.5). :class:`LeanBackend` is therefore a thin proxy: every read
 delegates to ``algo.Portfolio`` / ``algo.Securities``, every order
-placement delegates to ``algo.MarketOrder`` / ``algo.Liquidate`` /
-``algo.SetHoldings``.
+placement delegates to ``algo.MarketOrder`` / ``algo.Liquidate``.
 
 The tests below use a minimal duck-typed ``MockAlgo`` so we can verify
 behaviour without spinning up the LEAN Docker. The contract MockAlgo
@@ -203,8 +202,8 @@ class TestLeanBackendReadsDelegateToAlgo:
 
 
 class TestLeanBackendOrderPlacement:
-    def test_buy_routes_to_set_holdings(self):
-        """BUY intents use SetHoldings — LEAN sizes by target_pct."""
+    def test_buy_routes_to_exact_share_market_order(self):
+        """BUY intents execute the pipeline-sized whole-share order."""
         a = _algo_with_aapl()
         b = LeanBackend(a)
         intent = OrderIntent(
@@ -213,7 +212,7 @@ class TestLeanBackendOrderPlacement:
             reason="x", exit_type=None,
         )
         fill = b.place_market_order(intent)
-        assert ("SetHoldings", "AAPL", 0.10) in a.order_log
+        assert ("MarketOrder", "AAPL", 100) in a.order_log
         assert fill.ticker == "AAPL"
         assert fill.side == OrderSide.BUY
         assert fill.shares == 100

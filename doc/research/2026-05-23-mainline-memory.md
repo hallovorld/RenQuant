@@ -2465,6 +2465,27 @@ entire pipeline end-to-end:
   runner-meta-label wiring, meta-label preflight, no-trade monitor, and data
   freshness suites passed (`81 passed`, one xgboost warning).
 
+### Global Round 2/10 — Model Evidence / Backtest Parity Pass
+
+- New LEAN data-parity bug found: LEAN subscribes to the full watchlist, but
+  `LeanAdapter.make_context()` only loaded OHLCV for `algo._models.keys()`.
+  When `LoadUniverseJob` filters models via a universe floor, LEAN could then
+  fail `DataFreshnessGateTask` for configured watchlist names that were never
+  loaded into `ctx.ohlcv`, while sim/live still had full-watchlist data. LEAN
+  now loads history for the full configured watchlist plus loaded models,
+  sector ETFs, and SPY. This does not expand the buy universe because
+  `_buy_universe()` still requires a loaded model.
+- New LEAN execution-parity bug found: QP/selection emit exact whole-share
+  orders and sim/live execute those shares, but LEAN buy/top-up used
+  `SetHoldings(target_pct)`, letting LEAN recompute a potentially different
+  quantity from portfolio value, price, fees, and current holdings. LEAN now
+  executes buy/top-up orders with `MarketOrder(sym, shares)`; `target_pct`
+  remains audit metadata. The unused `LeanBackend` contract was updated the
+  same way so a future execution-backend refactor cannot reintroduce the old
+  `SetHoldings` sizing semantics. Validation: LEAN trace/backend,
+  data-freshness, sim/live parity, buy-emission, and QP admission tests passed
+  (`77 passed`).
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

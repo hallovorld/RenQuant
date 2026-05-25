@@ -1798,8 +1798,8 @@ def _actual_qp_buy_target_pct(ctx, ticker: str, shares: int, px: float) -> float
     """Return post-fill target weight implied by emitted shares.
 
     QP's solver target_w is the desired total weight before integer share and
-    cash caps. LEAN executes BUY orders through SetHoldings(target_pct), so the
-    order target must match the shares actually emitted after those caps.
+    cash caps. The adapters execute the emitted whole-share order; target_pct
+    is retained as audit metadata and must match the capped shares.
     """
     nav = float(getattr(ctx, "portfolio_value", 0.0) or 0.0)
     if nav <= 0 or px <= 0 or shares <= 0:

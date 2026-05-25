@@ -188,7 +188,8 @@ class LeanAdapter:
         ohlcv: dict[str, Any] = {}
 
         all_tickers = (
-            list(algo._models.keys())
+            list(config.get("watchlist", []) or [])
+            + list(algo._models.keys())
             + list(algo._sector_etf_symbols.keys())
             + ["SPY"]
         )
@@ -624,7 +625,10 @@ class LeanAdapter:
                 hs_new.shares = shares_f
                 algo._holdings[ticker] = hs_new
             algo._executed_buys += 1
-            algo.SetHoldings(sym, target_pct_f)
+            # The pipeline already sized an exact whole-share order and sim/live
+            # execute that quantity. Use MarketOrder here as well; target_pct is
+            # retained only as decision/audit metadata.
+            algo.MarketOrder(sym, int(shares_f))
             trade_events.append(build_buy_trade_event(
                 {
                     **order,

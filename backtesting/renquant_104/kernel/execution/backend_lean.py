@@ -4,13 +4,13 @@ LEAN's brokerage layer is the source of truth for cash + position state
 during a backtest (or paper-trade via QuantConnect Cloud). Per §5.13.5
 the adapter MUST NOT maintain a parallel mirror; every read delegates
 to ``algo.Portfolio`` / ``algo.Securities`` and every write delegates
-to ``algo.MarketOrder`` / ``algo.Liquidate`` / ``algo.SetHoldings``.
+to ``algo.MarketOrder`` / ``algo.Liquidate``.
 
 Order placement semantics (matches ``adapters/lean.py:202`` legacy
 commit body):
 
-* BUY  → ``algo.SetHoldings(sym, target_pct)`` (LEAN sizes the order
-  off TotalPortfolioValue, including same-bar sell proceeds).
+* BUY  → ``algo.MarketOrder(sym, shares)`` (the pipeline is the sizing
+  owner; LEAN must not recompute a different quantity from target_pct).
 * SELL full     → ``algo.Liquidate(sym)`` (closes entire position).
 * SELL partial  → ``algo.MarketOrder(sym, -shares)`` (negative qty).
 
@@ -54,7 +54,7 @@ class LeanBackend(ExecutionBackend):
 
         if intent.side == OrderSide.BUY:
             shares = int(intent.shares)  # type: ignore[arg-type]
-            algo.SetHoldings(sym, float(intent.target_pct))
+            algo.MarketOrder(sym, shares)
             return Fill(
                 ticker=intent.ticker, side=OrderSide.BUY,
                 shares=shares, price=price, fees=0.0,

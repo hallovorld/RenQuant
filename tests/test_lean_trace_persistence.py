@@ -6,6 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import pandas as pd
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -288,6 +289,39 @@ def test_lean_make_context_syncs_holding_shares_and_lots(tmp_path):
     assert out.lots[0].price == 100.0
 
 
+def test_lean_make_context_loads_full_watchlist_ohlcv_for_freshness(tmp_path, monkeypatch):
+    """AUDIT REGRESSION GUARD: universe floors must not shrink LEAN OHLCV.
+
+    DataFreshnessGateTask validates the configured watchlist. LEAN may load a
+    subset of models after universe-floor filtering, but it still subscribes to
+    the full watchlist and must provide those bars to the shared pipeline.
+    """
+    import adapters.lean as lean_mod
+
+    adapter, data = _minimal_lean_adapter_for_context(tmp_path)
+    adapter._algo._config["watchlist"] = ["AAA", "BBB"]
+    adapter._algo._models = {"AAA": {}}
+    adapter._algo.symbols = {"AAA": "AAA", "BBB": "BBB"}
+    monkeypatch.setattr(lean_mod, "Resolution", SimpleNamespace(Daily="Daily"), raising=False)
+
+    def _history(sym, _lookback, _resolution):
+        dates = pd.date_range("2026-05-18", periods=5, freq="B")
+        idx = pd.MultiIndex.from_product([[sym], dates])
+        return pd.DataFrame({
+            "open": [100.0] * len(idx),
+            "high": [101.0] * len(idx),
+            "low": [99.0] * len(idx),
+            "close": [100.0] * len(idx),
+            "volume": [1_000_000] * len(idx),
+        }, index=idx)
+
+    adapter._algo.History = _history
+
+    ctx = adapter.make_context(data)
+
+    assert {"AAA", "BBB", "SPY"}.issubset(ctx.ohlcv)
+
+
 def test_lean_commit_stamps_full_exit_pl_for_wash_sale_parity(tmp_path):
     """LEAN must preserve realized P/L for the cost-aware wash-sale gate.
 
@@ -516,7 +550,7 @@ def test_lean_commit_benchmark_sleeve_buy_allows_missing_alpha_scores(tmp_path):
 
     today = datetime.date(2026, 5, 22)
     debug_lines: list[str] = []
-    holdings_calls: list[tuple[str, float]] = []
+    market_calls: list[tuple[str, int]] = []
 
     class _Portfolio(dict):
         TotalPortfolioValue = 100_000.0
@@ -579,8 +613,8 @@ def test_lean_commit_benchmark_sleeve_buy_allows_missing_alpha_scores(tmp_path):
         _blocked_min_hold=0,
         Debug=lambda msg: debug_lines.append(str(msg)),
         Liquidate=lambda _sym: None,
-        MarketOrder=lambda _sym, _qty: None,
-        SetHoldings=lambda sym, target: holdings_calls.append((sym, target)),
+        MarketOrder=lambda sym, qty: market_calls.append((sym, qty)),
+        SetHoldings=lambda _sym, _target: pytest.fail("BUY must use exact-share MarketOrder"),
     )
     adapter = LeanAdapter.__new__(LeanAdapter)
     adapter._algo = algo
@@ -616,7 +650,7 @@ def test_lean_commit_benchmark_sleeve_buy_allows_missing_alpha_scores(tmp_path):
 
     adapter.commit(ctx)
 
-    assert holdings_calls == [("SPY", 0.50)]
+    assert market_calls == [("SPY", 10)]
     assert "rank=NA" in debug_lines[0]
     assert "rs=NA" in debug_lines[0]
 
