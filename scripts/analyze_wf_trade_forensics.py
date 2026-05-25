@@ -161,6 +161,83 @@ def _rank_deciles(df: pd.DataFrame) -> list[dict[str, Any]]:
     return _group_table(work, "entry_rank_decile")
 
 
+def _entry_score_ladder(
+    closed: pd.DataFrame,
+    *,
+    benchmark_ticker: str,
+    min_group_n: int = 5,
+    q: int = 5,
+) -> list[dict[str, Any]]:
+    """Regime-first score buckets measured against same-capital benchmark P&L.
+
+    This is the direct alpha-conversion lens: within each regime, higher model
+    score buckets should show better active outcomes versus the benchmark. If a
+    ladder slopes the wrong way, the failure is in entry score semantics or a
+    downstream decision rule that systematically harvests the wrong side.
+    """
+    if closed.empty or "entry_regime" not in closed.columns:
+        return []
+    alpha = closed[_alpha_trade_mask(closed, benchmark_ticker)].copy()
+    if alpha.empty:
+        return []
+    alpha = _with_same_capital_benchmark(
+        alpha,
+        benchmark_prices=_load_close_series(benchmark_ticker),
+    )
+    rows: list[dict[str, Any]] = []
+    for regime, regime_df in alpha.groupby("entry_regime", dropna=False, observed=False):
+        regime_name = "NULL" if pd.isna(regime) else str(regime)
+        for score_col in ("entry_rank_score", "entry_panel_score", "entry_mu"):
+            if score_col not in regime_df.columns:
+                continue
+            work = regime_df.copy()
+            work[score_col] = pd.to_numeric(work[score_col], errors="coerce")
+            work = work.replace([np.inf, -np.inf], np.nan).dropna(subset=[score_col])
+            if len(work) < min_group_n or work[score_col].nunique() < 2:
+                continue
+            n_bins = min(max(2, int(q)), int(work[score_col].nunique()), len(work))
+            try:
+                buckets = pd.qcut(
+                    work[score_col],
+                    q=n_bins,
+                    labels=False,
+                    duplicates="drop",
+                )
+            except ValueError:
+                continue
+            work = work.assign(_score_bucket=buckets)
+            for code, group in work.groupby("_score_bucket", dropna=True, observed=False):
+                if len(group) < min_group_n:
+                    continue
+                summary = _active_summary(group)
+                score = pd.to_numeric(group[score_col], errors="coerce")
+                exit_mix = (
+                    group.get("exit_reason", pd.Series("NULL", index=group.index))
+                    .fillna("NULL")
+                    .astype(str)
+                    .value_counts()
+                    .head(3)
+                    .to_dict()
+                )
+                rows.append({
+                    "entry_regime": regime_name,
+                    "score_col": score_col,
+                    "score_bucket": f"Q{int(code) + 1}",
+                    "min_score": float(score.min()),
+                    "median_score": float(score.median()),
+                    "max_score": float(score.max()),
+                    "mean_active_return": (
+                        float(pd.to_numeric(group["active_return"], errors="coerce").dropna().mean())
+                        if "active_return" in group.columns
+                        and pd.to_numeric(group["active_return"], errors="coerce").notna().any()
+                        else None
+                    ),
+                    "top_exit_reasons": exit_mix,
+                    **summary,
+                })
+    return rows
+
+
 def _score_spearman(df: pd.DataFrame) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for score_col in ("entry_rank_score", "entry_mu", "entry_panel_score"):
@@ -965,6 +1042,11 @@ def analyze_trace(
             "exit_regime",
             min_n=max(10, min_group_n),
         ),
+        "entry_score_ladder": _entry_score_ladder(
+            closed,
+            benchmark_ticker=benchmark_ticker,
+            min_group_n=max(3, min_group_n),
+        ),
         "groups": {
             "by_cut": _group_table(closed, "cut", min_n=min_group_n),
             "by_exit_reason": _group_table(closed, "exit_reason", min_n=min_group_n),
@@ -1064,6 +1146,14 @@ def markdown_report(payload: dict[str, Any]) -> str:
             lines.append(pd.DataFrame(rows).to_markdown(index=False, floatfmt=".4f"))
         else:
             lines.append("Insufficient scored closed trades by regime.")
+
+    lines.extend(["", "## Entry Score Ladder"])
+    ladder = payload.get("entry_score_ladder", [])
+    if ladder:
+        lines.append(pd.DataFrame(ladder).to_markdown(index=False, floatfmt=".4f"))
+    else:
+        lines.append("Insufficient scored alpha trades by regime.")
+
     fra = payload.get("forward_return_alignment", {})
     lines.extend(["", "## Forward Return Alignment"])
     if fra.get("enabled"):

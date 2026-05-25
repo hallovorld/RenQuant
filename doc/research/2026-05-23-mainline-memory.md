@@ -2030,6 +2030,33 @@ Operational conclusion:
   root, run with `--reuse-existing` where available, and record whether the
   artifact is promotion-grade, diagnostic-only, or cache-only.
 
+## 2026-05-24 Entry Score Alpha-Conversion Ladder
+
+- `scripts/analyze_wf_trade_forensics.py` now includes a regime-first
+  `entry_score_ladder`: within each entry regime and each score column
+  (`entry_rank_score`, `entry_panel_score`, `entry_mu`), it buckets closed
+  alpha trades by score and reports same-capital benchmark active P&L, active
+  return, win rate, hold time, tax, and exit mix. This prevents pooled score
+  IC from hiding a bad regime-local entry ladder.
+- Applied to diagnostic trace
+  `horizon60_erfloor_bullcalm040_diag_20260524-190959` with SPY same-capital
+  benchmark. Result: all 35 closed alpha trades entered in BULL_CALM; overall
+  active net after tax was only `+$30.68` versus SPY same capital, with active
+  win rate `34.3%`.
+- The new ladder confirms the root problem is entry-score semantics, not only
+  tax/QP churn. In BULL_CALM, `entry_panel_score` Q1 produced active
+  `+$6,069`, while Q4/Q5 produced `-$2,294` and `-$2,620`. `entry_mu` is
+  similarly inverted: Q1 `+$6,472`, Q4 `-$3,304`, Q5 `-$2,449`. `rank_score`
+  also deteriorates in Q4/Q5. This is consistent with negative BULL_CALM
+  Spearman (`entry_mu` vs net P/L about `-0.268`) and negative 60d forward
+  excess alignment (`entry_mu` about `-0.219`).
+- Current next thesis: the model/calibrator is scoring a target that is not
+  the realized BULL_CALM trade objective. The next repair should not be a
+  global score threshold tweak. It should audit and, if confirmed, replace or
+  regime-condition the BULL_CALM entry label/calibrator objective against
+  active forward return and/or realized trade-compatible path risk, then pass
+  leak-safe WF with regime-first score ladders.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

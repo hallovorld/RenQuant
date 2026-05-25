@@ -185,6 +185,81 @@ def test_score_spearman_by_group_keeps_regime_contract() -> None:
     assert rank_rows["CHOPPY"]["vs_pnl_pct"] == pytest.approx(-1.0)
 
 
+def test_entry_score_ladder_reports_regime_active_pnl(monkeypatch) -> None:
+    prices = pd.Series(
+        [100.0, 110.0],
+        index=pd.to_datetime(["2024-01-02", "2024-01-31"]),
+    )
+    monkeypatch.setattr(wf_forensics, "_load_close_series", lambda ticker: prices)
+    rows = []
+    for i in range(12):
+        rows.append({
+            "status": "closed",
+            "ticker": f"BC{i:02d}",
+            "entry_date": "2024-01-02",
+            "exit_date": "2024-01-31",
+            "shares": 10,
+            "entry_price": 10.0,
+            "gross_pnl": 12.0 - i,
+            "tax": 0.0,
+            "net_pnl_after_tax": 12.0 - i,
+            "hold_days": 29,
+            "entry_source_job": "JointPortfolioQPJob",
+            "entry_regime": "BULL_CALM",
+            "exit_regime": "BULL_CALM",
+            "exit_reason": "qp_close",
+            "entry_rank_score": float(i),
+            "entry_panel_score": float(i),
+            "entry_mu": float(i),
+        })
+    for i in range(12):
+        rows.append({
+            "status": "closed",
+            "ticker": f"CH{i:02d}",
+            "entry_date": "2024-01-02",
+            "exit_date": "2024-01-31",
+            "shares": 10,
+            "entry_price": 10.0,
+            "gross_pnl": float(i),
+            "tax": 0.0,
+            "net_pnl_after_tax": float(i),
+            "hold_days": 29,
+            "entry_source_job": "JointPortfolioQPJob",
+            "entry_regime": "CHOPPY",
+            "exit_regime": "CHOPPY",
+            "exit_reason": "stop_loss",
+            "entry_rank_score": float(i),
+            "entry_panel_score": float(i),
+            "entry_mu": float(i),
+        })
+    closed = pd.DataFrame(rows)
+
+    ladder = wf_forensics._entry_score_ladder(
+        closed,
+        benchmark_ticker="SPY",
+        min_group_n=4,
+        q=3,
+    )
+
+    bull = [
+        r for r in ladder
+        if r["entry_regime"] == "BULL_CALM"
+        and r["score_col"] == "entry_rank_score"
+    ]
+    choppy = [
+        r for r in ladder
+        if r["entry_regime"] == "CHOPPY"
+        and r["score_col"] == "entry_rank_score"
+    ]
+    assert len(bull) == 3
+    assert len(choppy) == 3
+    assert bull[0]["score_bucket"] == "Q1"
+    assert bull[-1]["score_bucket"] == "Q3"
+    assert bull[0]["active_net_after_tax"] > bull[-1]["active_net_after_tax"]
+    assert choppy[0]["active_net_after_tax"] < choppy[-1]["active_net_after_tax"]
+    assert all("median_score" in row for row in bull + choppy)
+
+
 def test_forward_return_alignment_separates_model_signal_from_trade_path(
     tmp_path: Path,
 ) -> None:
