@@ -416,6 +416,19 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_preflight.py tests/test_preflight_regime_sanity.py`
     (`163 passed`) plus runner/acceptance smoke neighborhood
     (`108 passed`).
+- Weekly promotion hardening:
+  - `weekly_wf_promote.sh` now calls the central
+    `kernel.model_acceptance.promote()` path for the staged model instead of
+    hand-writing the final copy/replace. The calibrator is staged to an
+    incoming file and swapped only after the central model promotion passes.
+  - The final promote Python block is now checked explicitly; a non-zero
+    return sends a WEEKLY-FAIL notification and exits before any success
+    dashboard/ntfy path.
+  - Targeted tests passed:
+    `bash -n scripts/weekly_wf_promote.sh` and
+    `tests/test_smoke_test_model.py tests/test_train_104_no_wf_bypass.py
+    tests/test_promote_wf_gate.py tests/test_model_acceptance.py`
+    (`100 passed`).
 
 ## Active Validation
 

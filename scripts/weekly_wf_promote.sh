@@ -176,28 +176,52 @@ print('  '.join(parts) if parts else '(no metadata)')
 " 2>/dev/null || echo "(metadata parse failed)")
 echo "Gate metadata: $GATE_SUMMARY"
 
-"$PYTHON" - <<PY
+if ! "$PYTHON" - <<PY
 from pathlib import Path
 import json
 import os
 import shutil
+import sys
 
-pairs = [
-    (Path("$STAGING_ART"), Path("$ACTIVE_ART")),
-    (Path("$STAGING_CAL"), Path("$ACTIVE_CAL")),
-]
-model = json.loads(pairs[0][0].read_text())
+sys.path.insert(0, "backtesting/renquant_104")
+from kernel.model_acceptance import promote
+
+model_src = Path("$STAGING_ART")
+model_dst = Path("$ACTIVE_ART")
+cal_src = Path("$STAGING_CAL")
+cal_dst = Path("$ACTIVE_CAL")
+
+model = json.loads(model_src.read_text())
 gate = model.get("wf_gate_metadata") or model.get("metadata", {}).get("wf_gate_metadata") or {}
 if gate.get("passed") is not True:
     raise SystemExit(f"staged artifact has no passing wf_gate_metadata: {gate}")
-for src, dst in pairs:
-    if not src.exists():
-        raise SystemExit(f"missing staging artifact: {src}")
-    incoming = dst.with_suffix(".incoming.json")
-    shutil.copy2(src, incoming)
-    os.replace(incoming, dst)
-    print(f"Promoted {src.name} -> {dst.name}")
+
+if not cal_src.exists():
+    raise SystemExit(f"missing staging calibrator: {cal_src}")
+cal_payload = json.loads(cal_src.read_text())
+if not isinstance(cal_payload, dict):
+    raise SystemExit(f"staging calibrator is not a JSON object: {cal_src}")
+
+cal_incoming = cal_dst.with_suffix(".incoming.json")
+shutil.copy2(cal_src, cal_incoming)
+try:
+    promote(model_src, model_dst)
+    os.replace(cal_incoming, cal_dst)
+except Exception:
+    try:
+        cal_incoming.unlink()
+    except FileNotFoundError:
+        pass
+    raise
+print(f"Promoted {model_src.name} -> {model_dst.name} via kernel.model_acceptance.promote")
+print(f"Promoted {cal_src.name} -> {cal_dst.name}")
 PY
+then
+    echo "Promote FAILED — production may still be on prior model or .previous rollback target."
+    notify "RenQuant 104 WEEKLY-FAIL" \
+        "Promotion step failed after WF gate. Check $LOG before trading."
+    exit 1
+fi
 
 # ── Step 6: Refresh dashboard ─────────────────────────────────────────────
 "$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \

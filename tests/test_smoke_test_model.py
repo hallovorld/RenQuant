@@ -231,6 +231,21 @@ class TestWeeklyShellInvariants:
         assert "--strict" in weekly, \
             "weekly_wf_promote.sh must run WF gate in strict mode"
 
+    def test_weekly_promote_uses_central_model_acceptance(self):
+        weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+        assert "from kernel.model_acceptance import promote" in weekly
+        assert "promote(model_src, model_dst)" in weekly
+
+    def test_weekly_promote_failure_exits_before_success_notify(self):
+        weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+        promote_idx = weekly.find("promote(model_src, model_dst)")
+        fail_idx = weekly.find("Promote FAILED")
+        success_idx = weekly.find("WEEKLY-PROMOTE")
+        assert promote_idx > 0 and fail_idx > promote_idx
+        assert success_idx > fail_idx
+        promote_block = weekly[promote_idx:success_idx]
+        assert "exit 1" in promote_block
+
     def test_weekly_calls_smoke_first(self):
         weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
         # smoke test must come BEFORE retrain (don't waste 90 min on broken pipeline)
