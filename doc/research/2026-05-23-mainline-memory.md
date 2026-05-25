@@ -1874,6 +1874,35 @@ Operational conclusion:
   production artifacts or strategy configs; those must remain visible until
   reviewed.
 
+## 2026-05-24 Model Artifact / Compute Discipline
+
+- Latest PatchTST checkpoints are saved locally, not just logs. The strict
+  shadow artifact is
+  `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt`
+  with a `.metadata.json` sidecar. The three 5-cut/5-seed architecture screens
+  have 75 `.pt` model files, 75 summaries, and 75 validation-prediction
+  parquet files across:
+  `artifacts/hf_trainer_5cut_5seed_pt07_clean`,
+  `artifacts/hf_film_5cut_5seed_pt07_clean`, and
+  `artifacts/hf_cross_stock_5cut_5seed_pt07`.
+- The PatchTST WF pilot is also saved under
+  `backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524`
+  with per-cut `.pt` and `.pt.metadata.json` files plus the manifest
+  `backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json`.
+- The expensive PatchTST WF driver has `--reuse-existing`; reruns should use it
+  unless intentionally changing the recipe. It reuses completed checkpoint,
+  sidecar, and calibrator outputs after downstream manifest/gate failures.
+- Found and fixed one compute-discipline gap in the new XGB comparator:
+  `scripts/eval_xgb_5cut_5seed.py` originally saved summaries and validation
+  predictions but not the trained XGBoost booster. Future runs now save
+  `xgb_*_model.json` and stamp `model_saved/model_path` into each summary.
+  The already-run XGB comparator can reproduce its IC from saved predictions,
+  but exact booster reuse would require rerunning that cheap XGB arm.
+- Policy: before launching any expensive model job, check for an existing
+  checkpoint + sidecar + summary + predictions under the intended artifact
+  root, run with `--reuse-existing` where available, and record whether the
+  artifact is promotion-grade, diagnostic-only, or cache-only.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

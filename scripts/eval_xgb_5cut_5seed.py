@@ -113,10 +113,13 @@ def run_one(args_dict: dict, cut: str, seed: int) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / f"xgb_{cut}_seed{seed}_summary.json"
     preds_path = out_dir / f"xgb_{cut}_seed{seed}_val_preds.parquet"
+    model_path = out_dir / f"xgb_{cut}_seed{seed}_model.json"
     if args.reuse_existing and summary_path.exists() and preds_path.exists():
         payload = json.loads(summary_path.read_text())
         payload["status"] = "ok"
         payload["skipped_existing"] = True
+        payload["model_path"] = str(model_path.relative_to(REPO))
+        payload["model_saved"] = model_path.exists()
         return payload
 
     panel, feat_cols = load_panel_with_split(Path(args.dataset), cut, args.label)
@@ -154,6 +157,7 @@ def run_one(args_dict: dict, cut: str, seed: int) -> dict:
     )
     val = val.copy()
     val["pred"] = booster.predict(dval)
+    booster.save_model(str(model_path))
     val_preds = val[["date", "ticker", "pred", args.label]].rename(columns={args.label: "label"})
     val_preds.to_parquet(preds_path, index=False)
 
@@ -178,6 +182,8 @@ def run_one(args_dict: dict, cut: str, seed: int) -> dict:
         "n_features": len(feat_cols),
         "n_train_rows": int(len(train)),
         "n_val_rows": int(len(val)),
+        "model_path": str(model_path.relative_to(REPO)),
+        "model_saved": True,
         "params": params,
         "label_winsor": panel.attrs.get("label_winsor", {}),
     }
