@@ -189,6 +189,24 @@ class TestTaskPopulatesCtx:
         assert ctx._blocked_by_ticker == {"XLU": "defensive_non_bear"}
         assert ctx._selected == ["CAT"]
 
+    def test_task_preserves_existing_upstream_block_reasons(self):
+        from kernel.pipeline.task_selection import RunSelectionTask
+        task = RunSelectionTask()
+
+        class _FakeCtx:
+            ranked   = _ranked([("XLU", 0.9), ("CAT", 0.5)])
+            _sel_ctx = _sel_ctx(defensive_set={"XLU"}, bear_only=False)
+            _blocked_by_ticker = {"MSFT": "risk_gate_vol"}
+            counters: dict = {}
+
+        ctx = _FakeCtx()
+        task.run(ctx)
+        assert ctx._blocked_by_ticker == {
+            "MSFT": "risk_gate_vol",
+            "XLU": "defensive_non_bear",
+        }
+        assert ctx._selected == ["CAT"]
+
 
 # ── End-to-end DB write: record_candidate_scores persists blocked_by ─────────
 

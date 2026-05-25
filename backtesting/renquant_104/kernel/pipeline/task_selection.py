@@ -83,7 +83,9 @@ class RunSelectionTask(Task):
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.selection import run_selection_loop  # noqa: PLC0415
 
-        blocked_by_ticker: dict[str, str] = {}
+        blocked_by_ticker = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked_by_ticker is None:
+            blocked_by_ticker = {}
         selected, blocks = run_selection_loop(
             ctx.ranked, ctx._sel_ctx,  # noqa: SLF001
             blocked_by_ticker=blocked_by_ticker,

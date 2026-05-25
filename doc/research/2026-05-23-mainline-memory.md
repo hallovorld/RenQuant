@@ -2383,6 +2383,14 @@ Operational conclusion:
   `infeasible:cvxportfolio_unsupported_constraints` whenever those hard
   constraints are present. Validation: backend-switch, cvxportfolio parity,
   sector, and correlation tests passed (`48 passed`).
+- Follow-up selection-trace bug found: `RunSelectionTask` recreated
+  `_blocked_by_ticker` from an empty dict each time it ran. Any upstream
+  terminal reason stamped by model/risk/panel gates could be overwritten by
+  the legacy selection path, turning a real reason such as `risk_gate_vol`
+  into a generic downstream non-selection reason in the DB. The task now
+  preserves and extends the existing map instead of clobbering it. Validation:
+  blocked-by, buy-quality, DB persistence, and LEAN trace tests passed
+  (`71 passed`).
 
 ## Stop Conditions
 
