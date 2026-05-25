@@ -265,6 +265,31 @@ class TestPercentileLookup:
 
         assert v == pytest.approx(0.40)
 
+    def test_get_threshold_can_exclude_same_day_rows_for_live_gates(self):
+        db = _make_db()
+        cur = db.cursor()
+        for day, p85 in [
+            ("2026-04-24", 0.40),
+            ("2026-04-25", 0.50),
+            ("2026-04-26", 0.99),
+        ]:
+            cur.execute(
+                """INSERT INTO score_percentiles_daily
+                   (run_id, date, n_cands, p85) VALUES (?, ?, ?, ?)""",
+                (f"{day}-sim-a", day, 10, p85),
+            )
+        db.commit()
+
+        v = get_score_percentile_threshold(
+            db,
+            "2026-04-26",
+            85,
+            lookback_days=5,
+            include_today=False,
+        )
+
+        assert v == pytest.approx(0.45)
+
 
 class TestPipelineIntegration:
     def test_score_distribution_job_should_skip_when_disabled(self):

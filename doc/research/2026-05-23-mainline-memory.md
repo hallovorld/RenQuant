@@ -3049,6 +3049,39 @@ Validation completed in this bundle:
 - `47 passed`: decision-trace/LEAN/ticker-state/sim-live adapter checks.
 - `26 passed`: reconciliation, decision-factor, and trade-attribution checks.
 
+## 2026-05-25 QP/Live Execution Boundary Hardening
+
+No new long experiment was required. Code and subagent audit found four
+decision-path bugs:
+
+- Gate A percentile lookup now excludes same-date rows when used as a live
+  buy gate. A same-day rerun can no longer read a percentile written by an
+  earlier run on the same market date.
+- Regime-specific `qp_admission_gate` now shapes the QP solver universe before
+  vector construction, not only at order emission. Weak candidates blocked by
+  a regime override cannot consume optimizer capacity.
+- QP same-bar sells now credit estimated long-sale proceeds before later QP
+  buys are cash-capped, matching the sim/live execution invariant that
+  confirmed exits can fund same-bar buys.
+- Held tickers are no longer marked exit-only merely because the new-buy scan
+  excludes already-held names. Explicit exit-only markers still cap a holding,
+  but a currently scored strong holding can be topped up by QP.
+- Strict QP μ contract now checks `mu_horizon_days` against the configured QP
+  horizon when raw μ is consumed without an alpha-to-mu transform.
+- Live SQLite sell rows now prefer the broker-confirmed `sig.sell_price` over
+  the decision snapshot price, so DB P&L/tax rows match fills.
+
+Validation:
+
+- `29 passed`: Gate A and score distribution percentile tests.
+- `20 passed`: QP integration and regime override tests.
+- `49 passed`: QP integration/regime override/runner sell attribution/emit
+  helper/min-share-floor neighborhood.
+- `99 passed`: QP admission/joint-QP/QP integration neighborhood after
+  updating the held-top-up contract.
+- `100 passed`: persistence/decision-trace/score-distribution/runner-sell
+  attribution/emit-helper/min-share-floor neighborhood.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

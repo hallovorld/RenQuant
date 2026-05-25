@@ -480,4 +480,5 @@ class QualityFloorTask(Task):
         return get_score_percentile_threshold(
             db, today_iso, percentile=percentile, lookback_days=lookback,
             run_type=run_type if isinstance(run_type, str) and run_type else None,
+            include_today=False,
         )

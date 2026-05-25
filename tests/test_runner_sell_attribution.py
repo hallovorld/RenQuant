@@ -15,7 +15,11 @@ STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquan
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
-from adapters.runner import build_sell_trade_event_for_db, model_type_from_artifact  # noqa: E402
+from adapters.runner import (  # noqa: E402
+    build_sell_trade_event_for_db,
+    model_type_from_artifact,
+    sell_event_price,
+)
 from kernel.exits import ExitSignal, HoldingState  # noqa: E402
 
 
@@ -80,6 +84,17 @@ def test_live_sell_trade_preserves_exit_signal_source_metadata():
     assert row["decision_inputs"]["tax_lot_method"] == "hifo"
     assert row["decision_inputs"]["take_profit_pct"] == 0.30
     assert row["decision_inputs"]["sdl_skip_if_unrealized_above"] == 0.02
+
+
+def test_live_sql_sell_uses_broker_fill_price_when_available():
+    sig = ExitSignal(
+        should_exit=True,
+        reason="broker filled below snapshot",
+        exit_type="qp_sell",
+    )
+    sig.sell_price = 95.0
+
+    assert sell_event_price(sig, 100.0) == 95.0
 
 
 def test_live_sell_trade_persists_applied_exit_params_from_signal():

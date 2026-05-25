@@ -782,7 +782,8 @@ def _has_finite_attr(obj: Any, attr: str) -> bool:
     if obj is None:
         return False
     try:
-        return math.isfinite(float(getattr(obj, attr)))
+        value = obj.get(attr) if isinstance(obj, dict) else getattr(obj, attr)
+        return math.isfinite(float(value))
     except (AttributeError, TypeError, ValueError):
         return False
 
@@ -976,15 +977,25 @@ class ValidateQPMuContractTask(Task):
             t for t in tickers
             if not _has_finite_attr(src.get(t), "sigma")
         ]
+        expected_horizon = _resolve_qp_mu_horizon_days(ctx, cfg)
+        horizon_mismatch = []
+        if expected_horizon is not None and not alpha_applied:
+            horizon_mismatch = [
+                t for t in tickers
+                if _has_finite_attr(src.get(t), "mu")
+                and _source_positive_int(src.get(t), "mu_horizon_days")
+                != expected_horizon
+            ]
         forced_raw = forced not in {"", "none", "mu"}
         ok = (not forced_missing) and (
             alpha_applied or (not missing_mu and not forced_raw)
-        ) and not missing_sigma
+        ) and not missing_sigma and not horizon_mismatch
         ctx._qp_mu_contract = {  # noqa: SLF001
             "ok": ok,
             "mode": mode,
             "alpha_to_mu_enabled": bool(alpha_cfg.get("enabled", False)),
             "alpha_to_mu_applied": alpha_applied,
+            "expected_mu_horizon_days": expected_horizon,
             "forced_source": forced,
             "forced_source_missing_count": len(forced_missing),
             "forced_source_missing_sample": forced_missing[:10],
@@ -992,12 +1003,17 @@ class ValidateQPMuContractTask(Task):
             "missing_mu_sample": missing_mu[:10],
             "missing_sigma_count": len(missing_sigma),
             "missing_sigma_sample": missing_sigma[:10],
+            "mu_horizon_mismatch_count": len(horizon_mismatch),
+            "mu_horizon_mismatch_sample": horizon_mismatch[:10],
         }
         if ok:
             return None
 
         affected = sorted({
-            str(t) for t in (missing_mu + missing_sigma + forced_missing)
+            str(t)
+            for t in (
+                missing_mu + missing_sigma + forced_missing + horizon_mismatch
+            )
         })
         affected_count = len(affected) or int(forced_raw)
         _inc_counter(ctx, "qp_mu_contract_fallback", affected_count)
@@ -1006,6 +1022,7 @@ class ValidateQPMuContractTask(Task):
             f"(missing_mu={len(missing_mu)}, forced_source={forced}, "
             f"forced_missing={len(forced_missing)}, "
             f"missing_sigma={len(missing_sigma)}, "
+            f"mu_horizon_mismatch={len(horizon_mismatch)}, "
             f"alpha_to_mu_applied={alpha_applied})"
         )
         if mode in {"strict", "hard", "error", "enforce"}:
@@ -1015,6 +1032,8 @@ class ValidateQPMuContractTask(Task):
                     reason = (
                         "qp_mu_contract_block"
                         if ticker in {str(t) for t in missing_mu + forced_missing}
+                        else "qp_mu_horizon_contract_block"
+                        if ticker in {str(t) for t in horizon_mismatch}
                         else "qp_sigma_contract_block"
                     )
                     _stamp_qp_ticker_block(ctx, str(ticker), reason)
@@ -1780,6 +1799,23 @@ def _shares_from_dw(dw: float, nav: float, px: float) -> int:
     return int(abs(dw) * nav / px)
 
 
+def _long_sell_credit(env: dict, ticker: str, shares: int, px: float) -> float:
+    """Estimated same-bar cash released by selling an existing long."""
+    if shares <= 0 or px <= 0:
+        return 0.0
+    hs = (env.get("holdings") or {}).get(ticker)
+    if hs is None:
+        return 0.0
+    try:
+        held = float(getattr(hs, "shares", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(held) or held <= 0.0:
+        return 0.0
+    credit = min(float(shares), held) * float(px)
+    return credit if math.isfinite(credit) and credit > 0.0 else 0.0
+
+
 def _array_float_at(value, idx: int) -> float | None:
     if value is None:
         return None
@@ -2451,7 +2487,8 @@ class EmitOrdersFromQPSolutionTask(Task):
                  delta_below_min_dw=0, zero_shares=0,
                  no_buy_delta=0, not_selected=0,
                  cash_capped=0, cash_exhausted=0, soft_sell_blocked=0,
-                 preexisting_exit=0, admission_blocked=0)
+                 preexisting_exit=0, admission_blocked=0,
+                 sell_credit_events=0)
         buy_cash_left = max(0.0, env["cash"] - env["nav"] * env["cash_reserve"])
         pending_sell_shares: dict[str, float] = {}
         _set_path(ctx, "_qp_pending_sell_shares", pending_sell_shares)
@@ -2586,6 +2623,15 @@ class EmitOrdersFromQPSolutionTask(Task):
                     continue
                 if _emit_qp_sell(ctx, t, shares, dw, sol, i):
                     ns += 1
+                    credit = _long_sell_credit(env, t, shares, px)
+                    if credit > 0.0:
+                        buy_cash_left += credit
+                        c["sell_credit_events"] += 1
+                        log.info(
+                            "QP_SELL_CREDIT %-6s  credited=$%.0f  "
+                            "buy_cash_left=$%.0f",
+                            t, credit, buy_cash_left,
+                        )
                 else:
                     stamp(t, "qp_no_sell_position")
         for ticker in candidate_tickers - emitted_candidates:

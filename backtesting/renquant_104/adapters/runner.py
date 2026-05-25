@@ -119,6 +119,19 @@ def persisted_skip_buys(state: dict | None) -> bool:
     return False
 
 
+def sell_event_price(sig: Any, fallback_price: Any) -> float:
+    """Use broker-confirmed sell fill price when present, else fallback."""
+    import math
+    for value in (getattr(sig, "sell_price", None), fallback_price):
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(price) and price > 0.0:
+            return price
+    return 0.0
+
+
 def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | None, str | None]:
     """Resize or reject one buy intent against the runner's live cash ledger."""
     import math
@@ -1919,7 +1932,7 @@ class RunnerAdapter:
             ) or {}
             for t, sig in exits_for_db:
                 hs    = ctx.holdings.get(t)
-                price = ctx.prices.get(t, 0.0)
+                price = sell_event_price(sig, ctx.prices.get(t, 0.0))
                 trade_events.append(build_sell_trade_event_for_db(
                     ticker=t,
                     sig=sig,

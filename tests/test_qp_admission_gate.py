@@ -431,7 +431,7 @@ def test_qp_source_map_preserves_explicit_exit_only_for_held_candidate() -> None
     assert ctx._qp_exit_only_tickers == {"HELD"}
 
 
-def test_qp_solver_marks_held_without_current_candidate_exit_only() -> None:
+def test_qp_solver_allows_scored_held_without_current_candidate_to_rebalance() -> None:
     held = SimpleNamespace(ticker="HELD", rank_score=0.80, panel_score=0.20)
     ctx = _ctx_for_source_map(
         holdings={"HELD": held},
@@ -443,7 +443,7 @@ def test_qp_solver_marks_held_without_current_candidate_exit_only() -> None:
 
     assert ctx._qp_tickers == ["HELD"]
     assert ctx._qp_mu_source_map["HELD"] is held
-    assert ctx._qp_exit_only_tickers == {"HELD"}
+    assert ctx._qp_exit_only_tickers == set()
 
 
 def test_qp_exit_only_guard_caps_upper_at_current_weight() -> None:

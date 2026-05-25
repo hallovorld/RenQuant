@@ -163,18 +163,24 @@ def get_score_percentile_threshold(
     db: Any, today_iso: str, percentile: int = 85,
     lookback_days: int = 5,
     run_type: str | None = None,
+    include_today: bool = True,
 ) -> float | None:
     """Return the score-percentile threshold averaged across the last
     `lookback_days` of trading days, or None if no rows yet.
 
     Example: percentile=85 lookback_days=5 → mean of p85 values across
     last 5 daily rows. Useful as buy_floor surrogate.
+
+    ``include_today=False`` is for live decision gates. It prevents a
+    same-date rerun from reading a percentile row written by an earlier run
+    on the same market date.
     """
     col = f"p{percentile:02d}"
     if col not in {"p01", "p05", "p10", "p25", "p50", "p75",
                     "p85", "p90", "p95", "p99"}:
         raise ValueError(f"Unsupported percentile {percentile}")
     cur = db.cursor()
+    date_op = "<=" if include_today else "<"
     run_filter = "AND run_type = ?" if run_type else ""
     params: tuple[Any, ...]
     if run_type:
@@ -190,7 +196,7 @@ def get_score_percentile_threshold(
                                ORDER BY created_at DESC, run_id DESC
                            ) AS rn
                       FROM score_percentiles_daily
-                     WHERE date <= ?
+                     WHERE date {date_op} ?
                        {run_filter}
                    )
              WHERE rn = 1

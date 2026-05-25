@@ -11,7 +11,9 @@ import datetime
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 from kernel.pipeline.context import InferenceContext  # noqa: E402
 from kernel.panel_pipeline.task_quality_floor import QualityFloorTask  # noqa: E402
+from kernel.portfolio_qp.job_qp import _BuildSourceMapTask  # noqa: E402
 from kernel.portfolio_qp.task_joint_qp import JointPortfolioQPTask  # noqa: E402
 
 
@@ -30,6 +33,8 @@ class _Cand:
     panel_score: float | None = None
     rank_score: float | None = None
     expected_return: float | None = None
+    expected_return_horizon_days: int | None = None
+    mu_horizon_days: int | None = None
     kelly_target_pct: float | None = None
     rs_score: float | None = None
 
@@ -45,6 +50,8 @@ class _Hold:
     entry_date: datetime.date = datetime.date(2026, 4, 1)
     entry_price: float = 100.0
     expected_return: float | None = None
+    expected_return_horizon_days: int | None = None
+    mu_horizon_days: int | None = None
     kelly_target_pct: float | None = None
 
 
@@ -76,6 +83,7 @@ def _base_config() -> dict:
             "A": "tech",
             "AAPL": "tech",
             "GOOG": "tech",
+            "HELD": "tech",
             "MSFT": "tech",
             "NEW": "tech",
             "OLD": "tech",
@@ -226,6 +234,154 @@ class TestQPMuContractIntegration:
         assert ctx.exits == []
         assert not hasattr(ctx, "_qp_w_current")
         assert not hasattr(ctx, "_qp_solution")
+
+    def test_strict_mu_contract_rejects_mismatched_mu_horizon(self):
+        """QP μ and σ must describe the same rebalance horizon."""
+        ctx = _make_ctx(
+            candidates=[
+                _Cand(
+                    "RAW",
+                    mu=0.04,
+                    mu_horizon_days=20,
+                    sigma=0.10,
+                    rank_score=0.95,
+                )
+            ],
+            holdings={},
+            prices={"RAW": 100.0},
+            cash=10000.0,
+            portfolio_value=10000.0,
+        )
+        ctx.config["rotation"]["joint_actions"]["qp_mu_contract"] = "strict"
+        ctx.config["rotation"]["joint_actions"]["qp_mu_horizon_days"] = 60
+
+        ret = JointPortfolioQPTask().run(ctx)
+
+        assert ret is True
+        assert ctx.counters["qp_mu_contract_block"] == 1
+        assert ctx._qp_mu_contract["ok"] is False
+        assert ctx._qp_mu_contract["mu_horizon_mismatch_count"] == 1
+        assert ctx._blocked_by_ticker["RAW"] == "qp_mu_horizon_contract_block"
+        assert ctx.orders == []
+        assert ctx.exits == []
+
+
+class TestQPAdmissionUniverse:
+    def test_regime_override_gate_excludes_weak_candidate_before_solver(self):
+        """Regime-specific admission gates must shape the QP solver universe."""
+        cfg = _base_config()
+        cfg["rotation"]["joint_actions"]["qp_admission_gate"] = {
+            "enabled": False,
+        }
+        cfg["regime_params"]["BULL_CALM"]["qp_admission_gate"] = {
+            "enabled": True,
+            "min_rank_score": 0.80,
+        }
+        ctx = InferenceContext(config=cfg, today=datetime.date(2026, 4, 27))
+        weak = _Cand("WEAK", mu=0.10, sigma=0.10, rank_score=0.50)
+        strong = _Cand("STRONG", mu=0.10, sigma=0.10, rank_score=0.90)
+        ctx.candidates = [weak, strong]
+        ctx.ranked = [weak, strong]
+        ctx.holdings = {}
+        ctx.exits = []
+        ctx.regime = "BULL_CALM"
+
+        _BuildSourceMapTask().run(ctx)
+
+        assert set(ctx._qp_mu_source_map) == {"STRONG"}  # noqa: SLF001
+        assert ctx._qp_tickers == ["STRONG"]             # noqa: SLF001
+        assert ctx._blocked_by_ticker["WEAK"] == "qp_admission_rank"  # noqa: SLF001
+
+    def test_qp_can_top_up_scored_held_winner(self):
+        """A held ticker is not exit-only merely because new-buy scan skips it."""
+        ctx = _make_ctx(
+            candidates=[],
+            holdings={
+                "HELD": _Hold(
+                    shares=5,
+                    mu=0.08,
+                    sigma=0.10,
+                    rank_score=0.95,
+                    panel_score=0.80,
+                )
+            },
+            prices={"HELD": 100.0},
+            cash=5_000.0,
+            portfolio_value=10_000.0,
+        )
+
+        JointPortfolioQPTask().run(ctx)
+
+        assert any(o["ticker"] == "HELD" for o in ctx.orders)
+        assert ctx._blocked_by_ticker.get("HELD") != "qp_universe_exit_only"  # noqa: SLF001
+
+    def test_qp_sell_credit_can_fund_same_bar_buy(self):
+        """Accepted long sells should increase QP buy cash before later buys."""
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        held = _Hold(shares=10, mu=-0.08, sigma=0.10)
+        cand = _Cand("NEW", mu=0.08, sigma=0.10, rank_score=0.95)
+        ctx = SimpleNamespace(
+            config=_base_config(),
+            orders=[],
+            exits=[],
+            holdings={"OLD": held},
+            candidates=[cand],
+            counters={},
+            _blocked_by_ticker={},
+            prices={"OLD": 100.0, "NEW": 100.0},
+            portfolio_value=10_000.0,
+            today=datetime.date(2026, 4, 27),
+            regime="BULL_CALM",
+            confidence=0.6,
+        )
+        env = {
+            "cfg": {},
+            "sol": SimpleNamespace(
+                status="optimal",
+                delta_w=np.array([-0.10, 0.10]),
+                target_w=np.array([0.0, 0.10]),
+            ),
+            "tickers": ["OLD", "NEW"],
+            "prices": ctx.prices,
+            "nav": 10_000.0,
+            "cash": 0.0,
+            "cash_actual": 0.0,
+            "alpha_funding_cash": 0.0,
+            "cash_reserve": 0.0,
+            "cash_reserve_configured": 0.0,
+            "cash_reserve_credit": 0.0,
+            "buy_cost_multiplier": 1.0,
+            "min_dw": 0.005,
+            "no_trade_factor": 0.0,
+            "band_cap": 0.05,
+            "sigma_vec": np.array([0.10, 0.10]),
+            "cands": {"NEW": cand},
+            "score_sources": {"OLD": held, "NEW": cand},
+            "buy_blocked": False,
+            "buys_gated": False,
+            "earnings_cal": {},
+            "earn_buf": 0,
+            "today": ctx.today,
+            "holdings_set": {"OLD"},
+            "holdings": ctx.holdings,
+            "max_positions": 8,
+            "min_share_floor_pct": 0.0,
+            "min_share_ceiling_pct": 0.15,
+            "defensive_set": set(),
+            "bear_only": False,
+            "preexisting_exit_tickers": set(),
+            "exit_only_tickers": set(),
+            "exit_only_reasons": {},
+            "emitted_new_tickers": set(),
+        }
+
+        nb, ns, counters = EmitOrdersFromQPSolutionTask._emit_orders_loop(ctx, env)
+
+        assert (nb, ns) == (1, 1)
+        assert counters["sell_credit_events"] == 1
+        assert ctx.exits[0][0] == "OLD"
+        assert ctx.orders[0]["ticker"] == "NEW"
 
 
 # ── Wash-sale interaction ─────────────────────────────────────────────────────

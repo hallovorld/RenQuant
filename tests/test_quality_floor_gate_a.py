@@ -4,7 +4,7 @@ Design: ``doc/buy_logic_redesign_2026-04-26.md`` §2 / Gate A.
 
 Gate A reads the trailing-N-day p_X cutoff from `score_percentiles_daily`
 (populated by RecordScoreDistributionTask) and rejects candidates whose
-`panel_score` falls below it. Adapts to whatever scale the panel
+`rank_score` falls below it. Adapts to whatever scale the calibrated panel
 emits — fix for calibrator saturation periods.
 
 Stage 0 contract: defaults all OFF — bit-for-bit parity preserved.
@@ -162,6 +162,23 @@ class TestGateAIntegration:
         QualityFloorTask().run(ctx)
         kept = {c.ticker for c in ctx.candidates}
         assert kept == {"STRONG"}
+
+    def test_gate_a_excludes_same_day_percentile_rows(self):
+        """A rerun on the same date must not learn from its own earlier run."""
+        ctx = _Ctx(config=_on_a(percentile=85, lookback=5,
+                                min_history=3))
+        db = sqlite3.connect(":memory:")
+        db.executescript(_SCHEMA_SQL)
+        _seed_percentiles(db, [
+            ("2026-04-23", 0.05),
+            ("2026-04-24", 0.05),
+            ("2026-04-25", 0.05),
+            ("2026-04-26", 0.50),
+        ])
+        ctx._db = db                    # noqa: SLF001
+        ctx.candidates = [_Cand("MID", rank_score=0.10)]
+        QualityFloorTask().run(ctx)
+        assert [c.ticker for c in ctx.candidates] == ["MID"]
 
     def test_gate_a_blocked_reason_surfaces(self):
         ctx = _Ctx(config=_on_a(percentile=85, lookback=5,

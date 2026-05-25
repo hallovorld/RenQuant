@@ -61,6 +61,7 @@ from .tasks import (
     SolveMarkowitzQPTask,
     ValidateQPMuContractTask,
     _qp_buy_admission_block_reason,
+    _qp_cfg,
     _qp_max_positions,
 )
 
@@ -121,11 +122,6 @@ class _BuildSourceMapTask(Task):
             if exclude_benchmark_sleeve_from_alpha(ctx) else None
         )
         holdings = ctx.holdings or {}
-        long_candidate_tickers = {
-            getattr(c, "ticker", None)
-            for c in self._ordered_long_candidates(ctx)
-            if getattr(c, "ticker", None)
-        }
         exit_only_tickers: set[str] = set(
             getattr(ctx, "_qp_exit_only_tickers", set()) or set()
         )
@@ -133,8 +129,6 @@ class _BuildSourceMapTask(Task):
             if t == sleeve_ticker:
                 continue
             src[t] = hs
-            if t not in long_candidate_tickers:
-                exit_only_tickers.add(t)
         admitted_new_tickers: set[str] = set()
         blocked_map = getattr(ctx, "_blocked_by_ticker", None)
         if blocked_map is None:
@@ -229,8 +223,7 @@ class _BuildSourceMapTask(Task):
             return "buy_blocked"
         if bool(getattr(ctx, "skip_buys", False)):
             return "skip_buys"
-        joint = ((ctx.config.get("rotation", {}) or {})
-                 .get("joint_actions", {}) or {})
+        joint = _qp_cfg(ctx)
         env = {
             "cfg": joint,
             "holdings_set": set((ctx.holdings or {}).keys()),
@@ -250,9 +243,8 @@ class _BuildSourceMapTask(Task):
     def _select_new_candidates_for_slots(ctx, src: dict, candidates: list) -> tuple[list, list]:
         if not candidates:
             return [], []
-        joint = ((ctx.config.get("rotation", {}) or {})
-                 .get("joint_actions", {}) or {})
-        gate = (joint.get("qp_admission_gate") or {})
+        joint = _qp_cfg(ctx)
+        gate = joint.get("qp_admission_gate") or {}
         if not bool(gate.get("enabled", False)):
             return candidates, []
         if not bool(gate.get("respect_open_slots", True)):

@@ -974,8 +974,8 @@ class TestActionDirections:
             == "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
         )
 
-    def test_positive_mu_on_held_without_candidate_does_not_topup(self):
-        """QP may not convert a held-only score into a fresh top-up."""
+    def test_positive_mu_on_scored_held_without_candidate_can_topup(self):
+        """QP owns held-position top-ups when the holding has current scores."""
         ctx = _Ctx(config=_qp_on())
         ctx.holdings = {
             "H": _Hold(
@@ -993,8 +993,10 @@ class TestActionDirections:
         ret = JointPortfolioQPTask().run(ctx)
 
         assert ret is True
-        assert ctx.orders == []
-        assert ctx._blocked_by_ticker["H"] == "qp_universe_exit_only"
+        assert len(ctx.orders) == 1
+        assert ctx.orders[0]["ticker"] == "H"
+        assert ctx.orders[0]["order_type"] == "QP_BUY"
+        assert ctx._blocked_by_ticker.get("H") != "qp_universe_exit_only"
 
     def test_positive_mu_on_admitted_held_topup_preserves_candidate_scores(self):
         """QP top-ups use the current candidate as score source when admitted."""
