@@ -650,6 +650,16 @@ def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
             f"aligned_real_ic={wf.get('sanity_placebo_aligned_real_ic')}. "
             f"Override with RQ_ALLOW_NO_WF=1 (emergency only)."
         )
+    sanity = wf.get("sanity_regime_ic") if isinstance(wf.get("sanity_regime_ic"), dict) else None
+    if not sanity or sanity.get("passed") is not True:
+        raise ValueError(
+            f"promote: refused — wf_gate_metadata is missing passing "
+            f"sanity_regime_ic on {staging_path.name}. Detail: "
+            f"{sanity.get('reason') if isinstance(sanity, dict) else 'absent'}. "
+            f"Re-run `scripts/run_wf_gate.py` so regime-layered placebo/IC "
+            f"evidence participates in the promotion verdict. Override with "
+            f"RQ_ALLOW_NO_WF=1 (emergency only)."
+        )
     if wf.get("candidate_artifact_used") is False and wf.get("recipe_validated") is not True:
         raise ValueError(
             f"promote: refused — wf_gate_metadata says the WF sim did not "

@@ -104,12 +104,22 @@ def _compute_overall_pass(
         return False
     return (
         bool(wf_result["passed"])
-        and bool(sanity_result["passed"])
+        and _sanity_result_passed(sanity_result)
         and bool(trade_contract_result["passed"])
         and bool(trade_gate_result["passed"])
         and validation_scope_ok
         and bool(parity_result.get("passed", True))
     )
+
+
+def _sanity_result_passed(sanity_result: dict) -> bool:
+    """Fail closed unless global and regime-level sanity evidence both pass."""
+    if not bool(sanity_result.get("passed")):
+        return False
+    regime_ic = sanity_result.get("sanity_regime_ic")
+    if not isinstance(regime_ic, dict):
+        return False
+    return bool(regime_ic.get("passed"))
 
 
 def _resolve_strategy_path(raw: str | None) -> Path | None:
@@ -1691,8 +1701,24 @@ def run_sanity_battery(
         if sanity_meta.get("sanity_eval_scope") == "walkforward_manifest"
         else "existing_model_label_diagnostics"
     )
+    pass_regime = bool(sanity_regime_ic.get("passed"))
+    pass_all = pass_shuf and pass_placebo and pass_regime
+    if pass_all:
+        sanity_reason = f"PASS: shuf_ic={shuf_ic:+.4f} placebo_ic={placebo_ic:+.4f}"
+    elif pass_shuf and pass_placebo and not pass_regime:
+        sanity_reason = (
+            "FAIL: regime sanity IC failed: "
+            f"{sanity_regime_ic.get('reason', 'unknown')}"
+        )
+    else:
+        sanity_reason = (
+            f"FAIL: shuf_ic={shuf_ic:+.4f} (need |·| < 0.005), "
+            f"placebo_ic={placebo_ic:+.4f} "
+            f"(must be available and < 0.5×aligned_real_ic="
+            f"{placebo_aligned_real_ic:+.4f})"
+        )
     return {
-        "passed": pass_shuf and pass_placebo,
+        "passed": pass_all,
         "real_ic": real_ic,
         "sanity_shuffled_ic": shuf_ic,
         "sanity_placebo_ic": placebo_ic if placebo_ic == placebo_ic else None,
@@ -1704,14 +1730,7 @@ def run_sanity_battery(
         "sanity_method": sanity_method,
         "placebo_shift_diagnostics": placebo_shift_diagnostics,
         "sanity_regime_ic": sanity_regime_ic,
-        "reason": (
-            f"PASS: shuf_ic={shuf_ic:+.4f} placebo_ic={placebo_ic:+.4f}"
-            if (pass_shuf and pass_placebo) else
-            f"FAIL: shuf_ic={shuf_ic:+.4f} (need |·| < 0.005), "
-            f"placebo_ic={placebo_ic:+.4f} "
-            f"(must be available and < 0.5×aligned_real_ic="
-            f"{placebo_aligned_real_ic:+.4f})"
-        ),
+        "reason": sanity_reason,
         **sanity_meta,
     }
 

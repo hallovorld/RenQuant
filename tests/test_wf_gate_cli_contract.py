@@ -144,6 +144,45 @@ def test_wf_gate_skip_flags_are_not_acceptance_passes() -> None:
     assert overall is False
 
 
+def test_wf_gate_overall_pass_requires_regime_sanity() -> None:
+    """Global sanity IC is insufficient when regime buckets fail."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    common = dict(
+        wf_result={"passed": True},
+        trade_contract_result={"passed": True},
+        trade_gate_result={"passed": True},
+        validation_scope_ok=True,
+        parity_result={"passed": True},
+        skipped_required_gates=[],
+    )
+
+    assert mod._compute_overall_pass(
+        sanity_result={
+            "passed": True,
+            "sanity_regime_ic": {
+                "passed": False,
+                "reason": "regime sanity IC failed: BULL_CALM",
+            },
+        },
+        **common,
+    ) is False
+    assert mod._compute_overall_pass(
+        sanity_result={
+            "passed": True,
+            "sanity_regime_ic": {"passed": True},
+        },
+        **common,
+    ) is True
+
+
+def test_wf_gate_sanity_fails_closed_without_regime_sanity() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    assert mod._sanity_result_passed({"passed": True}) is False
+
+
 def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "transform_feature_frame(" in src

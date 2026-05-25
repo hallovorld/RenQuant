@@ -407,6 +407,18 @@ def _check_wf_gate_metadata(
             details=details,
         )
     if passed is True:
+        sanity = wf.get("sanity_regime_ic") if isinstance(wf.get("sanity_regime_ic"), dict) else None
+        details["sanity_regime_passed"] = sanity.get("passed") if sanity else None
+        if not sanity or sanity.get("passed") is not True:
+            details["sanity_regime_ic"] = sanity
+            return _soft_for_sell_only(
+                "P-WF-GATE",
+                "WF gate passed=true but missing/failed regime sanity IC "
+                "evidence; rerun WF gate so regime-layered placebo/IC is "
+                "part of the acceptance verdict",
+                run_mode=run_mode,
+                details=details,
+            )
         required = {
             "wf_3cut_sharpe_mean": wf.get("wf_3cut_sharpe_mean"),
             "spy_sharpe_mean": wf.get("spy_sharpe_mean"),

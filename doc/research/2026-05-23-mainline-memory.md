@@ -2421,12 +2421,42 @@ Operational conclusion:
   Validation: data freshness, typed adapter, missing-OHLCV trace, buy-universe,
   LEAN trace, and persistence suites passed (`44 + 44 passed` across the two
   targeted runs).
+- Follow-up WF/model-acceptance bug found: `run_sanity_battery()` computed
+  regime-layered placebo/IC evidence (`sanity_regime_ic`) but the top-level
+  sanity verdict, overall WF gate verdict, promotion gate, and full-run
+  preflight could still accept old or hand-stamped `passed=true` metadata that
+  lacked passing regime sanity. That made BULL_CALM-style placebo-dominated
+  evidence visible in metadata but not a hard acceptance boundary. The WF gate
+  now requires both global shuffled/placebo sanity and regime-level sanity;
+  `promote()` refuses missing/failed `sanity_regime_ic`; P-WF-GATE blocks
+  full/buy runs on old `passed=true` metadata without regime sanity while
+  still allowing sell-only exits. Validation: WF gate, promotion, preflight,
+  preflight-regime-sanity, and runtime regime-admission tests passed
+  (`147 passed`).
+
+## Global Pipeline Self-Audit Reset (2026-05-24)
+
+Per operator instruction, previous local/vertical passes do not count. The
+next 10 bug-hunting rounds restart from zero and each round must traverse the
+entire pipeline end-to-end:
+
+1. Data/fundamentals/news/sector/benchmark ingress and freshness.
+2. Feature/label construction, embargo, neutralization, leakage controls.
+3. Model training, WF manifests, placebo controls, regime-split evidence.
+4. Artifact contracts, fingerprints, promotion, preflight.
+5. Runtime inference, decision-tree fields, blocked reasons, DB persistence.
+6. Alpha admission versus portfolio sizing/QP/rebalance.
+7. Sell/exit/tax/P&L attribution and trade-level accounting.
+8. Sim/live/LEAN parity and shared-code enforcement.
+9. Operational scripts, cron, broker, ntfy, failure semantics.
+10. Repo hygiene, stale artifacts, dead paths, cleanup/backlog/report.
 
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:
 
 - WF config loses `tax.cash_debit_mode=reporting_only`.
+- WF/sanity metadata lacks passing regime-level IC/placebo evidence.
 - A calibrator/scorer fingerprint mismatch is detected.
 - Sector metadata is missing for a buyable ticker.
 - A buy/full path silently falls back to raw score or a weaker score.

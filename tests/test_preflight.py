@@ -248,6 +248,16 @@ class TestCheckPanelArtifactContract:
 # ── P-WF-GATE ────────────────────────────────────────────────────────────────
 
 class TestCheckWFGateMetadata:
+    def _passing_wf_meta(self) -> dict:
+        return {
+            "passed": True,
+            "wf_3cut_sharpe_mean": 0.91,
+            "spy_sharpe_mean": 0.65,
+            "strategy_minus_spy_sharpe_mean": 0.26,
+            "n_cuts_beat_spy_sharpe": 2,
+            "sanity_regime_ic": _passing_sanity_regime_ic(),
+        }
+
     def test_failed_wf_metadata_fails_hard(self, tmp_path):
         cfg = {"ranking": {"panel_scoring": {
             "kind": "xgb",
@@ -298,13 +308,7 @@ class TestCheckWFGateMetadata:
         }}}
         (tmp_path / "artifacts").mkdir()
         (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
-            "metadata": {"wf_gate_metadata": {
-                "passed": True,
-                "wf_3cut_sharpe_mean": 0.91,
-                "spy_sharpe_mean": 0.65,
-                "strategy_minus_spy_sharpe_mean": 0.26,
-                "n_cuts_beat_spy_sharpe": 2,
-            }},
+            "metadata": {"wf_gate_metadata": self._passing_wf_meta()},
         }))
 
         r = _check_wf_gate_metadata(cfg, tmp_path)
@@ -312,17 +316,50 @@ class TestCheckWFGateMetadata:
         assert r.ok and r.severity == "hard"
         assert r.details["passed"] is True
 
+    def test_passed_wf_without_regime_sanity_fails_full(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        wf = self._passing_wf_meta()
+        del wf["sanity_regime_ic"]
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "metadata": {"wf_gate_metadata": wf},
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "regime sanity IC" in r.message
+
+    def test_passed_wf_without_regime_sanity_allows_sell_only(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        wf = self._passing_wf_meta()
+        del wf["sanity_regime_ic"]
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "metadata": {"wf_gate_metadata": wf},
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
+
     def test_passed_wf_without_spy_comparison_fails_full(self, tmp_path):
         cfg = {"ranking": {"panel_scoring": {
             "kind": "xgb",
             "artifact_path": "artifacts/panel-ltr.json",
         }}}
+        wf = self._passing_wf_meta()
+        del wf["spy_sharpe_mean"]
         (tmp_path / "artifacts").mkdir()
         (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
-            "metadata": {"wf_gate_metadata": {
-                "passed": True,
-                "wf_3cut_sharpe_mean": 0.91,
-            }},
+            "metadata": {"wf_gate_metadata": wf},
         }))
 
         r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="full")

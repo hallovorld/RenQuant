@@ -41,6 +41,19 @@ def _wf_meta(passed: bool = True, age_days: float = 1.0) -> dict:
         "wf_3cut_apy_mean": 0.075,
         "sanity_shuffled_ic": -0.0024,
         "sanity_placebo_ic": 0.012,
+        "sanity_regime_ic": {
+            "passed": True,
+            "reason": "regime sanity IC passed",
+            "regimes": {
+                "BULL_CALM": {
+                    "eligible": True,
+                    "passed": True,
+                    "mean_ic": 0.04,
+                    "placebo_60_aligned_real_ic": 0.06,
+                    "placebo_60_ic": 0.01,
+                },
+            },
+        },
         "run_at": ran.isoformat(),
         "gate_version": 1,
     }
@@ -74,6 +87,23 @@ class TestCheckWFGate:
         data = {"metadata": {"wf_gate_metadata": _wf_meta(passed=True)}}
         # No raise = pass
         _check_wf_gate(data, Path("/fake.json"))
+
+    def test_passed_true_without_regime_sanity_raises(self):
+        wf = _wf_meta(passed=True)
+        del wf["sanity_regime_ic"]
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        with pytest.raises(ValueError, match="sanity_regime_ic"):
+            _check_wf_gate(data, Path("/fake.json"))
+
+    def test_passed_true_with_failed_regime_sanity_raises(self):
+        wf = _wf_meta(passed=True)
+        wf["sanity_regime_ic"] = {
+            "passed": False,
+            "reason": "regime sanity IC failed: BULL_CALM",
+        }
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        with pytest.raises(ValueError, match="sanity_regime_ic"):
+            _check_wf_gate(data, Path("/fake.json"))
 
     def test_refuses_metadata_that_did_not_evaluate_candidate(self):
         wf = _wf_meta(passed=True)
