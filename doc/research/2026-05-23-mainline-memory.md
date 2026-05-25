@@ -2139,6 +2139,41 @@ Operational conclusion:
   remain unchanged until a diagnostic config explicitly enables the alternate
   μ source and `alpha_to_mu`.
 
+## 2026-05-24 QP μ Composite / Cash-Drag Root Cause
+
+- Diagnostic config
+  `base_featspace_scopefixed_covered_20260523.erfloor_bullcalm040_rsblend100_qpmucomposite.json`
+  explicitly set `ranking.qp_mu_source=ranking_composite` and
+  `ranking.alpha_to_mu.enabled=true` with `ic=0.08`. It keeps the qpmu change
+  diagnostic-only; production defaults are unchanged.
+- WF trace
+  `horizon60_erfloor_bullcalm040_rsblend100_qpmucomposite_20260524-2124`
+  still failed acceptance: mean annual-net Sharpe `+0.465` vs SPY `+1.081`,
+  with `0/3` cuts beating SPY. This is not promotion evidence.
+- The important forensic change is structural: only `16` closed alpha trades
+  appeared, but the alpha sleeve was positive after tax and versus same-capital
+  SPY. Gross P/L was about `+$10.1k`, tax about `+$6.0k`, net about `+$4.1k`,
+  same-capital SPY about `+$0.9k`, and active net about `+$3.3k`.
+  Cut-level active net was positive in all three WF cuts.
+- The portfolio-level APY/Sharpe remained weak because average alpha exposure
+  was tiny: about `4.8%`, `2.6%`, and `4.1%` across the three cuts, leaving
+  roughly `95%+` cash in risk-on periods. The next root is therefore
+  benchmark-relative cash drag / portfolio construction, not simply "buy more
+  weak alpha names".
+- Benchmark-sleeve A/B is now the next mainline test. It uses the existing
+  `BenchmarkSleeveTask` core-satellite design and SciPy HiGHS
+  `scipy.optimize.linprog`, a mature LP solver, to put residual capital into a
+  benchmark core while keeping alpha admission separate. Alpha candidates must
+  still pass model/ranking/QP gates; the sleeve may fund up to `15%` alpha
+  satellite budget by selling SPY. This tests whether RenQuant should be
+  evaluated as benchmark core + active satellite instead of sparse alpha plus
+  cash.
+- Exit-path false positives remain a separate pending issue. In the same
+  qpmu trace, `stop_loss` exits were net negative and barrier-incorrect, while
+  some `trailing_stop`/`single_day_loss` exits carried the gains. Do not call
+  the system fixed if benchmark sleeve improves Sharpe but exit false-positive
+  rates remain high.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

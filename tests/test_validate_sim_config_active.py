@@ -80,3 +80,36 @@ def test_qp_mu_source_and_alpha_to_mu_are_active_paths():
     assert "ranking.alpha_to_mu.enabled" in joined
     assert "ranking.alpha_to_mu.ic" in joined
     assert "ACTIVE" in joined
+
+
+def test_benchmark_sleeve_paths_are_active():
+    mod = _load_validator()
+    baseline = {"portfolio": {"benchmark_sleeve": {"enabled": False}}}
+    candidate = {
+        "portfolio": {
+            "benchmark_sleeve": {
+                "enabled": True,
+                "ticker": "SPY",
+                "target_exposure_by_regime": {"BULL_CALM": 1.0},
+                "fund_alpha_from_sleeve": True,
+                "alpha_funding_budget_pct": 0.15,
+                "sleeve_counts_as_cash_reserve": True,
+                "_research_note": "diagnostic note",
+            },
+        },
+        "execution": {"buying_power_mode": "non_marginable_buying_power"},
+    }
+
+    active, report = mod.static_validate(baseline, candidate)
+
+    joined = "\n".join(report)
+    assert active
+    assert "portfolio.benchmark_sleeve.enabled" in joined
+    assert "portfolio.benchmark_sleeve.target_exposure_by_regime.BULL_CALM" in joined
+    assert "portfolio.benchmark_sleeve.fund_alpha_from_sleeve" in joined
+    assert "portfolio.benchmark_sleeve.alpha_funding_budget_pct" in joined
+    assert "portfolio.benchmark_sleeve.sleeve_counts_as_cash_reserve" in joined
+    assert "execution.buying_power_mode" in joined
+    assert "portfolio.benchmark_sleeve._research_note" in joined
+    assert "INERT_METADATA" in joined
+    assert "✗ " not in joined
