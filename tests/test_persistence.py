@@ -276,6 +276,46 @@ class TestCandidateScores:
         assert rows == [("AAA", "holding")]
         conn.close()
 
+    def test_candidate_trace_pool_includes_short_candidates_with_distinct_role(self, tmp_path):
+        from types import SimpleNamespace
+        from kernel.decision_trace import candidate_trace_pool
+        from kernel.selection import CandidateResult
+
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+            strategy="test",
+        )
+        long = CandidateResult(
+            ticker="AAA", raw_score=0.5, rank_score=0.6, rs_score=0.1,
+            panel_score=0.7, mu=0.01, sigma=0.03,
+        )
+        short = CandidateResult(
+            ticker="AAA", raw_score=-1.5, rank_score=0.2, rs_score=0.0,
+            panel_score=-1.5, mu=-0.02, sigma=0.04,
+        )
+        short.trace_role = "short_candidate"
+        ctx = SimpleNamespace(candidates=[long], short_candidates=[short])
+
+        record_candidate_scores(
+            conn,
+            rid,
+            candidate_trace_pool(ctx),
+            {},
+            selected_tickers=set(),
+        )
+
+        rows = conn.execute(
+            "SELECT ticker, role, panel_score FROM candidate_scores "
+            "WHERE run_id = ? ORDER BY role",
+            (rid,),
+        ).fetchall()
+        assert rows == [
+            ("AAA", "candidate", 0.7),
+            ("AAA", "short_candidate", -1.5),
+        ]
+        conn.close()
+
     def test_blocked_map_recorded(self, tmp_path):
         from kernel.selection import CandidateResult
         conn = get_connection(_cfg(tmp_path))

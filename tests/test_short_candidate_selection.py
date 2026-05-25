@@ -98,6 +98,9 @@ class TestShortCandidateSelectionTask:
         assert tickers == ["T00", "T01"], (
             f"Expected bottom 2 (T00, T01); got {tickers}"
         )
+        assert {getattr(c, "trace_role", None) for c in ctx.short_candidates} == {
+            "short_candidate"
+        }
 
     def test_enabled_without_backend_short_support_skips_fail_closed(self):
         """long_short must not create actions a backend cannot execute."""

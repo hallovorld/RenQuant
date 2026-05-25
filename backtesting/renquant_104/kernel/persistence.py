@@ -1028,8 +1028,9 @@ def record_candidate_scores(
 
     for c in candidates:
         selected = c.ticker in selected_tickers
+        role = str(getattr(c, "trace_role", None) or "candidate")
         rows.append((
-            run_id, c.ticker, "candidate",
+            run_id, c.ticker, role,
             _none_or_float(getattr(c, "raw_score",  None)),
             _none_or_float(getattr(c, "rank_score", None)),
             _none_or_float(getattr(c, "panel_score", None)),

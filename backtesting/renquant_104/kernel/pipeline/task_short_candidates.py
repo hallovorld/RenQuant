@@ -292,6 +292,7 @@ class ShortCandidateSelectionTask(Task):
                 detail=f"short_candidate raw_panel_score={raw_score:.4f}",
                 panel_score=raw_score,
             )
+            cand.trace_role = "short_candidate"
             block = _enrich_short_candidate(
                 ctx,
                 cand,

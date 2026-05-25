@@ -51,11 +51,18 @@ def selected_buy_tickers(trade_events: list[dict[str, Any]] | None) -> set[str]:
 
 def candidate_trace_pool(ctx: Any) -> list[Any]:
     """Full candidate pool for trace persistence, including filtered candidates."""
-    return list(
+    base = list(
         getattr(ctx, "_full_candidate_snapshot", None)
         or getattr(ctx, "candidates", None)
         or []
     )
+    seen = {id(c) for c in base}
+    for cand in list(getattr(ctx, "short_candidates", None) or []):
+        if id(cand) in seen:
+            continue
+        base.append(cand)
+        seen.add(id(cand))
+    return base
 
 
 def candidate_score_excluded_holding_tickers(config: dict) -> set[str]:

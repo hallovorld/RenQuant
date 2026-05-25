@@ -255,6 +255,9 @@ Make RenQuant 104 scientifically trustworthy end to end:
   buy-to-cover `ctx.orders` before the buy scan; sim routes those through the
   repaired buy-to-cover accounting path. Buy-to-cover is risk reduction and is
   not blocked by the ordinary new-long buying-power gate.
+- Short-candidate trace repair 2026-05-25: `candidate_trace_pool()` now includes
+  `ctx.short_candidates`, and short candidates persist with role
+  `short_candidate` instead of overwriting same-ticker long candidate rows.
 
 ## Pushed Progress
 
