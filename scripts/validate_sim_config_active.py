@@ -91,6 +91,9 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     ("rotation.joint_actions.qp_correlation_cap_enabled", "tasks.py"),
     # ── QP regime overrides (_resolve_regime_override) ───────────────────
     ("rotation.joint_actions.regime_overrides.*.*",  "tasks.py:397"),
+    ("ranking.qp_mu_source",                         "tasks.py:ForceMuSourceTask"),
+    ("ranking.alpha_to_mu.enabled",                  "tasks.py:ApplyGrinoldKahnTransformTask"),
+    ("ranking.alpha_to_mu.ic",                       "tasks.py:ApplyGrinoldKahnTransformTask"),
     ("ranking.alpha_to_mu.regime_overrides.*.*",     "tasks.py:535"),
     # ── kelly_sizing knobs (kelly_cfg = ctx.config['ranking']['kelly_sizing']) ──
     ("ranking.kelly_sizing.enabled",                  "task_selection.py:149"),

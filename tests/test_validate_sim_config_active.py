@@ -60,3 +60,23 @@ def test_regime_blend_weight_is_active_path():
     assert "ranking.regime_blend_weights.BULL_CALM.0" in joined
     assert "ranking.regime_blend_weights.BULL_CALM.1" in joined
     assert "ACTIVE" in joined
+
+
+def test_qp_mu_source_and_alpha_to_mu_are_active_paths():
+    mod = _load_validator()
+    baseline = {"ranking": {"qp_mu_source": "mu", "alpha_to_mu": {"enabled": False}}}
+    candidate = {
+        "ranking": {
+            "qp_mu_source": "ranking_composite",
+            "alpha_to_mu": {"enabled": True, "ic": 0.08},
+        }
+    }
+
+    active, report = mod.static_validate(baseline, candidate)
+
+    joined = "\n".join(report)
+    assert active
+    assert "ranking.qp_mu_source" in joined
+    assert "ranking.alpha_to_mu.enabled" in joined
+    assert "ranking.alpha_to_mu.ic" in joined
+    assert "ACTIVE" in joined
