@@ -1519,6 +1519,20 @@ PatchTST pilot WF diagnostic:
   `compare_arch_5cut_5seed.py` can compare PatchTST variants against XGB
   instead of only comparing PatchTST against itself. Targeted smoke tests:
   `tests/test_eval_drivers_smoke.py` -> `26 passed`.
+- Expected-return QP-admission A/B (`BULL_CALM` new/top-up floor `0.04`) was
+  run as diagnostic-only with config parity intentionally skipped. Verdict:
+  FAIL. Annual-net cut metrics were:
+  - 2024-01-02 to 2024-12-31: APY `+6.08%`, Sharpe `+0.768`, SPY Sharpe
+    `+1.778`.
+  - 2024-07-01 to 2025-06-30: APY `+5.12%`, Sharpe `+0.692`, SPY Sharpe
+    `+0.715`.
+  - 2025-04-01 to 2026-03-28: APY `+0.47%`, Sharpe `+0.126`, SPY Sharpe
+    `+0.749`.
+  Mean Sharpe `+0.529`, all 3 cuts positive, but `0/3` beat SPY Sharpe/APY.
+  Trade ledger contract passed; BULL_CALM score monotonicity still failed;
+  sanity failed with real IC `+0.0385` and placebo IC `+0.0460`. Conclusion:
+  expected-return floor is useful defensive wiring but not the APY/Sharpe
+  root-cause fix.
 
 Next implication:
 
