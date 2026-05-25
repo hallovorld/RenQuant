@@ -130,7 +130,7 @@ class _BuildSourceMapTask(Task):
             for c in (getattr(ctx, "short_candidates", None) or [])
         }
         eligible_new_candidates: list = []
-        for c in (ctx.candidates or []):
+        for c in self._ordered_long_candidates(ctx):
             t = getattr(c, "ticker", None)
             if not t:
                 continue
@@ -250,9 +250,10 @@ class _BuildSourceMapTask(Task):
         if open_slots <= 0:
             return [], list(candidates)
 
+        mode = _BuildSourceMapTask._resolve_slot_priority_mode(ctx, gate)
         ordered = sorted(
             candidates,
-            key=lambda c: _BuildSourceMapTask._candidate_slot_priority(c, gate),
+            key=lambda c: _BuildSourceMapTask._candidate_slot_priority(c, gate, mode=mode),
             reverse=True,
         )
         selected = ordered[:open_slots]
@@ -264,8 +265,74 @@ class _BuildSourceMapTask(Task):
         return selected, rejected
 
     @staticmethod
-    def _candidate_slot_priority(cand, gate: dict) -> tuple[float, float, float, float, float]:
-        mode = str(gate.get("slot_priority", "rank_score")).strip().lower()
+    def _ordered_long_candidates(ctx) -> list:
+        """Return buy candidates in the RankingJob order.
+
+        QP is a sizing/rebalance layer. It must not reconstruct alpha
+        selection from the broad candidate pool after RankingJob has already
+        produced ``ctx.ranked``. Falling back to ``ctx.candidates`` preserves
+        direct unit-call behaviour when RankingJob has not run.
+        """
+        candidates = list(getattr(ctx, "candidates", None) or [])
+        if not candidates:
+            return []
+        ranked = list(getattr(ctx, "ranked", None) or [])
+        if not ranked:
+            for idx, cand in enumerate(candidates):
+                if not math.isfinite(_finite_attr(cand, "_ranking_order_index")):
+                    setattr(cand, "_ranking_order_index", idx)
+            return candidates
+
+        seen: set[str] = set()
+        ordered: list = []
+        candidate_by_ticker = {
+            getattr(c, "ticker", None): c
+            for c in candidates
+            if getattr(c, "ticker", None)
+        }
+        for cand in ranked:
+            ticker = getattr(cand, "ticker", None)
+            if not ticker or ticker in seen:
+                continue
+            canonical = candidate_by_ticker.get(ticker, cand)
+            if canonical is not cand:
+                for attr in (
+                    "_ranking_composite",
+                    "_ranking_norm_rank",
+                    "_ranking_norm_rs",
+                    "_ranking_order_index",
+                ):
+                    if hasattr(cand, attr):
+                        setattr(canonical, attr, getattr(cand, attr))
+            ordered.append(canonical)
+            seen.add(ticker)
+        for cand in candidates:
+            ticker = getattr(cand, "ticker", None)
+            if not ticker or ticker in seen:
+                continue
+            ordered.append(cand)
+            seen.add(ticker)
+        for idx, cand in enumerate(ordered):
+            if not math.isfinite(_finite_attr(cand, "_ranking_order_index")):
+                setattr(cand, "_ranking_order_index", idx)
+        return ordered
+
+    @staticmethod
+    def _resolve_slot_priority_mode(ctx, gate: dict) -> str:
+        configured = str(gate.get("slot_priority", "")).strip().lower()
+        if configured:
+            return configured
+        try:
+            _, w_rs = getattr(ctx, "_blend_w", (1.0, 0.0))
+            if float(w_rs) > 0.0:
+                return "ranking_composite"
+        except (TypeError, ValueError):
+            pass
+        return "rank_score"
+
+    @staticmethod
+    def _candidate_slot_priority(cand, gate: dict, *, mode: str | None = None) -> tuple[float, float, float, float, float, float]:
+        mode = str(mode or gate.get("slot_priority", "rank_score")).strip().lower()
         if mode in {"kelly", "kelly_target", "kelly_target_pct"}:
             primary = _finite_attr(cand, "kelly_target_pct")
         elif mode in {"mu_over_sigma", "edge_over_sigma"}:
@@ -278,6 +345,11 @@ class _BuildSourceMapTask(Task):
             )
         elif mode in {"panel", "panel_score"}:
             primary = _finite_attr(cand, "panel_score")
+        elif mode in {"ranking", "ranking_composite", "composite", "blend", "blended"}:
+            primary = _finite_attr(cand, "_ranking_composite")
+        elif mode in {"ranking_order", "ranked_order"}:
+            idx = _finite_attr(cand, "_ranking_order_index")
+            primary = -idx if math.isfinite(idx) else float("-inf")
         else:
             primary = _finite_attr(cand, "rank_score")
 
@@ -285,10 +357,12 @@ class _BuildSourceMapTask(Task):
         panel = _finite_attr(cand, "panel_score")
         mu = _finite_attr(cand, "mu")
         sigma = _finite_attr(cand, "sigma")
+        idx = _finite_attr(cand, "_ranking_order_index")
         if not math.isfinite(primary):
             primary = rank
         return (
             primary if math.isfinite(primary) else float("-inf"),
+            -idx if math.isfinite(idx) else float("-inf"),
             rank if math.isfinite(rank) else float("-inf"),
             panel if math.isfinite(panel) else float("-inf"),
             mu if math.isfinite(mu) else float("-inf"),

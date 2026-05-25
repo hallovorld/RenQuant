@@ -16,12 +16,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 from kernel.portfolio_qp.task_joint_qp import JointPortfolioQPTask  # noqa: E402
+from kernel.portfolio_qp.job_qp import _BuildSourceMapTask  # noqa: E402
+from kernel.pipeline.task_ranking import BlendScoresTask, SortCandidatesTask  # noqa: E402
 
 
 @dataclass
 class _Cand:
     ticker: str
     rank_score: float | None = None
+    rs_score: float | None = 0.0
     panel_score: float | None = None
     mu: float | None = None
     sigma: float | None = None
@@ -63,6 +66,7 @@ class _Ctx:
     skip_buys: bool = False
     earnings_calendar: dict = field(default_factory=dict)
     last_sell_dates: dict = field(default_factory=dict)
+    ranked: list = field(default_factory=list)
     orders: list = field(default_factory=list)
     exits: list = field(default_factory=list)
     counters: dict = field(default_factory=dict)
@@ -94,6 +98,49 @@ def _qp_on() -> dict:
         },
         "wash_sale_days": 0,
     }
+
+
+def _qp_admission_one_slot() -> dict:
+    cfg = _qp_on()
+    cfg["regime_params"]["BULL_CALM"]["max_concurrent_positions"] = 1
+    cfg["rotation"]["joint_actions"]["qp_admission_gate"] = {
+        "enabled": True,
+        "min_rank_score": 0.55,
+        "respect_open_slots": True,
+    }
+    return cfg
+
+
+class TestQPRespectsRankingOutput:
+    """QP may size/rebalance only after alpha ranking has chosen the names."""
+
+    def test_slot_admission_uses_regime_blended_ranking_order(self):
+        cfg = _qp_admission_one_slot()
+        cfg["ranking"] = {"regime_blend_weights": {"BULL_CALM": [0.0, 1.0]}}
+        ctx = _Ctx(config=cfg)
+        ctx.candidates = [
+            _Cand("A", rank_score=0.90, rs_score=0.10, panel_score=0.30, mu=0.05, sigma=0.10),
+            _Cand("B", rank_score=0.60, rs_score=0.90, panel_score=0.10, mu=0.04, sigma=0.10),
+        ]
+
+        BlendScoresTask().run(ctx)
+        SortCandidatesTask().run(ctx)
+        _BuildSourceMapTask().run(ctx)
+
+        assert list(ctx._qp_mu_source_map) == ["B"]
+
+    def test_default_slot_admission_still_uses_rank_score_order(self):
+        ctx = _Ctx(config=_qp_admission_one_slot())
+        ctx.candidates = [
+            _Cand("A", rank_score=0.90, rs_score=0.10, panel_score=0.30, mu=0.05, sigma=0.10),
+            _Cand("B", rank_score=0.60, rs_score=0.90, panel_score=0.10, mu=0.04, sigma=0.10),
+        ]
+
+        BlendScoresTask().run(ctx)
+        SortCandidatesTask().run(ctx)
+        _BuildSourceMapTask().run(ctx)
+
+        assert list(ctx._qp_mu_source_map) == ["A"]
 
 
 # ── Flag dispatch ─────────────────────────────────────────────────────────────

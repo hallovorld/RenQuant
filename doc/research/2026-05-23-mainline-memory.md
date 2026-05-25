@@ -2099,6 +2099,32 @@ Operational conclusion:
   a regime-conditional signal combiner/expected-return head, not another
   threshold tweak.
 
+## 2026-05-24 QP Ranking Bypass Root Cause
+
+- The first BULL_CALM rs-only WF diagnostic produced byte-identical
+  `round_trips.csv` files to the panel-rank baseline. That falsified the
+  hypothesis that the repaired `SortCandidatesTask` order was reaching the
+  active production execution path.
+- Root cause: active 104 uses `rotation.joint_actions.solver="qp"`.
+  `JointPortfolioQPJob` built its source map and one-slot candidate admission
+  from raw `ctx.candidates`, then defaulted slot priority to raw
+  `rank_score`. It bypassed `ctx.ranked`, which is the output of
+  `BlendScoresTask -> SortCandidatesTask`. This violated the architecture
+  principle that model/ranking decides eligibility and QP only sizes.
+- Fix: `score_candidates` now stamps `_ranking_composite`, normalized
+  components, and `_ranking_order_index` onto candidates for auditability.
+  QP source-map construction now consumes `ctx.ranked` when available, and
+  QP slot admission uses the ranking composite when an explicit regime blend
+  is active. Default panel-rank-only behavior is preserved.
+- Regression tests added in `tests/test_joint_qp_task.py`: one-slot QP
+  admission selects the RS-led candidate when
+  `ranking.regime_blend_weights.BULL_CALM=[0,1]`, and still selects the
+  raw-rank candidate under default config. Related QP/ranking tests passed.
+- Next validation: rerun the same rs-only WF. The ledger must differ from the
+  prior diagnostic; if APY/Sharpe still lag SPY, the remaining culprit is the
+  QP economic owner (`mu`/expected_return and risk/cost objective), not the
+  admission-order bypass.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

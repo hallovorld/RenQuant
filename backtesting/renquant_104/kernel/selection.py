@@ -317,11 +317,20 @@ def score_candidates(
             return 0.0   # NaN/None contributes nothing — same effect as ranking last
         return _norm(float(v), lo, hi)
 
-    def blend(c: CandidateResult) -> float:
-        return (w_rank * _safe_norm(c.rank_score, rank_min, rank_max)
-                + w_rs   * _safe_norm(c.rs_score,   rs_min,   rs_max))
+    scored: list[tuple[CandidateResult, float]] = []
+    for c in candidates:
+        rank_component = _safe_norm(c.rank_score, rank_min, rank_max)
+        rs_component = _safe_norm(c.rs_score, rs_min, rs_max)
+        composite = w_rank * rank_component + w_rs * rs_component
+        setattr(c, "_ranking_composite", composite)
+        setattr(c, "_ranking_norm_rank", rank_component)
+        setattr(c, "_ranking_norm_rs", rs_component)
+        scored.append((c, composite))
 
-    return sorted(candidates, key=blend, reverse=True)
+    ranked = [c for c, _ in sorted(scored, key=lambda item: item[1], reverse=True)]
+    for idx, c in enumerate(ranked):
+        setattr(c, "_ranking_order_index", idx)
+    return ranked
 
 
 # ── Selection loop ─────────────────────────────────────────────────────────────
