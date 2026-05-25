@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,6 +21,7 @@ from kernel.persistence import (  # noqa: E402
     record_pipeline_run,
     record_candidate_scores,
     record_trades,
+    record_rotations,
     record_training_run,
     record_ticker_daily_state,
     decision_trace_integrity_report,
@@ -200,6 +202,75 @@ class TestPipelineRun:
             None, run_type="sim", run_date=datetime.date(2026, 4, 22),
         )
         assert result is None
+
+
+class TestRotations:
+    def test_record_rotations_classifies_accepted_and_blocked_pairs(self, tmp_path):
+        from kernel.rotation import RotationPair
+
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn,
+            run_type="sim",
+            run_date=datetime.date(2026, 5, 25),
+            strategy="test",
+        )
+        accepted = RotationPair(
+            sell_ticker="AAA",
+            buy_ticker="BBB",
+            sell_score=0.30,
+            buy_score=0.60,
+            sell_er=0.01,
+            buy_er=0.05,
+            horizon_days=20,
+            raw_advantage=0.04,
+            tax_drag=0.01,
+            transaction_cost=0.001,
+            net_advantage=0.029,
+            threshold=0.02,
+            margin_realized=0.009,
+        )
+        blocked = RotationPair(
+            sell_ticker="CCC",
+            buy_ticker="DDD",
+            sell_score=0.40,
+            buy_score=0.55,
+            sell_er=0.02,
+            buy_er=0.03,
+            horizon_days=20,
+            raw_advantage=0.01,
+            tax_drag=0.00,
+            transaction_cost=0.001,
+            net_advantage=0.009,
+            threshold=0.02,
+            margin_realized=-0.011,
+        )
+        ctx = SimpleNamespace(
+            rotations=[accepted, blocked],
+            rotations_blocked=[{
+                "sell": "CCC",
+                "buy": "DDD",
+                "reason": "insufficient_cash",
+            }],
+            orders=[{
+                "ticker": "BBB",
+                "order_type": "ROTATION",
+                "decision_inputs": {"sell_ticker": "AAA", "buy_ticker": "BBB"},
+            }],
+        )
+
+        record_rotations(conn, rid, ctx)
+
+        rows = conn.execute(
+            """SELECT cand_ticker, held_ticker, decision, cand_er, held_er,
+                      raw_adv, net_adv, tax_drag, threshold
+                 FROM rotations ORDER BY cand_ticker""",
+        ).fetchall()
+        assert rows == [
+            ("BBB", "AAA", "accepted", 0.05, 0.01, 0.04, 0.029, 0.01, 0.02),
+            ("DDD", "CCC", "blocked:insufficient_cash", 0.03, 0.02, 0.01, 0.009, 0.0, 0.02),
+        ]
+        conn.close()
 
 
 class TestCandidateScores:

@@ -1232,6 +1232,154 @@ def record_trades(
         )
 
 
+def _field(obj: Any, *names: str) -> Any:
+    for name in names:
+        if isinstance(obj, dict):
+            value = obj.get(name)
+        else:
+            value = getattr(obj, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _rotation_key_from_order(order: Any) -> tuple[str, str] | None:
+    if not isinstance(order, dict):
+        return None
+    ticker = order.get("ticker")
+    inputs = order.get("decision_inputs")
+    if isinstance(inputs, dict):
+        sell = inputs.get("sell_ticker") or inputs.get("held_ticker")
+        buy = inputs.get("buy_ticker") or inputs.get("cand_ticker") or ticker
+        if sell and buy:
+            return str(sell), str(buy)
+    detail = str(order.get("detail") or "")
+    if "rotation" in detail and "←" in detail and ticker:
+        sell = detail.split("←", 1)[1].split()[0]
+        if sell:
+            return sell, str(ticker)
+    return None
+
+
+def _rotation_key_from_block(blocked: Any) -> tuple[str, str] | None:
+    sell = _field(blocked, "sell_ticker", "held_ticker", "sell", "held")
+    buy = _field(blocked, "buy_ticker", "cand_ticker", "buy", "candidate")
+    if sell and buy:
+        return str(sell), str(buy)
+    return None
+
+
+def _rotation_key_from_pair(pair: Any) -> tuple[str, str] | None:
+    sell = _field(pair, "sell_ticker", "held_ticker", "sell", "held")
+    buy = _field(pair, "buy_ticker", "cand_ticker", "buy", "candidate")
+    if sell and buy:
+        return str(sell), str(buy)
+    return None
+
+
+def _rotation_row(
+    run_id: str,
+    item: Any,
+    *,
+    decision: str,
+    fallback_key: tuple[str, str] | None = None,
+) -> tuple:
+    key = _rotation_key_from_pair(item) or _rotation_key_from_block(item) or fallback_key
+    sell, buy = key if key is not None else (None, None)
+    return (
+        run_id,
+        buy,
+        sell,
+        decision,
+        _none_or_float(_field(item, "buy_er", "cand_er", "candidate_er")),
+        _none_or_float(_field(item, "sell_er", "held_er")),
+        _none_or_float(_field(item, "raw_advantage", "raw_adv")),
+        _none_or_float(_field(item, "net_advantage", "net_adv")),
+        _none_or_float(_field(item, "tax_drag")),
+        _none_or_float(_field(item, "threshold")),
+    )
+
+
+def record_rotations(
+    conn: sqlite3.Connection | None,
+    run_id: str | None,
+    ctx_or_pairs: Any,
+    blocked: Iterable[Any] | None = None,
+) -> None:
+    """Persist rotation decisions from sim/live/LEAN.
+
+    ``ctx_or_pairs`` may be an InferenceContext-like object or an iterable of
+    RotationPair-like objects. Accepted swaps are inferred from rotation buy
+    orders, because ``ctx.rotations`` can still contain proposed pairs that
+    were later suppressed by buy gates, Kelly/cash sizing, or broker execution.
+    """
+    if conn is None or run_id is None:
+        return
+    if hasattr(ctx_or_pairs, "rotations"):
+        ctx = ctx_or_pairs
+        pairs = list(getattr(ctx, "rotations", []) or [])
+        blocked_items = list(
+            blocked if blocked is not None
+            else getattr(ctx, "rotations_blocked", []) or []
+        )
+        accepted_keys = {
+            key for key in (
+                _rotation_key_from_order(order)
+                for order in (getattr(ctx, "orders", []) or [])
+            )
+            if key is not None
+        }
+    else:
+        pairs = list(ctx_or_pairs or [])
+        blocked_items = list(blocked or [])
+        accepted_keys = {_rotation_key_from_pair(pair) for pair in pairs}
+        accepted_keys.discard(None)
+
+    blocked_by_key: dict[tuple[str, str], Any] = {}
+    for item in blocked_items:
+        key = _rotation_key_from_block(item)
+        if key is not None:
+            blocked_by_key[key] = item
+
+    rows = []
+    seen: set[tuple[str, str]] = set()
+    for pair in pairs:
+        key = _rotation_key_from_pair(pair)
+        if key is None:
+            continue
+        seen.add(key)
+        blocked_item = blocked_by_key.get(key)
+        if key in accepted_keys:
+            decision = "accepted"
+        elif blocked_item is not None:
+            reason = _field(blocked_item, "reason", "decision", "blocked_by")
+            decision = f"blocked:{reason or 'unknown'}"
+        else:
+            decision = "proposed_not_emitted"
+        rows.append(_rotation_row(run_id, pair, decision=decision))
+
+    for item in blocked_items:
+        key = _rotation_key_from_block(item)
+        if key is None or key in seen:
+            continue
+        reason = _field(item, "reason", "decision", "blocked_by")
+        rows.append(_rotation_row(
+            run_id,
+            item,
+            decision=f"blocked:{reason or 'unknown'}",
+            fallback_key=key,
+        ))
+
+    if rows:
+        conn.executemany(
+            """INSERT INTO rotations
+                  (run_id, cand_ticker, held_ticker, decision, cand_er,
+                   held_er, raw_adv, net_adv, tax_drag, threshold)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+
+
 def record_training_run(
     conn: sqlite3.Connection | None,
     *,

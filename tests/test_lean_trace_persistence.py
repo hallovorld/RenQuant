@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -95,6 +96,113 @@ def test_lean_adapter_records_full_watchlist_trace(tmp_path):
         ("AAA", 1, "no_model_signal", 0.42, 0.013),
         ("BBB", 0, "universe:ic_missing", None, None),
     ]
+    conn.close()
+
+
+def test_lean_adapter_records_nonfilled_execution_attempts(tmp_path):
+    from adapters.lean import (
+        LeanAdapter,
+        _lean_buy_attempt_event,
+        _lean_sell_attempt_event,
+    )
+    from kernel.exits import ExitSignal, HoldingState
+    from kernel.persistence import get_connection
+
+    cfg = {
+        "model_name": "renquant_104",
+        "watchlist": ["AAA"],
+        "sector_map": {"AAA": "Tech"},
+        "ranking": {"panel_scoring": {"artifact_path": "panel-ltr.json"}},
+        "persistence": {"enabled": True, "db_path": str(tmp_path / "runs.db")},
+    }
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = SimpleNamespace(
+        _config=cfg,
+        _strategy_dir=_STRATEGY_DIR,
+        _models={"AAA": {"_metadata": {"model_type": "xgb"}}},
+        Portfolio=SimpleNamespace(TotalPortfolioValue=100_000.0, Cash=90_000.0),
+        _holdings={},
+    )
+    adapter._db = get_connection(cfg, strategy_dir=_STRATEGY_DIR, role="live")
+    adapter._universe_rejections = {}
+    holding = HoldingState(
+        entry_price=90.0,
+        entry_date=datetime.date(2026, 5, 1),
+        high_watermark=101.0,
+        shares=5.0,
+        rank_score=0.41,
+        panel_score=0.38,
+        expected_return=0.01,
+        expected_return_horizon_days=60,
+    )
+    holding.model_type = "xgb"
+    holding.sector = "Tech"
+    ctx = SimpleNamespace(
+        today=datetime.date(2026, 5, 22),
+        regime="BULL_CALM",
+        confidence=0.60,
+        portfolio_value=100_000.0,
+        cash=90_000.0,
+        candidates=[],
+        holdings={"AAA": holding},
+        exits=[],
+        rotations=[],
+        orders=[],
+        counters={},
+        buy_blocked=False,
+        skip_buys=False,
+        bear_only=False,
+        prices={"AAA": 100.0},
+        _ticker_score_snapshot={},
+    )
+    buy_attempt = _lean_buy_attempt_event(
+        {
+            "ticker": "AAA",
+            "shares": 3,
+            "price": 100.0,
+            "target_pct": 0.003,
+            "rank_score": 0.44,
+            "source_job": "SelectionJob",
+            "source_task": "SizeAndEmitTask",
+        },
+        ctx=ctx,
+        status="Rejected",
+        blocked_by="lean_order_status:Rejected",
+    )
+    sell_attempt = _lean_sell_attempt_event(
+        ticker="AAA",
+        sig=ExitSignal(True, "stop", "stop_loss"),
+        holding=holding,
+        ctx=ctx,
+        requested_shares=5.0,
+        price=100.0,
+        status="Submitted",
+    )
+
+    adapter._record_decision_trace(ctx, [buy_attempt, sell_attempt])
+    adapter._db.close()
+
+    conn = sqlite3.connect(tmp_path / "runs.db")
+    rows = conn.execute(
+        """SELECT action, ticker, shares, price, blocked_by,
+                  score_snapshot_json, decision_inputs_json
+             FROM trades ORDER BY action""",
+    ).fetchall()
+    assert rows[0][:5] == (
+        "buy_rejected", "AAA", 3.0, 100.0, "lean_order_status:Rejected",
+    )
+    assert rows[1][:5] == (
+        "sell_pending", "AAA", 5.0, 100.0, "Submitted",
+    )
+    buy_snap = json.loads(rows[0][5])
+    sell_inputs = json.loads(rows[1][6])
+    assert buy_snap["attempt_status"] == "buy_rejected"
+    assert sell_inputs["attempt_status"] == "sell_pending"
+    assert sell_inputs["status"] == "Submitted"
+    selected = conn.execute(
+        "SELECT selected, blocked_by FROM candidate_scores WHERE ticker='AAA'",
+    ).fetchone()
+    assert selected == (0, None)
     conn.close()
 
 

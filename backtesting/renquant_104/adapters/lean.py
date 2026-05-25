@@ -369,6 +369,120 @@ def _lean_order_execution(
     return False, 0.0, price or fallback, status or "unknown"
 
 
+def _lean_attempt_action(side: str, status: Any) -> str:
+    status_l = str(status or "").lower()
+    terminal_bad = ("reject", "cancel", "invalid", "error", "missing")
+    suffix = "rejected" if any(t in status_l for t in terminal_bad) else "pending"
+    return f"{side}_{suffix}"
+
+
+def _lean_buy_attempt_event(
+    order: dict[str, Any],
+    *,
+    ctx: InferenceContext,
+    status: str,
+    blocked_by: str,
+    action: str | None = None,
+) -> dict[str, Any]:
+    action = action or _lean_attempt_action("buy", status)
+    row = build_buy_trade_event(
+        order,
+        date=ctx.today,
+        default_regime=ctx.regime,
+        default_confidence=ctx.confidence,
+        attribution_version="lean_execution_attempt_v1",
+        default_acceptance_reason=blocked_by,
+    )
+    row["action"] = action
+    row["blocked_by"] = blocked_by
+    row["exit_reason"] = status or blocked_by
+    inputs = dict(row.get("decision_inputs") or {})
+    inputs.update({
+        "attempt_status": action,
+        "status": status,
+        "blocked_by": blocked_by,
+    })
+    inputs.setdefault("acceptance_reason", blocked_by)
+    row["decision_inputs"] = inputs
+    snap = dict(row.get("score_snapshot") or {})
+    snap.update({
+        "attempt_status": action,
+        "status": status,
+        "blocked_by": blocked_by,
+    })
+    row["score_snapshot"] = snap
+    return row
+
+
+def _lean_sell_attempt_event(
+    *,
+    ticker: str,
+    sig: Any,
+    holding: Any,
+    ctx: InferenceContext,
+    requested_shares: float,
+    price: float,
+    status: str,
+    blocked_by: str | None = None,
+    action: str | None = None,
+) -> dict[str, Any]:
+    action = action or _lean_attempt_action("sell", status)
+    blocked = blocked_by or status or action
+    source_job = str(getattr(sig, "source_job", None) or "LeanOrderTicket")
+    source_task = str(getattr(sig, "source_task", None) or action)
+    order_source = str(getattr(sig, "order_source", None) or f"{source_job}.{source_task}")
+    snap = {
+        "rank_score": getattr(holding, "rank_score", None),
+        "panel_score": getattr(holding, "panel_score", None),
+        "expected_return": getattr(holding, "expected_return", None),
+        "expected_return_horizon_days": getattr(holding, "expected_return_horizon_days", None),
+        "mu": getattr(holding, "mu", None),
+        "mu_horizon_days": getattr(holding, "mu_horizon_days", None),
+        "sigma": getattr(holding, "sigma", None),
+        "confidence": getattr(ctx, "confidence", None),
+        "regime": getattr(ctx, "regime", None),
+        "model_type": getattr(holding, "model_type", None),
+        "sector": getattr(holding, "sector", None),
+        "blocked_by": blocked,
+        "attempt_status": action,
+        "status": status,
+    }
+    inputs = {
+        "acceptance_reason": blocked,
+        "attempt_status": action,
+        "exit_type": getattr(sig, "exit_type", None),
+        "signal_reason": getattr(sig, "reason", None),
+        "shares": requested_shares,
+        "price": price,
+        "status": status,
+        "blocked_by": blocked,
+        "source_job": source_job,
+        "source_task": source_task,
+        "order_source": order_source,
+    }
+    return {
+        "ticker": ticker,
+        "action": action,
+        "date": ctx.today,
+        "shares": requested_shares,
+        "price": price,
+        "exit_reason": getattr(sig, "exit_type", None),
+        "blocked_by": blocked,
+        "order_type": f"SELL_ATTEMPT_{getattr(sig, 'exit_type', None) or action}",
+        "source": "LeanOrderTicket",
+        "source_job": source_job,
+        "source_task": source_task,
+        "order_source": order_source,
+        "attribution_version": "lean_execution_attempt_v1",
+        "score_snapshot": snap,
+        "decision_inputs": inputs,
+        "confidence": getattr(ctx, "confidence", None),
+        "regime": getattr(ctx, "regime", None),
+        "model_type": getattr(holding, "model_type", None),
+        "sector": getattr(holding, "sector", None),
+    }
+
+
 class LeanAdapter:
     """Translate between LEAN API and InferenceContext.
 
@@ -665,6 +779,17 @@ class LeanAdapter:
             hs        = ctx.holdings.get(ticker)
             sym       = _symbol_for_ticker(algo, ticker)
             if sym is None:
+                trade_events.append(_lean_sell_attempt_event(
+                    ticker=ticker,
+                    sig=sig,
+                    holding=hs,
+                    ctx=ctx,
+                    requested_shares=getattr(sig, "quantity", None) or 0.0,
+                    price=ctx.prices.get(ticker, 0.0),
+                    status="missing_symbol",
+                    blocked_by="lean_missing_symbol",
+                    action="sell_skipped",
+                ))
                 continue
             gross_pnl_broker = float(algo.Portfolio[sym].UnrealizedProfit)
             days_held = (ctx.today - hs.entry_date).days if hs else 0
@@ -688,6 +813,17 @@ class LeanAdapter:
                         f"{ctx.today} {ticker} EXIT skipped — requested "
                         f"shares round to zero ({requested_exit_shares})"
                     )
+                    trade_events.append(_lean_sell_attempt_event(
+                        ticker=ticker,
+                        sig=sig,
+                        holding=hs,
+                        ctx=ctx,
+                        requested_shares=requested_exit_shares,
+                        price=fallback_price,
+                        status="requested_shares_round_to_zero",
+                        blocked_by="lean_requested_shares_round_to_zero",
+                        action="sell_skipped",
+                    ))
                     continue
                 requested_exit_shares = float(requested_order_shares)
                 ticket = algo.MarketOrder(sym, -requested_order_shares)
@@ -701,6 +837,16 @@ class LeanAdapter:
                     f"{ctx.today} {ticker} EXIT skipped — LEAN order not "
                     f"filled (status={status})"
                 )
+                trade_events.append(_lean_sell_attempt_event(
+                    ticker=ticker,
+                    sig=sig,
+                    holding=hs,
+                    ctx=ctx,
+                    requested_shares=requested_exit_shares,
+                    price=fill_price if fill_price > 0 else fallback_price,
+                    status=status,
+                    blocked_by=f"lean_order_status:{status}",
+                ))
                 continue
             event_shares = min(float(filled_qty), float(holding_qty))
             is_partial = event_shares < float(holding_qty) - 1e-9
@@ -935,6 +1081,14 @@ class LeanAdapter:
             except Exception:
                 ticker = "?"
             algo.Debug(f"{ctx.today} {ticker} SKIP — duplicate same-bar buy intent")
+            if isinstance(order, dict):
+                trade_events.append(_lean_buy_attempt_event(
+                    order,
+                    ctx=ctx,
+                    status="duplicate_same_bar_buy_intent",
+                    blocked_by="lean_duplicate_same_bar_buy_intent",
+                    action="buy_skipped",
+                ))
 
         for order in deduped_orders:
             ticker     = order["ticker"]
@@ -943,6 +1097,13 @@ class LeanAdapter:
             price      = order["price"]
             sym        = _symbol_for_ticker(algo, ticker)
             if sym is None:
+                trade_events.append(_lean_buy_attempt_event(
+                    order,
+                    ctx=ctx,
+                    status="missing_symbol",
+                    blocked_by="lean_missing_symbol",
+                    action="buy_skipped",
+                ))
                 continue
             try:
                 price_f      = float(price)
@@ -950,6 +1111,13 @@ class LeanAdapter:
                 target_pct_f = float(target_pct)
             except (TypeError, ValueError):
                 algo.Debug(f"{ctx.today} {ticker} SKIP — non-numeric order field")
+                trade_events.append(_lean_buy_attempt_event(
+                    order,
+                    ctx=ctx,
+                    status="non_numeric_order_field",
+                    blocked_by="lean_non_numeric_order_field",
+                    action="buy_skipped",
+                ))
                 continue
             if not (math.isfinite(price_f) and price_f > 0
                     and math.isfinite(shares_f) and shares_f > 0
@@ -958,6 +1126,13 @@ class LeanAdapter:
                     f"{ctx.today} {ticker} SKIP — non-finite order "
                     f"(price={price_f} shares={shares_f} target_pct={target_pct_f})"
                 )
+                trade_events.append(_lean_buy_attempt_event(
+                    order,
+                    ctx=ctx,
+                    status="non_finite_order_field",
+                    blocked_by="lean_non_finite_order_field",
+                    action="buy_skipped",
+                ))
                 continue
 
             already_held = ticker in algo._holdings
@@ -976,6 +1151,13 @@ class LeanAdapter:
                     f"{ctx.today} {ticker} SKIP — shares round to zero "
                     f"({shares_f})"
                 )
+                trade_events.append(_lean_buy_attempt_event(
+                    order,
+                    ctx=ctx,
+                    status="shares_round_to_zero",
+                    blocked_by="lean_shares_round_to_zero",
+                    action="buy_skipped",
+                ))
                 continue
             ticket = algo.MarketOrder(sym, order_qty)
             filled, filled_qty, fill_price, status = _lean_order_execution(
@@ -988,6 +1170,12 @@ class LeanAdapter:
                     f"{ctx.today} {ticker} BUY skipped — LEAN order not "
                     f"filled (status={status})"
                 )
+                trade_events.append(_lean_buy_attempt_event(
+                    order,
+                    ctx=ctx,
+                    status=status,
+                    blocked_by=f"lean_order_status:{status}",
+                ))
                 continue
             shares_f = float(filled_qty)
             price_f = float(fill_price or price_f)
@@ -1069,6 +1257,7 @@ class LeanAdapter:
         from kernel.persistence import (  # noqa: PLC0415
             record_candidate_scores,
             record_pipeline_run,
+            record_rotations,
             record_ticker_daily_state,
             record_trades,
             validate_decision_trace_integrity,
@@ -1134,6 +1323,7 @@ class LeanAdapter:
             excluded_holding_tickers=candidate_score_excluded_holding_tickers(config),
         )
         record_trades(self._db, run_id, trade_events)
+        record_rotations(self._db, run_id, ctx)
 
         rows = build_ticker_daily_state_rows(
             config=config,

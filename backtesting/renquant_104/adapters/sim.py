@@ -1392,7 +1392,8 @@ class SimAdapter:
         if self._db is not None:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
-                record_ticker_daily_state, validate_decision_trace_integrity,
+                record_rotations, record_ticker_daily_state,
+                validate_decision_trace_integrity,
             )
             from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
             run_bundle = build_run_bundle(
@@ -1455,6 +1456,7 @@ class SimAdapter:
                 excluded_holding_tickers=candidate_score_excluded_holding_tickers(self._config),
             )
             record_trades(self._db, run_id, trade_events_this_bar)
+            record_rotations(self._db, run_id, ctx)
             tds_rows = build_ticker_daily_state_rows(
                 config=self._config,
                 ctx=ctx,

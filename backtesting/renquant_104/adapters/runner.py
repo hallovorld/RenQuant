@@ -2330,8 +2330,8 @@ class RunnerAdapter:
         if self._db is not None:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
-                record_live_state_snapshot, record_ticker_daily_state,
-                validate_decision_trace_integrity,
+                record_live_state_snapshot, record_rotations,
+                record_ticker_daily_state, validate_decision_trace_integrity,
             )
             from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
             # Reconstruct trade events from ctx (live path doesn't keep an
@@ -2474,6 +2474,7 @@ class RunnerAdapter:
                 excluded_holding_tickers=candidate_score_excluded_holding_tickers(self._config),
             )
             record_trades(self._db, run_id, trade_events)
+            record_rotations(self._db, run_id, ctx)
 
             # ── ticker_daily_state — every watchlist ticker, every bar ──
             # Per user spec round-5 (2026-04-26): write a row for EVERY
