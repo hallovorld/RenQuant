@@ -130,17 +130,24 @@ def assert_consistent(
     - ``strict=False``: log.error but continue (only for migration windows
       where artifacts pre-date this guard).
 
-    Backwards-compat: artifacts WITHOUT a stored fingerprint are treated as
-    "unknown" — log a warning, do not fail (so existing artifacts keep
-    loading until the next retrain stamps them).
+    Artifacts WITHOUT a stored fingerprint are treated as unknown. In strict
+    mode this fails closed; in non-strict migration mode it logs a warning and
+    continues.
     """
     live_fp = fingerprint_config(config)
     stored = artifact.get("config_fingerprint")
     if stored is None:
+        msg = (
+            "Config-consistency: artifact "
+            f"{artifact_label} has no fingerprint. Live fingerprint={live_fp}. "
+            "Strict full/buy paths require stamped config/sector metadata; "
+            "retrain or promote a stamped artifact."
+        )
+        if strict:
+            raise ConfigModelMismatch(msg)
         log.warning(
-            "Config-consistency: artifact %s has no fingerprint (pre-guard). "
-            "Live fingerprint=%s. Will be stamped at next retrain.",
-            artifact_label, live_fp,
+            "%s",
+            msg,
         )
         return
     if stored == live_fp:

@@ -109,7 +109,15 @@ def healthy_setup(tmp_path):
     panel = art_dir / "panel-ltr.json"
     panel.write_text(json.dumps({
         "best_iter": 50,
+        "trained_date": "2026-05-22",
         "oos_mean_ic": 0.045,
+        "oos_std_ic": 0.011,
+        "oos_per_fold_ic": [0.034, 0.051, 0.049],
+        "cv_method": "purged_walk_forward",
+        "cv_embargo_days": 20,
+        "lookahead_days": 10,
+        "panel_shape": {"rows": 1000, "cols": 3},
+        "train_run_id": "test-run",
         "feature_cols": ["rsi", "macd", "bbp"],
         "config_fingerprint": fingerprint_config(cfg),
         "config_fingerprint_fields": _model_relevant_fields(cfg),
@@ -177,6 +185,38 @@ class TestCheckModelArtifact:
 # ── P-PANEL-CONTRACT ──────────────────────────────────────────────────────
 
 class TestCheckPanelArtifactContract:
+    def test_xgb_contract_missing_evidence_fails_full_by_default(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "feature_cols": ["f1"],
+            "trained_date": "2026-05-22",
+        }))
+
+        r = _check_panel_artifact_contract(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "missing config_fingerprint" in r.message
+
+    def test_xgb_contract_missing_evidence_allows_sell_only(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "feature_cols": ["f1"],
+            "trained_date": "2026-05-22",
+        }))
+
+        r = _check_panel_artifact_contract(cfg, tmp_path, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
+
     def test_hf_patchtst_binary_uses_summary_sidecar(self, tmp_path):
         """Shadow PatchTST artifacts are .pt checkpoints. Preflight must
         validate the JSON sidecar instead of decoding the binary as UTF-8."""
@@ -190,6 +230,7 @@ class TestCheckPanelArtifactContract:
             "seed": 44,
             "best_val_ic": 0.0657,
             "n_features": 172,
+            "config_fingerprint": "sha256:test",
         }))
         cfg = {
             "ranking": {"panel_scoring": {
@@ -380,16 +421,67 @@ class TestCheckWFGateMetadata:
         assert not r.ok and r.severity == "hard"
         assert "WF gate metadata absent" in r.message
 
-    def test_sequence_shadow_skips_wf_gate(self, tmp_path):
+    def test_sequence_artifact_without_wf_metadata_fails_full(self, tmp_path):
         cfg = {"ranking": {"panel_scoring": {
             "kind": "hf_patchtst",
             "artifact_path": "artifacts/patch_model.pt",
         }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "cut": "all",
+            "seed": 44,
+            "best_val_ic": 0.03,
+            "n_features": 172,
+            "config_fingerprint": "sha256:test",
+        }))
 
-        r = _check_wf_gate_metadata(cfg, tmp_path)
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "WF gate metadata absent" in r.message
+
+    def test_sequence_artifact_without_wf_metadata_allows_sell_only(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "hf_patchtst",
+            "artifact_path": "artifacts/patch_model.pt",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "cut": "all",
+            "seed": 44,
+            "best_val_ic": 0.03,
+            "n_features": 172,
+            "config_fingerprint": "sha256:test",
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="sell-only")
 
         assert r.ok and r.severity == "soft"
-        assert "not applicable" in r.message
+        assert "sell-only risk exits are allowed" in r.message
+
+    def test_sequence_metadata_sidecar_is_used_for_wf_gate(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "hf_patchtst",
+            "artifact_path": "artifacts/patch_model.pt",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_model.pt.metadata.json").write_text(json.dumps({
+            "kind": "hf_patchtst",
+            "best_val_ic": 0.03,
+            "n_features": 172,
+            "config_fingerprint": "sha256:test",
+            "metadata": {"wf_gate_metadata": self._passing_wf_meta()},
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="full")
+
+        assert r.ok and r.severity == "hard"
+        assert r.details["passed"] is True
 
 
 class TestCheckRegimeLayeredIC:
@@ -459,6 +551,50 @@ class TestCheckRegimeLayeredIC:
 
         assert not full.ok and full.severity == "hard"
         assert sell.ok and sell.severity == "soft"
+
+    def test_sequence_artifact_requires_regime_ic_metadata_for_full(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "hf_patchtst",
+            "artifact_path": "artifacts/patch_model.pt",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "cut": "all",
+            "seed": 44,
+            "best_val_ic": 0.03,
+            "n_features": 172,
+            "config_fingerprint": "sha256:test",
+            "metadata": {"wf_gate_metadata": {"passed": True}},
+        }))
+
+        r = _check_regime_layered_ic(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "regime-layered IC/monotonicity evidence absent" in r.message
+
+    def test_sequence_artifact_allows_sell_only_when_regime_ic_missing(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "hf_patchtst",
+            "artifact_path": "artifacts/patch_model.pt",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "cut": "all",
+            "seed": 44,
+            "best_val_ic": 0.03,
+            "n_features": 172,
+            "config_fingerprint": "sha256:test",
+            "metadata": {"wf_gate_metadata": {"passed": True}},
+        }))
+
+        r = _check_regime_layered_ic(cfg, tmp_path, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
 
 
 # ── P-BEST-ITER (BUG-CV-2 invariant) ───────────────────────────────────────

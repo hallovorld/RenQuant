@@ -401,6 +401,21 @@ Make RenQuant 104 scientifically trustworthy end to end:
   - It still fails benchmark-relative WF and sanity (`real_ic=+0.0385`,
     `shuffled_ic=+0.0024`, `placebo_ic=+0.0460`). Simple sigma cap is not a
     production fix.
+- Latest model-contract hardening:
+  - Full/buy preflight now treats missing panel artifact evidence and missing
+    config fingerprints as hard failures by default; sell-only remains soft so
+    risk exits stay armed.
+  - Sequence/PatchTST primary artifacts no longer skip WF/SPY/regime IC gates:
+    preflight reads their JSON sidecar (`*_summary.json` or
+    `.pt.metadata.json`) and requires the same WF metadata, regime-layered
+    monotonicity, sanity IC, and config fingerprint evidence before buy/full.
+  - Runtime `LoadScorerTask` also fails closed on unstamped artifacts unless
+    an explicit staged migration sets `strict_config_consistency=false`.
+  - Targeted tests passed:
+    `tests/test_config_consistency.py tests/test_panel_scoring_job.py
+    tests/test_preflight.py tests/test_preflight_regime_sanity.py`
+    (`163 passed`) plus runner/acceptance smoke neighborhood
+    (`108 passed`).
 
 ## Active Validation
 

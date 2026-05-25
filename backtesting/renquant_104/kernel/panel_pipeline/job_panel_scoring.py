@@ -637,8 +637,8 @@ class LoadScorerTask(Task):
         # isn't enough (operators don't tail logs every bar).
         # Set ranking.panel_scoring.strict_config_consistency=false to
         # downgrade to log-only (only for staged migrations).
-        # Backwards-compat: artifacts without a stored fingerprint pass
-        # with WARNING (stamped on next retrain).
+        # Artifacts without a stored fingerprint fail closed when strict is
+        # enabled; only explicit staged migrations may opt into log-only mode.
         if not self._assert_config_consistency(ctx, panel_cfg, ctx._panel_scorer, p):
             return False
 

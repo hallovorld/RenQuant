@@ -268,12 +268,18 @@ class TestAssertConsistent:
             assert_consistent(cfg, artifact, strict=False)
         assert any("MISMATCH" in r.message for r in caplog.records)
 
-    def test_unstamped_artifact_passes_with_warning(self, caplog):
+    def test_unstamped_artifact_fails_closed_in_strict(self):
+        cfg = _cfg()
+        artifact = {}  # no fingerprint stored
+        with pytest.raises(ConfigModelMismatch, match="no fingerprint"):
+            assert_consistent(cfg, artifact, strict=True)
+
+    def test_unstamped_artifact_warns_in_non_strict(self, caplog):
         import logging
         cfg = _cfg()
         artifact = {}  # no fingerprint stored
         with caplog.at_level(logging.WARNING):
-            assert_consistent(cfg, artifact, strict=True)  # should NOT raise
+            assert_consistent(cfg, artifact, strict=False)
         assert any("no fingerprint" in r.message for r in caplog.records)
 
     def test_mismatch_reports_specific_field(self):

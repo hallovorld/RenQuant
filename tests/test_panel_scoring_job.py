@@ -206,6 +206,9 @@ def _make_ctx(tmp_path, *, enabled=True, artifact_path="panel-ltr.json",
                 "enabled": enabled,
                 "artifact_path": artifact_path,
                 "nan_prone_cols": [],
+                # Most unit fixtures use intentionally minimal artifacts.
+                # Contract-hardening is covered by dedicated fail-closed tests.
+                "strict_config_consistency": False,
             },
         },
         "_strategy_dir": str(tmp_path),
@@ -266,12 +269,28 @@ class TestLoadScorerTask:
         payload["config_fingerprint_fields"] = {"watchlist": ["OLD"]}
         artifact.write_text(json.dumps(payload))
         ctx = _make_ctx(tmp_path, enabled=True, artifact_path="")
+        ctx.config["ranking"]["panel_scoring"]["strict_config_consistency"] = True
         ctx._panel_scorer = PanelScorer.load(artifact)
 
         out = LoadScorerTask().run(ctx)
 
         assert out is False
         assert ctx.candidates == []
+        assert set(ctx._blocked_by_ticker.values()) == {
+            "panel_scorer_config_mismatch",
+        }
+
+    def test_unstamped_artifact_fails_closed_when_strict(self, tmp_path):
+        from kernel.panel_pipeline.job_panel_scoring import LoadScorerTask
+        artifact = _write_artifact(tmp_path / "artifacts" / "panel-ltr.json")
+        ctx = _make_ctx(tmp_path, enabled=True, artifact_path=str(artifact))
+        ctx.config["ranking"]["panel_scoring"]["strict_config_consistency"] = True
+
+        out = LoadScorerTask().run(ctx)
+
+        assert out is False
+        assert ctx.candidates == []
+        assert ctx._panel_scoring_contract_failed is True
         assert set(ctx._blocked_by_ticker.values()) == {
             "panel_scorer_config_mismatch",
         }

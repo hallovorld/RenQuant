@@ -67,6 +67,37 @@ def _patchtst_summary_path(path: Path) -> Path:
     return path.with_suffix(".summary.json")
 
 
+def _sequence_sidecar_paths(path: Path) -> list[Path]:
+    """Candidate metadata sidecars for non-JSON sequence artifacts."""
+    out = [_patchtst_summary_path(path), path.with_name(path.name + ".metadata.json")]
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for p in out:
+        if p not in seen:
+            unique.append(p)
+            seen.add(p)
+    return unique
+
+
+def _load_sequence_sidecar(path: Path) -> tuple[dict, Path]:
+    for sidecar in _sequence_sidecar_paths(path):
+        if not sidecar.exists():
+            continue
+        return json.loads(sidecar.read_text()), sidecar
+    raise FileNotFoundError(
+        "missing sequence sidecar; checked "
+        + ", ".join(str(p) for p in _sequence_sidecar_paths(path))
+    )
+
+
+def _wf_metadata_from_payload(payload: dict) -> dict:
+    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    wf = meta.get("wf_gate_metadata") if isinstance(meta.get("wf_gate_metadata"), dict) else None
+    if wf is None and isinstance(payload.get("wf_gate_metadata"), dict):
+        wf = payload.get("wf_gate_metadata")
+    return wf or {}
+
+
 def _active_panel_config(config: dict) -> dict:
     """Return the artifact config used by the active scoring path."""
     return (
@@ -151,18 +182,12 @@ def _check_sequence_artifact_contract(
             f"{kind} checkpoint is empty: {artifact_path}",
         )
 
-    summary_path = _patchtst_summary_path(artifact_path)
-    if not summary_path.exists():
-        return PreflightCheck(
-            "P-PANEL-CONTRACT", "hard", False,
-            f"{kind} summary sidecar missing: {summary_path}",
-        )
     try:
-        summary = json.loads(summary_path.read_text())
+        summary, summary_path = _load_sequence_sidecar(artifact_path)
     except Exception as exc:
         return PreflightCheck(
             "P-PANEL-CONTRACT", "hard", False,
-            f"{kind} summary unreadable: {exc}",
+            f"{kind} summary sidecar missing/unreadable: {exc}",
         )
 
     arch = summary.get("arch")
@@ -284,13 +309,15 @@ def _check_model_artifact(config: dict, strategy_dir: Path) -> PreflightCheck:
     )
 
 
-def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> PreflightCheck:
+def _check_panel_artifact_contract(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> PreflightCheck:
     """P-PANEL-CONTRACT: panel artifact carries evidence metadata.
 
-    Default is soft so legacy production artifacts continue to trade while
-    the next retrain stamps the full contract. Set
-    ``preflight.artifact_contract.strict=true`` to hard-fail missing OOS
-    evidence during promotion/dry-run gates.
+    Full/buy paths are strict by default. Sell-only remains soft so risk exits
+    are not blocked by missing buy-side evidence.
     """
     panel_cfg = _active_panel_config(config)
     kind = _active_panel_kind(config, panel_cfg)
@@ -301,7 +328,7 @@ def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> Prefligh
     strict_contract = bool(
         config.get("preflight", {})
         .get("artifact_contract", {})
-        .get("strict", False)
+        .get("strict", not _is_sell_only_run(run_mode))
     )
     if _is_sequence_artifact(kind, p):
         return _check_sequence_artifact_contract(
@@ -317,6 +344,13 @@ def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> Prefligh
     result = validate_panel_artifact_contract(payload, strict=strict_contract)
     severity = "hard" if strict_contract else "soft"
     if not result.ok:
+        if _is_sell_only_run(run_mode):
+            return PreflightCheck(
+                "P-PANEL-CONTRACT", "soft", True,
+                "panel artifact contract failed: " + "; ".join(result.errors)
+                + "; sell-only risk exits are allowed, new buys remain blocked",
+                details=result.details | {"warnings": result.warnings},
+            )
         return PreflightCheck(
             "P-PANEL-CONTRACT", severity, False,
             "; ".join(result.errors),
@@ -350,25 +384,23 @@ def _check_wf_gate_metadata(
     kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = _resolve_artifact_path(strategy_dir, rel)
-    if _is_sequence_artifact(kind, p):
-        return PreflightCheck(
-            "P-WF-GATE", "soft", True,
-            f"WF gate not applicable to sequence shadow artifact ({kind})",
-        )
     if not p.exists():
         return PreflightCheck(
             "P-WF-GATE", "soft", True,
             f"artifact missing at {p}; P-MODEL-ARTIFACT/P-PANEL-CONTRACT will handle",
         )
     try:
-        payload = json.loads(p.read_text())
+        if _is_sequence_artifact(kind, p):
+            payload, _sidecar = _load_sequence_sidecar(p)
+        else:
+            payload = json.loads(p.read_text())
     except Exception as exc:
         return PreflightCheck(
-            "P-WF-GATE", "soft", True,
-            f"artifact unreadable: {exc}; P-PANEL-CONTRACT will handle",
+            "P-WF-GATE", "soft" if _is_sell_only_run(run_mode) else "hard",
+            True if _is_sell_only_run(run_mode) else False,
+            f"artifact/sidecar unreadable: {exc}; P-PANEL-CONTRACT will handle",
         )
-    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    wf = meta.get("wf_gate_metadata") if isinstance(meta.get("wf_gate_metadata"), dict) else {}
+    wf = _wf_metadata_from_payload(payload)
     if not wf:
         return _soft_for_sell_only(
             "P-WF-GATE",
@@ -474,25 +506,23 @@ def _check_regime_layered_ic(
     kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = _resolve_artifact_path(strategy_dir, rel)
-    if _is_sequence_artifact(kind, p):
-        return PreflightCheck(
-            "P-REGIME-IC", "soft", True,
-            f"regime IC gate not applicable to sequence shadow artifact ({kind})",
-        )
     if not p.exists():
         return PreflightCheck(
             "P-REGIME-IC", "soft", True,
             f"artifact missing at {p}; P-MODEL-ARTIFACT/P-PANEL-CONTRACT will handle",
         )
     try:
-        payload = json.loads(p.read_text())
+        if _is_sequence_artifact(kind, p):
+            payload, _sidecar = _load_sequence_sidecar(p)
+        else:
+            payload = json.loads(p.read_text())
     except Exception as exc:
-        return PreflightCheck(
-            "P-REGIME-IC", "soft", True,
-            f"artifact unreadable: {exc}; P-PANEL-CONTRACT will handle",
+        return _soft_for_sell_only(
+            "P-REGIME-IC",
+            f"artifact/sidecar unreadable: {exc}; P-PANEL-CONTRACT will handle",
+            run_mode=run_mode,
         )
-    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    wf = meta.get("wf_gate_metadata") if isinstance(meta.get("wf_gate_metadata"), dict) else {}
+    wf = _wf_metadata_from_payload(payload)
     tm = wf.get("trade_monotonicity") if isinstance(wf.get("trade_monotonicity"), dict) else {}
     sanity = wf.get("sanity_regime_ic") if isinstance(wf.get("sanity_regime_ic"), dict) else {}
     admission_cfg = panel_cfg.get("regime_admission", {}) or {}
@@ -672,14 +702,14 @@ def _check_config_fingerprint(
             "P-CONFIG-FP", "hard", False, f"artifact missing: {p}",
         )
     if _is_sequence_artifact(kind, p):
-        summary_path = _patchtst_summary_path(p)
         try:
-            meta = json.loads(summary_path.read_text())
+            meta, _sidecar = _load_sequence_sidecar(p)
         except Exception as exc:
-            return PreflightCheck(
-                "P-CONFIG-FP", "soft", True,
-                f"{kind} summary unavailable for fingerprint check: {exc}; "
+            return _soft_for_sell_only(
+                "P-CONFIG-FP",
+                f"{kind} sequence sidecar unavailable for fingerprint check: {exc}; "
                 "P-PANEL-CONTRACT handles checkpoint validity",
+                run_mode=run_mode,
             )
     else:
         try:
@@ -794,9 +824,8 @@ def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
             "P-WATCHLIST", "hard", False, f"artifact missing: {p}",
         )
     if _is_sequence_artifact(kind, p):
-        summary_path = _patchtst_summary_path(p)
         try:
-            meta = json.loads(summary_path.read_text())
+            meta, _sidecar = _load_sequence_sidecar(p)
         except Exception as exc:
             return PreflightCheck(
                 "P-WATCHLIST", "soft", True,
