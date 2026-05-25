@@ -172,6 +172,43 @@ class TestCandidateScores:
         assert by_key[("BBB", "candidate")][2] == 0   # not selected
         conn.close()
 
+    def test_excluded_holding_tickers_are_not_candidate_score_rows(self, tmp_path):
+        from kernel.exits import HoldingState
+
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+            strategy="test",
+        )
+        spy = HoldingState(
+            entry_price=500.0,
+            entry_date=datetime.date(2026, 3, 1),
+            high_watermark=510.0,
+            rank_score=None,
+        )
+        alpha = HoldingState(
+            entry_price=100.0,
+            entry_date=datetime.date(2026, 3, 1),
+            high_watermark=105.0,
+            rank_score=0.6,
+        )
+
+        record_candidate_scores(
+            conn,
+            rid,
+            [],
+            {"SPY": spy, "AAA": alpha},
+            selected_tickers=set(),
+            excluded_holding_tickers={"SPY"},
+        )
+
+        rows = conn.execute(
+            "SELECT ticker, role FROM candidate_scores WHERE run_id = ? ORDER BY ticker",
+            (rid,),
+        ).fetchall()
+        assert rows == [("AAA", "holding")]
+        conn.close()
+
     def test_blocked_map_recorded(self, tmp_path):
         from kernel.selection import CandidateResult
         conn = get_connection(_cfg(tmp_path))

@@ -86,6 +86,75 @@ def test_lean_adapter_records_full_watchlist_trace(tmp_path):
     conn.close()
 
 
+def test_lean_trace_excludes_benchmark_sleeve_from_candidate_scores(tmp_path):
+    from adapters.lean import LeanAdapter
+    from kernel.exits import HoldingState
+    from kernel.persistence import get_connection
+
+    cfg = {
+        "model_name": "renquant_104",
+        "watchlist": ["AAA"],
+        "ranking": {"panel_scoring": {"artifact_path": "panel-ltr.json"}},
+        "portfolio": {
+            "benchmark_sleeve": {
+                "enabled": True,
+                "ticker": "SPY",
+                "exclude_from_alpha_pipeline": True,
+            },
+        },
+        "persistence": {
+            "enabled": True,
+            "db_path": str(tmp_path / "runs.db"),
+        },
+    }
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = SimpleNamespace(
+        _config=cfg,
+        _strategy_dir=_STRATEGY_DIR,
+        _models={"AAA": {"_metadata": {"model_type": "xgb"}}},
+    )
+    adapter._db = get_connection(cfg, strategy_dir=_STRATEGY_DIR, role="live")
+    adapter._universe_rejections = {}
+    spy_holding = HoldingState(
+        entry_price=500.0,
+        entry_date=datetime.date(2026, 5, 1),
+        high_watermark=505.0,
+        shares=100.0,
+    )
+    ctx = SimpleNamespace(
+        today=datetime.date(2026, 5, 22),
+        regime="BULL_CALM",
+        confidence=0.60,
+        portfolio_value=100_000.0,
+        cash=50_000.0,
+        candidates=[],
+        holdings={"SPY": spy_holding},
+        exits=[],
+        rotations=[],
+        orders=[],
+        counters={},
+        buy_blocked=False,
+        skip_buys=False,
+        bear_only=False,
+        prices={"SPY": 500.0},
+        _ticker_score_snapshot={},
+    )
+
+    adapter._record_decision_trace(ctx, [])
+    adapter._db.close()
+
+    conn = sqlite3.connect(tmp_path / "runs.db")
+    candidate_rows = conn.execute(
+        "SELECT ticker, role FROM candidate_scores ORDER BY ticker",
+    ).fetchall()
+    daily_rows = conn.execute(
+        "SELECT ticker FROM ticker_daily_state ORDER BY ticker",
+    ).fetchall()
+    assert candidate_rows == []
+    assert daily_rows == [("AAA",), ("SPY",)]
+    conn.close()
+
+
 def _minimal_lean_adapter_for_context(tmp_path, *, panel_on=False):
     from adapters.lean import LeanAdapter
 
@@ -439,6 +508,117 @@ def test_lean_commit_buy_and_topup_maintain_tax_lots(tmp_path):
     assert len(out.lots) == 2
     assert [(lot.shares, lot.price) for lot in out.lots] == [(5.0, 100.0), (5.0, 120.0)]
     assert out.entry_price == 110.0
+
+
+def test_lean_commit_benchmark_sleeve_buy_allows_missing_alpha_scores(tmp_path):
+    from adapters.lean import LeanAdapter
+    from kernel.pipeline.context import InferenceContext
+
+    today = datetime.date(2026, 5, 22)
+    debug_lines: list[str] = []
+    holdings_calls: list[tuple[str, float]] = []
+
+    class _Portfolio(dict):
+        TotalPortfolioValue = 100_000.0
+        Cash = 100_000.0
+
+        def __getitem__(self, _sym):
+            return SimpleNamespace(Quantity=0.0, UnrealizedProfit=0.0)
+
+    class _Security:
+        Price = 500.0
+
+    algo = SimpleNamespace(
+        _config={
+            "model_name": "renquant_104",
+            "ranking": {"panel_scoring": {"enabled": False}},
+            "portfolio": {
+                "benchmark_sleeve": {
+                    "enabled": True,
+                    "ticker": "SPY",
+                    "exclude_from_alpha_pipeline": True,
+                },
+            },
+        },
+        _models={},
+        symbols={"SPY": "SPY"},
+        _sector_etf_symbols={},
+        _benchmark="SPY",
+        _spy_sym="SPY",
+        Portfolio=_Portfolio(),
+        Securities={"SPY": _Security()},
+        _holdings={},
+        _last_sell_dates={},
+        _last_sell_pls={},
+        _last_stop_exit_dates={},
+        _spy_returns=[],
+        _regime_state=None,
+        _regime_counts={},
+        _hwm=100_000.0,
+        _skip_buys=False,
+        _prev_closes={},
+        _tax_short=0.40,
+        _tax_long=0.20,
+        _tax_thresh_days=365,
+        _total_tax=0.0,
+        _executed_sells=0,
+        _lt_trades=0,
+        _st_trades=0,
+        _trail_exits=0,
+        _stop_exits=0,
+        _sdl_exits=0,
+        _rotation_exits=0,
+        _executed_buys=0,
+        _blocked_streak=0,
+        _transition_blocks=0,
+        _velocity_blocks=0,
+        _earnings_blocks=0,
+        _blocked_wash=0,
+        _sector_blocks=0,
+        _corr_blocks=0,
+        _blocked_min_hold=0,
+        Debug=lambda msg: debug_lines.append(str(msg)),
+        Liquidate=lambda _sym: None,
+        MarketOrder=lambda _sym, _qty: None,
+        SetHoldings=lambda sym, target: holdings_calls.append((sym, target)),
+    )
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = algo
+    adapter._db = None
+    adapter._universe_rejections = {}
+    ctx = InferenceContext(
+        config=algo._config,
+        today=today,
+        holdings={},
+        orders=[{
+            "ticker": "SPY",
+            "shares": 10.0,
+            "price": 500.0,
+            "target_pct": 0.50,
+            "rank_score": None,
+            "panel_score": None,
+            "rs_score": None,
+            "regime": "BULL_CALM",
+            "confidence": 0.8,
+            "detail": "benchmark_core_sleeve",
+            "order_type": "BENCHMARK_SLEEVE_BUY",
+        }],
+        exits=[],
+        ohlcv={},
+        spy_returns=[],
+        regime="BULL_CALM",
+        confidence=0.8,
+        portfolio_value=100_000.0,
+        cash=100_000.0,
+        prices={"SPY": 500.0},
+        counters={},
+    )
+
+    adapter.commit(ctx)
+
+    assert holdings_calls == [("SPY", 0.50)]
+    assert "rank=NA" in debug_lines[0]
+    assert "rs=NA" in debug_lines[0]
 
 
 def test_lean_partial_sell_uses_fifo_disposed_basis_for_tax(tmp_path):

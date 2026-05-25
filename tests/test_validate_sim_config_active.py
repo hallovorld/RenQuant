@@ -113,3 +113,27 @@ def test_benchmark_sleeve_paths_are_active():
     assert "portfolio.benchmark_sleeve._research_note" in joined
     assert "INERT_METADATA" in joined
     assert "✗ " not in joined
+
+
+def test_stop_loss_anchor_policy_paths_are_active():
+    mod = _load_validator()
+    baseline = {"risk": {"stop_loss_anchor_policy": {"mode": "current_regime"}}}
+    candidate = {
+        "risk": {
+            "stop_loss_anchor_policy": {
+                "mode": "max_entry_current",
+                "entry_regimes": ["BULL_CALM"],
+                "current_regimes": ["CHOPPY", "BEAR"],
+            }
+        }
+    }
+
+    active, report = mod.static_validate(baseline, candidate)
+
+    joined = "\n".join(report)
+    assert active
+    assert "risk.stop_loss_anchor_policy.mode" in joined
+    assert "risk.stop_loss_anchor_policy.entry_regimes.0" in joined
+    assert "risk.stop_loss_anchor_policy.current_regimes.0" in joined
+    assert "risk.stop_loss_anchor_policy.current_regimes.1" in joined
+    assert "✗ " not in joined

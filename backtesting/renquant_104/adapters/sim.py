@@ -1347,6 +1347,7 @@ class SimAdapter:
             # / ngb_skipped:*), so SQL queries on blocked_by reveal
             # exactly where each ticker was filtered out.
             cand_pool = candidate_trace_pool(ctx)
+            from kernel.decision_trace import candidate_score_excluded_holding_tickers  # noqa: PLC0415
             record_candidate_scores(
                 self._db, run_id, cand_pool, ctx.holdings,
                 selected_tickers=selected_tickers,
@@ -1357,6 +1358,7 @@ class SimAdapter:
                 qp_delta_by_ticker=qp_delta_by_ticker,
                 qp_target_by_ticker=qp_target_by_ticker,
                 qp_status=qp_status,
+                excluded_holding_tickers=candidate_score_excluded_holding_tickers(self._config),
             )
             record_trades(self._db, run_id, trade_events_this_bar)
             tds_rows = build_ticker_daily_state_rows(

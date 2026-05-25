@@ -110,6 +110,10 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     ("portfolio.benchmark_sleeve.alpha_funding_budget_pct", "task_benchmark_sleeve.py:benchmark_sleeve_alpha_funding_capacity"),
     ("portfolio.benchmark_sleeve.sleeve_counts_as_cash_reserve", "task_benchmark_sleeve.py:benchmark_sleeve_cash_reserve_credit"),
     ("execution.buying_power_mode",                        "task_benchmark_sleeve.py:execution_allows_unsettled_buying_power"),
+    # ── path-exit anchoring (exit_params.py) ────────────────────────────
+    ("risk.stop_loss_anchor_policy.mode",                  "exit_params.py:apply_stop_loss_anchor_policy"),
+    ("risk.stop_loss_anchor_policy.entry_regimes.*",       "exit_params.py:apply_stop_loss_anchor_policy"),
+    ("risk.stop_loss_anchor_policy.current_regimes.*",     "exit_params.py:apply_stop_loss_anchor_policy"),
     # ── kelly_sizing knobs (kelly_cfg = ctx.config['ranking']['kelly_sizing']) ──
     ("ranking.kelly_sizing.enabled",                  "task_selection.py:149"),
     ("ranking.kelly_sizing.disable_extra_multipliers","task_selection.py:155"),

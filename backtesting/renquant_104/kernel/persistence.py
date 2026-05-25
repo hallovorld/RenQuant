@@ -854,6 +854,7 @@ def record_candidate_scores(
     qp_delta_by_ticker: dict[str, float] | None = None,
     qp_target_by_ticker: dict[str, float] | None = None,
     qp_status: str | None = None,
+    excluded_holding_tickers: set[str] | None = None,
 ) -> None:
     """Insert one row per candidate + one per holding.
 
@@ -885,6 +886,7 @@ def record_candidate_scores(
     model_types = model_types or {}
     qp_delta_by_ticker = qp_delta_by_ticker or {}
     qp_target_by_ticker = qp_target_by_ticker or {}
+    excluded_holding_keys = {str(t).upper() for t in (excluded_holding_tickers or set())}
     for c in candidates:
         selected = c.ticker in selected_tickers
         rows.append((
@@ -910,6 +912,8 @@ def record_candidate_scores(
             qp_status,
         ))
     for ticker, hs in holdings.items():
+        if str(ticker).upper() in excluded_holding_keys:
+            continue
         rows.append((
             run_id, ticker, "holding",
             None,

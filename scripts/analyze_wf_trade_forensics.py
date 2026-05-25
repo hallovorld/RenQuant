@@ -498,6 +498,9 @@ def _exit_path_audit(
         return {"enabled": False, "reason": "ohlcv_root_not_set"}
     if closed.empty:
         return {"enabled": True, "reason": "no_closed_trades", "overall": {}}
+    closed = closed[_alpha_trade_mask(closed, benchmark_ticker)].copy()
+    if closed.empty:
+        return {"enabled": True, "reason": "no_alpha_closed_trades", "overall": {}}
 
     benchmark = _load_close(ohlcv_root, benchmark_ticker)
     close_cache: dict[str, pd.Series | None] = {benchmark_ticker: benchmark}

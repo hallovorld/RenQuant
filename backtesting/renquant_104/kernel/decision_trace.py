@@ -58,6 +58,20 @@ def candidate_trace_pool(ctx: Any) -> list[Any]:
     )
 
 
+def candidate_score_excluded_holding_tickers(config: dict) -> set[str]:
+    """Holdings that should not be persisted as alpha candidate-score rows."""
+    from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+        benchmark_sleeve_ticker,
+        exclude_benchmark_sleeve_from_alpha,
+    )
+
+    ticker = (
+        benchmark_sleeve_ticker(config)
+        if exclude_benchmark_sleeve_from_alpha(config) else None
+    )
+    return {ticker} if ticker else set()
+
+
 def qp_trace_maps(ctx: Any) -> tuple[dict[str, float], dict[str, float], str | None]:
     """Extract per-ticker QP delta/target/status from the shared QP solution."""
     qp_delta_by_ticker: dict[str, float] = {}
@@ -195,6 +209,7 @@ def build_ticker_daily_state_rows(
 
 __all__ = [
     "build_ticker_daily_state_rows",
+    "candidate_score_excluded_holding_tickers",
     "candidate_trace_pool",
     "model_type_from_artifact",
     "model_types_from_models",

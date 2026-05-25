@@ -2173,6 +2173,69 @@ Operational conclusion:
   some `trailing_stop`/`single_day_loss` exits carried the gains. Do not call
   the system fixed if benchmark sleeve improves Sharpe but exit false-positive
   rates remain high.
+- Benchmark-sleeve diagnostic result
+  `horizon60_erfloor_bullcalm040_rsblend100_qpmucomposite_benchsleeve_20260524-2300`
+  materially improved the portfolio layer: cut Sharpes were `+1.627`,
+  `+0.757`, and `+1.018`; mean Sharpe was `+1.134` vs SPY mean `+1.081`;
+  `2/3` cuts beat SPY Sharpe and APY. It still failed acceptance because
+  `regime_ok=false` with benchmark-lag regime `HIGH_CALM`, and the run was
+  explicitly diagnostic-only (`--skip-sanity --skip-config-parity`).
+- Clean forensics confirms the sleeve did not hide bad alpha. Alpha-only
+  closed trades remained positive: `16` closed alpha trades, gross about
+  `+$11.4k`, tax about `+$6.8k`, net after tax about `+$4.6k`, same-capital
+  SPY about `+$0.85k`, active net about `+$3.77k`. Average gross exposure
+  rose from cash-heavy qpmu to about `99.5%`, `98.2%`, and `89.4%` across
+  the three cuts, mostly via SPY benchmark weight.
+- Forensic-tool bug fixed after this run: exit-path audit was incorrectly
+  including `BenchmarkSleeveJob` / `benchmark_sleeve_rebalance` rows in the
+  triple-barrier false-positive report. `alpha_vs_benchmark` already excluded
+  sleeve rows, but exit-path audit did not. The tool now filters to alpha
+  trades before exit-path labeling; `tests/test_wf_trade_forensics.py`
+  covers the sleeve exclusion.
+- After that fix, alpha exit-path quality is still a real pending problem:
+  `stop_loss` has `5/5` false positives and net `-$2.17k`, with mean
+  post-exit 60d SPY-relative excess about `+19.9%`; `trailing_stop` has
+  `4/5` false positives despite positive realized P/L, with mean post-exit
+  60d excess about `+24.2%`. `single_day_loss` is better but not perfect
+  (`2/3` barrier-correct). Next repair should target BULL_CALM path exits,
+  not benchmark sleeve.
+
+## 2026-05-24 Stop-Anchor A/B and Sleeve Telemetry Hardening
+
+- Diagnostic config
+  `base_featspace_scopefixed_covered_20260523.erfloor_bullcalm040_rsblend100_qpmucomposite_benchsleeve_stopanchor.json`
+  tested exactly one exit-policy change: `risk.stop_loss_anchor_policy.mode =
+  max_entry_current` for BULL_CALM entries. The hypothesis was that BULL_CALM
+  60d momentum entries were being stopped by later current-regime relabels
+  using tighter cumulative stops.
+- Result: rejected. WF still failed: mean Sharpe `+1.090` vs SPY `+1.081`,
+  only `1/3` cuts beat SPY Sharpe and `0/3` beat SPY APY, with benchmark-lag
+  regimes `HIGH_CALM` and `LOW_SPIKED`. Compared with the plain benchmark
+  sleeve diagnostic, alpha active net fell from about `+$3.77k` to
+  `+$2.16k`.
+- Trade-level forensics: `stop_loss` count fell from `5` to `3`, but all
+  remaining stop-loss exits were still false positives and their net loss
+  worsened (`-$2.88k` vs `-$2.17k`). `single_day_loss` became worse
+  (`5` exits, `60%` false-positive rate), and `trailing_stop` was unchanged.
+  Therefore stop anchoring is not the next promotion path.
+- Stronger root cause: score ordering is still wrong inside the actually
+  traded BULL_CALM subset. In the stop-anchor trace, entry `rank_score`,
+  `panel_score`, and `mu` all had negative Spearman relationships to realized
+  P/L; entry `mu` vs 60d forward SPY-relative excess was about `-0.634`.
+  This says the next mainline target is score calibration/selection on the
+  selected-entry distribution, not another broad stop-loss tweak.
+- Engineering fixes completed around the benchmark sleeve:
+  `candidate_scores` now excludes the SPY benchmark sleeve holding when the
+  sleeve is configured as non-alpha, so alpha candidate audits are not polluted
+  by benchmark rows. `ticker_daily_state` still includes the sleeve via
+  `decision_trace_tickers`, so portfolio-level decision tracing remains
+  complete. LEAN debug logging now tolerates benchmark sleeve BUY orders whose
+  alpha fields (`rank_score`, `rs_score`, `confidence`) are intentionally
+  missing instead of crashing on float formatting.
+- Config validation now treats `risk.stop_loss_anchor_policy.*` as active
+  config paths, so future A/B configs cannot carry dead stop-anchor knobs
+  silently. This is validation support only; the stop-anchor A/B result above
+  is rejected.
 
 ## Stop Conditions
 

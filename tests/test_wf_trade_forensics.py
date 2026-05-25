@@ -384,6 +384,26 @@ def test_exit_path_audit_flags_stop_loss_false_positive_recoveries(
             "entry_rank_score": 0.7,
             "entry_mu": 0.04,
         },
+        {
+            "status": "closed",
+            "cut": "cut1",
+            "ticker": "SPY",
+            "entry_date": dates[0],
+            "exit_date": dates[exit_idx],
+            "entry_regime": "BULL_CALM",
+            "exit_regime": "BULL_CALM",
+            "entry_exit_regime": "BULL_CALM->BULL_CALM",
+            "exit_reason": "benchmark_sleeve_rebalance",
+            "shares": 1,
+            "entry_price": 100.0,
+            "exit_price": 90.0,
+            "gross_pnl": -10.0,
+            "tax": 0.0,
+            "net_pnl_after_tax": -10.0,
+            "pnl_pct": -0.10,
+            "hold_days": 20,
+            "entry_source_job": "BenchmarkSleeveJob",
+        },
     ])
 
     payload = wf_forensics._exit_path_audit(
@@ -395,6 +415,7 @@ def test_exit_path_audit_flags_stop_loss_false_positive_recoveries(
     )
 
     assert payload["enabled"] is True
+    assert payload["n_exits"] == 2
     stop_row = payload["by_exit_reason"][0]
     assert stop_row["exit_reason"] == "stop_loss"
     assert stop_row["labeled_n"] == 2
@@ -402,6 +423,10 @@ def test_exit_path_audit_flags_stop_loss_false_positive_recoveries(
     assert stop_row["barrier_false_positive_rate"] == pytest.approx(0.5)
     assert any(
         row["ticker"] == "RECOVER"
+        for row in payload["barrier_false_positive_examples"]
+    )
+    assert all(
+        row["ticker"] != "SPY"
         for row in payload["barrier_false_positive_examples"]
     )
 

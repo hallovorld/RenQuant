@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import uuid
 from typing import Any
 
@@ -19,6 +20,7 @@ from adapters.panel_runtime import (
 )
 from kernel.decision_trace import (
     build_ticker_daily_state_rows,
+    candidate_score_excluded_holding_tickers,
     candidate_trace_pool,
     model_type_from_artifact as _shared_model_type_from_artifact,
     model_types_from_models,
@@ -64,6 +66,16 @@ def _symbol_for_ticker(algo: Any, ticker: str):
 def _model_type_from_artifact(model: Any) -> str | None:
     """Extract a readable model type for decision-trace rows."""
     return _shared_model_type_from_artifact(model)
+
+
+def _fmt_debug_float(value: Any, spec: str, missing: str = "NA") -> str:
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        return missing
+    if not math.isfinite(value_f):
+        return missing
+    return format(value_f, spec)
 
 
 class LeanAdapter:
@@ -574,8 +586,10 @@ class LeanAdapter:
             algo.Debug(
                 f"{ctx.today} {ticker} {'TOPUP' if already_held else 'BUY'} "
                 f"regime={order['regime']} "
-                f"conf={order['confidence']:.2f} rank={order['rank_score']:.3f} "
-                f"rs={order['rs_score']:.3f} pct={target_pct:.2%} {order['detail']}"
+                f"conf={_fmt_debug_float(order.get('confidence'), '.2f')} "
+                f"rank={_fmt_debug_float(order.get('rank_score'), '.3f')} "
+                f"rs={_fmt_debug_float(order.get('rs_score'), '.3f')} "
+                f"pct={target_pct_f:.2%} {order.get('detail', '')}"
             )
 
             if already_held:
@@ -610,7 +624,7 @@ class LeanAdapter:
                 hs_new.shares = shares_f
                 algo._holdings[ticker] = hs_new
             algo._executed_buys += 1
-            algo.SetHoldings(sym, target_pct)
+            algo.SetHoldings(sym, target_pct_f)
             trade_events.append(build_buy_trade_event(
                 {
                     **order,
@@ -706,6 +720,7 @@ class LeanAdapter:
             qp_delta_by_ticker=qp_delta_by_ticker,
             qp_target_by_ticker=qp_target_by_ticker,
             qp_status=qp_status,
+            excluded_holding_tickers=candidate_score_excluded_holding_tickers(config),
         )
         record_trades(self._db, run_id, trade_events)
 
