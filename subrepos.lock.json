@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "source_repo": {
+    "name": "RenQuant",
+    "role": "permanent umbrella/orchestrator and rollback source",
+    "local_path": "/Users/renhao/git/github/RenQuant",
+    "remote": "https://github.com/hallovorld/RenQuant",
+    "never_delete": true
+  },
+  "subrepos": [
+    {
+      "name": "renquant-common",
+      "role": "shared pipeline primitives and contracts",
+      "local_path": "/Users/renhao/git/github/renquant-common",
+      "remote": "https://github.com/hallovorld/renquant-common",
+      "branch": "main",
+      "commit": "35891eb2d1c62156d818466e33f6dca17dc38f73",
+      "test_command": "python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-strategy-104",
+      "role": "active 104 strategy policy/config",
+      "local_path": "/Users/renhao/git/github/renquant-strategy-104",
+      "remote": "https://github.com/hallovorld/renquant-strategy-104",
+      "branch": "main",
+      "commit": "b1a3591a35ef15c9f6ccbe87a2c5895e00b5fc1c",
+      "test_command": "python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-model-gbdt",
+      "role": "current production GBDT / panel-LTR model training pipeline",
+      "local_path": "/Users/renhao/git/github/renquant-model-gbdt",
+      "remote": "https://github.com/hallovorld/renquant-model-gbdt",
+      "branch": "main",
+      "commit": "711722ffd27c55c0b697bb1387b7e3c107f88e96",
+      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-model-patchtst",
+      "role": "PatchTST/PatchTXT sequence-model training pipeline",
+      "local_path": "/Users/renhao/git/github/renquant-model-patchtst",
+      "remote": "https://github.com/hallovorld/renquant-model-patchtst",
+      "branch": "main",
+      "commit": "33f6bcf7829b12ad891b626a521408132f96751f",
+      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-pipeline",
+      "role": "runtime inference and decision pipeline",
+      "local_path": "/Users/renhao/git/github/renquant-pipeline",
+      "remote": "https://github.com/hallovorld/renquant-pipeline",
+      "branch": "main",
+      "commit": "575a8cf5a413d936ece475fba0d1a75d4d756f11",
+      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-execution",
+      "role": "broker execution and order audit pipeline",
+      "local_path": "/Users/renhao/git/github/renquant-execution",
+      "remote": "https://github.com/hallovorld/renquant-execution",
+      "branch": "main",
+      "commit": "f98980c6834b2124ca1ba89857023ce2ff9e32ed",
+      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-backtesting",
+      "role": "backtesting, LEAN assembly, simulation, and forensics pipeline",
+      "local_path": "/Users/renhao/git/github/renquant-backtesting",
+      "remote": "https://github.com/hallovorld/renquant-backtesting",
+      "branch": "main",
+      "commit": "b94add1cd56bb1c70e006f44154bee1b886a7f0d",
+      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-base-data",
+      "role": "base data manifests and validation pipeline",
+      "local_path": "/Users/renhao/git/github/renquant-base-data",
+      "remote": "https://github.com/hallovorld/renquant-base-data",
+      "branch": "main",
+      "commit": "4f07e16b7b5da138c98a51527603254621c80a6e",
+      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "status": "bootstrapped"
+    },
+    {
+      "name": "renquant-artifacts",
+      "role": "artifact registry manifests and validation pipeline",
+      "local_path": "/Users/renhao/git/github/renquant-artifacts",
+      "remote": "https://github.com/hallovorld/renquant-artifacts",
+      "branch": "main",
+      "commit": "2b2272ce07bebbf89996fafe817252278a060ada",
+      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "status": "bootstrapped"
+    }
+  ],
+  "pending_subrepos": []
+}
