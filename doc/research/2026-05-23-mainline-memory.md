@@ -48,29 +48,33 @@ rollback source.
 The umbrella lock now pins functional physical subrepos through training,
 runtime inference, execution, backtesting parity, and daily-contract assembly:
 
-- `renquant-model-gbdt` commit `23e8647`: real panel-LTR core with purged CV,
+- `renquant-model-gbdt` commit `03f5b40`: real panel-LTR core with purged CV,
   feature-contract validation, no silent backend fallback, runtime scorer
-  fields preserved in artifact manifests, and tests. It also fixes a double
-  `sha256:` fingerprint bug in trained artifact output.
-- `renquant-pipeline` commit `ec8bc61`: strict panel-scoring gate,
+  fields and feature-transform metadata preserved in artifact manifests, and
+  tests. It also fixes a double `sha256:` fingerprint bug in trained artifact
+  output.
+- `renquant-pipeline` commit `d567919`: strict panel-scoring gate,
   `blocked_by`, decision-trace rows, and attributed order-intent contract.
   Missing feature rows/columns, missing panel scores, failed model admission,
   missing calibration when required, missing order quantity, missing local
   XGBoost artifact, or broken scorer payload fail closed. This repo can now
   lazy-load real GBDT/panel-LTR XGBoost artifact JSON without pulling xgboost
-  at package import time.
+  at package import time. Runtime feature rows now support a hard raw/panel
+  source-space transform using artifact `feature_means`, `feature_stds`, and
+  `feature_norm_kind`; missing transform metadata blocks buys instead of
+  silently scoring mismatched feature space.
 - `renquant-backtesting` commit `cd87f10`: sim/backtest adapter reuses the
   same `renquant-pipeline` panel-scoring contract instead of rewriting alpha
   admission locally.
 - `renquant-execution` commit `6623daf`: paper, Alpaca, read-only/shadow
   broker factory; order normalization requires ticker/action/quantity.
-- `renquant-orchestrator` commit `5c2f2f4`: daily-contract path rejects
+- `renquant-orchestrator` commit `8acd82b`: daily-contract path rejects
   unattributed order intents before execution and persists attributed intents
   in the run bundle. The smoke path now uses `PanelScoringJob`, not a hand
   written score/select fixture. GitHub Actions CI now checks out all sibling
   repos required by this multi-repo dependency graph. Unit coverage includes
   a real synthetic GBDT train -> artifact manifest -> XGBoost scorer load ->
-  attributed panel order -> paper fill path.
+  raw feature transform -> attributed panel order -> paper fill path.
 - `renquant-base-data` commit `79da0c6` and `renquant-artifacts` commit
   `cf2c85d`: manifest resolver pipelines fail closed on missing/ambiguous
   data or artifact manifests.
@@ -82,14 +86,14 @@ Latest umbrella verification after these pins:
   order intent -> dry-run execution -> backtest bundle passed. The smoke order
   contains `order_attribution_v1` with source job/task, score snapshot, sector,
   artifact fingerprint, and config fingerprint.
-- `make subrepo-assemble`: wrote
-  `.subrepo_assembly/20260526T170710Z`.
+- `make subrepo-assemble`: latest verified assembly is updated each slice;
+  after the raw-feature contract slice it wrote
+  `.subrepo_assembly/20260526T182008Z`.
 
 Remaining migration work is still substantial: the smoke path proves contracts
 and physical repo wiring, not full production replacement. Next slices should
 port production runtime pieces into `renquant-pipeline` in this order:
-runtime feature builder and real artifact scorer loading, model/WF admission
-preflight, QP/selection, rotation/exits, LEAN/live adapter reuse, then full
+model/WF admission preflight, QP/selection, rotation/exits, LEAN/live adapter reuse, then full
 daily replacement. Each slice must add parity tests before updating the
 umbrella lock.
 
