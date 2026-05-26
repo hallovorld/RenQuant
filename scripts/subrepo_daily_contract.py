@@ -34,6 +34,9 @@ def main() -> int:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--as-of", default=None)
+    parser.add_argument("--broker-type", default="paper")
+    parser.add_argument("--broker-name", default=None)
+    parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
 
     as_of = args.as_of or dt.date.today().isoformat()
@@ -48,7 +51,7 @@ def main() -> int:
         / "configs"
         / "strategy_config.json"
     )
-    return orchestrator_main([
+    argv = [
         "daily-contract",
         "--strategy-config",
         str(strategy_config),
@@ -60,7 +63,14 @@ def main() -> int:
         as_of,
         "--code-commit",
         _entry("renquant-model-gbdt")["commit"],
-    ])
+        "--broker-type",
+        args.broker_type,
+    ]
+    if args.broker_name:
+        argv.extend(["--broker-name", args.broker_name])
+    if args.execute:
+        argv.append("--execute")
+    return orchestrator_main(argv)
 
 
 if __name__ == "__main__":
