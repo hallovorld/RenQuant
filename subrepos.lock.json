@@ -64,7 +64,7 @@
       "local_path": "/Users/renhao/git/github/renquant-execution",
       "remote": "https://github.com/hallovorld/renquant-execution",
       "branch": "main",
-      "commit": "6818536c95b4b554b86f920fd2675426e8ecc2dc",
+      "commit": "6623daffa68b6639f379533b1afc73be96bac8e8",
       "test_command": "make test",
       "status": "bootstrapped"
     },
