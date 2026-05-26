@@ -1,0 +1,276 @@
+# RenQuant Subrepo Operating Model
+
+Date: 2026-05-25
+
+This is the shared operating model for all RenQuant physical repositories.
+Every subrepo README and CLAUDE.md must link here.
+
+The current `/Users/renhao/git/github/RenQuant` repo is never deleted, emptied,
+or rewritten as part of this split. It remains the umbrella/orchestrator,
+integration harness, and rollback source.
+
+## Repository Roles
+
+| Repo | Role | Primary Output |
+|---|---|---|
+| `renquant-common` | Shared contracts and pipeline primitives | Python package with `Task`, `Job`, `Pipeline`, schemas |
+| `renquant-strategy-104` | Active strategy policy/config | Versioned strategy config bundle |
+| `renquant-model-gbdt` | Current prod GBDT/panel-LTR model training | Model artifact, calibrator, metrics record |
+| `renquant-model-patchtst` | PatchTST/PatchTXT sequence-model training | Shadow/candidate checkpoint, calibrator, sanity report |
+| `renquant-pipeline` | Runtime decision tree and QP/order-intent generation | Decision trace and order intents |
+| `renquant-execution` | Broker execution and order audit | Broker orders, cancel/reconcile/audit records |
+| `renquant-backtesting` | Sim/LEAN/WF validation and forensics | Backtest reports, decision-quality diagnostics |
+| `renquant-base-data` | Data manifests and validation | Fingerprinted data manifests |
+| `renquant-artifacts` | Artifact registry and validation | Fingerprinted artifact manifests |
+| `RenQuant` | Umbrella/orchestrator | Pinned assembly in `subrepos.lock.json` |
+
+## Universal Rules
+
+1. Every workflow is a pipeline. Training, inference, execution, data refresh,
+   artifact validation, and backtesting must use `renquant-common` `Task` /
+   `Job` / `Pipeline` primitives or a thin adapter over them.
+2. Every repo has `CLAUDE.md`, `README.md`, `renquant_repo.yml`, `Makefile`,
+   `RENQUANT_REPOS.md`, and GitHub Actions CI.
+3. Every repo defines inputs, outputs, owner boundaries, and forbidden imports.
+4. Large data and artifacts are referenced by manifest, fingerprint, and URI.
+   They are not committed to normal Git history.
+5. Production promotion requires immutable fingerprints: strategy config,
+   data, model artifact, calibrator, code commits, and acceptance metrics.
+6. `main` is the stable interface consumed by other repos and automation.
+   Work on large changes, optimizations, or experiments happens on feature
+   branches. `main` stays runnable.
+
+## Branching And SDLC
+
+Use branches for any non-trivial change:
+
+```bash
+git checkout -b feature/<repo>-<short-topic>
+```
+
+Allowed direct-to-main changes:
+
+- typo/doc-only fixes that do not alter operating behavior
+- manifest pin updates after the target repo commit is tested
+
+Everything else needs:
+
+- focused tests in the owning repo
+- import-boundary check
+- CI passing
+- a clear commit message naming the invariant or workflow changed
+
+Every subrepo agent should read local `RENQUANT_REPOS.md` first. That file is
+duplicated deliberately so an agent launched in any repo has the full map:
+roles, local paths, remotes, and system flow.
+
+The umbrella repo pins subrepo commits in `subrepos.lock.json`. Updating a
+subrepo alone is not enough for production use; the umbrella lock must be
+advanced after integration checks.
+
+## Training A New XGB/GBDT Model
+
+Owner repo: `renquant-model-gbdt`.
+
+Required inputs:
+
+- strategy policy from `renquant-strategy-104`
+- dataset manifest from `renquant-base-data`
+- training config in `renquant-model-gbdt`
+- common pipeline package from `renquant-common`
+
+Required outputs:
+
+- model artifact manifest
+- calibrator artifact manifest
+- metrics record with OOS IC, regime IC, train IC, calibration health,
+  placebo/shuffle sanity, config/data/code fingerprints
+- training ledger row or JSONL equivalent
+
+Artifact storage:
+
+- The physical model file goes to object storage, DVC remote, or local
+  controlled artifact store.
+- `renquant-artifacts` stores the manifest and acceptance metadata, not random
+  checkpoint dumps.
+- The umbrella repo updates `subrepos.lock.json` only after validation.
+
+Minimal current automation:
+
+```bash
+cd /Users/renhao/git/github/RenQuant
+make subrepo-smoke
+```
+
+This smoke proves the path: strategy config loads, data manifest validates,
+GBDT training pipeline emits an artifact manifest, runtime pipeline emits an
+order intent, execution performs dry-run submission, and backtest shell consumes
+the same manifests.
+
+Branching:
+
+- Big model changes use a feature branch in `renquant-model-gbdt`.
+- Strategy threshold/config changes belong in `renquant-strategy-104`, not the
+  model repo.
+- Runtime decision-tree changes belong in `renquant-pipeline`.
+
+## PatchTST/PatchTXT Research And Shadow
+
+Owner repo: `renquant-model-patchtst`.
+
+PatchTST must report both:
+
+- declared-label IC/sanity
+- raw expected-return IC/sanity
+
+Promotion requires the same acceptance standard as GBDT: walk-forward manifest,
+regime IC, SPY comparison where applicable, calibration health, and
+placebo/shuffle sanity.
+
+Shadow artifacts go to `renquant-artifacts` as `promotion_status: shadow` or
+`diagnostic`. They are not prod until accepted and pinned by the umbrella repo.
+
+## Daily Schedule / Inference / Live Flow
+
+Owner repo: `RenQuant` orchestrator.
+
+Runtime components:
+
+1. Read `subrepos.lock.json`.
+2. Checkout or verify pinned commits for common, strategy, pipeline,
+   execution, data, and artifacts.
+3. Validate strategy config from `renquant-strategy-104`.
+4. Resolve model artifact manifest from `renquant-artifacts`.
+5. Resolve data manifests from `renquant-base-data`.
+6. Assemble a deterministic local runtime bundle.
+7. For LEAN, export/prepare data and copy the assembled strategy into the LEAN
+   working directory.
+8. Run `renquant-pipeline` to produce decision trace and order intents.
+9. Run `renquant-execution` only after runtime gates pass and broker mode is
+   explicit.
+10. Persist run metadata: code commits, data fingerprints, model fingerprints,
+    strategy fingerprint, order intents, and broker results.
+
+The model comes from `renquant-artifacts`, not from a training repo working
+directory. Data comes from `renquant-base-data` manifests, not ad hoc local
+paths.
+
+Strategy repo is intentionally policy-only. It does not submit orders directly.
+The orchestrator assembles strategy + data + artifact + pipeline + execution;
+that keeps policy, alpha, portfolio construction, and broker mutation separated.
+
+## Data Refresh And Backup
+
+Owner repo: `renquant-base-data`.
+
+Data update workflow:
+
+1. Fetch/update source data into local/object storage.
+2. Validate schema and freshness.
+3. Compute fingerprints.
+4. Write or update a dataset manifest.
+5. Run `make test`.
+6. Push manifest changes.
+7. Umbrella lock or deployment config references the new manifest only after
+   consumers pass.
+
+Fast and accurate API access:
+
+- Consumers read local materialized cache when fingerprint matches.
+- If cache is missing/stale, orchestrator materializes from manifest URI.
+- Freshness rules live in manifests and validation tasks.
+- API-specific fallback logic belongs in data materialization, not in model or
+  execution repos.
+
+Backup:
+
+- Git backs up manifests and schemas.
+- Object/DVC/LFS remote backs up large files.
+- DB snapshots must be exported deliberately with fingerprint and retention
+  class. WAL/SHM files are never source artifacts.
+
+## Artifact Storage And Discovery
+
+Owner repo: `renquant-artifacts`.
+
+Every artifact manifest must include:
+
+- `artifact_id`
+- model family
+- strategy
+- URI
+- SHA256/fingerprint
+- data fingerprint
+- config fingerprint
+- code commit(s)
+- metrics summary
+- promotion status: `prod`, `shadow`, `candidate`, `diagnostic`, `rejected`
+- retention class and owner
+
+Finding history:
+
+- Search by `artifact_id`, strategy, model family, promotion status, date, or
+  metric keys.
+- Accepted artifacts should be easy to list without reading large files.
+- Rejected/diagnostic artifacts must keep the verdict so future work does not
+  rerun known failures blindly.
+
+## Local LEAN Assembly
+
+Owner repo: `RenQuant` orchestrator plus `renquant-backtesting`.
+
+The orchestrator builds a deterministic LEAN bundle from pinned repos and
+manifests. The LEAN directory is an assembly output, not the source of truth.
+
+The bundle records:
+
+- repo commits
+- strategy config fingerprint
+- data manifest fingerprints
+- artifact manifest fingerprints
+- assembly timestamp
+
+LEAN must not silently import code from a developer-local random path.
+
+## Automation Requirements
+
+Each subrepo CI runs at minimum:
+
+```bash
+make test
+```
+
+Each subrepo Makefile exposes:
+
+- `make test`
+- `make doctor`
+- optionally `make lint`
+
+Umbrella CI should eventually:
+
+- clone or verify pinned subrepos
+- install packages editable
+- validate all manifests
+- run a tiny inference fixture
+- run a readonly daily-full smoke
+
+Current umbrella local automation:
+
+```bash
+make subrepo-doctor   # required files, remotes, branch, lock commit
+make subrepo-test     # doctor plus each subrepo test command
+make subrepo-smoke    # train -> infer -> dry-run execute -> backtest contract
+```
+
+## Open Migration Work
+
+The first bootstrap created repo skeletons and contracts. Remaining work is to
+port real implementation slices with tests:
+
+1. GBDT training implementation into `renquant-model-gbdt`
+2. PatchTST implementation into `renquant-model-patchtst`
+3. Runtime 104 tasks into `renquant-pipeline`
+4. Broker adapters into `renquant-execution`
+5. LEAN/sim tooling into `renquant-backtesting`
+6. real data/artifact manifests into `renquant-base-data` and
+   `renquant-artifacts`

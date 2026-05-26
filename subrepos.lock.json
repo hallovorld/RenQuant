@@ -14,8 +14,8 @@
       "local_path": "/Users/renhao/git/github/renquant-common",
       "remote": "https://github.com/hallovorld/renquant-common",
       "branch": "main",
-      "commit": "35891eb2d1c62156d818466e33f6dca17dc38f73",
-      "test_command": "python -m pytest -q",
+      "commit": "92f23c11b934020f497fe9f10a38dc16101f12e0",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -24,8 +24,8 @@
       "local_path": "/Users/renhao/git/github/renquant-strategy-104",
       "remote": "https://github.com/hallovorld/renquant-strategy-104",
       "branch": "main",
-      "commit": "b1a3591a35ef15c9f6ccbe87a2c5895e00b5fc1c",
-      "test_command": "python -m pytest -q",
+      "commit": "7ac9623e1b37f67b33bf025f48e350a49bf9d748",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -34,8 +34,8 @@
       "local_path": "/Users/renhao/git/github/renquant-model-gbdt",
       "remote": "https://github.com/hallovorld/renquant-model-gbdt",
       "branch": "main",
-      "commit": "711722ffd27c55c0b697bb1387b7e3c107f88e96",
-      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "commit": "b3035b1058257f33f9b83bff26816729461ce6f2",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -44,8 +44,8 @@
       "local_path": "/Users/renhao/git/github/renquant-model-patchtst",
       "remote": "https://github.com/hallovorld/renquant-model-patchtst",
       "branch": "main",
-      "commit": "33f6bcf7829b12ad891b626a521408132f96751f",
-      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "commit": "8dade6b584c376b0dd144e110bd4fa68eb876be8",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -54,8 +54,8 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "575a8cf5a413d936ece475fba0d1a75d4d756f11",
-      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "commit": "10ff9e2de7b9ef30b27cfa98e55b3999932d2912",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -64,8 +64,8 @@
       "local_path": "/Users/renhao/git/github/renquant-execution",
       "remote": "https://github.com/hallovorld/renquant-execution",
       "branch": "main",
-      "commit": "f98980c6834b2124ca1ba89857023ce2ff9e32ed",
-      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "commit": "ab3b3c53b94ef372f978ca4b224ec1550c107697",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -74,8 +74,8 @@
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
-      "commit": "b94add1cd56bb1c70e006f44154bee1b886a7f0d",
-      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "commit": "62aa7d39b7253c91bd65e7fbbf923545bc488162",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -84,8 +84,8 @@
       "local_path": "/Users/renhao/git/github/renquant-base-data",
       "remote": "https://github.com/hallovorld/renquant-base-data",
       "branch": "main",
-      "commit": "4f07e16b7b5da138c98a51527603254621c80a6e",
-      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "commit": "9cd70653ecbaba46cd2c07df61f7d423321b58b8",
+      "test_command": "make test",
       "status": "bootstrapped"
     },
     {
@@ -94,8 +94,8 @@
       "local_path": "/Users/renhao/git/github/renquant-artifacts",
       "remote": "https://github.com/hallovorld/renquant-artifacts",
       "branch": "main",
-      "commit": "2b2272ce07bebbf89996fafe817252278a060ada",
-      "test_command": "PYTHONPATH=../renquant-common/src:src python -m pytest -q",
+      "commit": "0c4b35e22a5eb16cf8350214038481a305ec0001",
+      "test_command": "make test",
       "status": "bootstrapped"
     }
   ],
