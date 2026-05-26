@@ -411,6 +411,12 @@ class JointPortfolioQPJob(Job):
             return True
         if getattr(ctx, "_calibrator_contract_failed", False):
             return True
+        if getattr(ctx, "_panel_scoring_contract_failed", False):
+            log.info(
+                "JointPortfolioQPJob: skipped because panel scoring contract "
+                "already failed; QP is a sizing layer, not an alpha fallback"
+            )
+            return True
         return False
 
     @property

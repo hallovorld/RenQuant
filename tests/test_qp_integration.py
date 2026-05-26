@@ -199,6 +199,30 @@ class TestRealisticBars:
 # ── μ-contract integration ───────────────────────────────────────────────────
 
 class TestQPMuContractIntegration:
+    def test_panel_contract_failure_skips_qp_without_secondary_mu_block(self):
+        """When alpha contract already failed, QP must not invent another cause."""
+        ctx = _make_ctx(
+            candidates=[],
+            holdings={"HELD": _Hold(shares=5, mu=None, sigma=None)},
+            prices={"HELD": 100.0},
+            cash=5000.0,
+            portfolio_value=10000.0,
+        )
+        ctx._panel_scoring_contract_failed = True  # noqa: SLF001
+        ctx.buy_blocked = True
+        ctx.skip_buys = True
+        ctx.counters["panel_scoring_fail_closed"] = 91
+        ctx.config["rotation"]["joint_actions"]["qp_mu_contract"] = "strict"
+
+        ret = JointPortfolioQPTask().run(ctx)
+
+        assert ret is False
+        assert ctx.counters["panel_scoring_fail_closed"] == 91
+        assert "qp_mu_contract_block" not in ctx.counters
+        assert ctx.orders == []
+        assert ctx.exits == []
+        assert not hasattr(ctx, "_qp_mu_contract")
+
     def test_strict_mu_contract_stops_before_solver_on_raw_score_fallback(self):
         """Strict QP must not optimize raw panel/rank scores as return μ.
 
