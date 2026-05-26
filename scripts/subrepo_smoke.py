@@ -20,7 +20,7 @@ for entry in LOCK["subrepos"]:
 
 
 from renquant_backtesting import BacktestContext, BacktestPipeline  # noqa: E402
-from renquant_execution import ExecutionContext, ExecutionPipeline  # noqa: E402
+from renquant_execution import BrokerExecutionPipeline, ExecutionContext, PaperBroker  # noqa: E402
 from renquant_model_gbdt import PanelGbdtTrainingPipeline, TrainingContext  # noqa: E402
 from renquant_pipeline import InferenceContext, RuntimeInferencePipeline  # noqa: E402
 from renquant_strategy_104 import load_strategy_config, strategy_manifest  # noqa: E402
@@ -112,15 +112,18 @@ def main() -> int:
         )
         RuntimeInferencePipeline([SmokeScoreTask(), SmokeSelectTask()]).run(inference_ctx)
 
-        def submitter(broker_name: str, intents: list[dict[str, Any]], dry_run: bool) -> list[dict[str, Any]]:
-            return [{"broker": broker_name, "dry_run": dry_run, **intent} for intent in intents]
+        paper_broker = PaperBroker(initial_cash=100000.0)
+        paper_broker.connect()
+        for intent in inference_ctx.order_intents:
+            paper_broker.set_price(intent["ticker"], 100.0)
 
         execution_ctx = ExecutionContext(
             broker_name="paper-smoke",
             order_intents=inference_ctx.order_intents,
             dry_run=True,
         )
-        ExecutionPipeline(submitter).run(execution_ctx)
+        paper_broker.broker_name = "paper-smoke"
+        BrokerExecutionPipeline(paper_broker).run(execution_ctx)
 
         backtest_ctx = BacktestContext(
             strategy_manifest=strategy_ref,
@@ -144,4 +147,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

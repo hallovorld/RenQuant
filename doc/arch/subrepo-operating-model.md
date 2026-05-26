@@ -259,8 +259,15 @@ Current umbrella local automation:
 ```bash
 make subrepo-doctor   # required files, remotes, branch, lock commit
 make subrepo-test     # doctor plus each subrepo test command
+make subrepo-assemble # timestamped local assembly from pinned subrepos
 make subrepo-smoke    # train -> infer -> dry-run execute -> backtest contract
 ```
+
+`make subrepo-assemble` writes `.subrepo_assembly/<timestamp>/` with symlinks
+to the pinned repos, `manifest.json`, `pythonpath.txt`, and `env.sh`. It is an
+assembly output, not source. It never deletes the umbrella repo. Use
+`scripts/subrepo_assemble.py --sync` only when deliberately cloning or checking
+out clean subrepo worktrees to the lockfile commits.
 
 ## Open Migration Work
 
