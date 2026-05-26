@@ -82,6 +82,17 @@ def main() -> int:
             "fingerprint": "sha256:smoke-model",
             "uri": "object://renquant-artifacts/subrepo-smoke-gbdt.json",
             "promotion_status": "candidate",
+            "feature_cols": ["alpha_1", "alpha_2"],
+            "trained_date": "2026-05-25",
+            "config_fingerprint": config["config_fingerprint"],
+            "panel_shape": {"rows": len(dataset["rows"]), "cols": 2},
+            "lookahead_days": 5,
+            "train_run_id": "subrepo-smoke-run",
+            "oos_mean_ic": 0.0,
+            "oos_std_ic": 0.0,
+            "oos_per_fold_ic": [0.0, 0.0],
+            "cv_method": "purged-walk-forward-smoke",
+            "cv_embargo_days": 5,
         }, {"artifact_id": "subrepo-smoke-calibrator"}
 
     def validator(artifact: dict[str, Any], dataset: Any, config: dict[str, Any]) -> dict[str, Any]:

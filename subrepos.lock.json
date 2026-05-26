@@ -34,7 +34,7 @@
       "local_path": "/Users/renhao/git/github/renquant-model-gbdt",
       "remote": "https://github.com/hallovorld/renquant-model-gbdt",
       "branch": "main",
-      "commit": "b3035b1058257f33f9b83bff26816729461ce6f2",
+      "commit": "76bbcc2e7e729051821c375130df69601fc22926",
       "test_command": "make test",
       "status": "bootstrapped"
     },
