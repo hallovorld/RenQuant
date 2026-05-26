@@ -3399,6 +3399,55 @@ Stop and fix before reporting performance if any of these happen:
   and lacks panel/NGBoost `train_run_id` alignment. This is not a code
   regression; it means buy/full must wait for a newly trained and acceptance-
   passing artifact, while sell-only risk exits remain allowed.
+- 2026-05-25 late update: the stale NGBoost per-regime overlays were disabled
+  to match the already-disabled global NGBoost setting. Strict live preflight
+  now reports `P-RUN-ID` as pass/skip rather than a hard failure. Remaining
+  hard failures are the active panel contract, failed WF evidence, missing
+  regime IC evidence, and config fingerprint mismatch.
+- Ntfy buy-side preflight noise was reduced: expected model-contract/WF/config
+  buy blocks now emit `BUY-BLOCKED`/decision-priority alerts with cooldown,
+  while broker/account/preflight-code failures remain urgent. Tests covering
+  runner notifications and daily shadow notification behavior passed.
+- Decision-trace held-score horizon bug fixed and pushed. Sell-side
+  `ScoreModelTask` now stamps `expected_return_horizon_days` on existing
+  holdings whenever it writes `expected_return`. The read-only full run
+  `2026-05-25-live-fb789ff4` subsequently passed decision-trace integrity:
+  142 `ticker_daily_state` rows, 97 `candidate_scores` rows, zero horizon
+  gaps, zero trades, zero rotations.
+- The same read-only full decision tree is saved under
+  `backtesting/renquant_104/artifacts/diagnostics/daily_full_readonly_20260525/`.
+  It shows current prod is still non-tradable: 91 candidate rows blocked by
+  `panel_scorer_config_mismatch`, 13 by realized-vol risk gate, and 6 held
+  positions blocked by strict QP μ/σ contract. The correct live conclusion was
+  no orders.
+- Production alpha158 retraining now stamps the sentiment runtime-gate
+  contract. Training zeroes sentiment inputs in runtime-OFF regimes and
+  conservatively zeroes only leading regime-warmup rows; any non-warmup missing
+  regime label remains a hard failure. The new staging artifact
+  `artifacts/prod/panel-ltr.alpha158_fund.codex_contract_20260526T002129Z.staging.json`
+  has `train_run_id`, purged CV IC evidence, config fingerprint
+  `sha256:14586756d4f67691`, and `sentiment_runtime_gate_contract=trained_zeroing`.
+- That staging artifact passes dry-run panel contract, config fingerprint, and
+  calibrator health checks, but it is not promotable yet. A static WF attempt
+  correctly failed because using a 2026-05-22 GMM regime artifact inside
+  2024/2025 cuts is look-ahead leakage. Do not bypass this guard.
+- Correct WF acceptance now requires a same-recipe walk-forward manifest. The
+  fresh same-recipe manifest
+  `backtesting/renquant_104/artifacts/sim/walkforward_manifest_codex_contract_20260526T002129Z.json`
+  was generated successfully: 44/44 retrains completed and the recipe matched
+  the staged model. The acceptance run still failed and the staged model is not
+  promotable: mean Sharpe `+0.669` vs SPY `+1.081`, beat SPY Sharpe `1/3`,
+  beat SPY APY `0/3`, BULL_CALM trade monotonicity failed for
+  `entry_rank_score`, `entry_mu`, and `entry_expected_return`, and sanity
+  failed with shuffled IC `+0.0080` and placebo IC `+0.0260` above the
+  threshold `+0.0253`.
+- Alert taxonomy hardening: weekly WF gate rejection is now `WEEKLY-REJECT`,
+  not `WEEKLY-FAIL`, because candidate rejection is the trust boundary working
+  as designed. Daily full-run preflight handling now separates expected
+  buy-side model/contract blocks (`BUY-BLOCKED` with cooldown) from true
+  preflight system failures (`ERROR` after sell-only fallback). Shadow
+  buy-side preflight suppression no longer hides preflight import/exception
+  bugs.
 
 ## Companion Docs
 

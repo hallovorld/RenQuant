@@ -237,6 +237,7 @@ except Exception:
 " 2>/dev/null || echo "0")
 
 BUY_BLOCKED_BY_PREFLIGHT=0
+PREFLIGHT_SYSTEM_FAILURE=0
 FULL_RUN_LOG=$(mktemp "/tmp/renquant_104_daily_full.XXXXXX")
 if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 \
         "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once \
@@ -247,10 +248,17 @@ if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 \
 else
     FULL_RC=$?
     cat "$FULL_RUN_LOG"
-    BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL|P-PREFLIGHT-IMPORT|P-PREFLIGHT-EXCEPTION"
-    if grep -Eq "$BUY_SIDE_PREFLIGHT_PATTERN" "$FULL_RUN_LOG"; then
-        BUY_BLOCKED_BY_PREFLIGHT=1
-        echo "Full live trader blocked by buy-side preflight gate — rerunning sell-only so exits/risk controls still execute."
+    BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL"
+    PREFLIGHT_SYSTEM_FAILURE_PATTERN="P-PREFLIGHT-IMPORT|P-PREFLIGHT-EXCEPTION|P-BROKER-CONNECT"
+    PREFLIGHT_FALLBACK_PATTERN="$BUY_SIDE_PREFLIGHT_PATTERN|$PREFLIGHT_SYSTEM_FAILURE_PATTERN"
+    if grep -Eq "$PREFLIGHT_FALLBACK_PATTERN" "$FULL_RUN_LOG"; then
+        if grep -Eq "$PREFLIGHT_SYSTEM_FAILURE_PATTERN" "$FULL_RUN_LOG"; then
+            PREFLIGHT_SYSTEM_FAILURE=1
+            echo "Full live trader hit preflight system failure — rerunning sell-only so exits/risk controls still execute."
+        else
+            BUY_BLOCKED_BY_PREFLIGHT=1
+            echo "Full live trader blocked by buy-side preflight gate — rerunning sell-only so exits/risk controls still execute."
+        fi
         SELL_ONLY_LOG=$(mktemp "/tmp/renquant_104_daily_sell_only.XXXXXX")
         if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only > "$SELL_ONLY_LOG" 2>&1; then
             cat "$SELL_ONLY_LOG"
@@ -275,7 +283,9 @@ fi
 # live.runner is the single source of success/trade ntfy. The wrapper only
 # sends failure alerts plus this buy-blocked fallback alert; otherwise raw
 # wrapper success ntfy duplicates runner alerts and can mis-summarize trades.
-if [ "$BUY_BLOCKED_BY_PREFLIGHT" -eq 1 ]; then
+if [ "$PREFLIGHT_SYSTEM_FAILURE" -eq 1 ]; then
+    notify "RenQuant 104 ERROR" "Full run hit preflight system failure; sell-only fallback completed. Check $LOG"
+elif [ "$BUY_BLOCKED_BY_PREFLIGHT" -eq 1 ]; then
     HOLDINGS=$("$PYTHON" -c "
 import os
 try:
@@ -454,7 +464,7 @@ else
             echo "Shadow timeout ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
         fi
     else
-        SHADOW_BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL|P-PREFLIGHT-IMPORT|P-PREFLIGHT-EXCEPTION"
+        SHADOW_BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL"
         if grep -Eq "$SHADOW_BUY_SIDE_PREFLIGHT_PATTERN" "$SHADOW_LOG"; then
             echo "Shadow run blocked by expected buy-side preflight gate (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
             echo "Shadow preflight-block ntfy suppressed; prod path already reported the actionable gate."

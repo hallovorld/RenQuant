@@ -231,6 +231,14 @@ class TestWeeklyShellInvariants:
         assert "--strict" in weekly, \
             "weekly_wf_promote.sh must run WF gate in strict mode"
 
+    def test_weekly_wf_rejection_is_not_system_fail_alert(self):
+        weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+        gate_idx = weekly.find("Walk-forward gate")
+        assert gate_idx > 0
+        gate_block = weekly[gate_idx: weekly.find("Step 5", gate_idx)]
+        assert "WEEKLY-REJECT" in gate_block
+        assert "WEEKLY-FAIL" not in gate_block
+
     def test_weekly_promote_uses_central_model_acceptance(self):
         weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
         assert "from kernel.model_acceptance import promote" in weekly

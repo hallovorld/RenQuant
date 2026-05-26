@@ -152,9 +152,9 @@ if ! "$PYTHON" scripts/run_wf_gate.py \
     --derive-config-from-prod \
     --strict \
     --jobs 3; then
-    echo "WF gate FAILED — production unchanged."
-    notify "RenQuant 104 WEEKLY-FAIL" \
-        "Walk-forward gate REJECTED the staged model. Production unchanged. Check $LOG."
+    echo "WF gate REJECTED staged model — production unchanged."
+    notify "RenQuant 104 WEEKLY-REJECT" \
+        "Walk-forward gate rejected the staged model. Production unchanged. Check $LOG."
     exit 1
 fi
 

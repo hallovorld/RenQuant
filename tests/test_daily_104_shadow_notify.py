@@ -29,16 +29,23 @@ def test_shadow_buy_side_preflight_blocks_do_not_page_phone():
     assert "P-RUN-ID" in script
     assert "P-CORR-METADATA" in script
     assert "P-META-LABEL" in script
-    assert "P-PREFLIGHT-EXCEPTION" in script
+    shadow_idx = script.find("SHADOW_BUY_SIDE_PREFLIGHT_PATTERN=")
+    shadow_pattern = script[shadow_idx: script.find("\n", shadow_idx)]
+    assert "P-PREFLIGHT-EXCEPTION" not in shadow_pattern
+    assert "P-PREFLIGHT-IMPORT" not in shadow_pattern
 
 
 def test_full_preflight_exception_falls_back_to_sell_only():
     """Broken buy-side preflight code must not suppress risk exits."""
     script = DAILY_104.read_text()
 
+    assert "PREFLIGHT_FALLBACK_PATTERN" in script
+    assert "PREFLIGHT_SYSTEM_FAILURE_PATTERN" in script
+    assert "PREFLIGHT_SYSTEM_FAILURE=1" in script
     assert "P-PREFLIGHT-IMPORT" in script
     assert "P-PREFLIGHT-EXCEPTION" in script
     assert "rerunning sell-only" in script
+    assert "Full run hit preflight system failure; sell-only fallback completed" in script
 
 
 def test_buy_blocked_wrapper_alert_has_cooldown():
@@ -51,3 +58,7 @@ def test_buy_blocked_wrapper_alert_has_cooldown():
     assert "P-RUN-ID" in script
     assert "P-CORR-METADATA" in script
     assert "P-META-LABEL" in script
+    buy_idx = script.find("BUY_SIDE_PREFLIGHT_PATTERN=")
+    buy_pattern = script[buy_idx: script.find("\n", buy_idx)]
+    assert "P-PREFLIGHT-EXCEPTION" not in buy_pattern
+    assert "P-PREFLIGHT-IMPORT" not in buy_pattern
