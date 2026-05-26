@@ -54,7 +54,7 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "849981635df9485d620dd7dad94aac6c182b6712",
+      "commit": "ec8bc6185c4f928709eb42138410b8a709aac0e9",
       "test_command": "make test",
       "status": "bootstrapped"
     },

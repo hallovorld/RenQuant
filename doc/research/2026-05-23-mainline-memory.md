@@ -50,10 +50,13 @@ runtime inference, execution, backtesting parity, and daily-contract assembly:
 
 - `renquant-model-gbdt` commit `95966c4`: real panel-LTR core with purged CV,
   feature-contract validation, no silent backend fallback, and tests.
-- `renquant-pipeline` commit `8499816`: strict panel-scoring gate,
+- `renquant-pipeline` commit `ec8bc61`: strict panel-scoring gate,
   `blocked_by`, decision-trace rows, and attributed order-intent contract.
   Missing feature rows/columns, missing panel scores, failed model admission,
-  missing calibration when required, or missing order quantity fail closed.
+  missing calibration when required, missing order quantity, missing local
+  XGBoost artifact, or broken scorer payload fail closed. This repo can now
+  lazy-load real GBDT/panel-LTR XGBoost artifact JSON without pulling xgboost
+  at package import time.
 - `renquant-backtesting` commit `cd87f10`: sim/backtest adapter reuses the
   same `renquant-pipeline` panel-scoring contract instead of rewriting alpha
   admission locally.
