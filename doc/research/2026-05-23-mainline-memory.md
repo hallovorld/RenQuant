@@ -306,6 +306,27 @@ Make RenQuant 104 scientifically trustworthy end to end:
   `borrow_rate_missing` / HTB cost instead of silently assuming cheap ETB
   borrow. This can reduce long/short research APY, but it removes an optimistic
   cost understatement.
+- Daily full decision-tree review 2026-05-25:
+  `scripts/daily_104.sh` skipped because the market was closed, so direct live
+  and shadow runner paths were executed per the full-daily mandate. Live full
+  remained strict fail-closed at preflight: missing strict panel contract
+  fields, failed WF evidence (`wf_sharpe_mean=-1.3233` vs SPY `+1.0808`),
+  absent regime IC, and config fingerprint mismatch. No live orders were
+  placed. Shadow full produced DB run `2026-05-25-live-3c4ef3c8`; the clean
+  root cause was `panel_scoring_fail_closed=91` from
+  `panel_scorer_config_mismatch`, plus `risk_gate_vol_dropped=13`. The old
+  misleading `drawdown_halt` ntfy reason and secondary `qp_mu_contract_block`
+  noise are fixed. Full review:
+  `doc/research/2026-05-25-daily-full-decision-tree-review.md`.
+- Live/shadow feature-cache parity fix 2026-05-25: RunnerAdapter now builds a
+  run-local causal feature cache from already-fresh OHLCV, sharing the same
+  helper as SimAdapter. Shadow `TickerCandidateJob` dropped from about `473s`
+  to `1.19s`; total `InferencePipeline` dropped from about `502s` to `2.89s`.
+  This closes a sim/live code-reuse and performance bug.
+- QP-after-alpha-failure cleanup 2026-05-25: JointPortfolioQPJob now skips when
+  panel scoring contract has already failed. QP is treated as sizing/rebalance,
+  not as a fallback alpha engine, so failed panel admission no longer creates a
+  secondary `qp_mu_contract_block` pseudo-cause.
 
 ## Pushed Progress
 
