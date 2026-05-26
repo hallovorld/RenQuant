@@ -54,7 +54,7 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "74ad8aa89d9ec454d761f205df6ca7b75f738c46",
+      "commit": "db79e6310c9e66a1e1723401f7b979ee1c17e9cf",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -94,7 +94,7 @@
       "local_path": "/Users/renhao/git/github/renquant-artifacts",
       "remote": "https://github.com/hallovorld/renquant-artifacts",
       "branch": "main",
-      "commit": "0c4b35e22a5eb16cf8350214038481a305ec0001",
+      "commit": "0e7e72139f3a17485075d4f63c1bbd149b962e85",
       "test_command": "make test",
       "status": "bootstrapped"
     }
