@@ -43,6 +43,47 @@ DVC/LFS/object-store manifests, not ordinary Git payload. Never delete or empty
 `/Users/renhao/git/github/RenQuant`; it remains the umbrella/orchestrator and
 rollback source.
 
+### 2026-05-26 Multi-Repo Progress
+
+The umbrella lock now pins functional physical subrepos through training,
+runtime inference, execution, backtesting parity, and daily-contract assembly:
+
+- `renquant-model-gbdt` commit `95966c4`: real panel-LTR core with purged CV,
+  feature-contract validation, no silent backend fallback, and tests.
+- `renquant-pipeline` commit `8499816`: strict panel-scoring gate,
+  `blocked_by`, decision-trace rows, and attributed order-intent contract.
+  Missing feature rows/columns, missing panel scores, failed model admission,
+  missing calibration when required, or missing order quantity fail closed.
+- `renquant-backtesting` commit `cd87f10`: sim/backtest adapter reuses the
+  same `renquant-pipeline` panel-scoring contract instead of rewriting alpha
+  admission locally.
+- `renquant-execution` commit `6623daf`: paper, Alpaca, read-only/shadow
+  broker factory; order normalization requires ticker/action/quantity.
+- `renquant-orchestrator` commit `6ab75fa`: daily-contract path rejects
+  unattributed order intents before execution and persists attributed intents
+  in the run bundle.
+- `renquant-base-data` commit `79da0c6` and `renquant-artifacts` commit
+  `cf2c85d`: manifest resolver pipelines fail closed on missing/ambiguous
+  data or artifact manifests.
+
+Latest umbrella verification after these pins:
+
+- `make subrepo-test`: all pinned subrepo tests passed.
+- `make subrepo-daily-contract`: deterministic train -> infer -> attributed
+  order intent -> dry-run execution -> backtest bundle passed. The smoke order
+  contains `order_attribution_v1` with source job/task, score snapshot, sector,
+  artifact fingerprint, and config fingerprint.
+- `make subrepo-assemble`: wrote
+  `.subrepo_assembly/20260526T170710Z`.
+
+Remaining migration work is still substantial: the smoke path proves contracts
+and physical repo wiring, not full production replacement. Next slices should
+port production runtime pieces into `renquant-pipeline` in this order:
+runtime feature builder and real artifact scorer loading, model/WF admission
+preflight, QP/selection, rotation/exits, LEAN/live adapter reuse, then full
+daily replacement. Each slice must add parity tests before updating the
+umbrella lock.
+
 ## Current Truth
 
 - 2026-05-25 user mandate: when the user says `daily full` / `full daily`,
