@@ -256,6 +256,33 @@ class TestWhyNoTradeRollup:
             notify("RENQUANT-104", "full", ctx)
         assert "drawdown_halt" in m.call_args[0][0].data.decode()
 
+    def test_panel_contract_block_beats_drawdown_rollup(self):
+        notify = self._import()
+        ctx = _stub_ctx(
+            skip_buys=True,
+            buy_blocked=True,
+            counters={"panel_scoring_fail_closed": 91},
+            ranked=[SimpleNamespace(ticker="X")],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "panel_scoring_fail_closed(91)" in body
+        assert "drawdown_halt" not in body
+
+    def test_qp_mu_contract_block_beats_drawdown_rollup(self):
+        notify = self._import()
+        ctx = _stub_ctx(
+            skip_buys=True,
+            counters={"qp_mu_contract_block": 1},
+            ranked=[SimpleNamespace(ticker="X")],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "qp_mu_contract_block(1)" in body
+        assert "drawdown_halt" not in body
+
     def test_bear_only(self):
         notify = self._import()
         ctx = _stub_ctx(bear_only=True)

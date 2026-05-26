@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 
 from adapters.panel_runtime import (
+    build_runtime_feature_cache,
     describe_panel_frame_bundle,
     prepare_panel_runtime_frames,
 )
@@ -600,51 +601,11 @@ class SimAdapter:
         per sim run. Per-bar tasks then slice by `today` instead of
         re-running the indicator pipeline 570×42 times.
         """
-        from kernel.indicators import (  # noqa: PLC0415
-            assemble_feature_frame_from_indicators,
-            build_spy_context_series,
-            compute_all,
-        )
-
-        spy_df = self._ohlcv.get("SPY")
-        if spy_df is None:
-            log.warning("Feature cache: SPY OHLCV missing — skipping build")
-            return
-        if self._backtest_end is not None:
-            spy_df = spy_df.loc[:self._backtest_end]
-        if spy_df.empty:
-            log.warning("Feature cache: SPY OHLCV empty after sim-end clipping — skipping build")
-            return
-
-        spec    = self._config.get("indicator_spec", {})
-        vol_win = int(self._config.get("regime", {}).get("vol_realized_window", 20))
-        spy_ind = compute_all(spy_df, spec)
-        if spy_ind is None or spy_ind.empty:
-            log.warning("Feature cache: SPY indicators empty — skipping build")
-            return
-        spy_context = build_spy_context_series(spy_df, vol_window=vol_win)
-
-        built = 0
-        total = max(len(self._ohlcv) - 1, 0)
-        for ticker, df in self._ohlcv.items():
-            if ticker == "SPY" or df is None or df.empty:
-                continue
-            if self._backtest_end is not None:
-                df = df.loc[:self._backtest_end]
-                if df.empty:
-                    continue
-            stock_ind = compute_all(df, spec)
-            if stock_ind is None or stock_ind.empty:
-                continue
-            frame = assemble_feature_frame_from_indicators(
-                stock_ind, spy_ind, spy_context,
-            )
-            if frame is not None and not frame.empty:
-                self._feature_cache[ticker] = frame
-                built += 1
-            if built and built % 25 == 0:
-                log.info("Feature cache progress: %d/%d tickers", built, total)
-        log.info("Feature cache built: %d/%d tickers", built, total)
+        self._feature_cache.update(build_runtime_feature_cache(
+            config=self._config,
+            ohlcv=self._ohlcv,
+            end=self._backtest_end,
+        ))
 
     def _alpha158_cache_required(self) -> bool:
         """Whether this sim can use cached alpha158 scorer features."""

@@ -105,12 +105,11 @@ class InferenceContext:
     # and writes back. Adapter persists across bar boundaries.
     monitor_state: dict = field(default_factory=dict)
 
-    # Feature cache (performance optimization, 2026-04-24): SimAdapter
-    # pre-computes per-ticker full-range feature frames ONCE at init.
-    # Per-bar tasks (BuildFeaturesTask, ScoreModelTask) slice up to
-    # today instead of rebuilding from OHLCV. Live runner leaves this
-    # None (fresh data each bar makes cache stale). Key: ticker; Value:
-    # full feature DataFrame indexed by bar date.
+    # Feature cache (performance optimization, 2026-04-24; live parity
+    # 2026-05-25): adapters build run-local per-ticker feature frames from
+    # that run's already-fresh OHLCV. Per-bar tasks (BuildFeaturesTask,
+    # ScoreModelTask) slice up to today instead of rebuilding from OHLCV.
+    # Key: ticker; Value: full feature DataFrame indexed by bar date.
     feature_cache: dict = field(default_factory=dict)
 
     # ── ExecutionPipeline plumbing (slice 2 of P0 consolidation) ─────────────

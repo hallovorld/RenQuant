@@ -610,6 +610,19 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         if rs is not None and getattr(rs, "in_transition", False):
             return "transition_window"
         counters = getattr(ctx, "counters", {}) or {}
+        # Contract/risk fail-closed paths also set ctx.skip_buys=True. Do not
+        # collapse them into "drawdown_halt"; that makes ntfy actively
+        # misleading when the model artifact/QP contract, not portfolio
+        # drawdown, blocked the trade.
+        specific_blocks = (
+            ("panel_scoring_fail_closed", "panel_scoring_fail_closed"),
+            ("qp_mu_contract_block", "qp_mu_contract_block"),
+            ("risk_gate_vol_dropped", "risk_gate_vol_dropped"),
+        )
+        for key, label in specific_blocks:
+            n = int(counters.get(key, 0) or 0)
+            if n > 0:
+                return f"{label}({n})"
         # A global buy gate is the cause only when it actually suppressed a
         # QP buy. If every QP delta was below action thresholds anyway, keep
         # the summary on the tighter per-solver reason.

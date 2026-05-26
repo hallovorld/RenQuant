@@ -228,6 +228,7 @@ class TestPipelineOrdering:
 
         ctx = InferenceContext(config=_panel_enabled_config(),
                                today=datetime.date(2026, 4, 20))
+        ctx.config["data_freshness"] = {"enabled": False}
         ctx.holdings = {}
         ctx.buy_blocked = True  # skip buy-scan so test stays small
         ctx.bear_only = False
@@ -579,6 +580,7 @@ class TestApplyNGBoostScoring:
         # CRIT-1: opt-out of the hard-fail for this fixture (single-col
         # panel where 1/1 missing would otherwise trigger drift fail-safe).
         ctx.config["ranking"]["panel_scoring"]["ngboost"]["max_feature_drift_pct"] = 1.0
+        ctx.config["ranking"]["panel_scoring"]["ngboost"]["allow_partial_feature_fill"] = True
         head = _make_fake_head(feats, mu_map={"A": 0.1}, sigma_map={"A": 0.05})
         ctx._ngboost_head = head  # noqa: SLF001
 

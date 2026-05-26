@@ -2014,6 +2014,7 @@ def _fail_closed_ngboost(ctx: InferenceContext, reason: str, *, detail: str = ""
         if hasattr(cand, "sigma"):
             cand.sigma = _nan
     ctx._blocked_by_ticker = blocked  # noqa: SLF001
+    ctx._ngboost_head = None  # noqa: SLF001
     ctx._ngboost_fail_closed_reason = reason  # noqa: SLF001
     if detail:
         ctx._ngboost_fail_closed_detail = detail  # noqa: SLF001

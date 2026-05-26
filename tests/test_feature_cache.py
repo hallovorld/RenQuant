@@ -10,6 +10,7 @@ import datetime
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -217,6 +218,72 @@ class TestBuildFeaturesTaskUsesCache:
 
 
 class TestSimAdapterCacheBounds:
+    def test_shared_runtime_feature_cache_reuses_spy_context_once(self, monkeypatch):
+        """The shared sim/live cache builder should preserve the sim invariant."""
+        from adapters.panel_runtime import build_runtime_feature_cache
+        import pandas as pd
+
+        stock = _synthetic_ohlcv(140)
+        spy = _synthetic_ohlcv(140)
+        context_calls = 0
+
+        def fake_compute_all(df, *_args, **_kwargs):
+            return pd.DataFrame({"close": range(len(df))}, index=df.index)
+
+        def fake_context(df, *_args, **_kwargs):
+            nonlocal context_calls
+            context_calls += 1
+            return pd.DataFrame({"spy_trend": [1.0] * len(df)}, index=df.index)
+
+        def fake_assemble(stock_ind, *_args, **_kwargs):
+            return pd.DataFrame({"rsi": [50.0]}, index=[stock_ind.index.max()])
+
+        monkeypatch.setattr("kernel.indicators.compute_all", fake_compute_all)
+        monkeypatch.setattr("kernel.indicators.build_spy_context_series", fake_context)
+        monkeypatch.setattr(
+            "kernel.indicators.assemble_feature_frame_from_indicators",
+            fake_assemble,
+        )
+
+        cache = build_runtime_feature_cache(
+            config={},
+            ohlcv={"SPY": spy, "AAPL": stock, "MSFT": stock},
+        )
+
+        assert context_calls == 1
+        assert sorted(cache) == ["AAPL", "MSFT"]
+
+    def test_runner_adapter_attaches_run_local_feature_cache(self):
+        """Live/shadow must not drift from sim by rebuilding features per ticker."""
+        from adapters.runner import RunnerAdapter
+
+        broker = MagicMock()
+        broker.get_account_value.return_value = 100_000.0
+        broker.get_cash.return_value = 100_000.0
+        broker.get_all_positions.return_value = []
+        config = {
+            "watchlist": ["AAA"],
+            "benchmark": "SPY",
+            "ranking": {"panel_scoring": {"enabled": False}},
+        }
+        sentinel_cache = {"AAA": SimpleNamespace(name="cached_features")}
+
+        adapter = RunnerAdapter(
+            config,
+            models={},
+            broker=broker,
+            strategy_dir=_STRATEGY_DIR,
+            sell_only=False,
+        )
+
+        with patch("kernel.data.fetch_ohlcv", return_value=_synthetic_ohlcv()), \
+             patch("adapters.runner.build_runtime_feature_cache",
+                   return_value=sentinel_cache) as cache_mock:
+            ctx = adapter.make_context()
+
+        assert cache_mock.called
+        assert ctx.feature_cache is sentinel_cache
+
     def test_feature_caches_clip_source_ohlcv_to_backtest_end(self, monkeypatch):
         """Historical sim caches should not compute rows beyond the sim end."""
         from adapters.sim import SimAdapter

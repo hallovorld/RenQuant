@@ -13,6 +13,7 @@ from typing import Any
 
 from adapters.panel_runtime import (
     attach_panel_runtime_frames,
+    build_runtime_feature_cache,
     describe_panel_frame_bundle,
     prepare_panel_runtime_frames,
 )
@@ -1367,6 +1368,18 @@ class RunnerAdapter:
         ctx.prior_rotation_proposals = list(
             state.get("rotation_proposals", []) or []
         )
+
+        # Run-local feature cache (2026-05-25): live/shadow should use the
+        # same causal feature surface as sim. The OHLCV has already passed the
+        # live freshness guard; caching it for this one run avoids rebuilding
+        # indicators separately in sell and candidate jobs.
+        if config.get("live", {}).get("feature_cache_enabled", True):
+            ctx.feature_cache = build_runtime_feature_cache(
+                config=config,
+                ohlcv=ohlcv,
+            )
+            log.info("Feature cache attached to live context: %d tickers",
+                     len(ctx.feature_cache))
 
         # ── Panel scoring prep (optional) ────────────────────────────────────
         panel_cfg = config.get("ranking", {}).get("panel_scoring", {})
