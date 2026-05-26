@@ -19,10 +19,9 @@ for entry in LOCK["subrepos"]:
         sys.path.insert(0, str(src))
 
 
-from renquant_backtesting import BacktestContext, BacktestPipeline  # noqa: E402
-from renquant_execution import BrokerExecutionPipeline, ExecutionContext, PaperBroker  # noqa: E402
-from renquant_model_gbdt import PanelGbdtTrainingPipeline, TrainingContext  # noqa: E402
-from renquant_pipeline import InferenceContext, RuntimeInferencePipeline  # noqa: E402
+from renquant_execution import PaperBroker  # noqa: E402
+from renquant_orchestrator import DailyRunContext, DailyRunPipeline  # noqa: E402
+from renquant_pipeline import InferenceContext  # noqa: E402
 from renquant_strategy_104 import load_strategy_config, strategy_manifest  # noqa: E402
 from renquant_common import Task  # noqa: E402
 
@@ -100,57 +99,47 @@ def main() -> int:
         return {"accepted": False, "oos_mean_ic": 0.0, "smoke": True}
 
     with tempfile.TemporaryDirectory(prefix="renquant-subrepo-smoke-") as tmp:
-        training_ctx = TrainingContext(
-            dataset_manifest=data_manifest,
+        paper_broker = PaperBroker(initial_cash=100000.0)
+        daily_ctx = DailyRunContext(
+            run_id="subrepo-smoke-daily-full",
+            run_type="daily_full",
+            strategy_config=strategy_config,
+            strategy_manifest=strategy_ref,
+            data_manifest=data_manifest,
             model_config={
                 "strategy": "renquant_104",
                 "objective": "rank:pairwise",
                 "config_fingerprint": strategy_ref["fingerprint"],
                 "code_commit": _entry("renquant-model-gbdt")["commit"],
             },
-            output_dir=Path(tmp) / "model",
-        )
-        PanelGbdtTrainingPipeline(loader, trainer, validator).run(training_ctx)
-        if training_ctx.artifact_manifest is None:
-            raise RuntimeError("GBDT smoke did not produce artifact_manifest")
-
-        inference_ctx = InferenceContext(
-            strategy_config=strategy_config,
-            data_manifest=data_manifest,
-            artifact_manifest=training_ctx.artifact_manifest,
             market_snapshot={"as_of": "2026-05-25"},
             account_snapshot={"cash": 100000.0},
-        )
-        RuntimeInferencePipeline([SmokeScoreTask(), SmokeSelectTask()]).run(inference_ctx)
-
-        paper_broker = PaperBroker(initial_cash=100000.0)
-        paper_broker.connect()
-        for intent in inference_ctx.order_intents:
-            paper_broker.set_price(intent["ticker"], 100.0)
-
-        execution_ctx = ExecutionContext(
-            broker_name="paper-smoke",
-            order_intents=inference_ctx.order_intents,
+            output_dir=Path(tmp) / "daily-run",
+            broker=paper_broker,
+            runtime_stages=[SmokeScoreTask(), SmokeSelectTask()],
+            price_map={"AAPL": 100.0},
             dry_run=True,
         )
         paper_broker.broker_name = "paper-smoke"
-        BrokerExecutionPipeline(paper_broker).run(execution_ctx)
-
-        backtest_ctx = BacktestContext(
-            strategy_manifest=strategy_ref,
-            data_manifest=data_manifest,
-            artifact_manifest=training_ctx.artifact_manifest,
-            output_dir=Path(tmp) / "backtest",
-        )
-        BacktestPipeline(lambda ctx: {"ok": True, "n_orders": len(inference_ctx.order_intents)}).run(backtest_ctx)
+        DailyRunPipeline(
+            loader,
+            trainer,
+            validator,
+            backtest_runner=lambda ctx: {"ok": True, "n_orders": len(daily_ctx.inference_context.order_intents)},
+        ).run(daily_ctx)
+        if daily_ctx.training_context is None or daily_ctx.training_context.artifact_manifest is None:
+            raise RuntimeError("GBDT smoke did not produce artifact_manifest")
+        if not daily_ctx.run_bundle:
+            raise RuntimeError("daily smoke did not produce run_bundle")
 
     summary = {
         "ok": True,
         "training_calls": calls,
-        "artifact_id": training_ctx.artifact_manifest["artifact_id"],
-        "order_intents": inference_ctx.order_intents,
-        "submitted_orders": execution_ctx.submitted_orders,
-        "backtest_report": backtest_ctx.report,
+        "artifact_id": daily_ctx.training_context.artifact_manifest["artifact_id"],
+        "order_intents": daily_ctx.inference_context.order_intents,
+        "submitted_orders": daily_ctx.execution_context.submitted_orders,
+        "backtest_report": daily_ctx.backtest_context.report,
+        "run_bundle_keys": sorted(daily_ctx.run_bundle.keys()),
     }
     print(json.dumps(summary, indent=2))
     return 0

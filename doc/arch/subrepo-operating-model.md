@@ -22,7 +22,8 @@ integration harness, and rollback source.
 | `renquant-backtesting` | Sim/LEAN/WF validation and forensics | Backtest reports, decision-quality diagnostics |
 | `renquant-base-data` | Data manifests and validation | Fingerprinted data manifests |
 | `renquant-artifacts` | Artifact registry and validation | Fingerprinted artifact manifests |
-| `RenQuant` | Umbrella/orchestrator | Pinned assembly in `subrepos.lock.json` |
+| `renquant-orchestrator` | Daily/full orchestration across pinned subrepos | Run bundle, decision trace, order/audit bundle |
+| `RenQuant` | Permanent umbrella/integration harness | Pinned assembly in `subrepos.lock.json` |
 
 ## Universal Rules
 
@@ -103,9 +104,8 @@ make subrepo-smoke
 ```
 
 This smoke proves the path: strategy config loads, data manifest validates,
-GBDT training pipeline emits an artifact manifest, runtime pipeline emits an
-order intent, execution performs dry-run submission, and backtest shell consumes
-the same manifests.
+`renquant-orchestrator` runs GBDT training, runtime inference, execution, and
+backtest shell as one daily flow, then writes an auditable run bundle.
 
 Branching:
 
@@ -132,7 +132,8 @@ Shadow artifacts go to `renquant-artifacts` as `promotion_status: shadow` or
 
 ## Daily Schedule / Inference / Live Flow
 
-Owner repo: `RenQuant` orchestrator.
+Owner repo: `renquant-orchestrator`; pinned and integration-tested by
+`RenQuant`.
 
 Runtime components:
 
@@ -145,10 +146,13 @@ Runtime components:
 6. Assemble a deterministic local runtime bundle.
 7. For LEAN, export/prepare data and copy the assembled strategy into the LEAN
    working directory.
-8. Run `renquant-pipeline` to produce decision trace and order intents.
-9. Run `renquant-execution` only after runtime gates pass and broker mode is
+8. Run `renquant-orchestrator` to execute train -> inference -> execution ->
+   optional backtest against pinned subrepos.
+9. Run `renquant-pipeline` inside that orchestration to produce decision trace
+   and order intents.
+10. Run `renquant-execution` only after runtime gates pass and broker mode is
    explicit.
-10. Persist run metadata: code commits, data fingerprints, model fingerprints,
+11. Persist run metadata: code commits, data fingerprints, model fingerprints,
     strategy fingerprint, order intents, and broker results.
 
 The model comes from `renquant-artifacts`, not from a training repo working
@@ -156,7 +160,8 @@ directory. Data comes from `renquant-base-data` manifests, not ad hoc local
 paths.
 
 Strategy repo is intentionally policy-only. It does not submit orders directly.
-The orchestrator assembles strategy + data + artifact + pipeline + execution;
+`renquant-orchestrator` assembles strategy + data + artifact + pipeline +
+execution;
 that keeps policy, alpha, portfolio construction, and broker mutation separated.
 
 ## Data Refresh And Backup
@@ -217,7 +222,8 @@ Finding history:
 
 ## Local LEAN Assembly
 
-Owner repo: `RenQuant` orchestrator plus `renquant-backtesting`.
+Owner repo: `renquant-orchestrator` plus `renquant-backtesting`, pinned by
+`RenQuant`.
 
 The orchestrator builds a deterministic LEAN bundle from pinned repos and
 manifests. The LEAN directory is an assembly output, not the source of truth.
@@ -260,7 +266,7 @@ Current umbrella local automation:
 make subrepo-doctor   # required files, remotes, branch, lock commit
 make subrepo-test     # doctor plus each subrepo test command
 make subrepo-assemble # timestamped local assembly from pinned subrepos
-make subrepo-smoke    # train -> infer -> dry-run execute -> backtest contract
+make subrepo-smoke    # orchestrator train -> infer -> dry-run execute -> backtest
 ```
 
 `make subrepo-assemble` writes `.subrepo_assembly/<timestamp>/` with symlinks
@@ -271,7 +277,9 @@ out clean subrepo worktrees to the lockfile commits.
 
 ## Open Migration Work
 
-The first bootstrap created repo skeletons and contracts. Remaining work is to
+The first bootstrap created repo skeletons and contracts. `renquant-orchestrator`
+now owns the full training-to-trading flow contract and run bundle persistence.
+Remaining work is to
 port real implementation slices with tests:
 
 1. GBDT training implementation into `renquant-model-gbdt`
