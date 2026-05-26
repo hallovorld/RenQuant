@@ -53,7 +53,7 @@ runtime inference, execution, backtesting parity, and daily-contract assembly:
   fields and feature-transform metadata preserved in artifact manifests, and
   tests. It also fixes a double `sha256:` fingerprint bug in trained artifact
   output.
-- `renquant-pipeline` commit `d567919`: strict panel-scoring gate,
+- `renquant-pipeline` commit `89ae682`: strict panel-scoring gate,
   `blocked_by`, decision-trace rows, and attributed order-intent contract.
   Missing feature rows/columns, missing panel scores, failed model admission,
   missing calibration when required, missing order quantity, missing local
@@ -62,7 +62,10 @@ runtime inference, execution, backtesting parity, and daily-contract assembly:
   at package import time. Runtime feature rows now support a hard raw/panel
   source-space transform using artifact `feature_means`, `feature_stds`, and
   `feature_norm_kind`; missing transform metadata blocks buys instead of
-  silently scoring mismatched feature space.
+  silently scoring mismatched feature space. Runtime model admission can now
+  require OOS IC, WF Sharpe, SPY-relative Sharpe/APY, current-regime evidence,
+  calibration health, config fingerprint, and sector-map fingerprint before
+  any candidate reaches sizing/QP.
 - `renquant-backtesting` commit `cd87f10`: sim/backtest adapter reuses the
   same `renquant-pipeline` panel-scoring contract instead of rewriting alpha
   admission locally.
@@ -87,13 +90,13 @@ Latest umbrella verification after these pins:
   contains `order_attribution_v1` with source job/task, score snapshot, sector,
   artifact fingerprint, and config fingerprint.
 - `make subrepo-assemble`: latest verified assembly is updated each slice;
-  after the raw-feature contract slice it wrote
-  `.subrepo_assembly/20260526T182008Z`.
+  after the model-admission slice it wrote
+  `.subrepo_assembly/20260526T182420Z`.
 
 Remaining migration work is still substantial: the smoke path proves contracts
 and physical repo wiring, not full production replacement. Next slices should
 port production runtime pieces into `renquant-pipeline` in this order:
-model/WF admission preflight, QP/selection, rotation/exits, LEAN/live adapter reuse, then full
+QP/selection, rotation/exits, LEAN/live adapter reuse, then full
 daily replacement. Each slice must add parity tests before updating the
 umbrella lock.
 
