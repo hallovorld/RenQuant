@@ -1517,6 +1517,47 @@ def _validate_static_sanity_oos_contract(
     }
 
 
+def _validate_static_wf_oos_contract(
+    artifact: dict,
+    cuts: list[tuple[str, str]],
+) -> dict:
+    """Fail closed when a static artifact cannot be OOS for WF cuts."""
+    cutoff = _effective_artifact_cutoff(artifact)
+    if cutoff is None:
+        return {
+            "passed": False,
+            "reason": (
+                "static WF missing effective training cutoff; use a "
+                "recipe-matched walk-forward manifest instead of a static "
+                "full-sample artifact"
+            ),
+        }
+    lookahead = int(artifact.get("lookahead_days") or 0)
+    safe_last_label = cutoff + pd.offsets.BDay(max(0, lookahead))
+    unsafe = [
+        start for start, _end in cuts
+        if safe_last_label >= pd.Timestamp(start)
+    ]
+    if unsafe:
+        return {
+            "passed": False,
+            "reason": (
+                "static WF cutoff + lookahead overlaps WF cut(s); use a "
+                "recipe-matched walk-forward manifest"
+            ),
+            "cutoff": cutoff.date().isoformat(),
+            "lookahead_days": lookahead,
+            "safe_last_label_date": safe_last_label.date().isoformat(),
+            "unsafe_cut_starts": unsafe,
+        }
+    return {
+        "passed": True,
+        "cutoff": cutoff.date().isoformat(),
+        "lookahead_days": lookahead,
+        "safe_last_label_date": safe_last_label.date().isoformat(),
+    }
+
+
 def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, dict]:
     """Load label-safe sanity panel, using training feature panel when needed."""
     raw_path = REPO / "data/alpha158_291_fundamental_dataset_rawlabel.parquet"
@@ -2260,6 +2301,22 @@ def main():
                 ),
             }
             log.error("WF result: %s", wf_result["reason"])
+        elif artifact_usage.get("eval_scope") == "static_artifact":
+            static_contract = _validate_static_wf_oos_contract(artifact, CUTS)
+            if not bool(static_contract.get("passed")):
+                wf_result = {
+                    "passed": False,
+                    "reason": static_contract["reason"],
+                    "static_wf_oos_contract": static_contract,
+                }
+                log.error("WF result: %s", wf_result["reason"])
+            else:
+                wf_result = run_walk_forward(
+                    args.strategy_config,
+                    jobs=args.jobs,
+                    trace_dir=trace_dir,
+                )
+                log.info("WF result: %s", wf_result["reason"])
         else:
             wf_result = run_walk_forward(
                 args.strategy_config,

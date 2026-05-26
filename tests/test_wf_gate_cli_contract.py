@@ -42,6 +42,38 @@ def test_wf_gate_recipe_fingerprint_includes_feature_space_contract() -> None:
     assert mod._recipe_fingerprint(old) != mod._recipe_fingerprint(new)
 
 
+def test_static_wf_contract_rejects_full_sample_artifact_for_historical_cuts() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    result = mod._validate_static_wf_oos_contract(
+        {
+            "effective_train_cutoff_date": "2026-02-10",
+            "lookahead_days": 60,
+        },
+        mod.CUTS,
+    )
+
+    assert result["passed"] is False
+    assert "walk-forward manifest" in result["reason"]
+    assert result["unsafe_cut_starts"] == [start for start, _ in mod.CUTS]
+
+
+def test_static_wf_contract_allows_label_safe_static_artifact() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    result = mod._validate_static_wf_oos_contract(
+        {
+            "effective_train_cutoff_date": "2023-08-01",
+            "lookahead_days": 60,
+        },
+        [("2024-01-02", "2024-12-31")],
+    )
+
+    assert result["passed"] is True
+
+
 def test_wf_gate_sim_cuts_keep_static_preflight_but_not_persistence() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert '"--no-compare"' in src
