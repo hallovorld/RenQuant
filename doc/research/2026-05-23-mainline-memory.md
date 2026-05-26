@@ -48,8 +48,10 @@ rollback source.
 The umbrella lock now pins functional physical subrepos through training,
 runtime inference, execution, backtesting parity, and daily-contract assembly:
 
-- `renquant-model-gbdt` commit `95966c4`: real panel-LTR core with purged CV,
-  feature-contract validation, no silent backend fallback, and tests.
+- `renquant-model-gbdt` commit `23e8647`: real panel-LTR core with purged CV,
+  feature-contract validation, no silent backend fallback, runtime scorer
+  fields preserved in artifact manifests, and tests. It also fixes a double
+  `sha256:` fingerprint bug in trained artifact output.
 - `renquant-pipeline` commit `ec8bc61`: strict panel-scoring gate,
   `blocked_by`, decision-trace rows, and attributed order-intent contract.
   Missing feature rows/columns, missing panel scores, failed model admission,
@@ -62,9 +64,10 @@ runtime inference, execution, backtesting parity, and daily-contract assembly:
   admission locally.
 - `renquant-execution` commit `6623daf`: paper, Alpaca, read-only/shadow
   broker factory; order normalization requires ticker/action/quantity.
-- `renquant-orchestrator` commit `6ab75fa`: daily-contract path rejects
+- `renquant-orchestrator` commit `e85499c`: daily-contract path rejects
   unattributed order intents before execution and persists attributed intents
-  in the run bundle.
+  in the run bundle. The smoke path now uses `PanelScoringJob`, not a hand
+  written score/select fixture.
 - `renquant-base-data` commit `79da0c6` and `renquant-artifacts` commit
   `cf2c85d`: manifest resolver pipelines fail closed on missing/ambiguous
   data or artifact manifests.

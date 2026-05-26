@@ -34,7 +34,7 @@
       "local_path": "/Users/renhao/git/github/renquant-model-gbdt",
       "remote": "https://github.com/hallovorld/renquant-model-gbdt",
       "branch": "main",
-      "commit": "95966c4ab6b4e2e040aedfef87dd384db9e8d7c1",
+      "commit": "23e86472ca8ac393e91aad538d4c7935bc8c8033",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -104,7 +104,7 @@
       "local_path": "/Users/renhao/git/github/renquant-orchestrator",
       "remote": "https://github.com/hallovorld/renquant-orchestrator",
       "branch": "main",
-      "commit": "6ab75fa71c5fe6c32f7e10a35a15842e3d0a76af",
+      "commit": "e85499cab63f4fa0ab3a37e1f0c753fbb04adeb5",
       "test_command": "make test",
       "status": "bootstrapped"
     }
