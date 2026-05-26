@@ -260,9 +260,10 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.05,
       "ngboost": {
-        "enabled": true,
+        "enabled": false,
         "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "lambda_sigma": 1.0,
+        "_disable_reason": "2026-05-25 Codex contract repair: global NGBoost was already disabled after E55 (NGB-on lost to NGB-off), but this stale regime overlay still activated an old ngboost-head with mismatched train_run_id. Keep disabled until a same-run NGBoost head passes strict WF/regime evidence."
       },
       "sentiment": {
         "enabled": true
@@ -285,9 +286,10 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.04,
       "ngboost": {
-        "enabled": true,
+        "enabled": false,
         "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "lambda_sigma": 1.0,
+        "_disable_reason": "2026-05-25 Codex contract repair: global NGBoost was already disabled after E55 (NGB-on lost to NGB-off), but this stale regime overlay still activated an old ngboost-head with mismatched train_run_id. Keep disabled until a same-run NGBoost head passes strict WF/regime evidence."
       },
       "sentiment": {
         "enabled": true
@@ -309,9 +311,10 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.025,
       "ngboost": {
-        "enabled": true,
+        "enabled": false,
         "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "lambda_sigma": 1.0,
+        "_disable_reason": "2026-05-25 Codex contract repair: global NGBoost was already disabled after E55 (NGB-on lost to NGB-off), but this stale regime overlay still activated an old ngboost-head with mismatched train_run_id. Keep disabled until a same-run NGBoost head passes strict WF/regime evidence."
       },
       "sentiment": {
         "enabled": true
