@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: subrepo-doctor subrepo-test subrepo-assemble subrepo-smoke
+.PHONY: subrepo-doctor subrepo-test subrepo-assemble subrepo-smoke subrepo-daily-contract
 
 subrepo-doctor:
 	$(PYTHON) scripts/subrepo_doctor.py
@@ -13,3 +13,6 @@ subrepo-assemble:
 
 subrepo-smoke:
 	$(PYTHON) scripts/subrepo_smoke.py
+
+subrepo-daily-contract:
+	$(PYTHON) scripts/subrepo_daily_contract.py

@@ -13,6 +13,7 @@ __pycache__/
 # Local runtime scratch / experiment stores
 .tmp_*/
 .subrepo_assembly/
+.subrepo_runs/
 mlruns/
 catboost_info/
 
