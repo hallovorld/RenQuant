@@ -21,6 +21,16 @@ Make RenQuant 104 scientifically trustworthy end to end:
 
 ## Current Truth
 
+- 2026-05-25 user mandate: when the user says `daily full` / `full daily`,
+  execute the full path, not wrapper-only. If `scripts/daily_104.sh` skips on
+  NYSE holiday/calendar/lock/cadence, immediately run direct live full and
+  direct shadow full:
+  `set -a; source .env; set +a; .venv/bin/python -m live.runner --strategy renquant_104 --broker alpaca --once`
+  and
+  `set -a; source .env; set +a; .venv/bin/python -m live.runner --strategy renquant_104 --broker readonly-alpaca --once --strategy-config-name strategy_config.shadow.json`.
+  Report complete decision-tree/blocker output. This executes the path and
+  exposes hard-gate results; it does not permit disabling WF/model/preflight
+  gates or inventing discretionary live orders.
 - The active production artifact still carries an old failed WF stamp:
   APY `+0.63%`, Sharpe `-1.3233`, SPY Sharpe `+1.0808`, `passed=false`.
   This is stale failed metadata, and strict preflight now blocks full/buy on it.

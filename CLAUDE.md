@@ -84,6 +84,25 @@ nohup bash -c 'set -a; source .env; set +a; .venv/bin/python -m live.runner --st
   > logs/live_e2e/e2e_alpaca_live_$(date +%Y%m%d-%H%M%S).log 2>&1 &
 ```
 
+### "daily full" / "full daily" = force the full path, not wrapper-only
+
+When the user says **"daily full"**, **"full daily"**, **"run daily full"**,
+**"跑 daily full"**, or asks for daily shadow full, do not treat a wrapper
+holiday/calendar/cadence skip as completion. Try the wrapper if useful, but if
+`scripts/daily_104.sh` skips due NYSE calendar, lock, cadence, or schedule
+guard, immediately run the direct full paths and report the complete
+decision-tree / blocker output:
+
+```bash
+set -a; source .env; set +a; .venv/bin/python -m live.runner --strategy renquant_104 --broker alpaca --once
+set -a; source .env; set +a; .venv/bin/python -m live.runner --strategy renquant_104 --broker readonly-alpaca --once --strategy-config-name strategy_config.shadow.json
+```
+
+This means execute the flow and surface hard-gate outcomes. It does not
+authorize disabling WF/model/preflight hard gates, ignoring failed artifact
+contracts, or inventing discretionary live orders. If the user gives an
+explicit manual order, require exact ticker, quantity/notional, and order type.
+
 ## Workflow modes
 
 | Mode | Command | Use when |
