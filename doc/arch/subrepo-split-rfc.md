@@ -22,9 +22,20 @@ tree.
    metrics.
 2. The split target is physical repositories, not only folders in this repo.
    The current `RenQuant` repo should become an umbrella/integration repo that
-   pins the subrepo revisions.
+   pins the subrepo revisions. It must never be deleted, emptied, or rewritten
+   as part of the split; it remains the local orchestrator, integration
+   harness, and rollback source.
 3. Data and artifacts must not be copied into normal Git history. They need
    DVC, Git LFS, object storage, or manifest-only tracking.
+4. `renquant-strategy-104` is part of the first-wave split. It owns active
+   strategy policy and config, not model training or broker execution.
+5. `renquant-orchestrator` owns local assembly: pin repo revisions,
+   fetch/validate data and artifacts, build the deterministic local bundle,
+   export LEAN data, and place the assembled strategy into the LEAN runtime.
+6. Every repo follows the pipeline pattern. `renquant-common` owns generic
+   `Task` / `Job` / `Pipeline` / `run_parallel` primitives. Model training,
+   inference, execution, and backtesting repos compose those primitives rather
+   than inventing repo-local orchestration.
 
 ## Repository Set
 
@@ -34,6 +45,10 @@ Purpose: small shared code package.
 
 Owns:
 
+- Generic pipeline primitives: `Task`, `Job`, `Pipeline`, `PipelineResult`,
+  `run_parallel`, timeout/error types, and small test fixtures. These are
+  domain-neutral orchestration contracts used by training, inference,
+  backtesting, and execution repos.
 - Typed contracts and schemas for models, scores, decisions, trades, metrics,
   and artifact manifests.
 - Calendar/session helpers, config loading primitives, path resolution, tax
@@ -96,9 +111,14 @@ Must not own:
 Runtime output contract:
 
 ```text
-fit(dataset_manifest, model_config) -> model_artifact, calibration_artifact, metrics_record
-score(feature_frame, model_artifact) -> per_ticker_scores
-validate(model_artifact, validation_manifest) -> acceptance_report
+TrainingPipeline(Task/Job chain from renquant-common)
+  -> model_artifact, calibration_artifact, metrics_record
+
+ScoringPipeline(Task/Job chain from renquant-common)
+  -> per_ticker_scores
+
+ValidationPipeline(Task/Job chain from renquant-common)
+  -> acceptance_report
 ```
 
 ### `renquant-model-patchtst`
@@ -113,6 +133,8 @@ Owns:
 - PatchTST walk-forward manifest generation.
 - Declared-label and raw-expected-return sanity reports.
 - PatchTST shadow artifact registry and metrics writer.
+- Training/scoring/validation pipelines built from `renquant-common`
+  primitives.
 
 Must not own:
 
@@ -129,8 +151,8 @@ Purpose: production decision engine.
 
 Owns:
 
-- `InferencePipeline`, `SellOnlyPipeline`, `TrainingPipeline` orchestration
-  interfaces.
+- `InferencePipeline`, `SellOnlyPipeline`, runtime acceptance, and production
+  decision orchestration built from `renquant-common` primitives.
 - Task/Job implementations for regime, buy gates, sell logic, ranking,
   rotation, QP, preflight, acceptance gates, decision trace persistence.
 - Strategy-independent portfolio construction primitives.
@@ -227,13 +249,36 @@ Must not own:
 - Data lake blobs.
 - Broker secrets.
 
-This can be the renamed/current `RenQuant` repo to preserve operator muscle
-memory.
+This is the current `RenQuant` repo. It stays in place permanently during and
+after the split; subrepo extraction must never delete, empty, or rewrite the
+working tree at `/Users/renhao/git/github/RenQuant`.
+
+### `renquant-strategy-104`
+
+Purpose: active strategy policy repo.
+
+Owns:
+
+- `strategy_config.json`, golden/shadow variants, and strategy-level policy
+  declarations.
+- Watchlist, universe policy, sector map, regime params, gates, thresholds,
+  and accepted production/shadow artifact pins.
+- Strategy 104 runbook and decision-tree policy docs.
+- Tiny fixtures for config validation.
+
+Must not own:
+
+- GBDT or PatchTST training implementation.
+- Broker execution code.
+- QP solver implementation.
+- Large data or model artifacts.
+
+Dependency rule: depends on `renquant-common` schemas only. It is consumed by
+`renquant-orchestrator`, `renquant-pipeline`, `renquant-execution`, and
+`renquant-backtesting`.
 
 ### Optional Later Repos
 
-- `renquant-strategy-104`: active strategy config and strategy-specific policy
-  if we decide strategy ownership is too large for `renquant-orchestrator`.
 - `renquant-research`: notebooks, failed experiments, exploratory scripts.
 - `renquant-docs`: public/operator docs if docs churn becomes noisy.
 
@@ -244,9 +289,10 @@ renquant-common
     ^
     |
     +-- renquant-base-data        (schemas/validators only)
-    +-- renquant-model-gbdt       (training + scoring artifacts)
-    +-- renquant-model-patchtst   (training + scoring artifacts)
-    +-- renquant-pipeline
+    +-- renquant-model-gbdt       (training/scoring pipelines + artifacts)
+    +-- renquant-model-patchtst   (training/scoring pipelines + artifacts)
+    +-- renquant-strategy-104     (policy/config)
+    +-- renquant-pipeline         (inference/runtime pipelines)
             ^
             |
             +-- renquant-execution
@@ -294,6 +340,7 @@ Recommended local paths:
 /Users/renhao/git/github/renquant-base-data
 /Users/renhao/git/github/renquant-model-gbdt
 /Users/renhao/git/github/renquant-model-patchtst
+/Users/renhao/git/github/renquant-strategy-104
 /Users/renhao/git/github/renquant-pipeline
 /Users/renhao/git/github/renquant-execution
 /Users/renhao/git/github/renquant-backtesting
@@ -313,17 +360,19 @@ Do not push generated repos until each has:
 ### Phase 2: Package Contracts First
 
 1. Publish/install `renquant-common` locally as editable package.
-2. Replace cross-directory imports with package imports.
-3. Add boundary tests that fail if forbidden imports reappear.
-4. Keep compatibility shims in the umbrella repo while callers migrate.
+2. Move generic pipeline primitives into `renquant-common`.
+3. Replace cross-directory imports with package imports.
+4. Add boundary tests that fail if forbidden imports reappear.
+5. Keep compatibility shims in the umbrella repo while callers migrate.
 
 ### Phase 3: Split Models
 
 1. Move GBDT training/scoring into `renquant-model-gbdt`.
 2. Move PatchTST/HF/DLinear sequence work into `renquant-model-patchtst`.
-3. Both repos write the same model-ledger record format.
-4. Both repos emit artifact manifests consumed by `renquant-artifacts`.
-5. Neither repo can write live orders or mutate live state.
+3. Both repos express train/score/validate as `renquant-common` pipelines.
+4. Both repos write the same model-ledger record format.
+5. Both repos emit artifact manifests consumed by `renquant-artifacts`.
+6. Neither repo can write live orders or mutate live state.
 
 ### Phase 4: Split Runtime
 
@@ -362,9 +411,9 @@ Umbrella integration CI adds:
    I recommend lowercase hyphenated names.
 2. Submodules vs pinned manifest plus clone script. I recommend pinned manifest
    first because submodules are easy to desync during rapid agent work.
-3. Whether active strategy config stays in `renquant-orchestrator` or becomes
-   `renquant-strategy-104`. I recommend keeping it in orchestrator until the
-   pipeline contracts stabilize.
+3. Remote creation mechanism: `gh` is not installed locally as of
+   2026-05-25, so GitHub repo creation needs either `gh` installation/login,
+   pre-created empty remotes, or a GitHub token for API-based creation.
 
 ## Acceptance Criteria For The Split
 

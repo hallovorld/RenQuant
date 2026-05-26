@@ -6,6 +6,10 @@ This manifest maps the current monorepo paths to the target physical repos.
 It is intentionally conservative: move only committed source first, then bring
 data and artifacts through explicit manifests.
 
+The active `/Users/renhao/git/github/RenQuant` repo is never deleted or
+emptied. It remains the umbrella/orchestrator and rollback source. Physical
+subrepos are created beside it.
+
 ## Target Mapping
 
 | Current Path | Target Repo | Notes |
@@ -48,6 +52,9 @@ data and artifacts through explicit manifests.
 | `artifacts/` | `renquant-artifacts` via manifest | Exclude ad hoc experiments until classified. |
 | `backtesting/renquant_104/artifacts/` | `renquant-artifacts` via manifest | Accepted/staging/shadow registries only. |
 | `backtesting/renquant_104/models/` | `renquant-artifacts` or `model-gbdt` fixtures | Per-ticker policy metadata needs review; many files are generated. |
+| `backtesting/renquant_104/strategy_config.json` | `renquant-strategy-104` | Active policy config. |
+| `backtesting/renquant_104/strategy_config.golden.json` | `renquant-strategy-104` | Golden policy config. |
+| `backtesting/renquant_104/strategy_config.shadow.json` | `renquant-strategy-104` | Shadow policy config if present. |
 | `Notebooks/` | `renquant-research` | No prod dependency. |
 | `doc/` | `renquant-orchestrator` initially | Later split to docs if useful. |
 | `tests/` | split by owner | Integration tests stay in umbrella. |
@@ -76,15 +83,15 @@ coordination overhead:
 1. `renquant-common`
 2. `renquant-model-gbdt`
 3. `renquant-model-patchtst`
-4. `renquant-pipeline`
-5. `renquant-execution`
-6. `renquant-backtesting`
-7. `renquant-base-data`
-8. `renquant-artifacts`
-9. `RenQuant` as umbrella/orchestrator
+4. `renquant-strategy-104`
+5. `renquant-pipeline`
+6. `renquant-execution`
+7. `renquant-backtesting`
+8. `renquant-base-data`
+9. `renquant-artifacts`
+10. `RenQuant` as permanent umbrella/orchestrator
 
-Defer `renquant-research` and `renquant-strategy-104` until the first wave can
-run CI.
+Defer `renquant-research` until the first wave can run CI.
 
 ## Repo Creation Preflight
 
@@ -110,6 +117,7 @@ cd /Users/renhao/git/github
 git clone RenQuant renquant-common
 git clone RenQuant renquant-model-gbdt
 git clone RenQuant renquant-model-patchtst
+git clone RenQuant renquant-strategy-104
 git clone RenQuant renquant-pipeline
 git clone RenQuant renquant-execution
 git clone RenQuant renquant-backtesting
@@ -123,6 +131,7 @@ single-prefix repos and do multi-prefix repos with a clean archive import
 first, preserving source commit references in the initial commit message.
 
 Do not run history-rewriting commands in the active `RenQuant` working tree.
+Do not delete the active `RenQuant` working tree.
 
 ## Boundary Tests To Add
 
@@ -131,11 +140,16 @@ Each repo needs an import-boundary test. Examples:
 - `renquant-common`: importing the package must not import `alpaca`, `xgboost`,
   `torch`, `lean`, or broker modules.
 - `renquant-model-gbdt`: must not import `live`, broker modules, or QP order
-  emitters.
+  emitters. It must express train/score/validate as `renquant-common`
+  pipelines.
 - `renquant-model-patchtst`: must not import `live`, broker modules, or GBDT
-  training internals.
+  training internals. It must express train/score/validate as
+  `renquant-common` pipelines.
+- `renquant-strategy-104`: must not import model training, broker adapters, or
+  generated data/artifact files.
 - `renquant-pipeline`: may import model scorer interfaces, but not model
-  training modules.
+  training modules. Runtime inference must use `renquant-common` pipeline
+  primitives.
 - `renquant-execution`: must not import model training modules or notebooks.
 - `renquant-backtesting`: must not import live broker credentials or order
   submitters.

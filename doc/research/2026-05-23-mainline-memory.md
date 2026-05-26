@@ -25,8 +25,13 @@ Make RenQuant 104 scientifically trustworthy end to end:
 cleanup. `model-gbdt` means the current production panel-LTR / GBDT model
 line. The current `RenQuant` repo should become an umbrella/orchestrator repo
 that pins separate repos for common code, base data, GBDT model training,
-PatchTST/PatchTXT training, pipeline/runtime logic, execution, backtesting,
-and artifact registries. The initial RFC and migration manifest are:
+PatchTST/PatchTXT training, strategy-104 policy, pipeline/runtime logic,
+execution, backtesting, and artifact registries. `renquant-orchestrator`
+also owns local assembly into the LEAN runtime. Every repo must follow the
+pipeline pattern: `renquant-common` owns generic `Task` / `Job` / `Pipeline`
+primitives, and training/inference/execution repos compose those primitives
+instead of inventing their own orchestration. The initial RFC and migration
+manifest are:
 
 - `doc/arch/subrepo-split-rfc.md`
 - `doc/arch/subrepo-migration-manifest.md`
@@ -34,7 +39,9 @@ and artifact registries. The initial RFC and migration manifest are:
 Do not move files from the dirty working tree into new repos. Generate physical
 repos from committed `HEAD`, then deliberately copy classified dirty files only
 after owner review. Large `data/` and `artifacts/` contents must become
-DVC/LFS/object-store manifests, not ordinary Git payload.
+DVC/LFS/object-store manifests, not ordinary Git payload. Never delete or empty
+`/Users/renhao/git/github/RenQuant`; it remains the umbrella/orchestrator and
+rollback source.
 
 ## Current Truth
 
