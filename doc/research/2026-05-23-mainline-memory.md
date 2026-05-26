@@ -64,10 +64,11 @@ runtime inference, execution, backtesting parity, and daily-contract assembly:
   admission locally.
 - `renquant-execution` commit `6623daf`: paper, Alpaca, read-only/shadow
   broker factory; order normalization requires ticker/action/quantity.
-- `renquant-orchestrator` commit `e85499c`: daily-contract path rejects
+- `renquant-orchestrator` commit `e6f16ce`: daily-contract path rejects
   unattributed order intents before execution and persists attributed intents
   in the run bundle. The smoke path now uses `PanelScoringJob`, not a hand
-  written score/select fixture.
+  written score/select fixture. GitHub Actions CI now checks out all sibling
+  repos required by this multi-repo dependency graph.
 - `renquant-base-data` commit `79da0c6` and `renquant-artifacts` commit
   `cf2c85d`: manifest resolver pipelines fail closed on missing/ambiguous
   data or artifact manifests.
