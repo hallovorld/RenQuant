@@ -17,6 +17,7 @@ from kernel.pipeline.task_candidates import (  # noqa: E402
     AssembleCandidateTask,
     ScoreBuyTask,
 )
+from kernel.pipeline.task_sell import ScoreModelTask  # noqa: E402
 from kernel.selection import CandidateResult  # noqa: E402
 
 
@@ -82,7 +83,10 @@ def test_score_buy_task_stamps_expected_return_horizon(monkeypatch) -> None:
     monkeypatch.setattr(models, "score_artifact", fake_score_artifact)
     tc = TickerInferenceContext(
         ticker="AAA",
-        ohlcv={},
+        ohlcv={
+            "SPY": pd.DataFrame({"close": [100.0]}, index=[pd.Timestamp("2026-05-25")]),
+            "AAA": pd.DataFrame({"close": [100.0]}, index=[pd.Timestamp("2026-05-25")]),
+        },
         model={"policy_type": "xgboost"},
         config={
             "rotation": {"target_horizon_days": 60},
@@ -101,6 +105,51 @@ def test_score_buy_task_stamps_expected_return_horizon(monkeypatch) -> None:
     assert tc._expected_return_horizon_days == 60  # noqa: SLF001
     assert tc.candidate.expected_return == 0.04
     assert tc.candidate.expected_return_horizon_days == 60
+
+
+def test_sell_score_model_task_stamps_holding_expected_return_horizon(monkeypatch) -> None:
+    import kernel.models as models  # noqa: PLC0415
+
+    def fake_score_artifact(model, row, *, holdings, horizon_days):
+        assert horizon_days == 60
+        return SimpleNamespace(
+            signal="hold",
+            raw_score=0.1,
+            rank_score=0.57,
+            expected_return=0.025,
+        )
+
+    monkeypatch.setattr(models, "score_artifact", fake_score_artifact)
+    holding = HoldingState(
+        entry_price=100.0,
+        entry_date=datetime.date(2026, 4, 1),
+        high_watermark=106.0,
+        shares=1.0,
+    )
+    tc = TickerInferenceContext(
+        ticker="AAA",
+        ohlcv={
+            "SPY": pd.DataFrame({"close": [100.0]}, index=[pd.Timestamp("2026-05-25")]),
+            "AAA": pd.DataFrame({"close": [100.0]}, index=[pd.Timestamp("2026-05-25")]),
+        },
+        model={"policy_type": "xgboost"},
+        config={"rotation": {"target_horizon_days": 60}},
+        today=datetime.date(2026, 5, 25),
+        regime="BULL_CALM",
+        regime_params={},
+        exit_params={},
+        holding=holding,
+        feature_cache_frame=pd.DataFrame(
+            [{"x": 1.0}],
+            index=[pd.Timestamp("2026-05-25")],
+        ),
+    )
+
+    ScoreModelTask().run(tc)
+
+    assert tc.holding.rank_score == 0.57
+    assert tc.holding.expected_return == 0.025
+    assert tc.holding.expected_return_horizon_days == 60
 
 
 def test_benchmark_sleeve_trace_row_is_not_marked_watchlist_member() -> None:

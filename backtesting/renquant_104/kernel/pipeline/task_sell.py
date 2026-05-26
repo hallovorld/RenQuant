@@ -156,6 +156,7 @@ class ScoreModelTask(Task):
             if tc.holding is not None:
                 tc.holding.rank_score      = float(sr.rank_score)
                 tc.holding.expected_return = float(sr.expected_return)
+                tc.holding.expected_return_horizon_days = rotation_horizon
         else:
             tc.model_action = "hold"
 
