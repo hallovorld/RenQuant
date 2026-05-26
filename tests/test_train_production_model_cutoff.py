@@ -290,10 +290,29 @@ class TestStrictContractStamp:
         assert meta["sentiment_runtime_gate_contract"] == "trained_zeroing"
         assert meta["sentiment_runtime_gate_zeroed_rows"] == 1
 
-    def test_sentiment_gate_requires_complete_regime_labels(self):
+    def test_sentiment_gate_zeroes_leading_warmup_missing_regime(self):
         train = pd.DataFrame({
             "ticker": ["AAA"],
             "date": [pd.Timestamp("2024-01-02")],
+            "mean_sentiment": [0.7],
+            "fwd_60d_excess": [0.01],
+        })
+
+        out, meta = TPM.apply_sentiment_training_gate(
+            train,
+            ["mean_sentiment"],
+            {},
+            {pd.Timestamp("2024-01-03"): "BEAR"},
+        )
+
+        assert out.loc[0, "mean_sentiment"] == 0.0
+        assert meta["sentiment_runtime_gate_warmup_zeroed_rows"] == 1
+        assert meta["sentiment_runtime_gate_missing_regime_policy"] == "warmup_zero_only"
+
+    def test_sentiment_gate_requires_complete_non_warmup_regime_labels(self):
+        train = pd.DataFrame({
+            "ticker": ["AAA"],
+            "date": [pd.Timestamp("2024-01-04")],
             "mean_sentiment": [0.7],
             "fwd_60d_excess": [0.01],
         })

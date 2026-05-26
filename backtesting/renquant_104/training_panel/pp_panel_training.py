@@ -46,6 +46,42 @@ from .context import PanelTrainingContext, TickerPanelContext
 log = logging.getLogger("training_panel.pipeline")
 
 
+def _sentiment_gate_masks(
+    row_dates: pd.Series,
+    regime_by_date: dict,
+) -> tuple[pd.Series, pd.Series, int]:
+    """Return row-level regime masks for the training sentiment gate.
+
+    The production regime chain needs a warmup window before the first valid
+    label. Rows before that first valid regime cannot be assigned a live
+    regime, so sentiment is conservatively zeroed for them. Missing labels
+    inside or after the valid regime span remain a hard contract failure.
+    """
+    lookup = {
+        pd.Timestamp(k).normalize(): str(v)
+        for k, v in regime_by_date.items()
+        if v is not None
+    }
+    regimes = row_dates.map(lookup)
+    missing_mask = regimes.isna()
+    if not bool(missing_mask.any()):
+        return regimes, pd.Series(False, index=row_dates.index), 0
+    if not lookup:
+        raise RuntimeError(
+            "sentiment runtime gate contract requires production regime labels"
+        )
+    first_regime_date = min(lookup)
+    warmup_missing = missing_mask & (row_dates < first_regime_date)
+    non_warmup_missing = missing_mask & ~warmup_missing
+    if bool(non_warmup_missing.any()):
+        missing = int(non_warmup_missing.sum())
+        raise RuntimeError(
+            "sentiment runtime gate contract missing regime labels for "
+            f"{missing}/{len(row_dates)} non-warmup training rows"
+        )
+    return regimes, warmup_missing, int(warmup_missing.sum())
+
+
 def _apply_training_sentiment_gate(
     panel: pd.DataFrame,
     feature_cols: list[str],
@@ -67,22 +103,14 @@ def _apply_training_sentiment_gate(
             "sentiment runtime gate contract requires production regime labels"
         )
 
-    lookup = {
-        pd.Timestamp(k).normalize(): str(v)
-        for k, v in regime_by_date.items()
-        if v is not None
-    }
     row_dates = pd.to_datetime(panel["date"]).dt.normalize()
-    row_regimes = row_dates.map(lookup)
-    missing = int(row_regimes.isna().sum())
-    if missing:
-        raise RuntimeError(
-            "sentiment runtime gate contract missing regime labels for "
-            f"{missing}/{len(panel)} training rows"
-        )
+    row_regimes, warmup_missing, warmup_zeroed = _sentiment_gate_masks(
+        row_dates,
+        regime_by_date,
+    )
 
     disabled = set(req["disabled_regimes"])
-    mask = row_regimes.isin(disabled)
+    mask = row_regimes.isin(disabled) | warmup_missing
     out = panel.copy()
     for col in req["sentiment_feature_cols"]:
         if col in out.columns:
@@ -93,6 +121,8 @@ def _apply_training_sentiment_gate(
         "sentiment_runtime_gate_feature_cols": list(req["sentiment_feature_cols"]),
         "sentiment_runtime_gate_disabled_regimes": list(req["disabled_regimes"]),
         "sentiment_runtime_gate_zeroed_rows": int(mask.sum()),
+        "sentiment_runtime_gate_warmup_zeroed_rows": int(warmup_zeroed),
+        "sentiment_runtime_gate_missing_regime_policy": "warmup_zero_only",
         "sentiment_runtime_gate_policy": req["effective_policy"],
     }
 

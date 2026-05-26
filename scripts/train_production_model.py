@@ -555,22 +555,18 @@ def apply_sentiment_training_gate(
     if not regime_by_date:
         raise ValueError("sentiment runtime gate requires regime labels")
 
-    lookup = {
-        pd.Timestamp(k).normalize(): str(v)
-        for k, v in regime_by_date.items()
-        if v is not None
-    }
     row_dates = pd.to_datetime(train["date"]).dt.normalize()
-    row_regimes = row_dates.map(lookup)
-    missing = int(row_regimes.isna().sum())
-    if missing:
-        raise ValueError(
-            "sentiment runtime gate missing regime labels for "
-            f"{missing}/{len(train)} training rows"
+    from training_panel.pp_panel_training import _sentiment_gate_masks  # noqa: PLC0415
+    try:
+        row_regimes, warmup_missing, warmup_zeroed = _sentiment_gate_masks(
+            row_dates,
+            regime_by_date,
         )
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
 
     disabled = set(req["disabled_regimes"])
-    mask = row_regimes.isin(disabled)
+    mask = row_regimes.isin(disabled) | warmup_missing
     out = train.copy()
     for col in req["sentiment_feature_cols"]:
         if col in out.columns:
@@ -581,6 +577,8 @@ def apply_sentiment_training_gate(
         "sentiment_runtime_gate_feature_cols": list(req["sentiment_feature_cols"]),
         "sentiment_runtime_gate_disabled_regimes": list(req["disabled_regimes"]),
         "sentiment_runtime_gate_zeroed_rows": int(mask.sum()),
+        "sentiment_runtime_gate_warmup_zeroed_rows": int(warmup_zeroed),
+        "sentiment_runtime_gate_missing_regime_policy": "warmup_zero_only",
         "sentiment_runtime_gate_policy": req["effective_policy"],
     }
 

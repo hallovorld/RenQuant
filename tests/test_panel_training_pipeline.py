@@ -392,11 +392,37 @@ class TestTrainingSentimentGate:
         assert meta["sentiment_runtime_gate_zeroed_rows"] == 1
         assert "BULL_CALM" in meta["sentiment_runtime_gate_disabled_regimes"]
 
-    def test_training_sentiment_gate_requires_complete_regime_labels(self):
+    def test_training_sentiment_gate_zeroes_leading_warmup_missing_regime(self):
         from training_panel.pp_panel_training import _apply_training_sentiment_gate
 
         panel = pd.DataFrame({
             "date": pd.to_datetime(["2026-01-02"]),
+            "ticker": ["AAA"],
+            "sentiment_pos_share": [0.8],
+        })
+        cfg = {
+            "ranking": {"panel_scoring": {"sentiment": {
+                "enabled": True,
+                "regime_policy": {"BULL_CALM": False},
+            }}},
+        }
+
+        out, meta = _apply_training_sentiment_gate(
+            panel,
+            ["sentiment_pos_share"],
+            cfg,
+            {pd.Timestamp("2026-01-05"): "BULL_CALM"},
+        )
+
+        assert out.loc[0, "sentiment_pos_share"] == pytest.approx(0.0)
+        assert meta["sentiment_runtime_gate_warmup_zeroed_rows"] == 1
+        assert meta["sentiment_runtime_gate_missing_regime_policy"] == "warmup_zero_only"
+
+    def test_training_sentiment_gate_requires_complete_non_warmup_regime_labels(self):
+        from training_panel.pp_panel_training import _apply_training_sentiment_gate
+
+        panel = pd.DataFrame({
+            "date": pd.to_datetime(["2026-01-06"]),
             "ticker": ["AAA"],
             "sentiment_pos_share": [0.8],
         })
