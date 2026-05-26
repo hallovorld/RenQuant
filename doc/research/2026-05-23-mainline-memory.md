@@ -19,6 +19,23 @@ Make RenQuant 104 scientifically trustworthy end to end:
 5. No silent fallback: missing metadata, weaker score fallback, missing sector
    metadata, or failed artifact evidence blocks buy/full paths.
 
+## P0 Architecture Task: Physical Subrepo Split
+
+2026-05-25 user clarified this is a physical repository split, not a folder
+cleanup. `model-gbdt` means the current production panel-LTR / GBDT model
+line. The current `RenQuant` repo should become an umbrella/orchestrator repo
+that pins separate repos for common code, base data, GBDT model training,
+PatchTST/PatchTXT training, pipeline/runtime logic, execution, backtesting,
+and artifact registries. The initial RFC and migration manifest are:
+
+- `doc/arch/subrepo-split-rfc.md`
+- `doc/arch/subrepo-migration-manifest.md`
+
+Do not move files from the dirty working tree into new repos. Generate physical
+repos from committed `HEAD`, then deliberately copy classified dirty files only
+after owner review. Large `data/` and `artifacts/` contents must become
+DVC/LFS/object-store manifests, not ordinary Git payload.
+
 ## Current Truth
 
 - 2026-05-25 user mandate: when the user says `daily full` / `full daily`,
