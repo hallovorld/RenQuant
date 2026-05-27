@@ -3,11 +3,36 @@
 Date: 2026-05-25 (initial draft); revised 2026-05-27 to reconcile shipped
 bootstrap state with intended contracts.
 
-Status: bootstrap executed (10 sibling repos pinned in `subrepos.lock.json`).
-Contract-first pass deferred during bootstrap; this revision is that contract
-pass, plus a backfill plan for the drift it created. Source code does **not**
-move further until §"Backfill Plan" P0 lands. New experiments / features in
-the umbrella repo are not blocked, but cross-repo refactors are.
+Status: **Backfill Plan P0–P3 COMPLETE (2026-05-27).** The contract layer
+is live and the model repos are merged. Remaining work is the functional
+lift of umbrella code (decision-tree kernel, training_panel, live, sim,
+scripts) into the subrepos — see §"Backfill Plan" status annotations and
+the functional-lift tasks.
+
+Completed this session:
+- **P0** — `renquant-common` v0.2.0: Scorer Protocol + `load_scorer`
+  registry, `RegimeLabel` enum + `validate_regime_params`, Pydantic
+  schemas (ArtifactManifest/AcceptanceReport/DecisionTraceRow/…),
+  `renquant_common.stats` (DSR/PBO/Wilcoxon/HAC/regime_stratified),
+  canonical `PurgedKFold`. API-snapshot test.
+- **P1** — XGBoost scorer relocated to the model repo; `renquant-pipeline`
+  consumes only via `load_scorer`; `xgboost_scorer.py` leak deleted;
+  `RegimeLabel` adopted in `context.py`.
+- **P2** — AST import-boundary tests in pipeline + backtesting; raw-regime
+  string grep test in common (caught + fixed 2 real drift instances in
+  strategy-104 and artifacts); `validate_regime_params` wired into
+  strategy-104; artifacts macro defaults keyed off `RegimeLabel`.
+- **P3** — `renquant-model` created (v0.1.0), merging gbdt + patchtst with
+  git-history preserved via filter-repo subtree merge; both old repos
+  archived (`MIGRATED_TO_renquant-model.md`, `archived_subrepos` in lock);
+  pipeline repointed; scorer entry point now owned by `renquant-model`.
+  Namespace note: the two family packages stay top-level
+  (`renquant_model_gbdt`, `renquant_model_patchtst`) co-located rather
+  than deep-renamed to `renquant_model.{gbdt,patchtst}`, to preserve the
+  working entry points / consumer wiring from P1. Consolidation goal met;
+  nested namespace is a deferred non-breaking refactor.
+
+Cross-repo refactors are now unblocked (contracts are stable).
 
 ## Goal
 
