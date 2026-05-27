@@ -109,7 +109,7 @@ boundary-clean, with the umbrella keeping its working copy until cutover.
 Only pure leaves (no internal-kernel imports) are eligible per slice; a
 module lifts once its kernel dependencies are already lifted.
 
-- `renquant-pipeline` kernel modules lifted so far (umbrella pin `4989fc3`):
+- `renquant-pipeline` kernel modules lifted so far (umbrella pin `80c49dc`):
   - Slice 1 (sizing/exits): `kelly`, `exit_types`, `market_gates`,
     `vol_target`, `sizing`.
   - Slice 2 (regime/intraday/config/safety/portfolio): `regime_resolver`,
@@ -134,12 +134,35 @@ module lifts once its kernel dependencies are already lifted.
     is re-exported from common's `pipeline` submodule (not yet in common's
     top-level `__all__`) — promoting it to the package API is a future additive
     common change.
-  - **NOW UNBLOCKED for the next runtime slice:** the QP Tasks/Jobs (`job_qp`,
-    `task_joint_qp`, `portfolio_qp/tasks.py`) and the `kernel/pipeline/*`
-    Task/Job modules — they import `kernel.pipeline.{context,pipeline,atoms}`,
-    all of which now exist in the pipeline repo. The decision is whether the
-    next lift targets the cross-sectional Jobs (regime/gates/ranking/selection)
-    or the QP/joint-actions Jobs first.
+  - Slice 5 (model scoring + execution backend, verbatim): `models.py`
+    (artifact scoring incl. JSON-tree xgboost traversal — no xgboost import,
+    boundary holds) and the `execution/` package (`types`, `fees`, `slippage`,
+    `t2_settlement`, `backend`, `backend_sim`, `backend_lean`; relative imports,
+    no module-level LEAN import). `pytest -q` = 87 passed.
+  - **Next-slice dependency map (audited 2026-05-27).** The `kernel/pipeline/*`
+    Tasks split by remaining unlifted deps:
+    - Already-clean Tasks (closure fully lifted): `task_data_freshness`,
+      `task_risk_gates`, `task_monitor`, `task_trend_overlay`, `task_spy_regime`,
+      `task_short_cover`, `task_buy_quality_gates`, `task_gates`,
+      `task_limit_sells`, `task_panel_veto`, `task_post_stop_cooldown`,
+      `task_trim`, `task_drawdown*`, `task_dd_flatten`, `task_benchmark_sleeve`,
+      `task_joint_actions`, `task_ranking`.
+    - Blocked on the **data/regime/indicators tier** (still in umbrella;
+      `regime.py` ↔ `indicators.py` are a mutual-import cycle and use absolute
+      `kernel.X` imports → require an import-rewrite slice, not verbatim):
+      `task_candidates` (indicators/models), `task_regime`/`task_selection`/
+      `task_rotation`/`task_topup` (regime), `task_sell`/`task_panel_conviction_xs`
+      (indicators). `data.py`/`data_cache.py` need only `net_safety` (lifted)
+      but also need the absolute→relative import rewrite.
+    - Blocked on other subsystems: `task_short_candidates`
+      (`panel_pipeline.job_panel_scoring`), `task_score_distribution`
+      (`decision_trace`), QP Tasks/Jobs (`job_qp`, `task_joint_qp`,
+      `portfolio_qp/tasks.py` — need context/pipeline, now present).
+    - **Mechanism shift required next:** the remaining modules use absolute
+      `kernel.X` imports, so the next slice introduces a copy-**and-rewrite**
+      (absolute→`renquant_pipeline.kernel` / relative) pass with behavioral
+      parity tests, replacing the byte-identical verbatim discipline used for
+      slices 1–5's pure/relative-import leaves.
 - `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
   feature/data-source lift already merged to its `main`; umbrella pin
   advanced 2026-05-27 (was stale at `8eacd53`).
