@@ -100,6 +100,42 @@ QP/selection, rotation/exits, LEAN/live adapter reuse, then full
 daily replacement. Each slice must add parity tests before updating the
 umbrella lock.
 
+### 2026-05-27 Functional-lift slice progress
+
+The functional lift is proceeding as **copy-not-move** slices: production
+kernel modules are copied verbatim from `backtesting/renquant_104/kernel/`
+into the owning subrepo's package, verified byte-identical + import-clean +
+boundary-clean, with the umbrella keeping its working copy until cutover.
+Only pure leaves (no internal-kernel imports) are eligible per slice; a
+module lifts once its kernel dependencies are already lifted.
+
+- `renquant-pipeline` kernel leaves lifted so far (umbrella pin `38b44b0`):
+  - Slice 1 (sizing/exits): `kelly`, `exit_types`, `market_gates`,
+    `vol_target`, `sizing`.
+  - Slice 2 (regime/intraday/config/safety/portfolio): `regime_resolver`,
+    `regime_hmm`, `intraday`, `intraday_wash`, `config`,
+    `config_consistency`, `net_safety`, `realized_pnl`, `portfolio`,
+    `scoring`.
+  - Slice 3 (QP engine math + selection/rotation/exits): `portfolio_qp.{
+    qp_solver, signal_combiner, cvxportfolio_backend}`, `selection`,
+    `rotation`, `rotation_convex`, `exits`. Tests: import-smoke for all +
+    a QP-solver behavioral sanity (higher-μ asset gets ≥ weight, budget
+    respected). `pytest -q` = 67 passed.
+  - **NOT yet lifted (need the pipeline orchestration core first):** the QP
+    Tasks/Jobs (`job_qp`, `task_joint_qp`, `portfolio_qp/tasks.py`) and every
+    `kernel/pipeline/*` Task/Job — they import
+    `kernel.pipeline.{context,pipeline,atoms}`. The orchestration-core lift
+    (Job/Task base + `InferenceContext` + atoms) is the gating prerequisite
+    for the next runtime slice.
+- `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
+  feature/data-source lift already merged to its `main`; umbrella pin
+  advanced 2026-05-27 (was stale at `8eacd53`).
+- In flight elsewhere (not this slice): `renquant-backtesting` has an
+  uncommitted forensics lift parked on `feature/lift-bt-forensics`;
+  `renquant-model` is missing scaffold files the doctor requires
+  (`CLAUDE.md`, `RENQUANT_REPOS.md`, `renquant_repo.yml`,
+  `.github/workflows/ci.yml`) — a P3-merge gap to close.
+
 ## Current Truth
 
 - 2026-05-25 user mandate: when the user says `daily full` / `full daily`,
