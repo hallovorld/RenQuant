@@ -44,7 +44,7 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "cec48fd5b8b23e9b26b49e1443aaabe44bcb9c02",
+      "commit": "4eb4837fa9117b617b6cbbb7c42af1fbf7d32e20",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -103,14 +103,14 @@
   "archived_subrepos": [
     {
       "name": "renquant-model-gbdt",
-      "role": "ARCHIVED — merged into renquant-model (RFC P3); kept for rollback",
+      "role": "ARCHIVED \u2014 merged into renquant-model (RFC P3); kept for rollback",
       "remote": "https://github.com/hallovorld/renquant-model-gbdt",
       "merged_into": "renquant-model",
       "status": "archived"
     },
     {
       "name": "renquant-model-patchtst",
-      "role": "ARCHIVED — merged into renquant-model (RFC P3); kept for rollback",
+      "role": "ARCHIVED \u2014 merged into renquant-model (RFC P3); kept for rollback",
       "remote": "https://github.com/hallovorld/renquant-model-patchtst",
       "merged_into": "renquant-model",
       "status": "archived"
