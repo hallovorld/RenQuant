@@ -109,7 +109,7 @@ boundary-clean, with the umbrella keeping its working copy until cutover.
 Only pure leaves (no internal-kernel imports) are eligible per slice; a
 module lifts once its kernel dependencies are already lifted.
 
-- `renquant-pipeline` kernel leaves lifted so far (umbrella pin `38b44b0`):
+- `renquant-pipeline` kernel modules lifted so far (umbrella pin `4989fc3`):
   - Slice 1 (sizing/exits): `kelly`, `exit_types`, `market_gates`,
     `vol_target`, `sizing`.
   - Slice 2 (regime/intraday/config/safety/portfolio): `regime_resolver`,
@@ -121,12 +121,25 @@ module lifts once its kernel dependencies are already lifted.
     `rotation`, `rotation_convex`, `exits`. Tests: import-smoke for all +
     a QP-solver behavioral sanity (higher-μ asset gets ≥ weight, budget
     respected). `pytest -q` = 67 passed.
-  - **NOT yet lifted (need the pipeline orchestration core first):** the QP
-    Tasks/Jobs (`job_qp`, `task_joint_qp`, `portfolio_qp/tasks.py`) and every
-    `kernel/pipeline/*` Task/Job — they import
-    `kernel.pipeline.{context,pipeline,atoms}`. The orchestration-core lift
-    (Job/Task base + `InferenceContext` + atoms) is the gating prerequisite
-    for the next runtime slice.
+  - Slice 4 (orchestration core, `kernel/pipeline/` subpackage):
+    `pipeline.py` + `atoms/`. **This slice reconciles onto `renquant_common`
+    instead of copying verbatim** — `pipeline.py` re-exports the canonical
+    `Task`/`Job`/`run_parallel`/`ParallelTimeoutError`/`resolve_workers` from
+    common and adds only a thin `TickerJob` + a config-deriving `run_parallel`
+    wrapper, collapsing the umbrella's duplicate executor (a §5.13.5 cross-repo
+    one-impl violation). `atoms/*` are verbatim. `InferenceContext` /
+    `TickerInferenceContext` were already lifted to `renquant_pipeline.context`
+    in P1 (field-identical to the umbrella's current `context.py`; only delta
+    is `RegimeLabel` adoption). `pytest -q` = 76 passed. Note: `resolve_workers`
+    is re-exported from common's `pipeline` submodule (not yet in common's
+    top-level `__all__`) — promoting it to the package API is a future additive
+    common change.
+  - **NOW UNBLOCKED for the next runtime slice:** the QP Tasks/Jobs (`job_qp`,
+    `task_joint_qp`, `portfolio_qp/tasks.py`) and the `kernel/pipeline/*`
+    Task/Job modules — they import `kernel.pipeline.{context,pipeline,atoms}`,
+    all of which now exist in the pipeline repo. The decision is whether the
+    next lift targets the cross-sectional Jobs (regime/gates/ranking/selection)
+    or the QP/joint-actions Jobs first.
 - `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
   feature/data-source lift already merged to its `main`; umbrella pin
   advanced 2026-05-27 (was stale at `8eacd53`).
