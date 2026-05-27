@@ -520,8 +520,9 @@ def render(phases: list[dict], samples: list[dict], out_path: Path,
     if backends_present:
         ymin = min(bm[b].get("cpcv_mean", 0) - bm[b].get("cpcv_std", 0)
                    for b in backends_present)
-        ymax = max(bm[b].get("train_ic", 0)
-                   for b in backends_present if bm[b].get("train_ic"))
+        ymax = max((bm[b].get("train_ic", 0)
+                    for b in backends_present if bm[b].get("train_ic")),
+                   default=0.0)
         ax_b.set_ylim(min(ymin, -0.02) * 1.3, max(ymax, 0.10) * 1.2)
     ax_b.legend(loc="upper right", frameon=False, fontsize=8)
 

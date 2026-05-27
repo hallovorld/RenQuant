@@ -83,6 +83,16 @@ def _yf_translate(symbol: str) -> str:
     return symbol
 
 
+# Repo-root-anchored default OHLCV store. 2026-05-27: the old cwd-relative
+# default ("data/ohlcv") silently pointed at a different, truncated store when a
+# sim/script ran from the strategy dir (backtesting/renquant_104/data/ohlcv has
+# only the last ~year), vs the deep repo-root store. That produced spurious
+# empty-feature/zero-trade runs. Anchoring to the repo root makes the default
+# cwd-independent; production (which cd's to repo root) is unaffected. Callers
+# can still pass an explicit data_dir to override.
+_REPO_ROOT_OHLCV = Path(__file__).resolve().parents[3] / "data" / "ohlcv"
+
+
 class LocalStore:
     """Read/write OHLCV data as Parquet files.
 
@@ -91,8 +101,8 @@ class LocalStore:
         {data_dir}/{SYMBOL}/{timeframe}.parquet
     """
 
-    def __init__(self, data_dir: Path | str = "data/ohlcv"):
-        self.data_dir = Path(data_dir)
+    def __init__(self, data_dir: Path | str | None = None):
+        self.data_dir = Path(data_dir) if data_dir is not None else _REPO_ROOT_OHLCV
 
     def _path(self, symbol: str, timeframe: str = "1d") -> Path:
         return self.data_dir / symbol.upper() / f"{timeframe}.parquet"

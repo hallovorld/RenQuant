@@ -39,6 +39,43 @@ def _snapshot_df():
                          index=[pd.Timestamp("2026-04-24")])
 
 
+class TestLocalStoreCwdIndependenceRegressionGuard:
+    """AUDIT REGRESSION GUARD (2026-05-27).
+
+    Invariant: ``LocalStore``'s default OHLCV path is cwd-INDEPENDENT and
+    anchored to the repo-root ``data/ohlcv``. The pre-fix default was the
+    cwd-relative string ``"data/ohlcv"``; a sim/script run from the strategy
+    dir then silently loaded the shallow ``backtesting/renquant_104/data/ohlcv``
+    store (≈1 year) instead of the deep repo-root store, producing spurious
+    empty-feature / zero-trade walk-forward runs. See
+    doc/research/2026-05-27-wf-sharpe-audit.md.
+    """
+
+    def test_default_store_path_is_absolute_repo_root(self):
+        from kernel.data import LocalStore
+        store = LocalStore()
+        assert store.data_dir.is_absolute(), (
+            f"default data_dir must be absolute (cwd-independent), got {store.data_dir}"
+        )
+        # Anchored to repo-root data/ohlcv, NOT the strategy-dir store.
+        assert store.data_dir.name == "ohlcv"
+        assert store.data_dir.parent.name == "data"
+        assert store.data_dir.parent.parent.name == "RenQuant", (
+            f"default store must resolve under repo root, got {store.data_dir}"
+        )
+
+    def test_default_store_path_unchanged_by_cwd(self, tmp_path, monkeypatch):
+        from kernel.data import LocalStore
+        before = LocalStore().data_dir
+        monkeypatch.chdir(tmp_path)
+        after = LocalStore().data_dir
+        assert before == after, "default store path must not depend on cwd"
+
+    def test_explicit_data_dir_override_still_honored(self):
+        from kernel.data import LocalStore
+        assert LocalStore("foo/bar").data_dir == Path("foo/bar")
+
+
 class TestSkipTickers:
     def test_skip_ticker_returns_none_no_fetch(self, tmp_path):
         from kernel.data_cache import CachedStore

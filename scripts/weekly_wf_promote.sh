@@ -144,6 +144,24 @@ if [ ! -f "$STAGING_ART" ] || [ ! -f "$STAGING_CAL" ]; then
 fi
 echo "Training pipeline finished at $(date)"
 
+# ── Step 3.5: Stamp config fingerprints onto the WF manifest artifacts ────
+# 2026-05-27: the calibrated_causal manifest's per-cut scorers were created by
+# an ad-hoc path that bypassed train_production_model.py's stamp_fingerprint,
+# so config_fingerprint=None. The panel scorer's strict assert_consistent then
+# fail-closed EVERY bar (panel_scorer_config_mismatch → "Cleared N buy
+# candidate(s)") → zero trades → the gate could never pass ANY model. Stamp the
+# manifest before the gate runs. Idempotent: already-stamped artifacts are a
+# no-op. Best-effort (recipe-mismatch is surfaced by the gate's own check), so
+# this never blocks the weekly run.
+WF_MANIFEST="artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.json"
+echo "--- Step 3.5: Stamp WF manifest fingerprints ($WF_MANIFEST) ---"
+if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
+    --manifest "$WF_MANIFEST" \
+    --fingerprint-config strategy_config.json \
+    --reference-artifact artifacts/prod/panel-ltr.alpha158_fund.json; then
+    echo "WARN: WF manifest stamping reported an issue (recipe mismatch?); the gate's own contract check will handle it."
+fi
+
 # ── Step 4: Run WF gate (3-cut WF + §5.2 sanity battery) ──────────────────
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
 if ! "$PYTHON" scripts/run_wf_gate.py \
