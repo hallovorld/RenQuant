@@ -62,7 +62,7 @@ def main() -> int:
         "--as-of",
         as_of,
         "--code-commit",
-        _entry("renquant-model-gbdt")["commit"],
+        _entry("renquant-model")["commit"],
         "--broker-type",
         args.broker_type,
     ]
