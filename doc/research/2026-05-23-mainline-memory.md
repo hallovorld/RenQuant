@@ -109,7 +109,7 @@ boundary-clean, with the umbrella keeping its working copy until cutover.
 Only pure leaves (no internal-kernel imports) are eligible per slice; a
 module lifts once its kernel dependencies are already lifted.
 
-- `renquant-pipeline` kernel modules lifted so far (umbrella pin `c846d95`):
+- `renquant-pipeline` kernel modules lifted so far (umbrella pin `3aeb532`):
   - Slice 1 (sizing/exits): `kelly`, `exit_types`, `market_gates`,
     `vol_target`, `sizing`.
   - Slice 2 (regime/intraday/config/safety/portfolio): `regime_resolver`,
@@ -172,16 +172,27 @@ module lifts once its kernel dependencies are already lifted.
     `pytest -q` = 92 passed. **Scope correction** caught by the import-boundary
     test: `data.py`/`data_cache.py` import the alpaca SDK (ingestion) → they
     belong in `renquant-base-data`, not the pipeline; removed from this slice.
-  - **Next:** the cross-sectional Tasks/Jobs whose closures are now satisfied
-    (`task_selection`/`task_rotation`/`task_topup` need `regime`✓+`selection`✓+
-    `sizing`✓; `task_regime` needs `regime`✓+`config`✓+`regime_hmm`✓;
-    `task_candidates` needs `indicators`✓+`models`✓+`selection`✓; `task_sell`
-    needs `indicators`✓+`exits`✓). Lifting Tasks is a copy-and-rewrite step
-    (they use absolute `kernel.X` + relative `.context`/`.pipeline`). Still
-    blocked: `task_short_candidates` (`panel_pipeline`), `task_score_distribution`
-    (`decision_trace`), and the QP Tasks/Jobs (need `portfolio_qp/tasks.py`'s
-    wide closure). Data-layer (`data`/`data_cache`/`fundamentals`/`macro`/…)
-    is a separate `renquant-base-data` slice.
+  - Slice 7 (**first decision-tree Job**): the regime Job — `job_regime` +
+    `task_regime`/`task_spy_regime`/`task_trend_overlay`, under
+    `kernel/pipeline/`. Established the Task/Job lift pattern: a NEW
+    `kernel/pipeline/context.py` **re-export shim** (`from
+    renquant_pipeline.context import …`) makes the Tasks' `from .context import`
+    resolve verbatim (single source of truth, not a duplicate), so future Task
+    lifts only rewrite absolute `kernel.X` → `renquant_pipeline.kernel.X`.
+    `job_regime`/`task_trend_overlay` verbatim; `task_regime` (7) +
+    `task_spy_regime` (1) imports rewritten. Parity test drives the full Job:
+    benign→valid label, sustained crash→hard_bear+BEAR, deterministic.
+    `pytest -q` = 96 passed.
+  - **Next (decision-tree Tasks/Jobs, copy-and-rewrite via the shim):** other
+    fully-unblocked Jobs/Tasks — `task_selection`/`task_rotation`/`task_topup`
+    (`regime`✓+`selection`✓+`sizing`✓), `task_candidates`
+    (`indicators`✓+`models`✓+`selection`✓), `task_sell`/`task_panel_conviction_xs`
+    (`indicators`✓+`exits`✓), the gates/drawdown/ranking/rotation/sell Jobs.
+    Still blocked: `task_short_candidates` (`panel_pipeline` — not lifted),
+    `task_score_distribution` (`decision_trace` — verify pipeline-repo copy),
+    QP Tasks/Jobs (`portfolio_qp/{job_qp,task_joint_qp,tasks}` wide closure).
+    Data-layer (`data`/`data_cache`/`fundamentals`/`macro`/…) is a separate
+    `renquant-base-data` slice (alpaca/ingestion lives there, not pipeline).
 - `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
   feature/data-source lift already merged to its `main`; umbrella pin
   advanced 2026-05-27 (was stale at `8eacd53`).
