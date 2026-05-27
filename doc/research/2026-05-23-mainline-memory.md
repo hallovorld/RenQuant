@@ -109,7 +109,7 @@ boundary-clean, with the umbrella keeping its working copy until cutover.
 Only pure leaves (no internal-kernel imports) are eligible per slice; a
 module lifts once its kernel dependencies are already lifted.
 
-- `renquant-pipeline` kernel modules lifted so far (umbrella pin `b8e968a`):
+- `renquant-pipeline` kernel modules lifted so far (umbrella pin `d61016c`):
   - Slice 1 (sizing/exits): `kelly`, `exit_types`, `market_gates`,
     `vol_target`, `sizing`.
   - Slice 2 (regime/intraday/config/safety/portfolio): `regime_resolver`,
@@ -191,16 +191,34 @@ module lifts once its kernel dependencies are already lifted.
     full Job: HWM ratchet, halt on DD≥halt_pct, resume on recovery, resume_pct
     hysteresis, NaN-PV fail-safe (HWM preserved + buys blocked); all DC-1/Issue-07
     NaN guards preserved. `make test` = 104 passed.
-  - **Next (decision-tree Tasks/Jobs, copy-and-rewrite via the shim):** other
-    fully-unblocked Jobs/Tasks — `task_selection`/`task_rotation`/`task_topup`
-    (`regime`✓+`selection`✓+`sizing`✓), `task_candidates`
-    (`indicators`✓+`models`✓+`selection`✓), `task_sell`/`task_panel_conviction_xs`
-    (`indicators`✓+`exits`✓), the gates/ranking/rotation/sell Jobs. (drawdown Job
-    done in slice 8.) Still blocked: `task_short_candidates` (`panel_pipeline` —
-    not lifted), `task_score_distribution` (`decision_trace` — verify pipeline-repo
-    copy), QP Tasks/Jobs (`portfolio_qp/{job_qp,task_joint_qp,tasks}` wide closure).
-    Data-layer (`data`/`data_cache`/`fundamentals`/`macro`/…) is a separate
-    `renquant-base-data` slice (alpaca/ingestion lives there, not pipeline).
+  - Slices 9-15 (2026-05-27, decision-tree completion — umbrella pin
+    `d61016c`): the **entire `renquant_104` decision-tree pipeline is now
+    lifted into `renquant-pipeline`**. 9 support layer (decision_trace/
+    order_attribution/task_benchmark_sleeve/soft_exit_guards/exit_params/
+    order_dedupe); 10 gates/risk/monitor; 11 sell path; 12 candidates/ranking/
+    selection/rotation/topup/universe (+ kernel state_paths/persistence); 13
+    joint-actions + QP (+ guards-only trimmed walk_forward); 14
+    score-distribution/short-cover/execution; 15 `pp_inference`
+    InferencePipeline/SellOnlyPipeline assembly. `pytest -q` = 163 passed. Each
+    slice is copy-and-rewrite (`kernel.X`→`renquant_pipeline.kernel.X`) with
+    import-smoke + no-bare-kernel AST guard + Job-wiring/behavioral parity tests;
+    boundary AST scan green throughout.
+  - **Deliberately NOT in `renquant-pipeline` (boundary-correct):**
+    `panel_pipeline` (xgboost model scoring — consumed via the load_scorer-based
+    `renquant_pipeline.panel_scoring`), `meta_label` (xgboost meta-labeler),
+    `data`/`data_cache`/`fundamentals`/`macro`/… (alpaca ingestion → base-data),
+    `walk_forward` loader/manifest (panel_pipeline → model/backtesting),
+    `short_candidates` (depends on panel_pipeline). `pp_inference` routes panel
+    scoring through `load_scorer`; meta_label + short_candidates remain lazy +
+    OFF-by-default pending the model-integration cutover.
+  - **Remaining (Task #8 — the cutover, largest piece):** (a) model
+    integration — route `MetaLabelVetoTask` + short-candidate panel scoring
+    through `load_scorer` so `pp_inference` runs end-to-end; (b) data layer →
+    `renquant-base-data`; (c) live runner/broker → `renquant-execution`; (d)
+    sim/LEAN adapters → `renquant-backtesting`; (e) the umbrella cutover so
+    `backtesting/renquant_104` imports the pinned subrepos instead of its own
+    `kernel/` copies. Until cutover, the umbrella keeps its working copy
+    (copy-not-move) and remains the production path + rollback source.
 - `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
   feature/data-source lift already merged to its `main`; umbrella pin
   advanced 2026-05-27 (was stale at `8eacd53`).
