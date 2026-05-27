@@ -109,7 +109,7 @@ boundary-clean, with the umbrella keeping its working copy until cutover.
 Only pure leaves (no internal-kernel imports) are eligible per slice; a
 module lifts once its kernel dependencies are already lifted.
 
-- `renquant-pipeline` kernel modules lifted so far (umbrella pin `3aeb532`):
+- `renquant-pipeline` kernel modules lifted so far (umbrella pin `b8e968a`):
   - Slice 1 (sizing/exits): `kelly`, `exit_types`, `market_gates`,
     `vol_target`, `sizing`.
   - Slice 2 (regime/intraday/config/safety/portfolio): `regime_resolver`,
@@ -183,14 +183,22 @@ module lifts once its kernel dependencies are already lifted.
     `task_spy_regime` (1) imports rewritten. Parity test drives the full Job:
     benign→valid label, sustained crash→hard_bear+BEAR, deterministic.
     `pytest -q` = 96 passed.
+  - Slice 8 (**drawdown Job**, second decision-tree Job): `job_drawdown` +
+    `task_drawdown` (HWMUpdate + DrawdownCircuit) + `task_drawdown_rebalance`
+    (Grossman-Zhou Eq.8). `task_drawdown`/`job_drawdown` verbatim (pure-relative
+    imports resolve via the shim); `task_drawdown_rebalance` rewrote one import
+    (`kernel.exits` → `renquant_pipeline.kernel.exits`). Parity test drives the
+    full Job: HWM ratchet, halt on DD≥halt_pct, resume on recovery, resume_pct
+    hysteresis, NaN-PV fail-safe (HWM preserved + buys blocked); all DC-1/Issue-07
+    NaN guards preserved. `make test` = 104 passed.
   - **Next (decision-tree Tasks/Jobs, copy-and-rewrite via the shim):** other
     fully-unblocked Jobs/Tasks — `task_selection`/`task_rotation`/`task_topup`
     (`regime`✓+`selection`✓+`sizing`✓), `task_candidates`
     (`indicators`✓+`models`✓+`selection`✓), `task_sell`/`task_panel_conviction_xs`
-    (`indicators`✓+`exits`✓), the gates/drawdown/ranking/rotation/sell Jobs.
-    Still blocked: `task_short_candidates` (`panel_pipeline` — not lifted),
-    `task_score_distribution` (`decision_trace` — verify pipeline-repo copy),
-    QP Tasks/Jobs (`portfolio_qp/{job_qp,task_joint_qp,tasks}` wide closure).
+    (`indicators`✓+`exits`✓), the gates/ranking/rotation/sell Jobs. (drawdown Job
+    done in slice 8.) Still blocked: `task_short_candidates` (`panel_pipeline` —
+    not lifted), `task_score_distribution` (`decision_trace` — verify pipeline-repo
+    copy), QP Tasks/Jobs (`portfolio_qp/{job_qp,task_joint_qp,tasks}` wide closure).
     Data-layer (`data`/`data_cache`/`fundamentals`/`macro`/…) is a separate
     `renquant-base-data` slice (alpaca/ingestion lives there, not pipeline).
 - `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
