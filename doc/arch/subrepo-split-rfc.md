@@ -179,29 +179,67 @@ extra `promotion_status` field, no parallel registry table, no
 
 ### Promotion workflow
 
-For any artifact, config, or code change, promotion is a PR to `main`:
+RenQuant is a solo-operator codebase. **Promotion uses verbal approval
+plus a local `--no-ff` merge, not a GitHub PR.** The PR layer would add
+ceremony without adding a second reviewer; the user IS the reviewer, and
+the chat IS the review.
+
+For any artifact, config, or code change, promotion is:
 
 ```text
-1. R&D produces candidate on feature or candidate branch.
+1. R&D produces candidate on a feature or candidate branch (pushed to
+   origin so it survives session/laptop loss).
    - model: training writes ArtifactManifest to candidate/<run-id>
    - config: agent edits strategy_config.golden.json on feature/...
    - code: standard feature branch
 
-2. renquant-backtesting writes AcceptanceReport for the candidate.
+2. renquant-backtesting writes AcceptanceReport for the candidate
+   (when applicable — config / artifact promotions require Tier 3 per
+   §5.13.4a; pure code refactors require tests green).
 
-3. PR opened against main. Required CI checks:
-   - Boundary tests green
-   - For artifact/config PRs: AcceptanceReport.tier == LIVE_PROMOTABLE
-     (Tier 3 per §5.13.4a). PR template embeds the report.
-   - For code PRs: unit/integration tests green
+3. Agent reports completion: branch pushed, AcceptanceReport summary,
+   "ready to merge?".
 
-4. Merge to main = the promotion event. Use --no-ff so promotion shows
-   as a discrete merge commit (provenance preserved).
+4. User gives verbal approval ("merge it" / "go" / "ok").
 
-5. Orchestrator's next daily-full run pins the new main HEAD
-   automatically; or a coordinated PR to renquant-orchestrator advances
-   subrepos.lock.json explicitly for atomic multi-repo promotions.
+5. Agent runs the local promotion sequence:
+     git checkout main
+     git merge --no-ff <feature-branch> -m "Merge ... promoted per
+       verbal approval per feedback_no_pr_verbal_merge"
+     git push origin main
+     git tag -a vX.Y.Z -m "..."       # when bumping a semver release
+     git push origin vX.Y.Z
+     git branch -d <feature-branch>
+     git push origin --delete <feature-branch>
+
+6. Orchestrator's next daily-full run pins the new main HEAD
+   automatically; or a coordinated local lock-advance commit on the
+   umbrella advances subrepos.lock.json for atomic multi-repo
+   promotions.
 ```
+
+**Pre-merge internal review checklist** (the agent runs through this
+before reporting "ready to merge?" — it replaces what a PR template
+would have enforced):
+
+- [ ] All tests green locally (`pytest -q`).
+- [ ] Boundary tests green (`test_import_boundaries`, plus per-RFC
+      §"Cross-Repo Contracts → Boundary test matrix" guards).
+- [ ] If schema/contract changed: `tests/api_snapshot/` updated and
+      classified additive vs breaking.
+- [ ] If artifact/config promotion: `AcceptanceReport.tier ==
+      LIVE_PROMOTABLE` evidence included in the report.
+- [ ] If renquant-common version bumped: pyproject `version` field
+      bumped per semver, and consumer subrepos' bounds checked.
+
+**Hotfix carve-out** (§ below) is unchanged — emergency `hotfix/<incident>`
+branches still merge directly per the same verbal-approval mechanism.
+
+**Note on existing GitHub PRs:** PRs opened during the early bootstrap
+(e.g. `renquant-common#1`, closed 2026-05-27) should be closed without
+GitHub-merge and merged locally so the merge commit carries the right
+authorship and timestamp. Going forward, no `gh pr create` calls during
+promotion.
 
 ### Lock file semantics
 
