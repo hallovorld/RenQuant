@@ -265,6 +265,25 @@ def _write_artifact_payload(path: Path, payload: dict) -> Path:
     return out_path
 
 
+def _feature_source_contract_keys(artifact: dict) -> list[str]:
+    """Structural projection of the feature-source contract.
+
+    2026-05-27: the recipe fingerprint previously hashed
+    ``feature_source_contract`` whole — but its VALUES are human-readable prose
+    ("apply all feature_means/stds before scoring …"). Editing that docstring
+    (which the subrepo refactor did) changed the recipe fingerprint while the
+    actual preprocessing was unchanged, so the weekly gate kept rejecting
+    otherwise-comparable candidates with "manifest recipe mismatch". The
+    behavioral recipe is fully captured by ``feature_norm_kind`` + the SOURCE
+    SPACES the contract declares (its keys, e.g. raw/panel), not the prose. Hash
+    only the sorted keys so wording changes never break comparability.
+    """
+    contract = artifact.get("feature_source_contract")
+    if not isinstance(contract, dict):
+        return []
+    return sorted(str(k) for k in contract.keys())
+
+
 def _recipe_projection(artifact: dict) -> dict:
     """Return the model-recipe fields a WF manifest must match.
 
@@ -277,7 +296,8 @@ def _recipe_projection(artifact: dict) -> dict:
         "kind": artifact.get("kind"),
         "feature_cols": list(artifact.get("feature_cols") or []),
         "feature_norm_kind": list(artifact.get("feature_norm_kind") or []),
-        "feature_source_contract": artifact.get("feature_source_contract"),
+        # Structural keys only — NOT the prose values (see helper docstring).
+        "feature_source_contract_keys": _feature_source_contract_keys(artifact),
         "label_col": artifact.get("label_col"),
         "lookahead_days": int(artifact.get("lookahead_days") or 0),
         "params": _semantic_params(artifact.get("params") or {}),

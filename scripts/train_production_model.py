@@ -486,12 +486,27 @@ def build_fingerprint_config(
     that this script controls (label horizon, objective, resolution, embedding
     columns, and optional watchlist filter).
     """
-    cfg_path = (
-        _resolve_repo_path(fingerprint_config_path)
-        if fingerprint_config_path
-        else REPO / "backtesting/renquant_104/strategy_config.json"
-    )
-    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    if fingerprint_config_path:
+        # 2026-05-27: a strategy-dir-relative name like "strategy_config.json"
+        # previously resolved ONLY against repo root (non-existent there), then
+        # build_fingerprint_config silently fell back to an empty {} config →
+        # empty watchlist/sector_map → a bogus config_fingerprint (the gate then
+        # fail-closed on panel_scorer_config_mismatch). Resolve against repo root
+        # first, then the strategy dir, and FAIL LOUD if neither exists.
+        cfg_path = _resolve_repo_path(fingerprint_config_path)
+        if not cfg_path.exists():
+            strategy_rel = STRATEGY_DIR / fingerprint_config_path
+            if strategy_rel.exists():
+                cfg_path = strategy_rel
+            else:
+                raise FileNotFoundError(
+                    f"--fingerprint-config {fingerprint_config_path!r} not found at "
+                    f"{cfg_path} or {strategy_rel}; refusing to stamp an empty-config "
+                    "fingerprint (would fail-close the panel scorer)."
+                )
+    else:
+        cfg_path = STRATEGY_DIR / "strategy_config.json"
+    cfg = json.loads(cfg_path.read_text())
 
     if watchlist_file:
         payload = _load_json(watchlist_file)

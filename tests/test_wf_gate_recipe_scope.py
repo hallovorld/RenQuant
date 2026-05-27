@@ -34,6 +34,58 @@ def _artifact(features: list[str]) -> dict:
     }
 
 
+class TestRecipeFingerprintProseRobustnessRegressionGuard:
+    """AUDIT REGRESSION GUARD (2026-05-27).
+
+    Invariant: the recipe fingerprint must be invariant to the human-readable
+    PROSE in ``feature_source_contract`` — only its structural keys (raw/panel)
+    matter. The behavioral recipe is captured by feature_norm_kind + feature_cols
+    + params. Before the fix, the fingerprint hashed the prose values, so a
+    docstring edit (which the subrepo refactor did) changed the recipe
+    fingerprint and made the weekly gate reject otherwise-identical candidates
+    with "manifest recipe mismatch" → zero-trade FAIL. See
+    doc/research/2026-05-27-wf-sharpe-audit.md.
+    """
+
+    def test_recipe_fp_unchanged_by_contract_prose(self):
+        mod = _load_module()
+        base = _artifact([f"f{i}" for i in range(8)])
+        base["feature_norm_kind"] = ["global_z"] * 8
+        a = dict(base)
+        a["feature_source_contract"] = {
+            "raw": "apply all feature_means/stds before scoring live/sim rows",
+            "panel": "apply only feature_norm_kind entries that are raw in the prebuilt panel",
+        }
+        b = dict(base)
+        b["feature_source_contract"] = {
+            "raw": "apply feature_raw_clip_low/high when present, then feature_means/stds, "
+                   "fillna, and z-clip before scoring live/sim rows",
+            "panel": "TOTALLY DIFFERENT WORDING — same behavior",
+        }
+        assert mod._recipe_fingerprint(a) == mod._recipe_fingerprint(b), (
+            "recipe fingerprint must ignore feature_source_contract prose"
+        )
+
+    def test_recipe_fp_still_distinguishes_contract_keys(self):
+        mod = _load_module()
+        base = _artifact([f"f{i}" for i in range(8)])
+        base["feature_norm_kind"] = ["global_z"] * 8
+        with_keys = dict(base, feature_source_contract={"raw": "x", "panel": "y"})
+        missing_panel = dict(base, feature_source_contract={"raw": "x"})
+        assert mod._recipe_fingerprint(with_keys) != mod._recipe_fingerprint(missing_panel), (
+            "a different SET of source spaces must still change the recipe fingerprint"
+        )
+
+    def test_recipe_fp_still_distinguishes_norm_kind(self):
+        mod = _load_module()
+        feats = [f"f{i}" for i in range(8)]
+        a = dict(_artifact(feats), feature_norm_kind=["global_z"] * 8)
+        b = dict(_artifact(feats), feature_norm_kind=["robust_z"] * 8)
+        assert mod._recipe_fingerprint(a) != mod._recipe_fingerprint(b), (
+            "feature_norm_kind is behavioral and must remain in the recipe fingerprint"
+        )
+
+
 def test_manifest_recipe_usage_accepts_matching_samples(tmp_path: Path):
     mod = _load_module()
     candidate = tmp_path / "candidate.json"
