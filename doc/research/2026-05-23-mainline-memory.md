@@ -109,7 +109,7 @@ boundary-clean, with the umbrella keeping its working copy until cutover.
 Only pure leaves (no internal-kernel imports) are eligible per slice; a
 module lifts once its kernel dependencies are already lifted.
 
-- `renquant-pipeline` kernel modules lifted so far (umbrella pin `80c49dc`):
+- `renquant-pipeline` kernel modules lifted so far (umbrella pin `c846d95`):
   - Slice 1 (sizing/exits): `kelly`, `exit_types`, `market_gates`,
     `vol_target`, `sizing`.
   - Slice 2 (regime/intraday/config/safety/portfolio): `regime_resolver`,
@@ -163,6 +163,25 @@ module lifts once its kernel dependencies are already lifted.
       (absolute→`renquant_pipeline.kernel` / relative) pass with behavioral
       parity tests, replacing the byte-identical verbatim discipline used for
       slices 1–5's pure/relative-import leaves.
+  - Slice 6 (regime + indicators, **copy-AND-rewrite** — first non-verbatim
+    slice): absolute `kernel.X` imports rewritten to `renquant_pipeline.kernel.X`
+    (regime 1 line, indicators 2 lines; regime's module-level `from .config`
+    relative import preserved). `regime`↔`indicators` are a lazy function-level
+    mutual cycle, so module load is clean; parity tests exercise both rewritten
+    cross-import directions functionally (`test_lift_rewrite_parity.py`).
+    `pytest -q` = 92 passed. **Scope correction** caught by the import-boundary
+    test: `data.py`/`data_cache.py` import the alpaca SDK (ingestion) → they
+    belong in `renquant-base-data`, not the pipeline; removed from this slice.
+  - **Next:** the cross-sectional Tasks/Jobs whose closures are now satisfied
+    (`task_selection`/`task_rotation`/`task_topup` need `regime`✓+`selection`✓+
+    `sizing`✓; `task_regime` needs `regime`✓+`config`✓+`regime_hmm`✓;
+    `task_candidates` needs `indicators`✓+`models`✓+`selection`✓; `task_sell`
+    needs `indicators`✓+`exits`✓). Lifting Tasks is a copy-and-rewrite step
+    (they use absolute `kernel.X` + relative `.context`/`.pipeline`). Still
+    blocked: `task_short_candidates` (`panel_pipeline`), `task_score_distribution`
+    (`decision_trace`), and the QP Tasks/Jobs (need `portfolio_qp/tasks.py`'s
+    wide closure). Data-layer (`data`/`data_cache`/`fundamentals`/`macro`/…)
+    is a separate `renquant-base-data` slice.
 - `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
   feature/data-source lift already merged to its `main`; umbrella pin
   advanced 2026-05-27 (was stale at `8eacd53`).
