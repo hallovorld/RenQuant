@@ -238,9 +238,24 @@ except Exception:
 
 BUY_BLOCKED_BY_PREFLIGHT=0
 PREFLIGHT_SYSTEM_FAILURE=0
+
+# 2026-05-27: route the daily decision pipeline through the pinned subrepos
+# (multi-repo). scripts/daily_multirepo.py aliases every lifted kernel.* module
+# to renquant-pipeline (+ common/model/execution/backtesting/...) then delegates
+# to live.runner.main() with the SAME argv — broker/execution code stays umbrella,
+# only the decision tree runs from the pins. Verified byte-identical to plain
+# `-m live.runner` on the readonly path (preflight gates, 105 candidates, vol-gate
+# drops, fail-closed decision all matched, 2026-05-27). Instant rollback (§5.5):
+#   RQ_DAILY_RUNNER=umbrella  → plain `-m live.runner` (the untouched baseline).
+if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
+    RUNNER_ARGS=(-m live.runner)
+else
+    RUNNER_ARGS=("$REPO_DIR/scripts/daily_multirepo.py")
+fi
+
 FULL_RUN_LOG=$(mktemp "/tmp/renquant_104_daily_full.XXXXXX")
 if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 \
-        "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once \
+        "$PYTHON" "${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once \
         > "$FULL_RUN_LOG" 2>&1; then
     cat "$FULL_RUN_LOG"
     rm -f "$FULL_RUN_LOG"
@@ -260,7 +275,7 @@ else
             echo "Full live trader blocked by buy-side preflight gate — rerunning sell-only so exits/risk controls still execute."
         fi
         SELL_ONLY_LOG=$(mktemp "/tmp/renquant_104_daily_sell_only.XXXXXX")
-        if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only > "$SELL_ONLY_LOG" 2>&1; then
+        if "$PYTHON" "${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once --sell-only > "$SELL_ONLY_LOG" 2>&1; then
             cat "$SELL_ONLY_LOG"
             rm -f "$SELL_ONLY_LOG" "$FULL_RUN_LOG"
             echo "=== daily_104 finished sell-only fallback at $(date) ==="
