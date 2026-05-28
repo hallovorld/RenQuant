@@ -120,6 +120,27 @@ fail-closed → zero trades.** Details below.
   (`scripts/stamp_walkforward_fingerprints.py`) → weekly gate is now functional
   (was always fail-closed). Diagnostic/sim artifacts only; prod model unchanged;
   no live-trading effect (daily still correctly sell-only until a model beats SPY).
+- Anchored `LocalStore` OHLCV path to repo root; fixed `plot_training_resources`
+  crash; wired manifest stamping into `weekly_wf_promote.sh` (commit 06abc77).
+
+### WF manifest rebuild (2026-05-27, commit 455ab63)
+Rebuilt the calibrated_causal WF manifest end-to-end so the gate can evaluate
+*new-schema* candidates (the old manifest had `feature_norm_kind=[]`; current
+retrains use mixed global_z/robust_z/identity, so recipes never matched):
+- 43 scorers retrained (`train_walkforward_panel.py`, current code) →
+  config_fingerprint `14586756`, recipe `cfdd6c`; 43 causal calibrators refit;
+  manifest swapped into the live name (WF artifacts are untracked-by-convention,
+  so on-disk only).
+- Fixed two recipe-mismatch root causes (commit 455ab63): the recipe fingerprint
+  hashed `feature_source_contract` PROSE (now hashes structural keys only); and
+  `--fingerprint-config strategy_config.json` resolved only against repo root and
+  silently fell back to `{}` (now resolves strategy-dir + fails loud).
+- Verify on rebuilt manifest: recipe validated 43/43, `panel_scorer_config_mismatch=0`,
+  all 3 cuts TRADE, positive Sharpe (+0.166/+1.125/+0.716, mean +0.669). Verdict
+  still FAIL (mean +0.669 < SPY +1.081, beats SPY 1/3) — honest model quality.
+  **The weekly gate is now fully functional and will promote a future SPY-beating
+  model.** Daily run still correctly sell-only.
+- Rollback: `artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.json.bak_pre_rebuild_20260527`.
 
 ## Reproduction
 ```

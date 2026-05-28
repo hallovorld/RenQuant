@@ -4000,3 +4000,43 @@ does not have enough tradeable BULL_CALM edge for promotion.
   --manifest backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json \
   --output-dir backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_20260524_patchtst_pilot
 ```
+
+---
+
+## 2026-05-27 — Disabling the realized-vol cap to "let the index leaders in" (FAILED)
+
+**Hypothesis.** Forensics on the +0.669 production-faithful WF run showed the
+strategy holds value/quality names (WFC, GS, KMI, GILD…) that trailed a
+megacap/AI-led market, and the `RealizedVolGateTask` (60% annualized cap) drops
+exactly the high-β leaders (AMD 74%, COHR 80%, APP, COIN, ANET, …). Hypothesis:
+the vol cap excludes the winners → removing it lets the model hold the leaders →
+beats SPY.
+
+**Implementation.** Derived prod-semantic WF config with
+`risk_gates.realized_vol.enabled=false`; re-ran the 3-cut WF gate on the rebuilt
+calibrated_causal manifest (recipe cfdd6c), `--skip-config-parity`.
+
+**Result (vs baseline +0.669 mean Sharpe, beat SPY 1/3):**
+| cut | vol-cap ON | vol-cap OFF |
+|---|---|---|
+| 2024-01→12 | +0.832 | **−0.098** |
+| 2024-07→2025-06 | +0.726 | +0.649 |
+| 2025-04→2026-03 | +0.629 | +1.114 |
+| **mean** | **+0.669** | **+0.555** |
+| beat SPY | 1/3 | **0/3** |
+
+**Conclusion.** Disabling the vol cap made it WORSE (mean −0.114, beat SPY 1/3→0/3;
+2024 cut collapsed +0.83→−0.10). The vol gate is NOT excluding winners — it is
+PROTECTING the strategy from the model's bad high-vol picks. The model has no
+skill at choosing which high-vol names win; adding them just adds risk/drawdown.
+
+**Root cause confirmed (not a config bug).** The binding constraint is the
+model's ~0 realized cross-sectional IC: on the +0.669 run's 47 trades,
+corr(entry_rank_score, pnl_pct) = Pearson +0.006 / Spearman +0.023, with scores
+compressed to a 0.066 band among admitted names. Offline pool_ic ~0.11 separates
+top-half from bottom-half, but within the traded top band there is no ordering
+skill. Config levers are now exhausted: vol cap (removing hurts), calibrator
+(proper monotone map −0.59→+0.56 → 0.41-0.69 prob, not flattening), binding
+(fixed). **Beating SPY requires a better SIGNAL (features/label/model), not a
+knob.** Reproduction: derive prod-semantic config, set
+`risk_gates.realized_vol.enabled=false`, run_wf_gate on the cfdd6c manifest.
