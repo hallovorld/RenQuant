@@ -80,6 +80,20 @@ def _bootstrap_multirepo() -> list[str]:
             continue
         sys.modules[f"renquant_pipeline.kernel.{modname}"] = um
         aliased.append(f"renquant_pipeline.kernel.{modname}←umbrella")
+
+    # pp_inference does `from renquant_pipeline.panel_scoring import PanelScoringJob`,
+    # but the pin's panel_scoring.py is a *consolidated rewrite* of the model
+    # boundary that (unlike the umbrella) does NOT fail-close on an unfingerprinted
+    # artifact — a parity gap AND a safety divergence (§5.13.15). Route it to the
+    # umbrella's proven PanelScoringJob until the model boundary is homed into
+    # renquant-model. The fail-closed gate is a pure artifact-metadata check, so the
+    # decision is identical regardless of the (pin-provided) feature/data source.
+    try:
+        sys.modules["renquant_pipeline.panel_scoring"] = importlib.import_module(
+            "kernel.panel_pipeline.job_panel_scoring")
+        aliased.append("renquant_pipeline.panel_scoring←umbrella.job_panel_scoring")
+    except Exception:
+        pass
     return aliased
 
 
