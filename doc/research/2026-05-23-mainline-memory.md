@@ -219,6 +219,15 @@ module lifts once its kernel dependencies are already lifted.
     `backtesting/renquant_104` imports the pinned subrepos instead of its own
     `kernel/` copies. Until cutover, the umbrella keeps its working copy
     (copy-not-move) and remains the production path + rollback source.
+  - **Progress on (c) execution (umbrella pin `renquant-execution` f5a82a8,
+    2026-05-27):** broker layer already lifted (paper/alpaca/readonly/factory);
+    `live/alerts.py` operational-notification leaf now lifted verbatim
+    (pure-stdlib, network-free dedupe parity test; make test 16 passed, boundaries
+    green). Remaining for (c): `live/runner.py` (the live runner — depends on the
+    lifted pipeline, so it's a cutover-consumer not a leaf) + `ibkr_broker`.
+    Note: execution `make test` needs `pydantic` (renquant_common.contracts) and
+    the `.venv` python (Makefile defaults to system `python3`):
+    `make test PYTHON=…/.venv/bin/python`.
 - `renquant-base-data` (umbrella pin `0cf69ed`): data-layer leaves +
   feature/data-source lift already merged to its `main`; umbrella pin
   advanced 2026-05-27 (was stale at `8eacd53`).
