@@ -100,20 +100,5 @@
     }
   ],
   "pending_subrepos": [],
-  "archived_subrepos": [
-    {
-      "name": "renquant-model-gbdt",
-      "role": "ARCHIVED \u2014 merged into renquant-model (RFC P3); kept for rollback",
-      "remote": "https://github.com/hallovorld/renquant-model-gbdt",
-      "merged_into": "renquant-model",
-      "status": "archived"
-    },
-    {
-      "name": "renquant-model-patchtst",
-      "role": "ARCHIVED \u2014 merged into renquant-model (RFC P3); kept for rollback",
-      "remote": "https://github.com/hallovorld/renquant-model-patchtst",
-      "merged_into": "renquant-model",
-      "status": "archived"
-    }
-  ]
+  "archived_subrepos": []
 }
