@@ -11,19 +11,24 @@ integration harness, and rollback source.
 
 ## Repository Roles
 
+End-to-end data flow:
+`renquant-base-data` (data input) + `renquant-common`/`renquant-pipeline` (shared code)
+→ **`renquant-model` (MODEL FACTORY: research + training)** → `renquant-artifacts` (model output)
+→ consumed by `renquant-backtesting` / `renquant-strategy-104` / `renquant-orchestrator`.
+
 | Repo | Role | Primary Output |
 |---|---|---|
-| `renquant-common` | Shared contracts and pipeline primitives | Python package with `Task`, `Job`, `Pipeline`, schemas |
-| `renquant-strategy-104` | Active strategy policy/config | Versioned strategy config bundle |
-| `renquant-model-gbdt` | Current prod GBDT/panel-LTR model training | Model artifact, calibrator, metrics record |
-| `renquant-model-patchtst` | PatchTST/PatchTXT sequence-model training | Shadow/candidate checkpoint, calibrator, sanity report |
-| `renquant-pipeline` | Runtime decision tree and QP/order-intent generation | Decision trace and order intents |
+| `renquant-common` | Shared contracts + pipeline primitives + **shared training/eval utils** (`Task`/`Job`/`Pipeline`, `purged_cv`, `walk_forward_splits`, `hmm_regime_labels`, `config_consistency`) | Python package imported by the factory & pipeline |
+| `renquant-base-data` | Data manifests + validation + **the training-data INPUT to the factory** | Fingerprinted data manifests / dataset handles |
+| `renquant-model` | **MODEL FACTORY** — ingests base-data + common code, runs research/training (GBDT + PatchTST families in `renquant_model_gbdt` / `renquant_model_patchtst`), produces models | Model artifacts published to `renquant-artifacts` |
+| `renquant-artifacts` | Artifact registry + validation; **RECEIVES factory models** | Fingerprinted artifact manifests; models consumed downstream |
+| `renquant-strategy-104` | Active strategy policy/config; **consumes models from `renquant-artifacts`** | Versioned strategy config bundle |
+| `renquant-pipeline` | Runtime decision tree + QP/order-intent generation; shares regime/config code with trainers | Decision trace and order intents |
 | `renquant-execution` | Broker execution and order audit | Broker orders, cancel/reconcile/audit records |
-| `renquant-backtesting` | Sim/LEAN/WF validation and forensics | Backtest reports, decision-quality diagnostics |
-| `renquant-base-data` | Data manifests and validation | Fingerprinted data manifests |
-| `renquant-artifacts` | Artifact registry and validation | Fingerprinted artifact manifests |
-| `renquant-orchestrator` | Daily/full orchestration across pinned subrepos | Run bundle, decision trace, order/audit bundle |
-| `RenQuant` | Permanent umbrella/integration harness | Pinned assembly in `subrepos.lock.json` |
+| `renquant-backtesting` | Sim/LEAN/WF validation and forensics; **consumes models from `renquant-artifacts`** | Backtest reports, decision-quality diagnostics |
+| `renquant-orchestrator` | Daily/full orchestration across pinned subrepos (wires factory output into daily/sim/backtest) | Run bundle, decision trace, order/audit bundle |
+| `RenQuant` | Permanent umbrella/integration harness + canonical data store (`data/`, gitignored) | Pinned assembly in `subrepos.lock.json` |
+| `renquant-model-gbdt`, `renquant-model-patchtst` | **ARCHIVED** — merged into `renquant-model` (RFC P3); empty pre-merge shells kept for rollback. Do NOT work there | — |
 
 ## Universal Rules
 

@@ -10,17 +10,17 @@
   "subrepos": [
     {
       "name": "renquant-common",
-      "role": "shared pipeline primitives and contracts",
+      "role": "shared primitives + contracts + shared TRAINING/EVAL utilities (Task/Job/Pipeline, purged_cv, walk_forward_splits, hmm_regime_labels, config_consistency) \u2014 imported by the model factory & pipeline",
       "local_path": "/Users/renhao/git/github/renquant-common",
       "remote": "https://github.com/hallovorld/renquant-common",
       "branch": "main",
-      "commit": "d54b5b1b2bdf07ae1f69bf935498d8ee43b7aea9",
+      "commit": "9bd5b78",
       "test_command": "make test",
       "status": "bootstrapped"
     },
     {
       "name": "renquant-strategy-104",
-      "role": "active 104 strategy policy/config",
+      "role": "active 104 strategy config; CONSUMES models from renquant-artifacts",
       "local_path": "/Users/renhao/git/github/renquant-strategy-104",
       "remote": "https://github.com/hallovorld/renquant-strategy-104",
       "branch": "main",
@@ -30,17 +30,17 @@
     },
     {
       "name": "renquant-model",
-      "role": "merged GBDT + PatchTST model families (RFC P3)",
+      "role": "MODEL FACTORY \u2014 ingests base-data + common code, runs research/training (GBDT + PatchTST families), and produces models published to renquant-artifacts",
       "local_path": "/Users/renhao/git/github/renquant-model",
       "remote": "https://github.com/hallovorld/renquant-model",
       "branch": "main",
-      "commit": "a3491c8",
+      "commit": "e9907dd",
       "test_command": "make test",
       "status": "active"
     },
     {
       "name": "renquant-pipeline",
-      "role": "runtime inference and decision pipeline",
+      "role": "runtime inference/decision pipeline; shares regime/config code with trainers",
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
@@ -50,7 +50,7 @@
     },
     {
       "name": "renquant-execution",
-      "role": "broker execution and order audit pipeline",
+      "role": "broker execution and order-audit pipeline",
       "local_path": "/Users/renhao/git/github/renquant-execution",
       "remote": "https://github.com/hallovorld/renquant-execution",
       "branch": "main",
@@ -60,7 +60,7 @@
     },
     {
       "name": "renquant-backtesting",
-      "role": "backtesting, LEAN assembly, simulation, and forensics pipeline",
+      "role": "backtesting, LEAN assembly, simulation, forensics; CONSUMES models from renquant-artifacts",
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
@@ -70,7 +70,7 @@
     },
     {
       "name": "renquant-base-data",
-      "role": "base data manifests and validation pipeline",
+      "role": "base-data manifests + the training-data INPUT consumed by the model factory",
       "local_path": "/Users/renhao/git/github/renquant-base-data",
       "remote": "https://github.com/hallovorld/renquant-base-data",
       "branch": "main",
@@ -80,7 +80,7 @@
     },
     {
       "name": "renquant-artifacts",
-      "role": "artifact registry manifests and validation pipeline",
+      "role": "artifact registry \u2014 RECEIVES trained models from the factory; consumed by sim/backtest/strategy-104",
       "local_path": "/Users/renhao/git/github/renquant-artifacts",
       "remote": "https://github.com/hallovorld/renquant-artifacts",
       "branch": "main",
@@ -90,7 +90,7 @@
     },
     {
       "name": "renquant-orchestrator",
-      "role": "pinned-subrepo daily orchestration and run bundles",
+      "role": "pinned-subrepo daily orchestration + run bundles (wires factory output into daily/sim/backtest)",
       "local_path": "/Users/renhao/git/github/renquant-orchestrator",
       "remote": "https://github.com/hallovorld/renquant-orchestrator",
       "branch": "main",
