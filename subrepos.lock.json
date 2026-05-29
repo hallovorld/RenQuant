@@ -34,7 +34,7 @@
       "local_path": "/Users/renhao/git/github/renquant-model",
       "remote": "https://github.com/hallovorld/renquant-model",
       "branch": "main",
-      "commit": "8b17cd4",
+      "commit": "612287a",
       "test_command": "make test",
       "status": "active"
     },
@@ -64,7 +64,7 @@
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
-      "commit": "1cc3380",
+      "commit": "d1cb08d",
       "test_command": "make test",
       "status": "bootstrapped"
     },
