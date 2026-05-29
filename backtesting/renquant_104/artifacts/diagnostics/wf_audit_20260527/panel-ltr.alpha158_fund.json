@@ -859,15 +859,45 @@
   "metadata": {
     "wf_gate_metadata": {
       "passed": false,
-      "wf_3cut_sharpe_mean": -1.3233333333333333,
-      "wf_3cut_sharpe_std": 0.9768486747359252,
-      "wf_3cut_apy_mean": 0.006333333333333334,
+      "diagnostic_only": false,
+      "skipped_required_gates": [],
+      "wf_3cut_sharpe_mean": NaN,
+      "wf_3cut_sharpe_std": NaN,
+      "wf_3cut_apy_mean": 0.0,
       "spy_sharpe_mean": 1.0808386653410664,
-      "strategy_minus_spy_sharpe_mean": -2.4041719986744,
+      "strategy_minus_spy_sharpe_mean": NaN,
       "spy_apy_mean": 0.16943344377841862,
-      "strategy_minus_spy_apy_mean": -0.1631001104450853,
+      "strategy_minus_spy_apy_mean": -0.16943344377841862,
       "n_cuts_beat_spy_sharpe": 0,
       "n_cuts_beat_spy_apy": 0,
+      "benchmark_by_dominant_regime": {
+        "HIGH_CALM": {
+          "n_cuts": 2,
+          "mean_sharpe": NaN,
+          "mean_spy_sharpe": 1.2636937522665568,
+          "mean_sharpe_vs_spy": NaN,
+          "mean_apy": 0.0,
+          "mean_spy_apy": 0.18681609729757298,
+          "mean_apy_vs_spy": -0.18681609729757298,
+          "n_beat_spy_sharpe": 0,
+          "n_beat_spy_apy": 0
+        },
+        "LOW_SPIKED": {
+          "n_cuts": 1,
+          "mean_sharpe": NaN,
+          "mean_spy_sharpe": 0.7151284914900857,
+          "mean_sharpe_vs_spy": NaN,
+          "mean_apy": 0.0,
+          "mean_spy_apy": 0.1346681367401099,
+          "mean_apy_vs_spy": -0.1346681367401099,
+          "n_beat_spy_sharpe": 0,
+          "n_beat_spy_apy": 0
+        }
+      },
+      "regime_benchmark_failures": [],
+      "performance_tax_basis_counts": {
+        "event_level": 3
+      },
       "hmm_regime_counts_total": {
         "BULL_VOLATILE": 628,
         "BEAR": 73,
@@ -885,16 +915,30 @@
         "LOW_NORMAL": 40,
         "LOW_CALM": 7
       },
+      "trade_buy_regime_counts_total": {},
+      "trade_sell_regime_counts_total": {},
+      "trade_buy_source_counts_total": {},
+      "trade_sell_exit_reason_counts_total": {},
+      "trade_buy_missing_mu_total": 0,
+      "trade_buy_missing_sigma_total": 0,
       "n_positive_cuts": 0,
       "wf_jobs": 3,
       "cuts": [
         {
           "start": "2024-01-02",
           "end": "2024-12-31",
-          "sharpe": -0.42,
-          "apy": 0.026000000000000002,
-          "sharpe_vs_spy": -2.1982752408798003,
-          "apy_vs_spy": -0.21505045368105738,
+          "sharpe": NaN,
+          "apy": 0.0,
+          "event_level_sharpe": null,
+          "event_level_apy": 0.0,
+          "annual_net_sharpe": null,
+          "annual_net_apy": 0.0,
+          "event_level_tax_debited": 0.0,
+          "annual_net_tax_estimate": 0.0,
+          "tax_overstatement_vs_annual_net": 0.0,
+          "performance_tax_basis": "event_level",
+          "sharpe_vs_spy": NaN,
+          "apy_vs_spy": -0.24105045368105738,
           "dominant_hmm_regime": "BULL_VOLATILE",
           "dominant_spy_grid_regime": "HIGH_CALM",
           "market_context": {
@@ -920,22 +964,41 @@
               "LOW_CALM": 1
             }
           },
+          "trade_trace_summary": {
+            "n_buys": 0,
+            "n_sells": 0,
+            "buy_regime_counts": {},
+            "sell_regime_counts": {},
+            "buy_source_counts": {},
+            "sell_source_counts": {},
+            "sell_exit_reason_counts": {},
+            "buy_missing_mu": 0,
+            "buy_missing_sigma": 0
+          },
           "trace_paths": {
-            "equity_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-01-02_to_2024-12-31.equity.json",
-            "trade_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-01-02_to_2024-12-31.trades.json",
-            "trade_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-01-02_to_2024-12-31.trades.csv",
-            "round_trips_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-01-02_to_2024-12-31.round_trips.csv",
-            "report_md": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-01-02_to_2024-12-31.report.md"
+            "equity_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-01-02_to_2024-12-31.equity.json",
+            "trade_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-01-02_to_2024-12-31.trades.json",
+            "trade_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-01-02_to_2024-12-31.trades.csv",
+            "round_trips_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-01-02_to_2024-12-31.round_trips.csv",
+            "report_md": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-01-02_to_2024-12-31.report.md"
           },
           "returncode": 0
         },
         {
           "start": "2024-07-01",
           "end": "2025-06-30",
-          "sharpe": -1.19,
-          "apy": 0.005,
-          "sharpe_vs_spy": -1.9051284914900857,
-          "apy_vs_spy": -0.1296681367401099,
+          "sharpe": NaN,
+          "apy": 0.0,
+          "event_level_sharpe": null,
+          "event_level_apy": 0.0,
+          "annual_net_sharpe": null,
+          "annual_net_apy": 0.0,
+          "event_level_tax_debited": 0.0,
+          "annual_net_tax_estimate": 0.0,
+          "tax_overstatement_vs_annual_net": 0.0,
+          "performance_tax_basis": "event_level",
+          "sharpe_vs_spy": NaN,
+          "apy_vs_spy": -0.1346681367401099,
           "dominant_hmm_regime": "BULL_VOLATILE",
           "dominant_spy_grid_regime": "LOW_SPIKED",
           "market_context": {
@@ -960,22 +1023,41 @@
               "LOW_CALM": 3
             }
           },
+          "trade_trace_summary": {
+            "n_buys": 0,
+            "n_sells": 0,
+            "buy_regime_counts": {},
+            "sell_regime_counts": {},
+            "buy_source_counts": {},
+            "sell_source_counts": {},
+            "sell_exit_reason_counts": {},
+            "buy_missing_mu": 0,
+            "buy_missing_sigma": 0
+          },
           "trace_paths": {
-            "equity_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-07-01_to_2025-06-30.equity.json",
-            "trade_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-07-01_to_2025-06-30.trades.json",
-            "trade_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-07-01_to_2025-06-30.trades.csv",
-            "round_trips_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-07-01_to_2025-06-30.round_trips.csv",
-            "report_md": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2024-07-01_to_2025-06-30.report.md"
+            "equity_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-07-01_to_2025-06-30.equity.json",
+            "trade_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-07-01_to_2025-06-30.trades.json",
+            "trade_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-07-01_to_2025-06-30.trades.csv",
+            "round_trips_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-07-01_to_2025-06-30.round_trips.csv",
+            "report_md": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2024-07-01_to_2025-06-30.report.md"
           },
           "returncode": 0
         },
         {
           "start": "2025-04-01",
           "end": "2026-03-28",
-          "sharpe": -2.36,
-          "apy": -0.012,
-          "sharpe_vs_spy": -3.109112263653313,
-          "apy_vs_spy": -0.1445817409140886,
+          "sharpe": NaN,
+          "apy": 0.0,
+          "event_level_sharpe": null,
+          "event_level_apy": 0.0,
+          "annual_net_sharpe": null,
+          "annual_net_apy": 0.0,
+          "event_level_tax_debited": 0.0,
+          "annual_net_tax_estimate": 0.0,
+          "tax_overstatement_vs_annual_net": 0.0,
+          "performance_tax_basis": "event_level",
+          "sharpe_vs_spy": NaN,
+          "apy_vs_spy": -0.13258174091408859,
           "dominant_hmm_regime": "BULL_VOLATILE",
           "dominant_spy_grid_regime": "HIGH_CALM",
           "market_context": {
@@ -1000,36 +1082,228 @@
               "LOW_CALM": 3
             }
           },
+          "trade_trace_summary": {
+            "n_buys": 0,
+            "n_sells": 0,
+            "buy_regime_counts": {},
+            "sell_regime_counts": {},
+            "buy_source_counts": {},
+            "sell_source_counts": {},
+            "sell_exit_reason_counts": {},
+            "buy_missing_mu": 0,
+            "buy_missing_sigma": 0
+          },
           "trace_paths": {
-            "equity_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2025-04-01_to_2026-03-28.equity.json",
-            "trade_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2025-04-01_to_2026-03-28.trades.json",
-            "trade_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2025-04-01_to_2026-03-28.trades.csv",
-            "round_trips_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2025-04-01_to_2026-03-28.round_trips.csv",
-            "report_md": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment/2025-04-01_to_2026-03-28.report.md"
+            "equity_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2025-04-01_to_2026-03-28.equity.json",
+            "trade_json": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2025-04-01_to_2026-03-28.trades.json",
+            "trade_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2025-04-01_to_2026-03-28.trades.csv",
+            "round_trips_csv": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2025-04-01_to_2026-03-28.round_trips.csv",
+            "report_md": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z/2025-04-01_to_2026-03-28.report.md"
           },
           "returncode": 0
         }
       ],
-      "wf_trade_trace_dir": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/post_fix_20260522/wf_traces_172_sentiment",
+      "wf_trade_trace_dir": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260527T174915Z",
       "candidate_artifact_used": false,
       "recipe_validated": true,
-      "candidate_recipe_fingerprint": "sha256:31e45b8d2f17e006",
+      "candidate_recipe_fingerprint": "sha256:ccc412d08c0f3463",
       "wf_eval_scope": "walkforward_manifest",
       "artifact_usage": {
         "candidate_artifact_used": false,
         "eval_scope": "walkforward_manifest",
-        "strategy_config": "strategy_config.sim_wl200_172_sentiment.json",
-        "manifest_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_manifest_172_sentiment.json",
-        "reason": "manifest sample artifacts match candidate recipe",
+        "strategy_config": "artifacts/diagnostics/wf_eval_configs/strategy_config.sim_wl200_172_sentiment.calibrated_causal.prod_semantic.json",
+        "manifest_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.json",
+        "reason": "manifest artifacts match candidate recipe",
         "recipe_validated": true,
-        "candidate_recipe_fingerprint": "sha256:31e45b8d2f17e006",
+        "candidate_recipe_fingerprint": "sha256:ccc412d08c0f3463",
         "candidate_n_features": 172,
+        "manifest_rows_checked": 43,
         "manifest_sample_reports": [
           {
             "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2023-10-02/panel-ltr.json",
             "exists": true,
             "recipe_matches": true,
-            "recipe_fingerprint": "sha256:31e45b8d2f17e006",
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2023-10-23/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2023-11-13/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2023-12-04/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2023-12-25/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-01-15/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-02-05/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-02-26/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-03-18/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-04-08/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-04-29/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-05-20/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-06-10/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-07-01/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-07-22/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-08-12/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-09-02/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-09-23/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-10-14/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-11-04/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-11-25/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
             "n_features": 172,
             "missing_features_vs_candidate": [],
             "extra_features_vs_candidate": []
@@ -1038,7 +1312,187 @@
             "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2024-12-16/panel-ltr.json",
             "exists": true,
             "recipe_matches": true,
-            "recipe_fingerprint": "sha256:31e45b8d2f17e006",
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-01-06/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-01-27/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-02-17/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-03-10/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-03-31/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-04-21/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-05-12/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-06-02/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-06-23/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-07-14/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-08-04/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-08-25/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-09-15/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-10-06/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-10-27/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-11-17/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-12-08/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2025-12-29/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2026-01-19/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
+            "n_features": 172,
+            "missing_features_vs_candidate": [],
+            "extra_features_vs_candidate": []
+          },
+          {
+            "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2026-02-09/panel-ltr.json",
+            "exists": true,
+            "recipe_matches": true,
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
             "n_features": 172,
             "missing_features_vs_candidate": [],
             "extra_features_vs_candidate": []
@@ -1047,11 +1501,42 @@
             "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_172_sentiment/2026-03-02/panel-ltr.json",
             "exists": true,
             "recipe_matches": true,
-            "recipe_fingerprint": "sha256:31e45b8d2f17e006",
+            "recipe_fingerprint": "sha256:ccc412d08c0f3463",
             "n_features": 172,
             "missing_features_vs_candidate": [],
             "extra_features_vs_candidate": []
           }
+        ]
+      },
+      "config_parity": {
+        "passed": true,
+        "prod_config": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/strategy_config.json",
+        "wf_config": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_eval_configs/strategy_config.sim_wl200_172_sentiment.calibrated_causal.prod_semantic.json",
+        "candidate_artifact": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/diagnostics/wf_audit_20260527/panel-ltr.alpha158_fund.json",
+        "issues": [],
+        "checked_paths": [
+          "ranking.panel_scoring.enabled",
+          "ranking.panel_scoring.kind",
+          "ranking.panel_scoring.buy_floor",
+          "ranking.panel_scoring.rotation_advantage",
+          "ranking.panel_scoring.sizing",
+          "ranking.panel_scoring.sigma_sizing",
+          "ranking.panel_scoring.ngboost.enabled",
+          "ranking.panel_scoring.ngboost.score_mode",
+          "ranking.panel_scoring.ngboost.lambda_sigma",
+          "ranking.kelly_sizing",
+          "rotation.joint_actions",
+          "risk.panel_exit",
+          "risk.stop_loss_anchor_policy",
+          "regime_params",
+          "max_concurrent_positions",
+          "max_positions_per_sector",
+          "wash_sale_days",
+          "execution",
+          "tax",
+          "defensive_tickers",
+          "sector_map",
+          "tiered_thresholds"
         ]
       },
       "qp_contract": {
@@ -1068,69 +1553,193 @@
         }
       },
       "trade_contract": {
-        "passed": true,
-        "reason": "trade ledger contract OK",
-        "evidence": {
-          "n_rows": 171,
-          "n_auditable": 171,
-          "n_closed": 164,
-          "missing_entry_mu": 0,
-          "missing_entry_sigma": 0,
-          "missing_exit_regime": 0,
-          "missing_exit_threshold_columns": []
-        },
-        "require_entry_mu": true,
-        "require_entry_sigma": true
+        "passed": false,
+        "reason": "no round-trip ledgers found"
       },
       "trade_monotonicity": {
-        "passed": true,
-        "reason": "score monotonicity passed in 1 active regime(s)",
-        "pooled": {
-          "n": 164,
-          "spearman": 0.11270665473715741,
-          "top_return_mean": 0.027784776586517436,
-          "bottom_return_mean": 0.01996037081228814,
-          "top_bottom_return_spread": 0.007824405774229295,
-          "top_net_pnl": 883.3963770010126,
-          "bottom_net_pnl": 341.93513345667316
-        },
-        "regimes": [
-          {
-            "n": 152,
-            "spearman": 0.1079881315907101,
-            "top_return_mean": 0.02900758415064494,
-            "bottom_return_mean": 0.019367472313118455,
-            "top_bottom_return_spread": 0.009640111837526485,
-            "top_net_pnl": 935.7699115998388,
-            "bottom_net_pnl": 354.29117941715975,
-            "regime": "BULL_CALM",
+        "passed": false,
+        "reason": "no round-trip ledgers found"
+      },
+      "alpha_economics": {
+        "passed": false,
+        "reason": "no round-trip ledgers found"
+      },
+      "real_ic": 0.03453697607042469,
+      "sanity_shuffled_ic": 0.004026038112120818,
+      "sanity_placebo_ic": 0.040151728638540385,
+      "sanity_placebo_aligned_real_ic": 0.052921747444921494,
+      "sanity_label_col": "fwd_60d_excess",
+      "sanity_method": "manifest_point_in_time_label_diagnostics",
+      "sanity_eval_scope": "walkforward_manifest",
+      "sanity_manifest_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.json",
+      "sanity_eval_start": "2024-02-01",
+      "sanity_eval_end": "2026-02-10",
+      "sanity_n_oos_dates": 508,
+      "sanity_cutoff_contract": "manifest entry effective_train_cutoff_date/cutoff_date + lookahead_days < eval date",
+      "sanity_regime_ic": {
+        "passed": false,
+        "reason": "regime sanity IC failed: BEAR,BULL_CALM",
+        "min_n_dates": 30,
+        "min_mean_ic": 0.02,
+        "max_placebo_ratio": 0.5,
+        "regimes": {
+          "BEAR": {
+            "mean_ic": 0.2948903606440584,
+            "median_ic": 0.3316840452540494,
+            "std_ic": 0.11065313736371775,
+            "hit_rate": 0.96,
+            "n_dates": 50,
+            "n_rows": 7100,
+            "n_raw_rows": 7100,
+            "mean_confidence": 0.8293508479311579,
             "eligible": true,
-            "passed": true
+            "passed": false,
+            "placebo_60_ic": 0.1909406229287468,
+            "placebo_60_aligned_real_ic": 0.31279397113612967,
+            "label_autocorr_60_ic": 0.21282707753788807
           },
-          {
-            "n": 12,
-            "spearman": -0.14711055835105272,
-            "top_return_mean": 0.022755526552212732,
-            "bottom_return_mean": 0.0105007508130742,
-            "top_bottom_return_spread": 0.012254775739138532,
-            "top_net_pnl": 184.98262596893358,
-            "bottom_net_pnl": -223.0316228501536,
-            "regime": "BULL_VOLATILE",
+          "BULL_CALM": {
+            "mean_ic": 0.006100153912037021,
+            "median_ic": -0.007441123162973637,
+            "std_ic": 0.1791865302524117,
+            "hit_rate": 0.4925,
+            "n_dates": 400,
+            "n_rows": 56635,
+            "n_raw_rows": 56635,
+            "mean_confidence": 0.6376001543022207,
+            "eligible": true,
+            "passed": false,
+            "placebo_60_ic": 0.02148702308554455,
+            "placebo_60_aligned_real_ic": 0.031030981769643584,
+            "label_autocorr_60_ic": -0.04036468121685647
+          },
+          "BULL_VOLATILE": {
+            "mean_ic": -0.03592995572680867,
+            "median_ic": -0.10734569158256253,
+            "std_ic": 0.1332411539515849,
+            "hit_rate": 0.42105263157894735,
+            "n_dates": 19,
+            "n_rows": 2698,
+            "n_raw_rows": 2698,
+            "mean_confidence": 0.6439078464658382,
             "eligible": false,
             "passed": true,
-            "detail": "pass-open: n=12 < min_n_per_regime=30"
+            "placebo_60_ic": 0.045811320464935176,
+            "placebo_60_aligned_real_ic": -0.02135340747465079,
+            "label_autocorr_60_ic": 0.014800915837138637
+          },
+          "CHOPPY": {
+            "mean_ic": 0.02674034373249689,
+            "median_ic": 0.044350120637313736,
+            "std_ic": 0.14286543036784283,
+            "hit_rate": 0.6153846153846154,
+            "n_dates": 39,
+            "n_rows": 5407,
+            "n_raw_rows": 5407,
+            "mean_confidence": 0.33779801956333516,
+            "eligible": true,
+            "passed": true,
+            "placebo_60_ic": 0.004817667669270126,
+            "placebo_60_aligned_real_ic": 0.026498503507320904,
+            "label_autocorr_60_ic": -0.023773430939324047
           }
-        ],
-        "min_n_per_regime": 30,
-        "min_spearman": 0.02,
-        "min_top_bottom_spread": 0.0
+        }
       },
-      "real_ic": null,
-      "sanity_shuffled_ic": null,
-      "sanity_placebo_ic": null,
-      "wf_reason": "FAIL: mean Sharpe -1.323 or only 0/3 cuts > 0; SPY mean Sharpe +1.081, \u0394Sharpe -2.404, beat SPY Sharpe 0/3",
-      "sanity_reason": "skipped",
-      "run_at": "2026-05-22T07:50:56.485761",
+      "placebo_shift_diagnostics": [
+        {
+          "shift_days": 5,
+          "ic": 0.032205185394633386,
+          "aligned_real_ic": 0.032694815348414584,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 71130,
+          "n_dates": 503,
+          "abs_ratio_to_aligned_real": 0.9850242324795714,
+          "abs_ratio_to_full_real": 0.9324842258616814
+        },
+        {
+          "shift_days": 10,
+          "ic": 0.034194237303468884,
+          "aligned_real_ic": 0.032872091676629925,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 70420,
+          "n_dates": 498,
+          "abs_ratio_to_aligned_real": 1.0402209156583402,
+          "abs_ratio_to_full_real": 0.9900761790419368
+        },
+        {
+          "shift_days": 20,
+          "ic": 0.04234440458599623,
+          "aligned_real_ic": 0.03550596696968553,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 69000,
+          "n_dates": 488,
+          "abs_ratio_to_aligned_real": 1.1925996726733075,
+          "abs_ratio_to_full_real": 1.2260599914610746
+        },
+        {
+          "shift_days": 40,
+          "ic": 0.04256817249948975,
+          "aligned_real_ic": 0.04397636149647473,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 66160,
+          "n_dates": 468,
+          "abs_ratio_to_aligned_real": 0.9679785014251836,
+          "abs_ratio_to_full_real": 1.2325390738519946
+        },
+        {
+          "shift_days": 60,
+          "ic": 0.040151728638540385,
+          "aligned_real_ic": 0.052921747444921494,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 63320,
+          "n_dates": 448,
+          "abs_ratio_to_aligned_real": 0.758699978309077,
+          "abs_ratio_to_full_real": 1.1625722112053642
+        },
+        {
+          "shift_days": 80,
+          "ic": 0.038730827284409776,
+          "aligned_real_ic": 0.06263139753820045,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 60480,
+          "n_dates": 428,
+          "abs_ratio_to_aligned_real": 0.618393151147344,
+          "abs_ratio_to_full_real": 1.1214307588896422
+        },
+        {
+          "shift_days": 120,
+          "ic": 0.051320521674346496,
+          "aligned_real_ic": 0.06819602868270194,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 54800,
+          "n_dates": 388,
+          "abs_ratio_to_aligned_real": 0.7525441387962236,
+          "abs_ratio_to_full_real": 1.4859587466400739
+        },
+        {
+          "shift_days": 180,
+          "ic": 0.013102826139220628,
+          "aligned_real_ic": 0.03586118100425525,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 46280,
+          "n_dates": 328,
+          "abs_ratio_to_aligned_real": 0.36537631422863237,
+          "abs_ratio_to_full_real": 0.37938544800513296
+        },
+        {
+          "shift_days": 252,
+          "ic": 0.050704969715804474,
+          "aligned_real_ic": -0.017494877303649015,
+          "full_real_ic": 0.03453697607042469,
+          "n_rows": 36056,
+          "n_dates": 256,
+          "abs_ratio_to_aligned_real": 2.898275239988601,
+          "abs_ratio_to_full_real": 1.4681357630271819
+        }
+      ],
+      "wf_reason": "FAIL: zero trades across all WF cuts; decision tree admitted no buys, so Sharpe is undefined and SPY benchmark cannot be met",
+      "sanity_reason": "FAIL: shuf_ic=+0.0040 (need |\u00b7| < 0.005), placebo_ic=+0.0402 (must be available and < threshold=+0.0265 (0.5\u00d7|aligned_real_ic|, aligned_real_ic=+0.0529))",
+      "run_at": "2026-05-27T17:56:26.438888",
       "gate_version": 2
     },
     "config_fingerprint_source": {
