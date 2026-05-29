@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from sync_subrepo_docs import REGISTRY_FILENAME, render_repo_registry
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "subrepos.lock.json"
@@ -34,7 +36,7 @@ def _norm_remote(remote: str) -> str:
     return remote.removesuffix(".git").rstrip("/")
 
 
-def check_repo(entry: dict[str, Any], *, run_tests: bool) -> dict[str, Any]:
+def check_repo(entry: dict[str, Any], *, run_tests: bool, expected_registry: str) -> dict[str, Any]:
     path = Path(entry["local_path"])
     issues: list[str] = []
     if not path.exists():
@@ -43,6 +45,10 @@ def check_repo(entry: dict[str, Any], *, run_tests: bool) -> dict[str, Any]:
     for rel in REQUIRED_FILES:
         if not (path / rel).exists():
             issues.append(f"missing required file: {rel}")
+
+    registry = path / REGISTRY_FILENAME
+    if registry.exists() and registry.read_text() != expected_registry:
+        issues.append(f"{REGISTRY_FILENAME} drifted from lock; run scripts/sync_subrepo_docs.py")
 
     try:
         branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD")
@@ -54,8 +60,9 @@ def check_repo(entry: dict[str, Any], *, run_tests: bool) -> dict[str, Any]:
 
     if branch and branch != entry.get("branch"):
         issues.append(f"branch mismatch: local={branch} lock={entry.get('branch')}")
-    if commit and commit != entry.get("commit"):
-        issues.append(f"commit mismatch: local={commit} lock={entry.get('commit')}")
+    lock_commit = entry.get("commit", "")
+    if commit and lock_commit and not commit.startswith(lock_commit):
+        issues.append(f"commit mismatch: local={commit} lock={lock_commit}")
     if remote and _norm_remote(remote) != _norm_remote(entry.get("remote", "")):
         issues.append(f"remote mismatch: local={remote} lock={entry.get('remote')}")
 
@@ -85,7 +92,11 @@ def main() -> int:
     if lock["source_repo"].get("never_delete") is not True:
         raise SystemExit("source_repo.never_delete must be true")
 
-    results = [check_repo(entry, run_tests=args.run_tests) for entry in lock["subrepos"]]
+    expected_registry = render_repo_registry(lock)
+    results = [
+        check_repo(entry, run_tests=args.run_tests, expected_registry=expected_registry)
+        for entry in lock["subrepos"]
+    ]
     print(json.dumps({"ok": all(r["ok"] for r in results), "repos": results}, indent=2))
     return 0 if all(r["ok"] for r in results) else 1
 
