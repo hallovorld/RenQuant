@@ -1,33 +1,24 @@
 {
   "regime": "BULL_CALM",
-  "regime_confidence": 0.6301,
-  "high_water_mark": 10699.69,
+  "regime_confidence": 0.5932,
+  "high_water_mark": 11079.22,
   "entry_dates": {
-    "FTNT": "2026-04-27",
     "MU": "2026-04-27",
-    "DOCU": "2026-05-12",
-    "MCD": "2026-05-12",
-    "VRT": "2026-05-12",
     "GE": "2026-05-14",
-    "TXN": "2026-05-15"
+    "EQIX": "2026-05-17",
+    "META": "2026-05-17",
+    "HON": "2026-05-18"
   },
   "sell_streaks": {
-    "FTNT": 0,
     "MU": 0,
-    "MCD": 0,
-    "VRT": 0,
-    "DOCU": 0,
     "GE": 0,
-    "TXN": 0
+    "HON": 0,
+    "META": 0,
+    "EQIX": 0
   },
   "last_sell_dates": {
-    "AMZN": "2026-04-27",
-    "GOOG": "2026-04-27",
-    "PLTR": "2026-04-28",
     "BA": "2026-05-15",
     "CAT": "2026-05-01",
-    "TSM": "2026-04-28",
-    "SMCI": "2026-04-28",
     "NVDA": "2026-04-30",
     "GTLB": "2026-05-03",
     "NET": "2026-05-03",
@@ -50,26 +41,35 @@
     "CSCO": "2026-05-12",
     "XOM": "2026-05-12",
     "GE": "2026-05-14",
-    "TXN": "2026-05-15"
+    "TXN": "2026-05-20",
+    "DOCU": "2026-05-18",
+    "VRT": "2026-05-18",
+    "DUK": "2026-05-18",
+    "MCD": "2026-05-18",
+    "BAC": "2026-05-26",
+    "D": "2026-05-26",
+    "WFC": "2026-05-26",
+    "FTNT": "2026-05-27"
   },
   "position_hwm": {
-    "FTNT": 123.2,
-    "MU": 812.36,
-    "DOCU": 48.14,
-    "MCD": 277.77,
-    "VRT": 379.145,
-    "GE": 295.9,
-    "TXN": 307.395
+    "MU": 976.025,
+    "GE": 325.76,
+    "EQIX": 1086.94,
+    "META": 640.815,
+    "HON": 239.48
   },
   "monitor_state": {
-    "no_trade_streak": 1,
+    "no_trade_streak": 2,
     "no_candidate_streak": 0,
-    "last_activity_date": "2026-05-17",
-    "first_trade_date": "2026-04-23"
+    "last_activity_date": "2026-05-27",
+    "first_trade_date": "2026-04-23",
+    "no_trade_streak_source": "broker_filled_orders",
+    "last_fill_date": "2026-05-27",
+    "last_check_date": "2026-05-30"
   },
   "regime_state": {
     "regime": "BULL_CALM",
-    "confidence": 0.6301,
+    "confidence": 0.5932,
     "in_transition": false,
     "countdown": 0,
     "cusum_pos": 0.0,
@@ -82,24 +82,21 @@
       "panel_score": null,
       "kelly_target_pct": null
     },
-    "DOCU": {
-      "rank_score": 1.0,
+    "EQIX": {
+      "rank_score": 0.8199780461031834,
       "panel_score": null,
       "kelly_target_pct": null
     },
-    "MCD": {
-      "rank_score": 1.0,
-      "panel_score": null,
-      "kelly_target_pct": null
-    },
-    "VRT": {
-      "rank_score": 1.0,
+    "META": {
+      "rank_score": 0.8859416445623343,
       "panel_score": null,
       "kelly_target_pct": null
     }
   },
   "stop_orders": {},
   "last_stop_exit_dates": {
-    "BA": "2026-05-15"
-  }
+    "BA": "2026-05-15",
+    "VRT": "2026-05-18"
+  },
+  "skip_buys": false
 }

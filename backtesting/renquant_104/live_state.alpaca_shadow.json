@@ -1,0 +1,79 @@
+{
+  "regime": "BULL_CALM",
+  "regime_confidence": 0.5932,
+  "high_water_mark": 11079.22,
+  "entry_dates": {
+    "EQIX": "2026-05-18",
+    "HON": "2026-05-18",
+    "META": "2026-05-18",
+    "GE": "2026-05-14",
+    "DUK": "2026-05-30",
+    "GILD": "2026-05-30",
+    "MU": "2026-04-28",
+    "GM": "2026-05-30"
+  },
+  "entry_signals": {
+    "DUK": {
+      "rank_score": 0.536044750232565,
+      "panel_score": -0.16254231333732605,
+      "kelly_target_pct": 0.08898386573500403,
+      "regime": "BULL_CALM"
+    },
+    "GILD": {
+      "rank_score": 0.5310846617565654,
+      "panel_score": -0.1664491593837738,
+      "kelly_target_pct": 0.08898386573500403,
+      "regime": "BULL_CALM"
+    },
+    "GM": {
+      "rank_score": 0.5362033238358583,
+      "panel_score": -0.16241741180419922,
+      "kelly_target_pct": 0.07312467409654409,
+      "regime": "BULL_CALM"
+    }
+  },
+  "sell_streaks": {
+    "EQIX": 0,
+    "HON": 0,
+    "META": 0,
+    "GE": 0,
+    "MU": 0
+  },
+  "last_sell_dates": {
+    "TXN": "2026-05-20",
+    "GE": "2026-05-23",
+    "FTNT": "2026-05-27",
+    "MU": "2026-05-30"
+  },
+  "last_stop_exit_dates": {},
+  "position_hwm": {
+    "EQIX": 1084.76,
+    "HON": 237.86000061035156,
+    "META": 635.2899780273438,
+    "GE": 323.45001220703125,
+    "DUK": 122.66500091552734,
+    "GILD": 134.42999267578125,
+    "GM": 83.41500091552734,
+    "MU": 971.0
+  },
+  "stop_orders": {},
+  "regime_state": {
+    "regime": "BULL_CALM",
+    "confidence": 0.5932,
+    "in_transition": false,
+    "countdown": 0,
+    "cusum_pos": 0.0,
+    "cusum_neg": 0.0,
+    "cooldown_start": null
+  },
+  "monitor_state": {
+    "no_trade_streak": 2,
+    "no_candidate_streak": 0,
+    "last_activity_date": "2026-05-27",
+    "first_trade_date": "2026-05-19",
+    "last_check_date": "2026-05-30",
+    "no_trade_streak_source": "broker_filled_orders",
+    "last_fill_date": "2026-05-27"
+  },
+  "skip_buys": false
+}

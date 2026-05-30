@@ -68,8 +68,18 @@ def _patchtst_summary_path(path: Path) -> Path:
 
 
 def _sequence_sidecar_paths(path: Path) -> list[Path]:
-    """Candidate metadata sidecars for non-JSON sequence artifacts."""
-    out = [_patchtst_summary_path(path), path.with_name(path.name + ".metadata.json")]
+    """Candidate metadata sidecars for non-JSON sequence artifacts.
+
+    Order is significant: ``_load_sequence_sidecar`` returns the first hit and
+    ``_load_sequence_sidecar_merged`` MERGES later hits over earlier ones.
+
+    2026-05-30 bug: pre-fix order put ``_summary.json`` FIRST, so wf_gate_metadata
+    written into ``.pt.metadata.json`` by the WF gate runner was invisible to
+    preflight (summary always existed and short-circuited the read). Reversed
+    the order so the gate-written sidecar wins. Summary still provides the
+    training contract (best_val_ic / n_features / config_fingerprint).
+    """
+    out = [path.with_name(path.name + ".metadata.json"), _patchtst_summary_path(path)]
     seen: set[Path] = set()
     unique: list[Path] = []
     for p in out:
@@ -80,14 +90,41 @@ def _sequence_sidecar_paths(path: Path) -> list[Path]:
 
 
 def _load_sequence_sidecar(path: Path) -> tuple[dict, Path]:
-    for sidecar in _sequence_sidecar_paths(path):
+    """Return the merged sidecar payload + the first existing source path.
+
+    Pre-2026-05-30: returned only the FIRST existing sidecar, so e.g. wf_gate
+    stamps in ``.pt.metadata.json`` were hidden when ``_summary.json`` existed.
+    Post-fix: merges every existing sidecar (last writer wins per key) so the
+    training-time summary fields (best_val_ic etc.) and the gate-time
+    wf_gate_metadata both surface in the same payload.
+    """
+    merged: dict = {}
+    first_path: Path | None = None
+    for sidecar in reversed(_sequence_sidecar_paths(path)):
         if not sidecar.exists():
             continue
-        return json.loads(sidecar.read_text()), sidecar
-    raise FileNotFoundError(
-        "missing sequence sidecar; checked "
-        + ", ".join(str(p) for p in _sequence_sidecar_paths(path))
-    )
+        side = json.loads(sidecar.read_text())
+        if first_path is None:
+            first_path = sidecar
+        # Shallow merge — top-level keys from later iterations override earlier.
+        # 'metadata' sub-dict gets deep-merged so wf_gate_metadata stamps survive.
+        for k, v in side.items():
+            if k == "metadata" and isinstance(v, dict) and isinstance(merged.get("metadata"), dict):
+                merged_md = dict(merged["metadata"])
+                merged_md.update(v)
+                merged["metadata"] = merged_md
+            else:
+                merged[k] = v
+    if not merged:
+        raise FileNotFoundError(
+            "missing sequence sidecar; checked "
+            + ", ".join(str(p) for p in _sequence_sidecar_paths(path))
+        )
+    # Return the first sidecar path found in priority order (the one whose
+    # presence triggered the original lookup; used for error messages only).
+    assert first_path is not None
+    primary = next((p for p in _sequence_sidecar_paths(path) if p.exists()), first_path)
+    return merged, primary
 
 
 def _wf_metadata_from_payload(payload: dict) -> dict:
