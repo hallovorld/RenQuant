@@ -62,6 +62,27 @@ _MUTABLE_ARTIFACT_KEYS = {
     "test_mean_ic",
     "test_median_ic",
     "oos_mean_ic",
+    # P-PANEL-CONTRACT acceptance fields (2026-05-30 Bug D fix).
+    # These are pure post-training metadata: CV bookkeeping, OOS evidence,
+    # promotion gates, sentiment-contract markers, audit IDs. Stamping any
+    # of these changes the JSON bytes but does NOT change the model's
+    # predictions — must be excluded from model_content_fingerprint so the
+    # calibrator binding survives metadata edits (previously caused 3
+    # calibrator rebinds in one day).
+    "cv_method",
+    "cv_embargo_days",
+    "cv_folds",
+    "cv_n_splits",
+    "oos_std_ic",
+    "oos_per_fold_ic",
+    "eval_ic",
+    "train_run_id",
+    "sentiment_runtime_gate_contract",
+    "sentiment_runtime_gate_trained",
+    "promotion_status",
+    "promotion_gating_reason",
+    "version",  # artifact-format version, not a model parameter
+    "side_label",
 }
 
 _PREDICTIVE_CONTENT_HINTS = {

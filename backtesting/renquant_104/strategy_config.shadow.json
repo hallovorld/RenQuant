@@ -634,7 +634,9 @@
       "qp_correlation_cap_enabled": true,
       "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
       "qp_mu_contract": "strict",
-      "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu."
+      "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu.",
+      "qp_band_method": "davis_norman",
+      "_qp_band_method_note_2026-05-30": "Shadow also opts in to Davis-Norman band (Bug F fix). Today's shadow ORCL Delta_w=0.88pct hit 2pct qp_min_dw_pct floor; DN floor=0.5pct should let it through."
     },
     "enabled_regimes": [
       "BULL_CALM"

@@ -82,9 +82,18 @@ def _fit_one(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lookahead_days = int(row.get("lookahead_days", 60))
     data_start, data_end = _date_window(cutoff, training_window_years, lookahead_days)
+    # Dispatch by artifact type (2026-05-30 Bug C fix):
+    #   .json  → GBDT panel-LTR fitter
+    #   .pt    → HF PatchTST sequence fitter (same CLI surface)
+    # Pre-fix: hardcoded to GBDT script, which crashed
+    # UnicodeDecodeError on torch pickles.
+    if scorer_path.suffix == ".pt":
+        fitter_script = "fit_hf_patchtst_calibrator.py"
+    else:
+        fitter_script = "fit_calibrator_alpha158_fund.py"
     cmd = [
         sys.executable,
-        str(REPO / "scripts" / "fit_calibrator_alpha158_fund.py"),
+        str(REPO / "scripts" / fitter_script),
         "--scorer-artifact",
         str(scorer_path),
         "--out",

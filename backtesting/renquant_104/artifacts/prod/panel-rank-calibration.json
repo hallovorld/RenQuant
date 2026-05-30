@@ -454,9 +454,11 @@
     },
     "lookahead_days_used": 60,
     "expected_return_longest_flat_span": 0.0,
-    "scorer_model_content_fingerprint": "sha256:5a1e4e14beeb5e428b4895ae5d4bcee89496307d6ce7e7280d0193d9a10aae6f",
+    "scorer_model_content_fingerprint": "sha256:9c4bbd74b51adc17906ef79702d6cffc96fca9f8e943c33a27ec5adf0b83f686",
     "_binding_fix_2026-05-27": "rebound from sha256:9333f7bf91d10cc4 (config-fp) to scorer content sha256; calibrator was fit on this prod scorer (scorer_oos_mean_ic=0.11513494783634057)",
     "_binding_fix_2026-05-30": "rebound from sha256:154c42c966617fd56... to current scorer content sha256; calibrator was fit on the same booster. Artifact bytes changed because this session stamped 6 P-PANEL-CONTRACT fields (train_run_id, oos_mean_ic, cv_method, cv_embargo_days, etc.) \u2014 pure metadata, model unchanged.",
-    "_binding_fix_2026-05-30_post_cv_method": "rebound after cv_method docstring/value normalization rewrote artifact JSON; model content (booster_raw_json) unchanged. This is the 2nd rebind today \u2014 underlying architectural issue: calibrator binds to artifact bytes not model bytes, so pure metadata changes invalidate binding. Followup work item: change binding to hash(booster_raw_json) or config_fingerprint."
+    "_binding_fix_2026-05-30_post_cv_method": "rebound after cv_method docstring/value normalization rewrote artifact JSON; model content (booster_raw_json) unchanged. This is the 2nd rebind today \u2014 underlying architectural issue: calibrator binds to artifact bytes not model bytes, so pure metadata changes invalidate binding. Followup work item: change binding to hash(booster_raw_json) or config_fingerprint.",
+    "model_content_fingerprint": "sha256:9c4bbd74b51adc17906ef79702d6cffc96fca9f8e943c33a27ec5adf0b83f686",
+    "_binding_fix_2026-05-30_model_content": "Bug D fix: stamped model_content_fingerprint (stable across metadata edits) so future stamps do NOT invalidate binding. Validator prefers this over artifact_fingerprint."
   }
 }

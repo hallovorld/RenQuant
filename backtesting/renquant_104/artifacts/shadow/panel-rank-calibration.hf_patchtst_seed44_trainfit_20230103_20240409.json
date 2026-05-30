@@ -450,6 +450,8 @@
     "data_window_end": "2024-04-09",
     "expected_return_longest_flat_span": 0.0,
     "scorer_model_content_fingerprint": "sha256:d873e13540547b72b6eedf8989105b483e2aa21440b8e5ca19d104f8657f7ee7",
-    "_binding_fix_2026-05-30_shadow": "Shadow leg discovered same fingerprint mismatch class as prod (3rd occurrence today). Same workaround: rebind to current scorer bytes. Architectural followup: change binding to model bytes (booster_raw_json or .pt checkpoint hash) not artifact metadata bytes."
+    "_binding_fix_2026-05-30_shadow": "Shadow leg discovered same fingerprint mismatch class as prod (3rd occurrence today). Same workaround: rebind to current scorer bytes. Architectural followup: change binding to model bytes (booster_raw_json or .pt checkpoint hash) not artifact metadata bytes.",
+    "model_content_fingerprint": "sha256:d873e13540547b72b6eedf8989105b483e2aa21440b8e5ca19d104f8657f7ee7",
+    "_binding_fix_2026-05-30_model_content": "Bug D fix: stamped model_content_fingerprint (stable across metadata edits) so future stamps do NOT invalidate binding. Validator prefers this over artifact_fingerprint."
   }
 }
