@@ -103,12 +103,17 @@ def _compute_overall_pass(
     validation_scope_ok: bool,
     parity_result: dict,
     skipped_required_gates: list[str],
+    sanity_required: bool = True,
 ) -> bool:
     if skipped_required_gates:
         return False
+    sanity_ok = (
+        _sanity_result_passed(sanity_result)
+        if sanity_required else True
+    )
     return (
         bool(wf_result["passed"])
-        and _sanity_result_passed(sanity_result)
+        and sanity_ok
         and bool(trade_contract_result["passed"])
         and bool(trade_gate_result["passed"])
         and bool(alpha_economics_result["passed"])
@@ -900,12 +905,42 @@ def run_sim_cut(
     }
 
 
+def _read_wf_gate_relax(strategy_config: str) -> dict:
+    """Read optional ``wf_gate`` relaxation flags from the active strategy config.
+
+    Default behaviour (all keys absent / True) preserves the strict gate:
+    pass_sharpe requires absolute_ok AND benchmark_ok AND regime_ok.
+
+    Operator opt-in (set any key to False in ``strategy_config.<name>.json``):
+      * ``benchmark_required``        — drop "beat SPY" from pass
+      * ``regime_required``           — drop "no benchmark-lag regimes" from pass
+      * ``sanity_regime_ic_required`` — preflight P-WF-GATE: don't require
+                                         regime sanity IC.passed for live decisions
+
+    Real-money decision: enabling these accepts a model that may lag SPY or
+    have weak per-regime edge. Logged into wf_gate_metadata so the audit trail
+    shows the verdict was produced under relaxed criteria.
+    """
+    try:
+        cfg_path = STRATEGY_DIR / strategy_config
+        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    except Exception:
+        cfg = {}
+    block = (cfg.get("wf_gate") or {}) if isinstance(cfg, dict) else {}
+    return {
+        "benchmark_required": bool(block.get("benchmark_required", True)),
+        "regime_required": bool(block.get("regime_required", True)),
+        "sanity_regime_ic_required": bool(block.get("sanity_regime_ic_required", True)),
+    }
+
+
 def run_walk_forward(
     strategy_config: str,
     jobs: int = 1,
     trace_dir: Path | None = None,
 ) -> dict:
     """Run 3-cut walk-forward, return mean/std/per-cut."""
+    relax = _read_wf_gate_relax(strategy_config)
     cuts = CUTS
     jobs = max(1, min(int(jobs), len(cuts)))
     results: list[dict | None] = [None] * len(cuts)
@@ -1067,7 +1102,15 @@ def run_walk_forward(
         and n_beat_spy_apy >= 2
     )
     regime_ok = not regime_benchmark_failures
-    pass_sharpe = bool(absolute_ok and benchmark_ok and regime_ok)
+    # Config-controlled relaxation (defaults preserve the strict gate).
+    # Operator opt-in via strategy_config.wf_gate.{benchmark_required,regime_required}.
+    benchmark_required = relax["benchmark_required"]
+    regime_required = relax["regime_required"]
+    pass_sharpe = bool(
+        absolute_ok
+        and (benchmark_ok or not benchmark_required)
+        and (regime_ok or not regime_required)
+    )
     benchmark_suffix = (
         f"; SPY mean Sharpe {mean_spy_sharpe:+.3f}, "
         f"ΔSharpe {mean_sharpe_vs_spy:+.3f}, "
@@ -1081,6 +1124,10 @@ def run_walk_forward(
     )
     return {
         "passed": pass_sharpe,
+        "wf_gate_relax_applied": {
+            "benchmark_required": bool(benchmark_required),
+            "regime_required": bool(regime_required),
+        },
         "wf_3cut_sharpe_mean": float(mean_sharpe),
         "wf_3cut_sharpe_std": float(std_sharpe),
         "wf_3cut_apy_mean": float(mean_apy),
@@ -2440,6 +2487,10 @@ def main():
             "Required gate(s) skipped: %s — metadata is diagnostic-only",
             ", ".join(skipped_required_gates),
         )
+    # Read the strategy_config relaxation flag so the gate's overall_pass
+    # respects the same operator opt-in as the preflight side. Default True
+    # preserves strict behaviour.
+    _relax = _read_wf_gate_relax(args.strategy_config)
     overall_pass = _compute_overall_pass(
         wf_result=wf_result,
         sanity_result=sanity_result,
@@ -2449,6 +2500,7 @@ def main():
         validation_scope_ok=validation_scope_ok,
         parity_result=parity_result,
         skipped_required_gates=skipped_required_gates,
+        sanity_required=_relax["sanity_regime_ic_required"],
     )
     wf_meta = {
         "passed": overall_pass,

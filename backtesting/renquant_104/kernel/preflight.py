@@ -465,7 +465,12 @@ def _check_wf_gate_metadata(
     if passed is True:
         sanity = wf.get("sanity_regime_ic") if isinstance(wf.get("sanity_regime_ic"), dict) else None
         details["sanity_regime_passed"] = sanity.get("passed") if sanity else None
-        if not sanity or sanity.get("passed") is not True:
+        # Config-controlled relaxation (default True preserves strict behaviour).
+        # Operator opt-in via strategy_config.wf_gate.sanity_regime_ic_required.
+        sanity_required = bool(
+            (config.get("wf_gate") or {}).get("sanity_regime_ic_required", True)
+        )
+        if sanity_required and (not sanity or sanity.get("passed") is not True):
             details["sanity_regime_ic"] = sanity
             return _soft_for_sell_only(
                 "P-WF-GATE",
@@ -576,12 +581,20 @@ def _check_regime_layered_ic(
         )
     if sanity and sanity.get("passed") is False:
         details["sanity_regime_ic"] = sanity
-        return _soft_for_sell_only(
-            "P-REGIME-IC",
-            f"regime sanity IC failed: {sanity.get('reason', 'unknown')}",
-            run_mode=run_mode,
-            details=details,
+        # Config-controlled relaxation (default True preserves strict behaviour).
+        # Operator opt-in via strategy_config.wf_gate.sanity_regime_ic_required.
+        sanity_required = bool(
+            (config.get("wf_gate") or {}).get("sanity_regime_ic_required", True)
         )
+        if sanity_required:
+            return _soft_for_sell_only(
+                "P-REGIME-IC",
+                f"regime sanity IC failed: {sanity.get('reason', 'unknown')}",
+                run_mode=run_mode,
+                details=details,
+            )
+        # Relax mode: log the failure but proceed.
+        details["sanity_regime_ic_relaxed"] = True
     regimes_raw = tm.get("regimes")
     if isinstance(regimes_raw, dict):
         regimes = regimes_raw
