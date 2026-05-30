@@ -2439,6 +2439,16 @@ class EmitOrdersFromQPSolutionTask(Task):
             min_dw=float(cfg.get("qp_min_dw_pct", 0.005)),
             no_trade_factor=float(cfg.get("qp_no_trade_band_factor", 0.0)),
             band_cap=float(cfg.get("qp_no_trade_band_cap", 0.05)),
+            # Davis-Norman closed-form path (research C, 2026-05-30).
+            # Default 'legacy' preserves current behaviour.
+            band_method=str(cfg.get("qp_band_method", "legacy")),
+            dn_eps_oneway=float(cfg.get("qp_band_dn_eps_oneway",
+                                         (float(cfg.get("qp_cost_kappa", 0.002)) or 0.002) / 2.0)),
+            dn_gamma=float(cfg.get("qp_band_dn_gamma",
+                                     cfg.get("qp_risk_aversion", 3.0))),
+            dn_floor=float(cfg.get("qp_band_dn_floor", 0.005)),
+            dn_ceiling=float(cfg.get("qp_band_dn_ceiling",
+                                       cfg.get("qp_no_trade_band_cap", 0.05))),
             sigma_vec=_get_path(ctx, "_qp_sigma"),
             cands={c.ticker: c for c in (ctx.candidates or [])},
             score_sources=_get_path(ctx, "_qp_mu_source_map") or {},
@@ -2538,8 +2548,30 @@ class EmitOrdersFromQPSolutionTask(Task):
                 s = float(sigma_vec[i])
                 if _m.isfinite(s) and s > 0:
                     sig_i = s
-            ok, in_band = _passes_no_trade_band(dw, sig_i, env["min_dw"],
-                                                  env["no_trade_factor"], band_cap=env["band_cap"])
+            # π* for DN band: target weight from QP solve (the asset's
+            # frictionless optimum in DN-1990 terms). Fall back to a small
+            # constant when target is non-finite or zero (e.g. blocked names).
+            pi_star_i = 0.0
+            try:
+                tw_i = float(sol.target_w[i]) if hasattr(sol, "target_w") else 0.0
+                if _m.isfinite(tw_i) and tw_i > 0:
+                    pi_star_i = tw_i
+            except Exception:  # noqa: BLE001
+                pi_star_i = 0.0
+            if pi_star_i <= 0:
+                # Use a typical-name fallback so DN gives a meaningful threshold
+                # for sell-only or near-zero-target names. 0.05 = 5% portfolio weight.
+                pi_star_i = 0.05
+            ok, in_band = _passes_no_trade_band(
+                dw, sig_i, env["min_dw"],
+                env["no_trade_factor"], band_cap=env["band_cap"],
+                band_method=env.get("band_method", "legacy"),
+                dn_eps_oneway=env.get("dn_eps_oneway", 0.0),
+                dn_gamma=env.get("dn_gamma", 0.0),
+                dn_pi_star=pi_star_i,
+                dn_floor=env.get("dn_floor", 0.0),
+                dn_ceiling=env.get("dn_ceiling", 1.0),
+            )
             if not ok:
                 if in_band:
                     c["skipped_band"] += 1

@@ -728,7 +728,9 @@
       "_qp_c2_infeasible_policy_reason": "2026-05-24 Codex audit: sector/correlation caps are hard diversification constraints. If they make the QP infeasible, block QP orders for the bar instead of relaxing or dropping risk constraints. Diagnostic configs may explicitly set relax/drop.",
       "qp_conviction_cap_enabled": true,
       "qp_mu_contract": "strict",
-      "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu."
+      "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu.",
+      "qp_band_method": "davis_norman",
+      "_qp_band_method_note_2026-05-30": "Operator opt-in to Davis-Norman closed-form no-trade band (research C). Defaults: dn_floor=0.005, dn_ceiling=qp_no_trade_band_cap (0.05), dn_eps_oneway=qp_cost_kappa/2 (0.001), dn_gamma=qp_risk_aversion (3.0). Replaces 5% ad-hoc band_cap (binding on most names) with literature 1/3-power band ~0.5-2% at typical \u03c3. Per Davis-Norman 1990 / Jane\u010dek-Shreve 2004."
     },
     "enabled_regimes": [
       "BULL_CALM"
