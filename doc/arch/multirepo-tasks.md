@@ -125,3 +125,5 @@ Debt I personally introduced this session that needs fixing.
 - Use 🟡 for tasks running in background (manifest builds, training runs).
 - Use ✅ with the commit hash when a task lands.
 - Never lose the "currently running BG" state — that's the only way to resume cleanly.
+
+_**2026-05-30 Stage 1 + Stage 2 + Stage 6 完全 lifted**: 10 of 14 Tasks runner-independent (Config: Load/Derive/CheckConfigParity; Recipe: Resolve/ValidateRecipe; Stamp: Assemble/Stamp/EmitVerdict + 2 placeholders for inner-config). Only Stages 3-5 (WF sim + trade gates + sanity battery) still need lifts; those are Track C blocked on `kernel.*` split._
