@@ -79,6 +79,10 @@ class ExecutionContext:
     state_path: pathlib.Path
     today: _dt.date
     earnings_buffer_days: int = 3
+    # Operator-override map {TICKER: reason}. Wash-sale + earnings refusals
+    # are SKIPPED for these tickers; the audit row carries the operator reason
+    # so the tax / risk trade-off is documented (not silently bypassed).
+    operator_overrides: dict[str, str] = field(default_factory=dict)
     # populated through the pipeline
     state: dict | None = None
     orders: list[OrderItem] = field(default_factory=list)
@@ -159,7 +163,13 @@ class ValidateBrokerLiveTask(Task):
 
 
 class ValidateWashSaleTask(Task):
-    """Refuse any BUY whose ticker was SOLD in the last 30 days (IRS Sec.1091)."""
+    """Refuse any BUY whose ticker was SOLD in the last 30 days (IRS Sec.1091).
+
+    Operator-override: if ``ctx.operator_overrides[ticker]`` is set, the
+    refusal is documented as ALLOWED with the operator reason stamped in
+    the audit row. Wash-sale rule disallows the LOSS deduction (not the
+    trade itself); operator may accept the tax consequence explicitly.
+    """
 
     def run(self, ctx: ExecutionContext) -> bool | None:
         assert ctx.state is not None
@@ -176,6 +186,15 @@ class ValidateWashSaleTask(Task):
                 continue
             days = (ctx.today - sd).days
             if 0 <= days < 30:
+                override_reason = ctx.operator_overrides.get(o.ticker)
+                if override_reason:
+                    ctx.audit.append({"task": "ValidateWashSaleTask",
+                                        "ticker": o.ticker, "ok": True,
+                                        "override": True,
+                                        "operator_reason": override_reason,
+                                        "wash_sale_days": days,
+                                        "tax_consequence": "loss-deduction disallowed if prior sell was at loss"})
+                    continue
                 o.decision = "refused"
                 o.reason = f"wash_sale: sold {days}d ago (IRS Sec.1091)"
                 ctx.audit.append({"task": "ValidateWashSaleTask", "ticker": o.ticker,
@@ -315,13 +334,24 @@ def main() -> int:
                     help="ACTUALLY submit orders (default = dry-run).")
     ap.add_argument("--state-path", type=pathlib.Path,
                     default=STRATEGY_DIR / "live_state.alpaca.json")
+    ap.add_argument("--operator-override", nargs="*", default=[],
+                    help="One or more TICKER=reason to override wash-sale "
+                         "gate for that ticker (audit-stamped).")
     args = ap.parse_args()
+
+    overrides: dict[str, str] = {}
+    for spec in args.operator_override:
+        if "=" not in spec:
+            raise ValueError(f"--operator-override must be TICKER=reason (got {spec!r})")
+        t, _, reason = spec.partition("=")
+        overrides[t.upper()] = reason.strip()
 
     ctx = ExecutionContext(
         raw_orders=args.order,
         execute=bool(args.execute),
         state_path=args.state_path,
         today=_dt.date.today(),
+        operator_overrides=overrides,
     )
     build_pipeline().run(ctx)
 
