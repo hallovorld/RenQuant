@@ -648,7 +648,7 @@
     "enabled": true,
     "min_expected_advantage_pct": 0.06,
     "target_horizon_days": 60,
-    "_target_horizon_days_reason": "2026-05-24 Codex horizon-contract fix: panel-LTR production label/calibrator/QP μ are 60d (`panel_ltr.lookahead_days=60`, `qp_mu_horizon_days=60`). Rotation decisions must use the same expected-return horizon; 20d made logs/thresholds short-horizon while the panel calibrator supplied 60d μ, and BULL_CALM forensics showed the signal aligns better at longer horizons.",
+    "_target_horizon_days_reason": "2026-05-24 Codex horizon-contract fix: panel-LTR production label/calibrator/QP \u03bc are 60d (`panel_ltr.lookahead_days=60`, `qp_mu_horizon_days=60`). Rotation decisions must use the same expected-return horizon; 20d made logs/thresholds short-horizon while the panel calibrator supplied 60d \u03bc, and BULL_CALM forensics showed the signal aligns better at longer horizons.",
     "transaction_cost_pct": 0.0,
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
@@ -683,7 +683,7 @@
         "min_expected_return_by_regime": {
           "BULL_CALM": 0.04
         },
-        "_min_expected_return_reason": "2026-05-24 Codex QP alpha contract: QP may size only candidates with finite calibrated expected-return evidence on the same 60d horizon as panel_ltr/QP μ. Requiring 4% 60d expected excess return in BULL_CALM keeps thin probability-only signals from becoming trades after friction and benchmark-sleeve opportunity cost.",
+        "_min_expected_return_reason": "2026-05-24 Codex QP alpha contract: QP may size only candidates with finite calibrated expected-return evidence on the same 60d horizon as panel_ltr/QP \u03bc. Requiring 4% 60d expected excess return in BULL_CALM keeps thin probability-only signals from becoming trades after friction and benchmark-sleeve opportunity cost.",
         "respect_open_slots": true,
         "_reason": "2026-05-23 Codex alpha-conversion fix: QP may size/rebalance only pre-qualified alpha. WF trace forensics showed negative raw-panel and low-rank QP/TopUp adds were net negative after tax/friction, and QP opened risk when the book was already at the legacy slot cap. Require calibrated rank >=0.55, raw panel >=0, and available slot for new names before emitting QP buys/top-ups."
       },
@@ -1193,5 +1193,8 @@
     "user_approval": "Option A (2026-05-18, in-session)"
   },
   "min_reentry_days": 5,
-  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change."
+  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
+  "walkforward": {
+    "manifest_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_manifest_dropsenti_v3.json"
+  }
 }
