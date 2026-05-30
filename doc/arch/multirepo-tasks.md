@@ -41,7 +41,7 @@ Goal: move the WF gate + sim ledger ecosystem from umbrella to its proper repo.
 | B8 | Phase 3e — lift `RunWfSimTask` (calls run_sim_cut × 3, ThreadPool when --jobs > 1) | ⏳ | same | Most complex, kernel.* deps |
 | B9 | Phase 3f — lift `RunTradeContractTask` + `RunTradeMonotonicityTask` | ⏳ | same | runner.run_trade_*_gate stays as helper |
 | B10 | Phase 3g — lift `RunSanityBatteryTask` (wraps run_sanity_battery + _score_manifest_sanity) | ⏳ | same | Already updated for hf_patchtst dispatch in 82f928b |
-| B11 | Phase 3h — lift Stamp/Verdict tasks (write back to artifact) | ⏳ | same | Smallest, all I/O |
+| B11 | Phase 3h — Stamp/Verdict tasks wired (write_artifact_payload + ctx-driven verdict) | ✅ done | next commit | 7 tests pin behaviour incl. binary preservation + skip-on-None |
 | B12 | Phase 4 — smoke vs umbrella: byte-equivalent metadata on a known fixture | ⏳ | `tests/wf_gate/` | Critical gate before any flip |
 | B13 | Phase 5 — flip callers: weekly_wf_promote.sh, daily_104.sh, orchestrator → backtesting package | ⏳ | umbrella shells + renquant-orchestrator | Umbrella scripts become thin shims |
 
