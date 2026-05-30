@@ -86,7 +86,7 @@ Debt I personally introduced this session that needs fixing.
 | E2 | Same for train_one (PatchTST) | ✅ done | `8997151` (RecordTrainingRunJob) | |
 | E3 | README "Latest models" auto-refresh | ✅ done | `8c760f5` + `48e9838` | |
 | E4 | `docs/training_pipelines.md` — every hyperparameter | ✅ done | `00b3da9` | |
-| E5 | DB writer should also write to `pipeline_runs` table (not just training_runs) | ⏳ | renquant-pipeline | Daily decisions vs training |
+| E5 | `pipeline_runs` writer audit — already populated by live runner (38,360 rows in runs.alpaca.db, 1089 in sim_runs.db) | ✅ resolved | next commit | gap was misstated; existing infra works. New schema fields (buy_blocked / skip_buys / bear_only / counters_json) already in DDL |
 | E6 | `--training-window-years` CLI added to train_gbdt + hf_trainer, threaded into record_training_run | ✅ done | next commit | schema field finally populated; diagnostic only (no training behaviour change) |
 
 ---
