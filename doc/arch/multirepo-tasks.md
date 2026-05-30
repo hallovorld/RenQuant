@@ -73,7 +73,7 @@ Debt I personally introduced this session that needs fixing.
 | D4 | Tests for both `build_wf_manifest` drivers (GBDT + PatchTST) | ✅ done | next commit | 4 GBDT + 5 PatchTST tests, monkeypatch subprocess.run |
 | D5 | `PatchTstStatefulScorer.bootstrap_from_history(history_df)` — warms buffer to seq_len-1 | ✅ done | next commit | 5 new tests; caller-driven (load stays clean) |
 | D6 | `train_one` rename → `train_single_run` | ⏳ | renquant-model + research.py + tests | cosmetic but cascades |
-| D7 | Resolve duplicates: `hf_trainer.main()` vs `orchestrator/train_patchtst.py` | ⏳ | both | Decide canonical CLI entry |
+| D7 | Duplicates-audit doc with canonical/redundant classification | ✅ done | next commit | `doc/arch/duplicates-audit.md` — A1 confirmed: orchestrator/train_patchtst is dead code (delete in followup); A3/B2-B3/C1 umbrella copies blocked on Track C |
 | D8 | Delete unused renquant-pipeline/.../kernel/config_consistency.py (canonical = renquant-common; umbrella copy is Track C blocker) | ✅ done | next commit | byte-identical to common, zero importers — safe delete |
 
 ---
