@@ -91,7 +91,23 @@ def _resolve_strategy_path(raw: str | None, strategy_dir: Path) -> Path | None:
 
 
 def _artifact_feature_cols(path: Path) -> list[str]:
-    payload = json.loads(path.read_text())
+    # Route .pt sequence artifacts through the sidecar-aware loader so the
+    # parity checker can read PatchTST feature_cols without UnicodeDecodeError
+    # on the torch pickle (starts with byte 0x80).
+    if path.suffix == ".json":
+        payload = json.loads(path.read_text())
+    else:
+        try:
+            from renquant_backtesting.wf_gate.artifact_loader import (  # noqa: PLC0415
+                load_artifact_payload,
+            )
+            payload = load_artifact_payload(path)
+        except Exception:
+            # Best-effort sidecar fallback if the subrepo loader is unavailable.
+            sidecar = path.with_name(path.name + ".metadata.json")
+            if not sidecar.exists():
+                sidecar = path.with_name(path.stem + "_summary.json")
+            payload = json.loads(sidecar.read_text()) if sidecar.exists() else {}
     return list(payload.get("feature_cols") or [])
 
 
