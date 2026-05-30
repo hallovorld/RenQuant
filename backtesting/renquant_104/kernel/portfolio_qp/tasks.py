@@ -2337,6 +2337,67 @@ def _disposed_lot_min_holding_days(
     return min_days
 
 
+class ApplyProportionalTradeTask(Task):
+    """Gârleanu-Pedersen 2013 partial-rebalance (research B).
+
+    Mutates ``ctx._qp_solution`` in place: replaces ``target_w`` (the
+    QP's frictionless one-shot target) with ``current + (target - current) / N``
+    and recomputes ``delta_w`` from the new target. Skipped (no-op) when N ≤ 1
+    or the per-regime knob is absent — preserves all-or-nothing legacy behavior.
+
+    N comes from ``regime_params.<REGIME>.qp_partial_trade_horizon_days`` per
+    PRIME DIRECTIVE, with a global default ``rotation.joint_actions.
+    qp_partial_trade_horizon_days``.
+
+    Reference: cvxportfolio.ProportionalTradeToTargets.values_in_time
+    (15-line verbatim form of GP-2013's optimal trade-rate matrix's
+    scalar projection).
+    """
+
+    def run(self, ctx) -> bool | None:
+        import numpy as np  # noqa: PLC0415
+        from .proportional_trade import (  # noqa: PLC0415
+            proportional_trade_target,
+            resolve_trade_horizon_days,
+        )
+
+        sol = _get_path(ctx, "_qp_solution")
+        if sol is None or not hasattr(sol, "target_w"):
+            return None
+        current = _get_path(ctx, "_qp_w_current")
+        if current is None:
+            return None
+
+        regime = str(getattr(ctx, "regime", "") or "")
+        regime_params = (ctx.config or {}).get("regime_params") or {}
+        cfg = ((ctx.config or {}).get("rotation") or {}).get("joint_actions") or {}
+        default_n = cfg.get("qp_partial_trade_horizon_days")
+
+        n_days = resolve_trade_horizon_days(
+            regime=regime, regime_params=regime_params, default_days=default_n,
+        )
+        if n_days <= 1.0:
+            # Legacy all-or-nothing — preserve QP target as-is.
+            ctx._qp_partial_trade_applied = False  # noqa: SLF001
+            return None
+
+        current_arr = np.asarray(current, dtype=float)
+        target_arr = np.asarray(sol.target_w, dtype=float)
+        partial = proportional_trade_target(
+            current_w=current_arr, target_w=target_arr, n_days=n_days,
+        )
+        sol.target_w = partial
+        sol.delta_w = partial - current_arr
+        ctx._qp_partial_trade_applied = True  # noqa: SLF001
+        ctx._qp_partial_trade_n_days = float(n_days)  # noqa: SLF001
+        log.info(
+            "ApplyProportionalTradeTask: regime=%s N=%.1f — shrank QP target by 1/N "
+            "(Gârleanu-Pedersen 2013 partial-rebalance, research B)",
+            regime, n_days,
+        )
+        return True
+
+
 class EmitOrdersFromQPSolutionTask(Task):
     """Translate Δw → ctx.orders (buys/top-ups) + ctx.exits (closes/trims).
 

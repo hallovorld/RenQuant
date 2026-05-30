@@ -45,6 +45,7 @@ from .tasks import (
     ApplyExitOnlyTopupGuardTask,
     ApplyExposureScalingTask,
     ApplyGrinoldKahnTransformTask,
+    ApplyProportionalTradeTask,
     ApplySectorMetadataGuardTask,
     AlignQPHorizonUnitsTask,
     ForceMuSourceTask,
@@ -483,6 +484,12 @@ class JointPortfolioQPJob(Job):
 
             # ── Phase 4: solve (domain) ────────────────────────────────
             SolveMarkowitzQPTask(),
+
+            # ── Phase 4b: partial-rebalance (research B, default off) ──
+            # Gârleanu-Pedersen 2013: if regime_params.<R>.qp_partial_trade
+            # _horizon_days > 1, shrink the QP target by 1/N for smooth
+            # multi-day rebalancing. No-op when N ≤ 1 (legacy behaviour).
+            ApplyProportionalTradeTask(),
 
             # ── Phase 5: emit (domain) ─────────────────────────────────
             EmitOrdersFromQPSolutionTask(),
