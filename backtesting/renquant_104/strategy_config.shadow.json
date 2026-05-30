@@ -250,9 +250,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.05,
       "ngboost": {
-        "enabled": true,
-        "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "enabled": false
       },
       "sentiment": {
         "enabled": true
@@ -275,9 +273,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.04,
       "ngboost": {
-        "enabled": true,
-        "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "enabled": false
       },
       "sentiment": {
         "enabled": true
@@ -299,9 +295,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.025,
       "ngboost": {
-        "enabled": true,
-        "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "enabled": false
       },
       "sentiment": {
         "enabled": true
@@ -851,6 +845,9 @@
       "threshold": 0.5,
       "artifact_path": "artifacts/shadow/meta-label-exit.shadow.json",
       "_deployment_reason": "2026-05-11: meta-label exit veto. L\u00f3pez de Prado AFML ch.20. Trained 2026-05-11 on 2024-04\u21922025-04 (146 events, class balance 55.5%, AUC 0.554). Threshold 0.5 used in OOS validation; do NOT switch to artifact's F1-optimum 0.30 without re-validation. Fallback: \u00a75.13.10 \u2014 missing artifact \u2192 no-op."
+    },
+    "ngboost": {
+      "enabled": false
     }
   },
   "panel_ltr": {
