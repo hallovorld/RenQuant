@@ -37,7 +37,7 @@ Goal: move the WF gate + sim ledger ecosystem from umbrella to its proper repo.
 | B5 | Phase 3b — lift `DeriveConfigTask` (parses `--derive-config-from-prod` logic) | ⏳ | same | Pull from runner.main() lines ~50-100 |
 | B6 | Phase 3c — lift `CheckConfigParityTask` (uses `wf_config_parity.py`) | ⏳ | same | wf_config_parity.py already in backtesting copy |
 | B7a | Phase 3d.1 — lift recipe_match helpers (semantic_params, recipe_projection, recipe_fingerprint) | ✅ | `wf_gate/recipe_match.py` | runner copy keeps inline for byte-equivalence smoke |
-| B7b | Phase 3d.2 — lift `_manifest_recipe_usage` (uses recipe_match + STRATEGY_DIR coupling) | ⏳ | same | needs STRATEGY_DIR injected; bridge via context |
+| B7b | Phase 3d.2 — lift `manifest_recipe_usage` via DI (`strategy_dir` injected through ctx) | ✅ done | next commit | 7 tests pin behaviour incl. relative URI resolution + per-sample diff |
 | B8 | Phase 3e — lift `RunWfSimTask` (calls run_sim_cut × 3, ThreadPool when --jobs > 1) | ⏳ | same | Most complex, kernel.* deps |
 | B9 | Phase 3f — lift `RunTradeContractTask` + `RunTradeMonotonicityTask` | ⏳ | same | runner.run_trade_*_gate stays as helper |
 | B10 | Phase 3g — lift `RunSanityBatteryTask` (wraps run_sanity_battery + _score_manifest_sanity) | ⏳ | same | Already updated for hf_patchtst dispatch in 82f928b |
