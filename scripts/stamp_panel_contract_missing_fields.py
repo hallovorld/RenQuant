@@ -10,7 +10,7 @@ The values are NOT invented:
     own oos_mean_ic values (recipe fingerprint sha256:aeb1cd20db700361 matches
     prod). That distribution IS the OOS-quality evidence for this model recipe.
   * oos_mean_ic / oos_std_ic = mean / std of those 43 values.
-  * cv_method = "purged_walk_forward_43cuts" (semantically truthful).
+  * cv_method = "purged_walk_forward" (per ALLOWED_CV_METHODS template allowlist).
   * cv_embargo_days = 60 (matches the artifact's lookahead_days).
   * train_run_id = synthetic sha1 of (config_fingerprint, trained_date,
     label_col) — stable across re-stamping, unique per artifact recipe.
@@ -167,7 +167,7 @@ class ComputeStampsTask(Task):
             "oos_mean_ic": float(statistics.mean(per_fold)),
             "oos_std_ic": float(statistics.stdev(per_fold)) if len(per_fold) > 1 else 0.0,
             "oos_per_fold_ic": [float(x) for x in per_fold],
-            "cv_method": "purged_walk_forward_43cuts",
+            "cv_method": "purged_walk_forward",
             "cv_embargo_days": 60,
             "sentiment_runtime_gate_contract": "runtime_zeroing",
         }

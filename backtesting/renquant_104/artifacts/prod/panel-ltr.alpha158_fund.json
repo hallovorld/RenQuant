@@ -2010,7 +2010,7 @@
     0.046526223048816324,
     0.04403883386633405
   ],
-  "cv_method": "purged_walk_forward_43cuts",
+  "cv_method": "purged_walk_forward",
   "cv_embargo_days": 60,
   "sentiment_runtime_gate_contract": "runtime_zeroing"
 }

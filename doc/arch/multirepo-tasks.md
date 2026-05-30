@@ -90,6 +90,24 @@ Goal: `kernel/*` lives in umbrella; split between renquant-pipeline (runtime), r
 | D6 | `train_one` → `train_single_run` rename (+ back-compat alias) | ✅ done | 3 regression tests pin alias |
 | D7 | Duplicates-audit doc with canonical/redundant classification | ✅ done | |
 | D8 | Delete unused `renquant-pipeline/.../kernel/config_consistency.py` | ✅ done | |
+| R1 | D1 followup — proper §1c T/J/P refactor of build_wf_manifest (Pipeline + 5 Tasks + Context dataclass) | ✅ done | 22 T/J/P tests + 16 pure-helper tests |
+| R2 | D2 followup — proper §1c T/J/P refactor of build_patchtst_wf_manifest | ✅ done | included in 22 T/J/P tests |
+| R3 | stamp_panel_contract_missing_fields.py → §1c T/J/P | ✅ done | 12 T/J/P + 8 helper tests |
+
+---
+
+## Research track — literature-backed QP improvements (2026-05-30)
+
+Driven by the post-revert research report (no force-trade hacks; sound architecture):
+
+| ID | Task | Status | Notes |
+|---|---|---|---|
+| **Research-C** | Davis-Norman closed-form no-trade band | ✅ done | `kernel/portfolio_qp/davis_norman.py` + wired into `_passes_no_trade_band(band_method='davis_norman')` + threaded through `EmitOrdersFromQPSolutionTask` env. Enabled in prod + golden config. 14 helper tests + 5 band-integration tests. Davis-Norman 1990 + Janeček-Shreve 2004. |
+| **Research-B Phase 1** | Gârleanu-Pedersen ProportionalTradeToTargets helper | ✅ done | `kernel/portfolio_qp/proportional_trade.py` + 12 helper tests. Per-regime knob via PRIME DIRECTIVE. |
+| **Research-B Phase 2** | `ApplyProportionalTradeTask` wired into JointPortfolioQPJob | ✅ done | Between SolveMarkowitzQPTask and EmitOrdersFromQPSolutionTask. Default N=1 = legacy. 7 Task-tests pin Job wiring + default-off + per-regime override. |
+| Research-D | Enable `qp_robust_mu_kappa` per-regime (already in qp_solver.py:213) | ⏳ not started | Needs sim A/B before enabling |
+| Research-E | GBDT + PatchTST disagreement-σ combiner (DHS 2001) | ⏳ not started | Substantive new Task, deferred |
+| Research-A | Black-Litterman with raw-return prior | ⏳ deferred | Current label is `fwd_60d_excess`, BL with zero-prior shrinks toward 0. Needs label switch first. |
 
 **ALL OF TRACK D IS DONE.**
 
