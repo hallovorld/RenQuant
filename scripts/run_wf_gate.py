@@ -1713,7 +1713,20 @@ def _score_manifest_sanity(
     mu = pd.Series(_np.nan, index=scored.index, dtype=float)
     n_history_artifacts = 0
     for uri, sub in scored.groupby("__sanity_artifact_uri", sort=False):
-        scorer = PanelScorer.load(Path(uri))
+        uri_path = Path(uri)
+        # Dispatch: .pt is a sequence checkpoint (hf_patchtst); JSON is the
+        # GBDT PanelScorer. The hf_patchtst loader registers under
+        # renquant_common.scorers, so load_scorer dispatches by manifest.kind.
+        if uri_path.suffix == ".pt":
+            from types import SimpleNamespace  # noqa: PLC0415
+            from renquant_common import load_scorer  # noqa: PLC0415
+            scorer = load_scorer(SimpleNamespace(
+                kind="hf_patchtst",
+                local_artifact_path=str(uri_path),
+                uri=f"file://{uri_path}",
+            ))
+        else:
+            scorer = PanelScorer.load(uri_path)
         if getattr(scorer, "requires_history", False) is True:
             if panel_history is None:
                 raise ValueError(
