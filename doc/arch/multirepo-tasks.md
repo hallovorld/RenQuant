@@ -33,7 +33,7 @@ Goal: move the WF gate + sim ledger ecosystem from umbrella to its proper repo.
 | B1 | Phase 1 — copy runner/sim_driver/sim_ledger byte-identical | ✅ done | `2b6985c` | |
 | B2 | Phase 1 sweep — copy 18× wf_/walkforward + 18× analyze + 1 sim + 2 lean | ✅ done | `7decced` | 42 files total, byte-identical |
 | B3 | Phase 2 — Task/Job/Pipeline scaffold (6 Jobs / 14 Tasks) | ✅ done | `d52f102` | 7 tests pin shape |
-| B4 | Phase 3a — lift `LoadArtifactTask` body into the Task (was delegating to runner._load_artifact_payload) | ⏳ | `wf_gate/pipelines.py` | Start here — simplest task, no kernel deps |
+| B4 | Phase 3a — lift `LoadArtifactTask` body via `artifact_loader.py` | ✅ done | `4b1dfbb` | 7 tests pin behaviour; runner copy keeps inline for Phase 4 oracle |
 | B5 | Phase 3b — lift `DeriveConfigTask` (parses `--derive-config-from-prod` logic) | ⏳ | same | Pull from runner.main() lines ~50-100 |
 | B6 | Phase 3c — lift `CheckConfigParityTask` (uses `wf_config_parity.py`) | ⏳ | same | wf_config_parity.py already in backtesting copy |
 | B7a | Phase 3d.1 — lift recipe_match helpers (semantic_params, recipe_projection, recipe_fingerprint) | ✅ | `wf_gate/recipe_match.py` | runner copy keeps inline for byte-equivalence smoke |
