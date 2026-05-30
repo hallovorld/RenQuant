@@ -59,6 +59,7 @@ Goal: `kernel/*` lives in umbrella; should split between renquant-pipeline (runt
 | C4 | Keep umbrella `kernel/` as shim that re-exports for back-compat (Phase 5 friendly) | ⏳ | Avoids breaking everything at once |
 | C5 | After C2: kernel.* imports in `wf_gate/runner.py` resolve from package, not umbrella | ⏳ | Unblocks B8-B10 lifts |
 | **C2.1** | **kernel/metrics/ → renquant-backtesting** (6 files) | ✅ first chunk done | next commit | byte-identical copy; umbrella callers unchanged; 7 import-lift tests pass |
+| **C2.2** | **kernel/walk_forward/ → renquant-backtesting** (7 files) | ✅ done | next commit | unblocks B8-B10 once Phase 5 flips; 8 import-lift tests pass |
 
 ---
 
