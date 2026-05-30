@@ -35,7 +35,7 @@ Goal: move the WF gate + sim ledger ecosystem from umbrella to its proper repo.
 | B3 | Phase 2 — Task/Job/Pipeline scaffold (6 Jobs / 14 Tasks) | ✅ done | `d52f102` | 7 tests pin shape |
 | B4 | Phase 3a — lift `LoadArtifactTask` body via `artifact_loader.py` | ✅ done | `4b1dfbb` | 7 tests pin behaviour; runner copy keeps inline for Phase 4 oracle |
 | B5 | Phase 3b — lift `DeriveConfigTask` (parses `--derive-config-from-prod` logic) | ⏳ | same | Pull from runner.main() lines ~50-100 |
-| B6 | Phase 3c — lift `CheckConfigParityTask` (uses `wf_config_parity.py`) | ⏳ | same | wf_config_parity.py already in backtesting copy |
+| B6 | Phase 3c — `CheckConfigParityTask` wires `evaluate_wf_config_parity` with DI strategy_dir | ✅ done | next commit | 3 tests pin skip-on-missing-config / skip flag / no strategy_dir |
 | B7a | Phase 3d.1 — lift recipe_match helpers (semantic_params, recipe_projection, recipe_fingerprint) | ✅ | `wf_gate/recipe_match.py` | runner copy keeps inline for byte-equivalence smoke |
 | B7b | Phase 3d.2 — lift `manifest_recipe_usage` via DI (`strategy_dir` injected through ctx) | ✅ done | next commit | 7 tests pin behaviour incl. relative URI resolution + per-sample diff |
 | B8 | Phase 3e — lift `RunWfSimTask` (calls run_sim_cut × 3, ThreadPool when --jobs > 1) | ⏳ | same | Most complex, kernel.* deps |
