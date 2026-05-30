@@ -60,6 +60,7 @@ Goal: `kernel/*` lives in umbrella; should split between renquant-pipeline (runt
 | C5 | After C2: kernel.* imports in `wf_gate/runner.py` resolve from package, not umbrella | ⏳ | Unblocks B8-B10 lifts |
 | **C2.1** | **kernel/metrics/ → renquant-backtesting** (6 files) | ✅ first chunk done | next commit | byte-identical copy; umbrella callers unchanged; 7 import-lift tests pass |
 | **C2.2** | **kernel/walk_forward/ → renquant-backtesting** (7 files) | ✅ done | next commit | unblocks B8-B10 once Phase 5 flips; 8 import-lift tests pass |
+| **C2.3** | **kernel/reconciliation/ → renquant-backtesting** (1 file) | ✅ done | next commit | 3 import-lift tests pass; smallest chunk done |
 
 ---
 
@@ -129,3 +130,13 @@ Debt I personally introduced this session that needs fixing.
 - Never lose the "currently running BG" state — that's the only way to resume cleanly.
 
 _**2026-05-30 Stage 1 + Stage 2 + Stage 6 完全 lifted**: 10 of 14 Tasks runner-independent (Config: Load/Derive/CheckConfigParity; Recipe: Resolve/ValidateRecipe; Stamp: Assemble/Stamp/EmitVerdict + 2 placeholders for inner-config). Only Stages 3-5 (WF sim + trade gates + sanity battery) still need lifts; those are Track C blocked on `kernel.*` split._
+
+---
+
+## Process lessons learned (2026-05-30 session)
+
+1. **Always `pytest` BEFORE `git commit`.** 5 fix-forward commits this session shared one root cause: the commit-then-test sequence. Lesson logged.
+2. **Phase 1 lifts: byte-equivalence is the invariant**, not full importability. Modules whose `__init__.py` uses absolute `from kernel.x import` re-exports fail to import in the package context — that's expected pre-Phase-5. Tests must soft-skip on `ModuleNotFoundError('kernel')`, not assert.
+3. **Heredoc + cwd reset**: when using `.venv/bin/python - <<'PY'` inside a multi-cd bash, the cwd resets between calls. Always use absolute paths inside heredocs.
+4. **Grep filters for string literals matter.** A grep for `import X` misses occurrences of `X` in lists / docstrings. When doing a `git rm`-style delete, also grep for the bare module name.
+5. **Commit + push + advance pin** is 3 ops, not 1. Each must be verified before moving on (commit can succeed while push fails on network reset).
