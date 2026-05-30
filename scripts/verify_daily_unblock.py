@@ -48,11 +48,11 @@ def main() -> int:
         print(f"PREFLIGHT-FAIL (hard): {exc}")
         return 1
 
-    hard_fails = [c for c in checks if c.severity == "hard" and not c.passed]
-    soft_fails = [c for c in checks if c.severity == "soft" and not c.passed]
+    hard_fails = [c for c in checks if c.severity == "hard" and not c.ok]
+    soft_fails = [c for c in checks if c.severity == "soft" and not c.ok]
     if not args.quiet:
         for c in checks:
-            status = "✓" if c.passed else "✗"
+            status = "✓" if c.ok else "✗"
             print(f"  {status} {c.name:25s} [{c.severity}] {c.message[:100]}")
     print(
         f"SUMMARY: {len(checks)} checks; {len(hard_fails)} hard FAIL; "
