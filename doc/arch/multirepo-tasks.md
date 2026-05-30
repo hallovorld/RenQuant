@@ -87,7 +87,7 @@ Debt I personally introduced this session that needs fixing.
 | E3 | README "Latest models" auto-refresh | ✅ done | `8c760f5` + `48e9838` | |
 | E4 | `docs/training_pipelines.md` — every hyperparameter | ✅ done | `00b3da9` | |
 | E5 | DB writer should also write to `pipeline_runs` table (not just training_runs) | ⏳ | renquant-pipeline | Daily decisions vs training |
-| E6 | Add `--training-window-years` to record_training_run (schema field exists, not yet populated) | ⏳ | renquant-orchestrator + renquant-model | |
+| E6 | `--training-window-years` CLI added to train_gbdt + hf_trainer, threaded into record_training_run | ✅ done | next commit | schema field finally populated; diagnostic only (no training behaviour change) |
 
 ---
 
