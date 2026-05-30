@@ -188,6 +188,15 @@ _EXECUTION_ONLY_PARAM_KEYS = {
     "verbosity",
     "verbose",
     "silent",
+    # Sequence-model execution controls. epochs / early_stopping_patience are
+    # how-long-to-train knobs; device is what-hardware. None of them define the
+    # statistical recipe (the model can be retrained on the same data with
+    # different stopping criteria and still be the same "recipe" for WF parity).
+    # Added 2026-05-30 (Track A3 unblock) — without this, an 8-epoch A vs a
+    # 4-epoch manifest entry mismatch fingerprints despite identical hyperparams.
+    "epochs",
+    "early_stopping_patience",
+    "device",
 }
 
 
