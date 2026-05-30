@@ -1882,6 +1882,30 @@ def run_sanity_battery(
                 "cutoff_contract": "artifact cutoff + lookahead_days < eval_start",
                 **contract,
             }
+        elif artifact.get("kind") in ("hf_patchtst", "patchtst_panel"):
+            # PatchTST static sanity is non-trivial: the scorer is stateful (per-ticker
+            # rolling buffer needs seq_len warmup) and per-day batched, so a direct
+            # adaptation of the panel_ltr_xgboost path isn't faithful. The full
+            # implementation belongs in a manifest-based sanity that mirrors how the
+            # WF sim itself scores PatchTST (load scorer per cutoff, predict on val
+            # using the buffer the manifest entry was trained against). Once
+            # build_patchtst_wf_manifest output is registered + _score_manifest_sanity
+            # gains a kind dispatch, this branch can use it.
+            log.warning(
+                "kind=%s — PatchTST static sanity is skipped pending "
+                "_score_manifest_sanity hf_patchtst dispatch (build_patchtst_wf_manifest "
+                "output supplies the manifest; the dispatch is the follow-up)",
+                artifact.get("kind"),
+            )
+            return {
+                "passed": False,
+                "reason": ("PatchTST static sanity skipped — sequence model needs "
+                           "manifest-based sanity with per-cutoff scorer warmup; "
+                           "implementation pending"),
+                "sanity_method": "patchtst_manifest_required",
+                "sanity_label_col": LABEL,
+                "sanity_eval_scope": "static_artifact",
+            }
         else:
             log.warning("kind=%s — sanity not implemented for this head type",
                         artifact.get("kind"))
