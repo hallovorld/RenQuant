@@ -71,7 +71,7 @@ Debt I personally introduced this session that needs fixing.
 | D2 | `build_patchtst_wf_manifest.py` same | ⏳ | renquant-orchestrator | minor |
 | D3 | Tests for `refresh_readme_latest_models.py` | ✅ done | next commit | 5 tests: write block, replace block, no-rows, --limit, missing-db |
 | D4 | Tests for both `build_wf_manifest` drivers (GBDT + PatchTST) | ✅ done | next commit | 4 GBDT + 5 PatchTST tests, monkeypatch subprocess.run |
-| D5 | `PatchTstStatefulScorer` cold-start fix — bootstrap from panel history at load() | ⏳ | renquant-model | Daily run otherwise empty first N days |
+| D5 | `PatchTstStatefulScorer.bootstrap_from_history(history_df)` — warms buffer to seq_len-1 | ✅ done | next commit | 5 new tests; caller-driven (load stays clean) |
 | D6 | `train_one` rename → `train_single_run` | ⏳ | renquant-model + research.py + tests | cosmetic but cascades |
 | D7 | Resolve duplicates: `hf_trainer.main()` vs `orchestrator/train_patchtst.py` | ⏳ | both | Decide canonical CLI entry |
 | D8 | Move umbrella `kernel/` config_consistency duplicate (also in renquant-common per memory) | ⏳ | renquant-common | feedback_multirepo_code_placement flagged this |
