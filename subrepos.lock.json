@@ -94,7 +94,7 @@
       "local_path": "/Users/renhao/git/github/renquant-orchestrator",
       "remote": "https://github.com/hallovorld/renquant-orchestrator",
       "branch": "main",
-      "commit": "4a56043",
+      "commit": "8bf4c90",
       "test_command": "make test",
       "status": "active"
     }
