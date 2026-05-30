@@ -1748,24 +1748,49 @@ def _retry_with_relaxed_c2_caps(sol, kwargs, solve_fn, *, policy: str = "strict"
 def _passes_no_trade_band(
     dw: float, sig_i: float, min_dw: float, no_trade_factor: float,
     band_cap: float = 0.05,
+    *,
+    # Davis-Norman closed-form path (2026-05-30 C, default off):
+    band_method: str = "legacy",
+    dn_eps_oneway: float = 0.0,
+    dn_gamma: float = 0.0,
+    dn_pi_star: float = 0.0,
+    dn_floor: float = 0.0,
+    dn_ceiling: float = 1.0,
 ) -> tuple[bool, bool]:
-    """Davis-Norman 1990 / Constantinides 1979 no-trade band, capped.
+    """No-trade band gate. Two band-computation modes:
 
-    Original: skip trades inside max(min_dw, no_trade_factor × σ_i).
+    Legacy (default, ``band_method='legacy'``):
+        Davis-Norman / Constantinides ad-hoc form. Skip inside
+        ``max(min_dw, min(band_cap, no_trade_factor × σ_i))``.
 
-    2026-05-09 BUG #7 fix: with NGB now emitting σ̂ ≈ 0.10-0.30, the
-    raw `no_trade_factor × σ_i` produces bands of 10-30% of equity for
-    high-σ holdings, making them structurally uncoverable even when μ̂
-    strongly disagrees with the position. Discovered when BA at
-    edge_sharpe = -0.51 (12% expected underperformance) failed to sell
-    because σ̂_BA = 0.24 → effective band = 24% > BA's 6.7% weight.
+        2026-05-09 BUG #7 fix: band_cap protects high-σ names from
+        unreachable 10-30% bands (BA at σ=0.24).
 
-    Cap the σ-derived band at `band_cap` (default 5% of equity) so
-    high-σ holdings remain reachable. The cap is per-ticker — assets
-    with σ < band_cap are unaffected.
+    Closed-form Davis-Norman (``band_method='davis_norman'``):
+        Threshold from the literature 1/3-power formula
+        ``δ* = (1.5/γ · ε · π·(1-π)² · σ²)^(1/3)`` (Davis-Norman 1990,
+        Janeček-Shreve 2004), clamped to ``[dn_floor, dn_ceiling]``.
+        Eliminates the three hand-tuned knobs in favor of literature
+        scaling. Enable via ``rotation.joint_actions.qp_band_method`` and
+        provide γ (risk_aversion), π* (current/target weight), ε (one-way
+        cost). The 2026-05-30 research report verified DN gives ≈ 1.1%
+        at our typical params vs the hand-tuned 2% floor — ~half the
+        threshold, more trades pass through.
 
     Returns (pass, was_in_band).
     """
+    if band_method == "davis_norman":
+        from .davis_norman import davis_norman_band_clamped  # noqa: PLC0415
+        threshold = davis_norman_band_clamped(
+            eps_oneway=dn_eps_oneway, sigma=sig_i, gamma=dn_gamma,
+            pi_star=dn_pi_star, floor=dn_floor, ceiling=dn_ceiling,
+        )
+        # Preserve the legacy min_dw floor (operator can still force min absolute Δw).
+        threshold = max(min_dw, threshold)
+        if abs(dw) < threshold:
+            return False, abs(dw) >= min_dw
+        return True, False
+    # Legacy path (unchanged).
     sigma_band = min(band_cap, no_trade_factor * sig_i)
     threshold = max(min_dw, sigma_band)
     if abs(dw) < threshold:
