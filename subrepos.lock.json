@@ -34,7 +34,7 @@
       "local_path": "/Users/renhao/git/github/renquant-model",
       "remote": "https://github.com/hallovorld/renquant-model",
       "branch": "main",
-      "commit": "be645ad",
+      "commit": "34d50b5",
       "test_command": "make test",
       "status": "active"
     },
