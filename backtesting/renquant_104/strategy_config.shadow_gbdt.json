@@ -1091,7 +1091,7 @@
   "min_reentry_days": 5,
   "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
   "walkforward": {
-    "manifest_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal_smoke.json",
+    "manifest_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_calibrated.json",
     "enabled": true
   }
 }
