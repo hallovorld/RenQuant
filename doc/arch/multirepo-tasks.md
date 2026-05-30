@@ -53,7 +53,7 @@ Goal: `kernel/*` lives in umbrella; should split between renquant-pipeline (runt
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| C1 | Inventory umbrella `kernel/` modules and classify (runtime / sim / shared) | ⏳ | First step — audit which module belongs where |
+| C1 | Inventory umbrella `kernel/` modules and classify (runtime / sim / shared) | ✅ done | `doc/arch/kernel-inventory.md` — 170+ files classified into 5 buckets (pipeline/backtesting/common/base-data/misc) + 10-step suggested sequence + 5 immediate dup-audit findings |
 | C2 | Move `kernel.pipeline.*`, `kernel.walk_forward.loader`, `kernel.panel_pipeline.panel_scorer`, `kernel.preflight` → renquant-pipeline | ⏳ | These are runtime (already partially in pipeline repo) |
 | C3 | Move `kernel.sim.*`, `kernel.exits.*`, `kernel.regime.*` → renquant-backtesting | ⏳ | Sim-specific |
 | C4 | Keep umbrella `kernel/` as shim that re-exports for back-compat (Phase 5 friendly) | ⏳ | Avoids breaking everything at once |
