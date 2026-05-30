@@ -197,6 +197,38 @@ When a theory predicts X and the result is ¬X, the first hypothesis is "my impl
 ### 3. Git commits — sync everything, guard secrets
 Commit and push all changed files. Before every commit: `git status` for untracked/modified, then if any file contains sensitive data, gitignore-first then commit `.gitignore` then handle the file. Currently gitignored: `.env`, `live/logs/`, `data/`, `backtesting/data/`, `backtesting/*/backtests/`. If it's not gitignored, it should be in the remote.
 
+### 3a. PR-based workflow — STRICT, all 10 repos (2026-05-30 mandate)
+
+**User verbatim** (2026-05-30): *"future code changes should be PR based! this is a strict rule for all repos! enforce it! main branch of all repos should be protected from now!"*
+
+**Hard rule, no exceptions, applies to ALL 13 renquant repos** (umbrella `RenQuant` + 12 subrepos under `hallovorld/`):
+- **11 public** (server-side protected 2026-05-30): `RenQuant`, `renquant-artifacts`, `renquant-backtesting`, `renquant-base-data`, `renquant-common`, `renquant-execution`, `renquant-model-gbdt`, `renquant-model-patchtst`, `renquant-orchestrator`, `renquant-pipeline`, `renquant-strategy-104`.
+- **2 private** (no server-side; agent-rule + pre-push hook enforcement): `renquant-model`, `renquant-state-backup`.
+- **Future renquant-\* repos** automatically covered by the agent rule. Apply server-side protection at creation time (`gh api ... /branches/main/protection`); if private, install hook via `bash scripts/install_pr_hook.sh <repo-path>`.
+1. **NEVER commit directly to `main`.** Always create a feature branch first (`feat/`, `fix/`, `chore/`, `docs/`, `bug/` prefix).
+2. **Open a GitHub PR** via `gh pr create --base main --head <branch>` after pushing the branch. Body must include: change summary, test evidence, and rollback notes if production-touching.
+3. **Self-merge allowed** (solo dev) but the PR is required as the audit surface. Use `gh pr merge --merge|--squash <PR#>` (default `--merge` so merge commit retains branch lineage).
+4. **NEVER run `git push origin main` from a branch checkout.** Period. Server-side branch protection on 11 public repos will reject; for the 2 private repos (`renquant-model`, `renquant-state-backup`) the local pre-push hook + this rule are the enforcement.
+5. **Server-side protection** (already applied 2026-05-30 to 11 public repos): `enforce_admins=true`, `required_pull_request_reviews.required_approving_review_count=0`, `allow_force_pushes=false`, `allow_deletions=false`. The 2 private repos (`renquant-model`, `renquant-state-backup`) not server-protected on free plan — agent rule + local pre-push hook are the gate.
+6. **Pre-push hook installed on every local clone** via `bash scripts/install_pr_hook.sh --all`. Blocks `git push origin main` even when server-side is unavailable. Re-run after `git clone` of any new renquant repo.
+7. **Reverses the deleted 2026-05-27 verbal-merge convention** (`feedback_no_pr_verbal_merge.md`). That convention's rationale (solo dev = no second pair of eyes) is overridden by the explicit 2026-05-30 mandate. Verbal approval is still gating ("ok merge?"), but the *mechanism* is now `gh pr merge`, not `git merge --no-ff` on local `main`.
+
+**Workflow template:**
+```bash
+# 1. Branch first
+git checkout -b feat/foo-bar
+# 2. Make changes, commit
+git add -A && git commit -m "..." 
+# 3. Push branch
+git push -u origin feat/foo-bar
+# 4. Open PR
+gh pr create --base main --head feat/foo-bar --title "..." --body "..."
+# 5. After verbal approval, merge
+gh pr merge --merge --delete-branch
+```
+
+**Source incident:** 2026-05-30 session — user halted free-flow chat to lay down the rule. Captured before next commit to ensure agent compliance.
+
 ### 4. Keep docs current
 After any non-trivial change, sync: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/ops/schedule.md`](doc/ops/schedule.md), [`doc/roadmap.md`](doc/roadmap.md), and this file. Code wins on conflict.
 
