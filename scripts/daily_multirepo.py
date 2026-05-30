@@ -6,12 +6,14 @@ LIFTED kernel module to the pinned `renquant-pipeline` subrepo, so the decision
 tree genuinely runs out of the multi-repo packages — while the umbrella RenQuant
 stays the untouched baseline/rollback (copy-not-move).
 
-Bridge state: 3 modules are not yet homed into a subrepo
-(`kernel.preflight`, `kernel.panel_pipeline`, `kernel.meta_label` — the model /
-strategy boundary, slated for renquant-model). Those resolve from the umbrella's
-own `kernel/` for now. Everything else (regime, exits, sizing, QP, selection,
-rotation, the whole pipeline + jobs/tasks, decision_trace, persistence, models,
-execution) comes from the pinned subrepo.
+Bridge state (2026-05-30, after Track C2.4/C2.9/C2.11):
+  * `kernel.preflight`     → renquant-pipeline.kernel.preflight (lifted)
+  * `kernel.panel_pipeline`→ renquant-pipeline.kernel.panel_pipeline (lifted)
+  * `kernel.meta_label`    → renquant-backtesting.meta_label (lifted; bridged here)
+  * everything else        → renquant-pipeline (already lifted)
+The umbrella `kernel/` retains all of these as byte-equivalent copies for
+rollback (RQ_DAILY_RUNNER=umbrella) and for any code still doing
+`from kernel.x import …` outside the bootstrap.
 
 Usage (safe default = readonly-alpaca, no orders):
     python scripts/daily_multirepo.py --broker readonly-alpaca --once
@@ -69,17 +71,22 @@ def _bootstrap_multirepo() -> list[str]:
         sys.modules[modname] = mod
         aliased.append(modname)
 
-    # The pin's lifted code (e.g. pp_inference) rewrote model-boundary imports to
-    # `renquant_pipeline.kernel.{meta_label,panel_pipeline}`, but those are NOT
-    # homed in the pin yet (model boundary → renquant-model, pending). Bridge
-    # them to the umbrella's own modules so the pipeline runs end-to-end.
-    for modname in ("meta_label", "panel_pipeline"):
+    # 2026-05-30: panel_pipeline + preflight are now homed in the pin (C2.9 + C2.11).
+    # The pin loop above already aliases them. meta_label was lifted to
+    # renquant-backtesting (C2.4) — alias that here so the pin's pp_inference path
+    # `from renquant_pipeline.kernel.meta_label import …` still resolves.
+    try:
+        bm = importlib.import_module("renquant_backtesting.meta_label")
+        sys.modules["renquant_pipeline.kernel.meta_label"] = bm
+        aliased.append("renquant_pipeline.kernel.meta_label←renquant_backtesting")
+    except Exception:
+        # Fallback to umbrella if backtesting subrepo not on path
         try:
-            um = importlib.import_module(f"kernel.{modname}")
+            um = importlib.import_module("kernel.meta_label")
+            sys.modules["renquant_pipeline.kernel.meta_label"] = um
+            aliased.append("renquant_pipeline.kernel.meta_label←umbrella")
         except Exception:
-            continue
-        sys.modules[f"renquant_pipeline.kernel.{modname}"] = um
-        aliased.append(f"renquant_pipeline.kernel.{modname}←umbrella")
+            pass
 
     # pp_inference does `from renquant_pipeline.panel_scoring import PanelScoringJob`,
     # but the pin's panel_scoring.py is a *consolidated rewrite* of the model
