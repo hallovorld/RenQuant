@@ -74,7 +74,7 @@ Debt I personally introduced this session that needs fixing.
 | D5 | `PatchTstStatefulScorer.bootstrap_from_history(history_df)` — warms buffer to seq_len-1 | ✅ done | next commit | 5 new tests; caller-driven (load stays clean) |
 | D6 | `train_one` rename → `train_single_run` | ⏳ | renquant-model + research.py + tests | cosmetic but cascades |
 | D7 | Resolve duplicates: `hf_trainer.main()` vs `orchestrator/train_patchtst.py` | ⏳ | both | Decide canonical CLI entry |
-| D8 | Move umbrella `kernel/` config_consistency duplicate (also in renquant-common per memory) | ⏳ | renquant-common | feedback_multirepo_code_placement flagged this |
+| D8 | Delete unused renquant-pipeline/.../kernel/config_consistency.py (canonical = renquant-common; umbrella copy is Track C blocker) | ✅ done | next commit | byte-identical to common, zero importers — safe delete |
 
 ---
 
