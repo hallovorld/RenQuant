@@ -16,7 +16,7 @@ Goal: stop `BUY-BLOCKED` on the live runner.
 |---|---|---|---|---|
 | A1 | `build_patchtst_wf_manifest` BG run completes | 🟡 running | `b8kynsdcl` | 10 cutoffs × ~15min on MPS, cwd fix in 93f9f38 |
 | A2 | Pin new manifest in `strategy_config.shadow.json::walkforward.manifest_path` | ⏳ | umbrella | Required so the gate picks it up |
-| A3 | Re-run `run_wf_gate.py --artifact A.pt --strategy-config strategy_config.shadow.json` | ⏳ | umbrella | A2 prerequisite |
+| A3 | Re-ran WF gate (twice): manifest landed but gate routes .pt → static_artifact scope → sanity hits skip-stub | ⚠️ blocked | umbrella | Real unblock: write static-scope hf_patchtst sanity in run_sanity_battery; the manifest-scope dispatch I shipped doesn't fire here |
 | A4 | Verify A's `wf_gate_metadata` stamps real Sharpe + sanity numbers | ⏳ | A artifact | If passes → A4a; if fails → diagnose |
 | A4a | If sharpe positive 3/3 cuts AND beats SPY 1/3+ AND sanity placebo ≈0 → flip prod `strategy_config.panel_scoring.artifact_path` to A | ⏳ | umbrella | Per §5.13.4a Tier 3 gate |
 | A5 | Run `daily_104.sh` e2e on LIVE alpaca → confirm BUY-BLOCKED is gone | ⏳ | umbrella | Verification of unblock |
