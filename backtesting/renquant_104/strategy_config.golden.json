@@ -648,7 +648,7 @@
     "enabled": true,
     "min_expected_advantage_pct": 0.06,
     "target_horizon_days": 60,
-    "_target_horizon_days_reason": "2026-05-24 Codex horizon-contract fix: panel-LTR production label/calibrator/QP μ are 60d (`panel_ltr.lookahead_days=60`, `qp_mu_horizon_days=60`). Rotation decisions must use the same expected-return horizon; 20d made logs/thresholds short-horizon while the panel calibrator supplied 60d μ, and BULL_CALM forensics showed the signal aligns better at longer horizons.",
+    "_target_horizon_days_reason": "2026-05-24 Codex horizon-contract fix: panel-LTR production label/calibrator/QP \u03bc are 60d (`panel_ltr.lookahead_days=60`, `qp_mu_horizon_days=60`). Rotation decisions must use the same expected-return horizon; 20d made logs/thresholds short-horizon while the panel calibrator supplied 60d \u03bc, and BULL_CALM forensics showed the signal aligns better at longer horizons.",
     "transaction_cost_pct": 0.0,
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
@@ -891,7 +891,10 @@
         }
       ],
       "shadow_tracking_uri": "file:./mlruns",
-      "shadow_experiment": "renquant_104_shadow"
+      "shadow_experiment": "renquant_104_shadow",
+      "regime_admission": {
+        "enabled": true
+      }
     },
     "universe_floor": {
       "type": "sharpe",
@@ -1193,5 +1196,11 @@
     "user_approval": "Option A (2026-05-18, in-session)"
   },
   "min_reentry_days": 5,
-  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change."
+  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
+  "wf_gate": {
+    "benchmark_required": false,
+    "regime_required": false,
+    "sanity_regime_ic_required": false,
+    "_decision_note": "2026-05-30 operator decision: accept positive-Sharpe-but-SPY-laggard GBDT signal (mean Sharpe +0.646, 3/3 cuts > 0, 0/3 beat SPY). Daily orders unblock on absolute_ok alone. Revert by removing this wf_gate block (defaults are strict)."
+  }
 }
