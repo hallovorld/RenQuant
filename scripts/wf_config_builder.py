@@ -173,6 +173,15 @@ def build_wf_config_from_prod(
         if value is not None:
             _set_path(cfg, dotted, value)
 
+    # Propagate the wf_gate relax block from the base config (2026-05-30).
+    # The derived prod-semantic config drives the gate's overall_pass + the
+    # P-REGIME-IC preflight relaxation; both read wf_gate.* from the active
+    # config. Without this propagation, the derive operation silently strips
+    # the operator's opt-in to relax benchmark/sanity gates.
+    base_wf_gate = base.get("wf_gate") if isinstance(base.get("wf_gate"), dict) else None
+    if base_wf_gate:
+        cfg["wf_gate"] = copy.deepcopy(base_wf_gate)
+
     if preserve_experiment_overrides:
         preserved: list[str] = []
         for dotted in overrides:
