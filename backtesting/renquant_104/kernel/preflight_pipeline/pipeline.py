@@ -11,6 +11,7 @@ from __future__ import annotations
 from .base import PreflightJob, PreflightPipeline
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
+from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.state import StateFileTask
 
 
@@ -25,6 +26,13 @@ class _ArtifactJob(PreflightJob):
     ]
 
 
+class _GateJob(PreflightJob):
+    """WF gate + regime-layered IC — the production trust boundary
+    (CLAUDE.md prime directive: regime-conditional evidence required)."""
+
+    tasks = [WfGateMetadataTask(), RegimeLayeredICTask()]
+
+
 class _StateAndBrokerJob(PreflightJob):
     """State + broker connectivity — final checks before live decisions."""
 
@@ -32,10 +40,14 @@ class _StateAndBrokerJob(PreflightJob):
 
 
 def build_minimal_preflight_pipeline() -> PreflightPipeline:
-    """Return a PreflightPipeline holding the migrated checks (5/16 so far).
+    """Return a PreflightPipeline holding the migrated checks (7/16 so far).
 
     Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
-    artifact validation runs first, state + broker last. As more checks lift
-    over, they'll be inserted into appropriate Jobs between these two.
+    artifact validation → WF gate → regime IC → state + broker. As more
+    checks lift over, they'll be inserted into appropriate Jobs.
     """
-    return PreflightPipeline(jobs=[_ArtifactJob(), _StateAndBrokerJob()])
+    return PreflightPipeline(jobs=[
+        _ArtifactJob(),
+        _GateJob(),
+        _StateAndBrokerJob(),
+    ])

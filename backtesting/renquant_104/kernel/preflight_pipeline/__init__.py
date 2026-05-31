@@ -22,6 +22,7 @@ from .base import PreflightTask, PreflightJob, PreflightPipeline
 from .tasks.state import StateFileTask
 from .tasks.broker import BrokerConnectTask
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
+from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .pipeline import build_minimal_preflight_pipeline
 
 __all__ = [
@@ -34,5 +35,7 @@ __all__ = [
     "ModelArtifactTask",
     "PanelContractTask",
     "BestIterTask",
+    "WfGateMetadataTask",
+    "RegimeLayeredICTask",
     "build_minimal_preflight_pipeline",
 ]
