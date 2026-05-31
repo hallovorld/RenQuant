@@ -229,6 +229,46 @@ gh pr merge --merge --delete-branch
 
 **Source incident:** 2026-05-30 session — user halted free-flow chat to lay down the rule. Captured before next commit to ensure agent compliance.
 
+### 3b. Sync-from-remote-before-work — STRICT, all 13 renquant repos (2026-05-30 multi-agent mandate)
+
+**User verbatim** (2026-05-30): *"告诉所有repo，记得经常sync from remote！现在是多agent互相协作！"*
+
+Multi-agent collaboration (Claude main session + codex + user + future agents) means each agent starts cold and assumes nothing about its local clone's freshness. **Without an explicit pull-from-remote step at every task boundary**, agents work on stale state, create duplicate work, miss in-flight fixes from other agents, and produce silent merge conflicts.
+
+**Hard rule** for every renquant repo (`RenQuant` umbrella + all 12 subrepos):
+
+```bash
+# At the start of EVERY task, before any edit/commit/PR:
+git fetch origin
+git checkout main && git pull --ff-only origin main
+
+# Before opening a PR or merging:
+git fetch origin && git rebase origin/main   # if working on a feature branch
+```
+
+**Mandatory sync points:**
+1. Starting any new task (even resuming after a 10-minute break)
+2. Before editing any file you haven't touched in the current task
+3. Before opening any PR (rebase feature branch on latest `origin/main`)
+4. After receiving a task-notification or codex-merged event
+5. Before declaring a PR ready for verbal-approve + merge
+
+**Sync ALL repos when work touches multiple:**
+```bash
+for d in /Users/renhao/git/github/RenQuant /Users/renhao/git/github/renquant-*; do
+    [ -d "$d/.git" ] && (cd "$d" && git fetch origin -q && git pull --ff-only origin main 2>&1 | grep -v "^Already up to date")
+done
+```
+
+**Source incidents** that triggered this rule (all 2026-05-30):
+- Codex pushed `9982de8` (umbrella) and `7f3cd14` (subrepo pipeline) to in-flight PRs while my local main was unaware. I had to manually `git fetch + git show` to discover the hardening.
+- Codex opened renquant-backtesting PR #6 + #7 (refining PR #5 + adding review protocol) while I was working on unrelated tasks. Without periodic sync, I'd have missed both.
+- Cross-repo recorder lift PRs (7 PRs across common / pipeline / model / base-data / artifacts / strategy-104 / backtesting) all landed in ~1 hour. Any agent without sync would have worked against stale dep pins.
+
+**Cross-repo aware:** When you `pull` one repo, also check sibling renquant repos for recent merges. Even if your current task only touches one repo, downstream Phase 1 byte-equivalence tests assert state across multiple — drift on one repo can break tests on another.
+
+**Inherits to subrepos:** This rule, like §3a, is renquant-wide canon. Subrepo CLAUDE.md files do NOT need to repeat it — they inherit via this umbrella declaration.
+
 ### 4. Keep docs current
 After any non-trivial change, sync: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/ops/schedule.md`](doc/ops/schedule.md), [`doc/roadmap.md`](doc/roadmap.md), and this file. Code wins on conflict.
 
