@@ -12,9 +12,11 @@ from .base import PreflightJob, PreflightPipeline
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
 from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
+from .tasks.config_fingerprint import ConfigFingerprintTask
 from .tasks.correlation import CorrelationMetadataTask
 from .tasks.feature_coverage import FeatureCoverageTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
+from .tasks.meta_label import MetaLabelArtifactContractTask
 from .tasks.run_id import ArtifactRunIdAlignmentTask
 from .tasks.sector_map import SectorMapCoverageTask
 from .tasks.state import StateFileTask
@@ -40,11 +42,11 @@ class _GateJob(PreflightJob):
 
 
 class _IdentityJob(PreflightJob):
-    """Identity-of-trained-model group — watchlist consistency, sector-map
-    coverage, correlation metadata. (config_fingerprint lands in a follow-up
-    PR as it's the most complex single check at 129 lines.)"""
+    """Identity-of-trained-model group — config fingerprint, watchlist
+    consistency, sector-map coverage, correlation metadata."""
 
     tasks = [
+        ConfigFingerprintTask(),
         WatchlistSizeTask(),
         SectorMapCoverageTask(),
         CorrelationMetadataTask(),
@@ -67,19 +69,32 @@ class _NgboostAuxJob(PreflightJob):
     tasks = [FeatureCoverageTask(), ArtifactRunIdAlignmentTask()]
 
 
+class _MetaLabelJob(PreflightJob):
+    """Meta-label exit-veto contract — runs only when ranking.meta_label.enabled.
+    Stands alone as its own Job because (a) the artifact is independent from
+    panel + NGBoost, and (b) the contract has many distinct failure modes."""
+
+    tasks = [MetaLabelArtifactContractTask()]
+
+
 class _StateAndBrokerJob(PreflightJob):
     """State + broker connectivity — final checks before live decisions."""
 
     tasks = [StateFileTask(), BrokerConnectTask()]
 
 
-def build_minimal_preflight_pipeline() -> PreflightPipeline:
-    """Return a PreflightPipeline holding the migrated checks (14/16 so far).
+def build_preflight_pipeline() -> PreflightPipeline:
+    """Return the FULL PreflightPipeline holding ALL 16 migrated checks.
 
     Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
     artifact → WF gate → regime IC → identity → calibrator → ngboost-aux →
-    state + broker. Remaining 2: config_fingerprint (129 lines, most complex)
-    and meta_label (129 lines).
+    meta-label → state + broker.
+
+    This replaces the prior ``build_minimal_preflight_pipeline()`` factory
+    (kept as alias for back-compat). Track H migration COMPLETE at this PR.
+    Follow-up: retire ``kernel.preflight.run_preflight`` functional path
+    and make it a thin wrapper around ``PreflightPipeline.run`` + config-
+    driven thresholds.
     """
     return PreflightPipeline(jobs=[
         _ArtifactJob(),
@@ -87,5 +102,12 @@ def build_minimal_preflight_pipeline() -> PreflightPipeline:
         _IdentityJob(),
         _CalibratorJob(),
         _NgboostAuxJob(),
+        _MetaLabelJob(),
         _StateAndBrokerJob(),
     ])
+
+
+# Back-compat alias — older imports still work
+def build_minimal_preflight_pipeline() -> PreflightPipeline:
+    """DEPRECATED alias — use ``build_preflight_pipeline`` instead."""
+    return build_preflight_pipeline()

@@ -29,7 +29,9 @@ from .tasks.correlation import CorrelationMetadataTask
 from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 from .tasks.feature_coverage import FeatureCoverageTask
 from .tasks.run_id import ArtifactRunIdAlignmentTask
-from .pipeline import build_minimal_preflight_pipeline
+from .tasks.config_fingerprint import ConfigFingerprintTask
+from .tasks.meta_label import MetaLabelArtifactContractTask
+from .pipeline import build_minimal_preflight_pipeline, build_preflight_pipeline
 
 __all__ = [
     "PreflightContext",
@@ -50,5 +52,8 @@ __all__ = [
     "CalibratorFlatRegionTask",
     "FeatureCoverageTask",
     "ArtifactRunIdAlignmentTask",
+    "ConfigFingerprintTask",
+    "MetaLabelArtifactContractTask",
     "build_minimal_preflight_pipeline",
+    "build_preflight_pipeline",
 ]

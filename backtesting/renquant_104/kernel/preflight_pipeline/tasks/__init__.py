@@ -14,6 +14,8 @@ from .correlation import CorrelationMetadataTask
 from .calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 from .feature_coverage import FeatureCoverageTask
 from .run_id import ArtifactRunIdAlignmentTask
+from .config_fingerprint import ConfigFingerprintTask
+from .meta_label import MetaLabelArtifactContractTask
 
 __all__ = [
     "StateFileTask",
@@ -30,4 +32,6 @@ __all__ = [
     "CalibratorFlatRegionTask",
     "FeatureCoverageTask",
     "ArtifactRunIdAlignmentTask",
+    "ConfigFingerprintTask",
+    "MetaLabelArtifactContractTask",
 ]
