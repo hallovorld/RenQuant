@@ -53,7 +53,13 @@ live flip without Tier 3. The factory never writes into a consumer.
 - Use `renquant-common` pipeline primitives for every workflow.
 - Cross-repo docs (architecture/SOP/roles) live ONCE in `RenQuant/doc/arch/` and are
   referenced, never copied — replication is what causes stale-doc drift.
-- Workflow: feature branch → `make test` green → local `git merge --no-ff` into `main` →
-  push. **No GitHub PRs.** After a subrepo merge, advance its pin in `subrepos.lock.json`.
+- Workflow: PR-based for ALL repos per umbrella `CLAUDE.md` §3.1 (2026-05-30 mandate,
+  reverses the deleted 2026-05-27 verbal-merge convention). Feature branch →
+  `make test` green → `git push -u origin <branch>` → `gh pr create --base main`
+  → after verbal approval, `gh pr merge --merge --delete-branch`. NEVER
+  `git push origin main` from a branch. Per umbrella `CLAUDE.md` §3.2, also
+  `git fetch origin && git rebase origin/main` before opening any PR and before
+  declaring merge-ready. After a subrepo PR merges, advance its pin in
+  `subrepos.lock.json`.
 - Large data, checkpoints, DBs, experiment dumps are referenced by manifest + fingerprint,
   not committed. A subrepo commit is not production-active until the umbrella pins it.
