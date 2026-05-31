@@ -1219,6 +1219,35 @@ class VetoWeakBuysTask(Task):
         if raw_floor is None:
             return
 
+        # 2026-05-30 — escape hatch for distribution-fair model comparison.
+        # When RQ_SIM_BYPASS_BUY_FLOOR=1 on a ctx tagged as sim, skip the floor
+        # entirely. Used by WF gate sims to evaluate models whose calibrated
+        # score distribution is narrower than the adaptive_mean_std rule expects
+        # (per-cut PatchTST calibrators output prob ranges as tight as 0.07, vs
+        # daily shadow's 0.49 — same model, same scoring, but buy_floor rejects
+        # all WF cut candidates and admits daily-shadow candidates).
+        # See memory: project_wf_sim_unfair_to_compressed_models_2026-05-30.
+        # Prod live / cron keep the floor strict even if the env leaks.
+        import os  # noqa: PLC0415
+        if os.environ.get("RQ_SIM_BYPASS_BUY_FLOOR") == "1":
+            run_type = str(
+                getattr(ctx, "_run_type", None)
+                or getattr(ctx, "run_type", None)
+                or ctx.config.get("_run_type", "")
+            ).strip().lower()
+            if run_type == "sim":
+                log.info(
+                    "VetoWeakBuysTask: RQ_SIM_BYPASS_BUY_FLOOR=1 — skipping floor "
+                    "(distribution-fair sim mode); raw_floor=%r ignored",
+                    raw_floor,
+                )
+                return
+            log.warning(
+                "VetoWeakBuysTask: RQ_SIM_BYPASS_BUY_FLOOR=1 ignored outside "
+                "sim run_type=%r; buy_floor remains active",
+                run_type or None,
+            )
+
         # 2026-05-04 user spec (final form):
         #   floor = min(max(buy_floor_min, mean+std), buy_floor_adaptive_cap)
         # i.e. clamp `mean+std` to the interval [min, cap].
