@@ -69,8 +69,13 @@ loads it. The factory NEVER writes directly into a consumer.
 - **Placement**: new code goes in the repo that OWNS the subject (model research →
   renquant-model; runtime → pipeline; shared util → common). Never the umbrella; never
   duplicate across repos.
-- **Merge**: feature branch → `make test` green → local `git merge --no-ff` into main →
-  push. **No GitHub PRs.**
+- **Merge**: PR-based for ALL 13 repos per umbrella `CLAUDE.md` §3.1
+  (2026-05-30 mandate, reverses the deleted 2026-05-27 verbal-merge convention).
+  Feature branch → `make test` green → `git push -u origin <branch>` →
+  `gh pr create --base main` → after verbal approval, `gh pr merge --merge --delete-branch`.
+  NEVER `git push origin main` from a branch. Per umbrella `CLAUDE.md` §3.2,
+  also `git fetch origin && git rebase origin/main` before opening any PR
+  and before declaring merge-ready.
 - **Pins**: after a subrepo merge, advance its commit in the umbrella `subrepos.lock.json`.
 - **Tests**: each subrepo's `make test` (incl. import-boundary + no-raw-regime-string
   scans) must pass before merge.

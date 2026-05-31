@@ -72,8 +72,10 @@ NAV ≡ free_cash + pending_settle + Σ(shares × price)
 [`doc/research/2026-05-23-mainline-memory.md`](doc/research/2026-05-23-mainline-memory.md) —
 the live mainline for the current repair campaign.
 
-Day-to-day status: `git log --oneline -30 main` (after §3.2 sync). Recent
-sessions in `doc/archives/sessions/`:
+Day-to-day status: `git fetch origin -q && git log --oneline -30 origin/main`.
+Read `origin/main` (not local `main`) so the result reflects what other agents
+shipped even if you're on a feature branch or your local `main` is stale.
+Recent sessions in `doc/archives/sessions/`:
 - [`2026-05-17-night.md`](doc/archives/sessions/2026-05-17-night.md) — detector + per-regime σ-wire + 3 prod-corruption gates + HIFO
 - [`2026-05-15-evening.md`](doc/archives/sessions/2026-05-15-evening.md) — calibrator P0 + NGBoost confirmed + regime-aware re-eval
 - [`2026-05-12-evening.md`](doc/archives/sessions/2026-05-12-evening.md) — Bug C + industry-grade evaluation rebuild
@@ -91,7 +93,7 @@ sessions in `doc/archives/sessions/`:
 | Run daily full | §4.2 |
 | Promote a model | §7.4 (3-tier promotion) |
 | Evaluate an A/B | §7.2 (sanity triad) + §9 (DOE) |
-| See what other agents shipped | `git log --oneline -30 main` after sync |
+| See what other agents shipped | `git fetch origin -q && git log --oneline -30 origin/main` |
 | Look up an old session | `doc/archives/sessions/` |
 
 **Documentation index**:
@@ -134,16 +136,38 @@ be protected from now!"*
 **Pre-push hook**: `bash scripts/install_pr_hook.sh --all` on every local clone.
 Re-run after any fresh `git clone` of a renquant repo.
 
-**Workflow template**:
+**Workflow template** (includes §3.2 sync at every required boundary):
 ```bash
+# 0. Sync first (§3.2). Branch off latest origin/main.
+git fetch origin
+git checkout main && git pull --ff-only origin main
 git checkout -b feat/foo-bar
-# … edit, then …
+
+# 1. Edit, commit.
 git add -A && git commit -m "..."
+
+# 2. BEFORE pushing / opening the PR — rebase on latest origin/main
+#    so the PR isn't stale before review starts (§3.2).
+git fetch origin
+git status --short                # confirm clean working tree
+git rebase origin/main
+
+# 3. Push + open PR.
 git push -u origin feat/foo-bar
 gh pr create --base main --head feat/foo-bar --title "..." --body "..."
-# after verbal approval:
+
+# 4. BEFORE declaring merge-ready, re-sync in case another agent merged
+#    while the PR was being reviewed (§3.2).
+git fetch origin
+git rebase origin/main && git push --force-with-lease
+
+# 5. After verbal approval:
 gh pr merge --merge --delete-branch
 ```
+
+The two rebase steps (before-PR, before-merge-ready) are NOT optional —
+they're the same §3.2 mandate that requires re-sync at each task boundary.
+Skipping them is how stale PRs land.
 
 ### 3.2 · Sync-from-remote before every task — STRICT
 
