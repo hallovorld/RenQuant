@@ -229,34 +229,54 @@ gh pr merge --merge --delete-branch
 
 **Source incident:** 2026-05-30 session — user halted free-flow chat to lay down the rule. Captured before next commit to ensure agent compliance.
 
-### 3b. Sync-from-remote-before-work — STRICT, all 13 renquant repos (2026-05-30 multi-agent mandate)
+### 3b. Sync-from-remote-before-work — STRICT, all renquant repos (2026-05-30 multi-agent mandate)
 
 **User verbatim** (2026-05-30): *"告诉所有repo，记得经常sync from remote！现在是多agent互相协作！"*
 
 Multi-agent collaboration (Claude main session + codex + user + future agents) means each agent starts cold and assumes nothing about its local clone's freshness. **Without an explicit pull-from-remote step at every task boundary**, agents work on stale state, create duplicate work, miss in-flight fixes from other agents, and produce silent merge conflicts.
 
-**Hard rule** for every renquant repo (`RenQuant` umbrella + all 12 subrepos):
+**Hard rule** for every repo covered by §3a:
 
 ```bash
-# At the start of EVERY task, before any edit/commit/PR:
+# At the start of EVERY task, before any edit/commit/PR in this repo:
 git fetch origin
-git checkout main && git pull --ff-only origin main
 
-# Before opening a PR or merging:
-git fetch origin && git rebase origin/main   # if working on a feature branch
+# If already on a clean main, fast-forward it.
+if [ "$(git branch --show-current)" = "main" ] && [ -z "$(git status --porcelain)" ]; then
+    git pull --ff-only origin main
+else
+    git status --short --branch
+fi
+
+# Before opening a PR or declaring merge-ready from a feature branch:
+git fetch origin
+git status --short
+git rebase origin/main
 ```
 
 **Mandatory sync points:**
 1. Starting any new task (even resuming after a 10-minute break)
 2. Before editing any file you haven't touched in the current task
-3. Before opening any PR (rebase feature branch on latest `origin/main`)
+3. Before opening any PR (from a clean feature branch, rebase on latest `origin/main`)
 4. After receiving a task-notification or codex-merged event
 5. Before declaring a PR ready for verbal-approve + merge
 
 **Sync ALL repos when work touches multiple:**
 ```bash
 for d in /Users/renhao/git/github/RenQuant /Users/renhao/git/github/renquant-*; do
-    [ -d "$d/.git" ] && (cd "$d" && git fetch origin -q && git pull --ff-only origin main 2>&1 | grep -v "^Already up to date")
+    [ -d "$d/.git" ] || continue
+    (
+        cd "$d" || exit
+        git fetch origin -q
+        branch="$(git branch --show-current)"
+        dirty="$(git status --porcelain)"
+        if [ "$branch" = "main" ] && [ -z "$dirty" ]; then
+            git pull --ff-only origin main 2>&1 | grep -v "^Already up to date"
+        else
+            printf '%s: fetched only (branch=%s dirty=%s)\n' \
+                "$d" "${branch:-detached}" "$([ -n "$dirty" ] && echo yes || echo no)"
+        fi
+    )
 done
 ```
 
@@ -267,7 +287,7 @@ done
 
 **Cross-repo aware:** When you `pull` one repo, also check sibling renquant repos for recent merges. Even if your current task only touches one repo, downstream Phase 1 byte-equivalence tests assert state across multiple — drift on one repo can break tests on another.
 
-**Inherits to subrepos:** This rule, like §3a, is renquant-wide canon. Subrepo CLAUDE.md files do NOT need to repeat it — they inherit via this umbrella declaration.
+**Propagation to subrepos:** This rule, like §3a, is renquant-wide canon. Subrepo CLAUDE.md files may point here rather than duplicating the full text, but agents working from a subrepo must still execute this sync protocol before editing or reviewing.
 
 ### 4. Keep docs current
 After any non-trivial change, sync: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/ops/schedule.md`](doc/ops/schedule.md), [`doc/roadmap.md`](doc/roadmap.md), and this file. Code wins on conflict.
