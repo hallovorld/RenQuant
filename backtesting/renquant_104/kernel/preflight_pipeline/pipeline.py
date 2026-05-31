@@ -12,6 +12,7 @@ from .base import PreflightJob, PreflightPipeline
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
+from .tasks.sector_map import SectorMapCoverageTask
 from .tasks.state import StateFileTask
 
 
@@ -33,6 +34,13 @@ class _GateJob(PreflightJob):
     tasks = [WfGateMetadataTask(), RegimeLayeredICTask()]
 
 
+class _IdentityJob(PreflightJob):
+    """Identity-of-trained-model group — sector-map coverage (and later
+    config_fingerprint + watchlist + correlation metadata)."""
+
+    tasks = [SectorMapCoverageTask()]
+
+
 class _StateAndBrokerJob(PreflightJob):
     """State + broker connectivity — final checks before live decisions."""
 
@@ -40,14 +48,15 @@ class _StateAndBrokerJob(PreflightJob):
 
 
 def build_minimal_preflight_pipeline() -> PreflightPipeline:
-    """Return a PreflightPipeline holding the migrated checks (7/16 so far).
+    """Return a PreflightPipeline holding the migrated checks (8/16 so far).
 
     Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
-    artifact validation → WF gate → regime IC → state + broker. As more
-    checks lift over, they'll be inserted into appropriate Jobs.
+    artifact → WF gate → regime IC → identity (sector + future fingerprint/
+    watchlist/correlation) → state + broker.
     """
     return PreflightPipeline(jobs=[
         _ArtifactJob(),
         _GateJob(),
+        _IdentityJob(),
         _StateAndBrokerJob(),
     ])

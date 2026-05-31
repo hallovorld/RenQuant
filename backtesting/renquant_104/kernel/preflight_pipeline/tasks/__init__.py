@@ -8,6 +8,7 @@ from .state import StateFileTask
 from .broker import BrokerConnectTask
 from .artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .gate import RegimeLayeredICTask, WfGateMetadataTask
+from .sector_map import SectorMapCoverageTask
 
 __all__ = [
     "StateFileTask",
@@ -17,4 +18,5 @@ __all__ = [
     "BestIterTask",
     "WfGateMetadataTask",
     "RegimeLayeredICTask",
+    "SectorMapCoverageTask",
 ]

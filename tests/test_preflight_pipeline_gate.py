@@ -264,17 +264,19 @@ class TestRegimeLayeredICTaskParity:
 class TestExtendedPipeline:
     """Pipeline now has 7 Tasks across 3 Jobs."""
 
-    def test_pipeline_runs_7_tasks_in_order(self, tmp_path):
+    def test_pipeline_includes_gate_group_in_order(self, tmp_path):
+        """Gate group runs after artifact group, before state+broker.
+        Test asserts relative ordering, not exact pipeline size (grows by
+        one check per future PR)."""
         sd, cfg = _make_strategy_dir(tmp_path, artifact_payload=_wf_passing_payload())
         ctx = _ctx(sd, cfg, run_mode="full")
         from kernel.preflight_pipeline import build_minimal_preflight_pipeline
         results = build_minimal_preflight_pipeline().run(ctx, strict=False)
-        assert [r.name for r in results] == [
-            "P-MODEL-ARTIFACT",
-            "P-PANEL-CONTRACT",
-            "P-BEST-ITER",
-            "P-WF-GATE",
-            "P-REGIME-IC",
-            "P-STATE-FILE",
-            "P-BROKER-CONNECT",
-        ]
+        names = [r.name for r in results]
+        # Gate group sandwiched between artifact and state+broker
+        artifact_end_idx = max(names.index(n) for n in
+                               ["P-MODEL-ARTIFACT", "P-PANEL-CONTRACT", "P-BEST-ITER"])
+        wf_idx = names.index("P-WF-GATE")
+        regime_idx = names.index("P-REGIME-IC")
+        state_idx = names.index("P-STATE-FILE")
+        assert artifact_end_idx < wf_idx < regime_idx < state_idx

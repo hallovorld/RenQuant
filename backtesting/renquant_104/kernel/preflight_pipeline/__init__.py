@@ -23,6 +23,7 @@ from .tasks.state import StateFileTask
 from .tasks.broker import BrokerConnectTask
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
+from .tasks.sector_map import SectorMapCoverageTask
 from .pipeline import build_minimal_preflight_pipeline
 
 __all__ = [
@@ -37,5 +38,6 @@ __all__ = [
     "BestIterTask",
     "WfGateMetadataTask",
     "RegimeLayeredICTask",
+    "SectorMapCoverageTask",
     "build_minimal_preflight_pipeline",
 ]
