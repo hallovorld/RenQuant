@@ -11,6 +11,7 @@ from __future__ import annotations
 from .base import PreflightJob, PreflightPipeline
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
+from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 from .tasks.correlation import CorrelationMetadataTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.sector_map import SectorMapCoverageTask
@@ -48,6 +49,14 @@ class _IdentityJob(PreflightJob):
     ]
 
 
+class _CalibratorJob(PreflightJob):
+    """Calibrator health + structural flat-region checks. Sits between
+    identity and state+broker because they ALL operate on the calibrator
+    artifact and share the global_calibration-disabled soft-skip path."""
+
+    tasks = [CalibratorHealthTask(), CalibratorFlatRegionTask()]
+
+
 class _StateAndBrokerJob(PreflightJob):
     """State + broker connectivity — final checks before live decisions."""
 
@@ -55,17 +64,18 @@ class _StateAndBrokerJob(PreflightJob):
 
 
 def build_minimal_preflight_pipeline() -> PreflightPipeline:
-    """Return a PreflightPipeline holding the migrated checks (10/16 so far).
+    """Return a PreflightPipeline holding the migrated checks (12/16 so far).
 
     Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
     artifact → WF gate → regime IC → identity (watchlist + sector + corr) →
-    state + broker. Remaining: config_fingerprint, feature_coverage,
-    artifact_run_id_alignment, meta_label, calibrator_health,
-    calibrator_flat_region.
+    calibrator (health + flat-region) → state + broker. Remaining:
+    config_fingerprint, feature_coverage, artifact_run_id_alignment,
+    meta_label.
     """
     return PreflightPipeline(jobs=[
         _ArtifactJob(),
         _GateJob(),
         _IdentityJob(),
+        _CalibratorJob(),
         _StateAndBrokerJob(),
     ])

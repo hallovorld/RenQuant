@@ -26,6 +26,7 @@ from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.sector_map import SectorMapCoverageTask
 from .tasks.watchlist import WatchlistSizeTask
 from .tasks.correlation import CorrelationMetadataTask
+from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 from .pipeline import build_minimal_preflight_pipeline
 
 __all__ = [
@@ -43,5 +44,7 @@ __all__ = [
     "SectorMapCoverageTask",
     "WatchlistSizeTask",
     "CorrelationMetadataTask",
+    "CalibratorHealthTask",
+    "CalibratorFlatRegionTask",
     "build_minimal_preflight_pipeline",
 ]

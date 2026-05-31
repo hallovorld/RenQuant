@@ -11,6 +11,7 @@ from .gate import RegimeLayeredICTask, WfGateMetadataTask
 from .sector_map import SectorMapCoverageTask
 from .watchlist import WatchlistSizeTask
 from .correlation import CorrelationMetadataTask
+from .calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 
 __all__ = [
     "StateFileTask",
@@ -23,4 +24,6 @@ __all__ = [
     "SectorMapCoverageTask",
     "WatchlistSizeTask",
     "CorrelationMetadataTask",
+    "CalibratorHealthTask",
+    "CalibratorFlatRegionTask",
 ]
