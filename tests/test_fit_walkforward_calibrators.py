@@ -528,3 +528,192 @@ def test_min_coverage_validates_range(
     err = capsys.readouterr().err
     assert "--min-coverage" in err
     assert "1.5" in err
+
+
+# --- PR #13 follow-up review (commit 3e56a41) -----------------------------
+#
+# Two additional findings:
+#
+#   F1 MEDIUM — --limit denominator off-by. After --limit slicing, the
+#      coverage denominator is the SCHEDULED rows, not the full manifest.
+#      --limit 1 --min-coverage 1.0 on a 2-row manifest fits 1/1 = 100%
+#      and must rc=0, not rc=2 from the 1/2 = 50% computation.
+#
+#   F2 MEDIUM — method is the same contamination class as window. A Platt
+#      artifact reused under --method isotonic would have the manifest
+#      claim isotonic while the file is Platt.
+
+
+# ---- F1: --limit denominator ---------------------------------------------
+
+
+def test_limit_denominator_uses_scheduled_rows_not_full_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--limit 1 on a 2-row manifest with --min-coverage 1.0 fits 1/1 = 100%.
+
+    Pre-fix: denominator was len(payload["retrains"])=2 → 50% → rc=2 even
+    though every SCHEDULED cutoff fit successfully.
+    """
+    def fake_fit_one(row, **kw):
+        return {**row,
+                "calibrator_uri": str(tmp_path / "cal.json"),
+                "calibrator_method": kw["method"],
+                "calibrator_window_years": 0.0}
+    monkeypatch.setattr("fit_walkforward_calibrators._fit_one", fake_fit_one)
+
+    out_manifest = tmp_path / "out.json"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fit_walkforward_calibrators.py",
+         "--manifest", str(_two_row_manifest(tmp_path)),
+         "--out-manifest", str(out_manifest),
+         "--calibrator-root", str(tmp_path / "out"),
+         "--calibrator-window-years", "0.0",
+         "--limit", "1",
+         "--min-coverage", "1.0"],
+    )
+    rc = main()
+    assert rc == 0, "1-of-1 scheduled fit at --min-coverage 1.0 must pass"
+
+    # Output manifest preserves all 2 rows (the 1 un-scheduled row passes
+    # through untouched), but the coverage gate measured only the scheduled set.
+    out = json.loads(out_manifest.read_text())
+    assert len(out["retrains"]) == 2
+    fit_count = sum(1 for r in out["retrains"] if "calibrator_uri" in r)
+    assert fit_count == 1
+
+
+def test_limit_denominator_still_catches_partial_in_scheduled_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--limit 2 with 1 fit + 1 fail still fails --min-coverage 1.0."""
+    def fake_fit_one(row, **kw):
+        if row["cutoff_date"] == "2024-04-02":
+            raise RuntimeError("synthetic failure")
+        return {**row,
+                "calibrator_uri": str(tmp_path / "cal.json"),
+                "calibrator_method": kw["method"],
+                "calibrator_window_years": 0.0}
+    monkeypatch.setattr("fit_walkforward_calibrators._fit_one", fake_fit_one)
+
+    out_manifest = tmp_path / "out.json"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fit_walkforward_calibrators.py",
+         "--manifest", str(_two_row_manifest(tmp_path)),
+         "--out-manifest", str(out_manifest),
+         "--calibrator-root", str(tmp_path / "out"),
+         "--continue-on-failure",
+         "--limit", "2",
+         "--min-coverage", "1.0"],
+    )
+    rc = main()
+    assert rc == 2  # 1/2 of scheduled set < 100%
+
+
+# ---- F2: method reuse-gate (same class as window) ------------------------
+
+
+def test_reuse_refuses_when_existing_artifact_lacks_method_stamp(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """An artifact stamped with window=0.0 but no calibrator_method MUST
+    NOT be silently reused — the manifest would claim a method the file
+    wasn't fit at."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    cal_path.write_text(json.dumps({
+        "calibrator_window_years": 0.0,
+        # no calibrator_method
+    }))
+
+    with pytest.raises(RuntimeError, match="lacks calibrator_method metadata"):
+        _fit_one(
+            _row_fixture(tmp_path),
+            calibrator_root=tmp_path / "out",
+            training_window_years=3.0,
+            calibrator_window_years=0.0,
+            method="platt",
+            panel=None,
+            raw_label_panel=None,
+            overwrite=False,
+        )
+    fake_subprocess.assert_not_called()
+
+
+def test_reuse_refuses_when_existing_method_differs(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """A Platt artifact cannot be reused under --method isotonic."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    cal_path.write_text(json.dumps({
+        "calibrator_window_years": 0.0,
+        "calibrator_method": "platt",
+    }))
+
+    with pytest.raises(RuntimeError,
+                       match=r"existing method 'platt' != requested 'isotonic'"):
+        _fit_one(
+            _row_fixture(tmp_path),
+            calibrator_root=tmp_path / "out",
+            training_window_years=3.0,
+            calibrator_window_years=0.0,
+            method="isotonic",
+            panel=None,
+            raw_label_panel=None,
+            overwrite=False,
+        )
+    fake_subprocess.assert_not_called()
+
+
+def test_reuse_accepts_matching_window_and_method(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """Both axes match → reuse OK; subprocess not invoked."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    cal_path.write_text(json.dumps({
+        "calibrator_window_years": 0.0,
+        "calibrator_method": "platt",
+    }))
+
+    out = _fit_one(
+        _row_fixture(tmp_path),
+        calibrator_root=tmp_path / "out",
+        training_window_years=3.0,
+        calibrator_window_years=0.0,
+        method="platt",
+        panel=None,
+        raw_label_panel=None,
+        overwrite=False,
+    )
+    assert out["calibrator_window_years"] == 0.0
+    assert out["calibrator_method"] == "platt"
+    fake_subprocess.assert_not_called()
+
+
+def test_fresh_fit_stamps_method_into_artifact(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """Post-fit stamping injects BOTH window and method into the JSON."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+
+    def _side_effect(cmd, *a, **kw):
+        # Fitter writes an artifact without the policy stamps.
+        cal_path.write_text(json.dumps({"unique_field": 7}))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+    fake_subprocess.side_effect = _side_effect
+
+    _fit_one(
+        _row_fixture(tmp_path),
+        calibrator_root=tmp_path / "out",
+        training_window_years=3.0,
+        calibrator_window_years=0.0,
+        method="isotonic",
+        panel=None,
+        raw_label_panel=None,
+        overwrite=True,
+    )
+    stamped = json.loads(cal_path.read_text())
+    assert stamped["calibrator_window_years"] == 0.0
+    assert stamped["calibrator_method"] == "isotonic"
+    assert stamped["unique_field"] == 7  # original fields preserved

@@ -66,12 +66,41 @@ def _existing_artifact_window(out_path: Path) -> float | None:
     return None
 
 
-def _stamp_window_into_artifact(out_path: Path, window_years: float) -> None:
-    """Inject ``calibrator_window_years`` into the artifact JSON the fitter
-    subprocess just produced. The fitter scripts don't know about the
-    orchestrator's window-policy concept (they only see ``--data-start`` /
-    ``--data-end``), so we post-process here so future reuse decisions can
-    audit the fit policy from the artifact itself.
+def _existing_artifact_method(out_path: Path) -> str | None:
+    """Read the calibrator artifact's stamped method (platt/isotonic), or
+    ``None`` if missing / unreadable.
+
+    Same reuse-contamination class as ``_existing_artifact_window``: a
+    Platt artifact under ``--method isotonic`` would have the manifest
+    claim isotonic while the file is Platt.
+    """
+    if not out_path.exists():
+        return None
+    try:
+        data = json.loads(out_path.read_text())
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("calibrator_method", "method"):
+        if key in data and isinstance(data[key], str):
+            return data[key]
+    return None
+
+
+def _stamp_window_into_artifact(
+    out_path: Path,
+    window_years: float,
+    *,
+    method: str | None = None,
+) -> None:
+    """Inject ``calibrator_window_years`` (and optionally ``calibrator_method``)
+    into the artifact JSON the fitter subprocess just produced.
+
+    The fitter scripts don't know about the orchestrator's policy concept
+    (they only see ``--data-start`` / ``--data-end`` / ``--method``), so we
+    post-process here so future reuse decisions can audit the fit policy
+    from the artifact itself.
     """
     data = json.loads(out_path.read_text())
     if not isinstance(data, dict):
@@ -80,6 +109,8 @@ def _stamp_window_into_artifact(out_path: Path, window_years: float) -> None:
             f"cannot stamp calibrator_window_years"
         )
     data["calibrator_window_years"] = float(window_years)
+    if method is not None:
+        data["calibrator_method"] = str(method)
     out_path.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -128,23 +159,37 @@ def _fit_one(
     scorer_path = Path(str(row["artifact_uri"]))
     out_path = _calibrator_path(calibrator_root, cutoff)
     if out_path.exists() and not overwrite:
-        # Reuse gate: refuse to stamp the manifest with a window the cached
-        # artifact wasn't actually fit on. Without this guard, a rerun with
-        # ``--calibrator-window-years 0.0`` against a directory containing
-        # legacy 3y artifacts would silently claim full-history calibration
-        # while the underlying files are still 3y — Bug G regression risk.
+        # Reuse gate: refuse to stamp the manifest with a (window, method)
+        # the cached artifact wasn't actually fit on. Without this guard,
+        # a rerun with --calibrator-window-years 0.0 against legacy 3y
+        # artifacts (or --method isotonic against a Platt artifact) would
+        # silently lie about the fit policy in the manifest while the
+        # underlying file stayed unchanged.
         existing_window = _existing_artifact_window(out_path)
         if existing_window is None:
             raise RuntimeError(
                 f"Refusing to reuse legacy calibrator at {out_path} that lacks "
                 f"calibrator_window_years metadata. Re-run with --overwrite to "
-                f"refit and stamp the window, or remove the legacy artifact."
+                f"refit and stamp the policy, or remove the legacy artifact."
             )
         if abs(existing_window - effective_years) > 1e-9:
             raise RuntimeError(
                 f"Refusing to reuse {out_path}: existing window "
                 f"{existing_window} != requested {effective_years}. Re-run "
                 f"with --overwrite to refit at the new window."
+            )
+        existing_method = _existing_artifact_method(out_path)
+        if existing_method is None:
+            raise RuntimeError(
+                f"Refusing to reuse legacy calibrator at {out_path} that lacks "
+                f"calibrator_method metadata. Re-run with --overwrite to refit "
+                f"and stamp the policy."
+            )
+        if existing_method != method:
+            raise RuntimeError(
+                f"Refusing to reuse {out_path}: existing method "
+                f"{existing_method!r} != requested {method!r}. Re-run "
+                f"with --overwrite to refit at the new method."
             )
         stamped = copy.deepcopy(row)
         stamped["calibrator_uri"] = str(out_path)
@@ -154,6 +199,7 @@ def _fit_one(
             int(row.get("lookahead_days", 60)),
         )
         stamped["calibrator_window_years"] = effective_years
+        stamped["calibrator_method"] = method
         return stamped
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,8 +239,9 @@ def _fit_one(
             f"rc={proc.returncode}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
         )
 
-    # Stamp the chosen window into the artifact so reuse gates can audit it.
-    _stamp_window_into_artifact(out_path, effective_years)
+    # Stamp the chosen (window, method) into the artifact so reuse gates
+    # can audit both axes of the fit policy.
+    _stamp_window_into_artifact(out_path, effective_years, method=method)
 
     stamped = copy.deepcopy(row)
     stamped["calibrator_uri"] = str(out_path)
@@ -328,24 +375,33 @@ def main() -> int:
 
     out_manifest.parent.mkdir(parents=True, exist_ok=True)
     out_manifest.write_text(json.dumps(out_payload, indent=2, sort_keys=False) + "\n")
-    total_planned = len(payload["retrains"])
+
+    # Coverage denominator = number of cutoffs the run actually SCHEDULED
+    # (after --limit slicing), not the full manifest. With ``--limit 1`` on
+    # a 2-row manifest, fitting 1/1 scheduled cutoffs is 100% coverage —
+    # the un-scheduled rows pass-through untouched and don't count against
+    # this run's coverage budget. Reviewer-flagged contract: the help text
+    # says "planned cutoffs", and after --limit slicing the planned set is
+    # ``rows``.
+    scheduled_count = len(rows)
     fitted_count = len(fitted)
-    coverage = (fitted_count / total_planned) if total_planned > 0 else 0.0
+    coverage = (fitted_count / scheduled_count) if scheduled_count > 0 else 0.0
     print(
-        f"stamped {fitted_count}/{total_planned} calibrators "
-        f"(coverage={coverage:.1%}, failures={len(failed_cutoffs)}) -> {out_manifest}"
+        f"stamped {fitted_count}/{scheduled_count} calibrators "
+        f"(coverage={coverage:.1%}, failures={len(failed_cutoffs)}, "
+        f"manifest_rows={len(payload['retrains'])}) -> {out_manifest}"
     )
 
     # Exit-code policy:
-    #   * zero successful fits  → rc=2 (silent zero-coverage is a process bug)
-    #   * coverage < --min-coverage → rc=2 (strict research-run guard)
-    #   * else                        → rc=0
+    #   * zero successful fits (with cutoffs scheduled) → rc=2
+    #   * coverage < --min-coverage                       → rc=2
+    #   * else                                            → rc=0
     # --continue-on-failure relaxes the per-row exception behavior but does
     # NOT relax these aggregate gates.
-    if fitted_count == 0 and total_planned > 0:
+    if fitted_count == 0 and scheduled_count > 0:
         print(
             "ERROR: zero successful calibrator fits — refusing to declare "
-            "success on an empty manifest"
+            "success on an empty scheduled set"
         )
         return 2
     if coverage + 1e-9 < float(args.min_coverage):
