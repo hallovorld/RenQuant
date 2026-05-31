@@ -40,6 +40,49 @@ def _calibrator_path(root: Path, cutoff: pd.Timestamp) -> Path:
     return root / cutoff.date().isoformat() / "panel-rank-calibration.json"
 
 
+def _existing_artifact_window(out_path: Path) -> float | None:
+    """Read the calibrator artifact's stamped window-years, or ``None`` if
+    the file is missing / unreadable / lacks the metadata.
+
+    Reuse gating depends on this:  if a legacy artifact lacks the stamp,
+    we must NOT reuse it under a non-legacy requested window — the manifest
+    would lie about the fit data. Returning ``None`` makes the caller force
+    a refit (or refuse with a clear error).
+    """
+    if not out_path.exists():
+        return None
+    try:
+        data = json.loads(out_path.read_text())
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("calibrator_window_years", "window_years"):
+        if key in data:
+            try:
+                return float(data[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _stamp_window_into_artifact(out_path: Path, window_years: float) -> None:
+    """Inject ``calibrator_window_years`` into the artifact JSON the fitter
+    subprocess just produced. The fitter scripts don't know about the
+    orchestrator's window-policy concept (they only see ``--data-start`` /
+    ``--data-end``), so we post-process here so future reuse decisions can
+    audit the fit policy from the artifact itself.
+    """
+    data = json.loads(out_path.read_text())
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"calibrator artifact at {out_path} is not a JSON object; "
+            f"cannot stamp calibrator_window_years"
+        )
+    data["calibrator_window_years"] = float(window_years)
+    out_path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def _date_window(
     cutoff: pd.Timestamp,
     years: float,
@@ -85,6 +128,24 @@ def _fit_one(
     scorer_path = Path(str(row["artifact_uri"]))
     out_path = _calibrator_path(calibrator_root, cutoff)
     if out_path.exists() and not overwrite:
+        # Reuse gate: refuse to stamp the manifest with a window the cached
+        # artifact wasn't actually fit on. Without this guard, a rerun with
+        # ``--calibrator-window-years 0.0`` against a directory containing
+        # legacy 3y artifacts would silently claim full-history calibration
+        # while the underlying files are still 3y — Bug G regression risk.
+        existing_window = _existing_artifact_window(out_path)
+        if existing_window is None:
+            raise RuntimeError(
+                f"Refusing to reuse legacy calibrator at {out_path} that lacks "
+                f"calibrator_window_years metadata. Re-run with --overwrite to "
+                f"refit and stamp the window, or remove the legacy artifact."
+            )
+        if abs(existing_window - effective_years) > 1e-9:
+            raise RuntimeError(
+                f"Refusing to reuse {out_path}: existing window "
+                f"{existing_window} != requested {effective_years}. Re-run "
+                f"with --overwrite to refit at the new window."
+            )
         stamped = copy.deepcopy(row)
         stamped["calibrator_uri"] = str(out_path)
         stamped["calibrator_data_start"], stamped["calibrator_data_end"] = _date_window(
@@ -132,6 +193,9 @@ def _fit_one(
             f"rc={proc.returncode}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
         )
 
+    # Stamp the chosen window into the artifact so reuse gates can audit it.
+    _stamp_window_into_artifact(out_path, effective_years)
+
     stamped = copy.deepcopy(row)
     stamped["calibrator_uri"] = str(out_path)
     stamped["calibrator_data_start"] = data_start
@@ -172,7 +236,18 @@ def main() -> int:
                              "0.0 = full history up to per-cut "
                              "cutoff-minus-lookahead. Omitted → legacy behavior "
                              "(calibrator window = training_window_years).")
+    parser.add_argument("--min-coverage", type=float, default=0.0,
+                        help="Minimum fraction of planned cutoffs that must fit "
+                             "successfully for main() to return 0. ``0.0`` (default) "
+                             "means \"any non-zero coverage is OK\" but still treats "
+                             "zero-fits as a hard failure under --continue-on-failure. "
+                             "Strict research runs should pass ``--min-coverage 1.0`` "
+                             "to require every cutoff to fit.")
     args = parser.parse_args()
+    if not 0.0 <= float(args.min_coverage) <= 1.0:
+        parser.error(
+            f"--min-coverage must be in [0.0, 1.0], got {args.min_coverage}"
+        )
 
     manifest_path = _resolve_strategy_path(args.manifest)
     out_manifest = _resolve_strategy_path(args.out_manifest)
@@ -186,7 +261,7 @@ def main() -> int:
     fitted: list[dict[str, Any]] = []
     failed_cutoffs: list[dict[str, Any]] = []
     with cf.ThreadPoolExecutor(max_workers=max(1, int(args.jobs))) as ex:
-        futures = [
+        futures = {
             ex.submit(
                 _fit_one,
                 row,
@@ -197,10 +272,11 @@ def main() -> int:
                 panel=args.panel,
                 raw_label_panel=args.raw_label_panel,
                 overwrite=args.overwrite,
-            )
+            ): row
             for row in rows
-        ]
+        }
         for fut in cf.as_completed(futures):
+            row = futures[fut]
             try:
                 fitted.append(fut.result())
             except Exception as exc:  # noqa: BLE001
@@ -209,8 +285,13 @@ def main() -> int:
                 # partial coverage instead of zero coverage.
                 if not bool(getattr(args, "continue_on_failure", False)):
                     raise
-                failed_cutoffs.append({"error": repr(exc)[:300]})
-                print(f"  (skipped: {exc!s})", flush=True)
+                failed_cutoffs.append({
+                    "cutoff_date": str(row.get("cutoff_date")),
+                    "artifact_uri": str(row.get("artifact_uri")),
+                    "error": repr(exc)[:300],
+                })
+                print(f"  (skipped cutoff={row.get('cutoff_date')}: {exc!s})",
+                      flush=True)
 
     by_cutoff = {str(r["cutoff_date"]): r for r in fitted}
     stamped_rows = []
@@ -238,10 +319,40 @@ def main() -> int:
             if args.calibrator_window_years is not None
             else training_window_years
         ),
+        "min_coverage": float(args.min_coverage),
     }
+    # Persist per-cutoff failures into the manifest so downstream audit /
+    # research tooling can attribute coverage gaps without re-running the
+    # fit job. Empty list when no failures.
+    out_payload["calibrator_failures"] = failed_cutoffs
+
     out_manifest.parent.mkdir(parents=True, exist_ok=True)
     out_manifest.write_text(json.dumps(out_payload, indent=2, sort_keys=False) + "\n")
-    print(f"stamped {len(fitted)}/{len(payload['retrains'])} calibrators -> {out_manifest}")
+    total_planned = len(payload["retrains"])
+    fitted_count = len(fitted)
+    coverage = (fitted_count / total_planned) if total_planned > 0 else 0.0
+    print(
+        f"stamped {fitted_count}/{total_planned} calibrators "
+        f"(coverage={coverage:.1%}, failures={len(failed_cutoffs)}) -> {out_manifest}"
+    )
+
+    # Exit-code policy:
+    #   * zero successful fits  → rc=2 (silent zero-coverage is a process bug)
+    #   * coverage < --min-coverage → rc=2 (strict research-run guard)
+    #   * else                        → rc=0
+    # --continue-on-failure relaxes the per-row exception behavior but does
+    # NOT relax these aggregate gates.
+    if fitted_count == 0 and total_planned > 0:
+        print(
+            "ERROR: zero successful calibrator fits — refusing to declare "
+            "success on an empty manifest"
+        )
+        return 2
+    if coverage + 1e-9 < float(args.min_coverage):
+        print(
+            f"ERROR: coverage {coverage:.1%} < required {float(args.min_coverage):.1%}"
+        )
+        return 2
     return 0
 
 

@@ -61,9 +61,25 @@ def _row_fixture(tmp_path: Path) -> dict[str, object]:
 
 @pytest.fixture
 def fake_subprocess(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Capture the subprocess.run cmd argv that _fit_one would have invoked."""
-    fake = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0,
-                                                              stdout="", stderr=""))
+    """Capture the subprocess.run cmd argv that _fit_one would have invoked.
+
+    Real fitters write the artifact JSON; here we synthesize a minimal
+    artifact so the post-fit ``_stamp_window_into_artifact`` step can
+    open + amend it.  Tests that need to control the artifact's pre-stamp
+    contents can override via ``fake.side_effect = ...``.
+    """
+    def _default_side_effect(cmd, *a, **kw):
+        # Parse the --out arg and synthesize a minimal artifact at that path.
+        try:
+            out_idx = cmd.index("--out") + 1
+            out_path = Path(cmd[out_idx])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps({"method": "platt"}))
+        except (ValueError, IndexError):
+            pass
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    fake = MagicMock(side_effect=_default_side_effect)
     monkeypatch.setattr("fit_walkforward_calibrators.subprocess.run", fake)
     return fake
 
@@ -222,3 +238,293 @@ def test_main_legacy_default_falls_back_to_training_window_in_policy(
     out = json.loads(out_manifest.read_text())
     assert out["calibrator_policy"]["calibrator_window_years"] == 3.0
     assert out["calibrator_policy"]["fit_window"] == "training_window_through_effective_cutoff"
+
+
+# --- PR #13 review fixes -------------------------------------------------
+#
+# Two follow-up review findings on the Bug G surgical knob:
+#
+#   1. HIGH — reuse path could stamp the manifest with a window the cached
+#      artifact wasn't fit at, silently making the manifest lie about the
+#      calibration data. Fix: gate reuse on the artifact's stamped window.
+#
+#   2. MEDIUM — --continue-on-failure could exit rc=0 with zero successful
+#      fits, and failures were never persisted into the manifest. Fix:
+#      persist failures + return rc=2 on zero coverage or < --min-coverage.
+
+# ---- Finding 1: reuse-gate ----------------------------------------------
+
+
+def _cal_dir(tmp_path: Path) -> Path:
+    """Per-cutoff directory under the calibrator root that _calibrator_path
+    expects.  cutoff_date='2024-01-02' → 2024-01-02/panel-rank-calibration.json"""
+    out = tmp_path / "out" / "2024-01-02"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def test_reuse_refuses_when_existing_artifact_lacks_window_stamp(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """A pre-Bug-G artifact (no calibrator_window_years field) MUST NOT be
+    silently reused under a different requested window — the manifest
+    would lie about the fit data."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    cal_path.write_text(json.dumps({"method": "platt"}))  # legacy: no window stamp
+
+    with pytest.raises(RuntimeError, match="lacks calibrator_window_years metadata"):
+        _fit_one(
+            _row_fixture(tmp_path),
+            calibrator_root=tmp_path / "out",
+            training_window_years=3.0,
+            calibrator_window_years=0.0,
+            method="platt",
+            panel=None,
+            raw_label_panel=None,
+            overwrite=False,
+        )
+    # Subprocess must NOT have been invoked — reuse gate fires before fit.
+    fake_subprocess.assert_not_called()
+
+
+def test_reuse_refuses_when_existing_window_differs_from_requested(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """Cached artifact at window=3.0 cannot be reused for a request at 0.0."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    cal_path.write_text(json.dumps({
+        "method": "platt",
+        "calibrator_window_years": 3.0,  # legacy 3-year window
+    }))
+
+    with pytest.raises(RuntimeError, match=r"existing window 3\.0 != requested 0\.0"):
+        _fit_one(
+            _row_fixture(tmp_path),
+            calibrator_root=tmp_path / "out",
+            training_window_years=3.0,
+            calibrator_window_years=0.0,  # operator wants the wider window
+            method="platt",
+            panel=None,
+            raw_label_panel=None,
+            overwrite=False,
+        )
+    fake_subprocess.assert_not_called()
+
+
+def test_reuse_accepts_matching_window(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """Cached artifact at window=0.0 IS reusable when request is 0.0."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    cal_path.write_text(json.dumps({
+        "method": "platt",
+        "calibrator_window_years": 0.0,
+    }))
+
+    out = _fit_one(
+        _row_fixture(tmp_path),
+        calibrator_root=tmp_path / "out",
+        training_window_years=3.0,
+        calibrator_window_years=0.0,
+        method="platt",
+        panel=None,
+        raw_label_panel=None,
+        overwrite=False,
+    )
+    assert out["calibrator_window_years"] == 0.0
+    assert out["calibrator_uri"] == str(cal_path)
+    fake_subprocess.assert_not_called()
+
+
+def test_overwrite_short_circuits_reuse_gate(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """--overwrite ignores window mismatch — operator opt-in to refit."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    cal_path.write_text(json.dumps({"calibrator_window_years": 3.0}))
+
+    # subprocess.run must return success so _fit_one continues to stamp.
+    fake_subprocess.return_value = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="", stderr="",
+    )
+    # The subprocess "writes" the artifact — simulate that by re-writing
+    # the file with no window stamp (the fitters don't stamp; orchestrator does).
+    def _side_effect(*a, **kw):
+        cal_path.write_text(json.dumps({"method": "platt"}))
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    fake_subprocess.side_effect = _side_effect
+
+    out = _fit_one(
+        _row_fixture(tmp_path),
+        calibrator_root=tmp_path / "out",
+        training_window_years=3.0,
+        calibrator_window_years=0.0,
+        method="platt",
+        panel=None,
+        raw_label_panel=None,
+        overwrite=True,
+    )
+    assert out["calibrator_window_years"] == 0.0
+    # After refit, the artifact carries the new window stamp.
+    stamped = json.loads(cal_path.read_text())
+    assert stamped["calibrator_window_years"] == 0.0
+    fake_subprocess.assert_called_once()
+
+
+def test_fresh_fit_stamps_window_into_artifact(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    """The orchestrator must inject calibrator_window_years into the
+    artifact JSON that the fitter subprocess produces, so future reuse
+    decisions can audit the fit policy from the artifact alone."""
+    cal_path = _cal_dir(tmp_path) / "panel-rank-calibration.json"
+    # Fitter writes an artifact without the window field.
+    def _side_effect(*a, **kw):
+        cal_path.write_text(json.dumps({"method": "platt", "a_unique": 5}))
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    fake_subprocess.side_effect = _side_effect
+
+    _fit_one(
+        _row_fixture(tmp_path),
+        calibrator_root=tmp_path / "out",
+        training_window_years=3.0,
+        calibrator_window_years=5.0,
+        method="platt",
+        panel=None,
+        raw_label_panel=None,
+        overwrite=True,
+    )
+    stamped = json.loads(cal_path.read_text())
+    assert stamped["calibrator_window_years"] == 5.0
+    assert stamped["a_unique"] == 5  # original fields preserved
+
+
+# ---- Finding 2: zero-coverage rc + failures persistence ------------------
+
+
+def _two_row_manifest(tmp_path: Path) -> Path:
+    in_manifest = tmp_path / "in.json"
+    scorer = tmp_path / "scorer.json"
+    scorer.write_text("{}")
+    in_manifest.write_text(json.dumps({
+        "training_window_years": 3.0,
+        "retrains": [
+            {"cutoff_date": "2024-01-02", "artifact_uri": str(scorer),
+             "lookahead_days": 60},
+            {"cutoff_date": "2024-04-02", "artifact_uri": str(scorer),
+             "lookahead_days": 60},
+        ],
+    }))
+    return in_manifest
+
+
+def test_main_returns_nonzero_when_continue_on_failure_yields_zero_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero successful fits with --continue-on-failure must exit rc=2.
+    Pre-fix: returned rc=0 (silent empty manifest)."""
+    def fake_fit_one(row, **kw):
+        raise RuntimeError(f"synthetic failure for {row['cutoff_date']}")
+    monkeypatch.setattr("fit_walkforward_calibrators._fit_one", fake_fit_one)
+
+    out_manifest = tmp_path / "out.json"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fit_walkforward_calibrators.py",
+         "--manifest", str(_two_row_manifest(tmp_path)),
+         "--out-manifest", str(out_manifest),
+         "--calibrator-root", str(tmp_path / "out"),
+         "--continue-on-failure"],
+    )
+    rc = main()
+    assert rc == 2, "zero-fit + --continue-on-failure must signal failure"
+    # Manifest persisted with full failure record.
+    out = json.loads(out_manifest.read_text())
+    assert len(out["calibrator_failures"]) == 2
+    cutoffs = sorted(f["cutoff_date"] for f in out["calibrator_failures"])
+    assert cutoffs == ["2024-01-02", "2024-04-02"]
+
+
+def test_main_persists_partial_failures_with_per_cutoff_attribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Partial coverage: 1 fit + 1 failure → failures list keeps the
+    failing cutoff's cutoff_date + artifact_uri + error text."""
+    def fake_fit_one(row, **kw):
+        if row["cutoff_date"] == "2024-04-02":
+            raise RuntimeError("synthetic failure")
+        return {**row,
+                "calibrator_uri": str(tmp_path / "cal.json"),
+                "calibrator_data_start": None,
+                "calibrator_data_end": "2023-10-10",
+                "calibrator_method": kw["method"],
+                "calibrator_window_years": 0.0}
+    monkeypatch.setattr("fit_walkforward_calibrators._fit_one", fake_fit_one)
+
+    out_manifest = tmp_path / "out.json"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fit_walkforward_calibrators.py",
+         "--manifest", str(_two_row_manifest(tmp_path)),
+         "--out-manifest", str(out_manifest),
+         "--calibrator-root", str(tmp_path / "out"),
+         "--calibrator-window-years", "0.0",
+         "--continue-on-failure"],
+    )
+    rc = main()
+    assert rc == 0, "1-of-2 fit is positive coverage; default --min-coverage=0 passes"
+    out = json.loads(out_manifest.read_text())
+    failures = out["calibrator_failures"]
+    assert len(failures) == 1
+    assert failures[0]["cutoff_date"] == "2024-04-02"
+    assert "synthetic failure" in failures[0]["error"]
+
+
+def test_min_coverage_gate_returns_nonzero_when_below_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--min-coverage 1.0 requires every cutoff to fit; 1/2 → rc=2."""
+    def fake_fit_one(row, **kw):
+        if row["cutoff_date"] == "2024-04-02":
+            raise RuntimeError("synthetic failure")
+        return {**row,
+                "calibrator_uri": str(tmp_path / "cal.json"),
+                "calibrator_method": kw["method"],
+                "calibrator_window_years": 0.0}
+    monkeypatch.setattr("fit_walkforward_calibrators._fit_one", fake_fit_one)
+
+    out_manifest = tmp_path / "out.json"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fit_walkforward_calibrators.py",
+         "--manifest", str(_two_row_manifest(tmp_path)),
+         "--out-manifest", str(out_manifest),
+         "--calibrator-root", str(tmp_path / "out"),
+         "--continue-on-failure",
+         "--min-coverage", "1.0"],
+    )
+    rc = main()
+    assert rc == 2
+    out = json.loads(out_manifest.read_text())
+    assert out["calibrator_policy"]["min_coverage"] == 1.0
+    assert len(out["calibrator_failures"]) == 1
+
+
+def test_min_coverage_validates_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """--min-coverage outside [0, 1] is rejected by argparse."""
+    out_manifest = tmp_path / "out.json"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fit_walkforward_calibrators.py",
+         "--manifest", str(_two_row_manifest(tmp_path)),
+         "--out-manifest", str(out_manifest),
+         "--calibrator-root", str(tmp_path / "out"),
+         "--min-coverage", "1.5"],
+    )
+    with pytest.raises(SystemExit):
+        main()
+    err = capsys.readouterr().err
+    assert "--min-coverage" in err
+    assert "1.5" in err
