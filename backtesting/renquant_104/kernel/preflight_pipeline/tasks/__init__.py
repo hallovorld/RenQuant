@@ -9,6 +9,8 @@ from .broker import BrokerConnectTask
 from .artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .gate import RegimeLayeredICTask, WfGateMetadataTask
 from .sector_map import SectorMapCoverageTask
+from .watchlist import WatchlistSizeTask
+from .correlation import CorrelationMetadataTask
 
 __all__ = [
     "StateFileTask",
@@ -19,4 +21,6 @@ __all__ = [
     "WfGateMetadataTask",
     "RegimeLayeredICTask",
     "SectorMapCoverageTask",
+    "WatchlistSizeTask",
+    "CorrelationMetadataTask",
 ]

@@ -24,6 +24,8 @@ from .tasks.broker import BrokerConnectTask
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.sector_map import SectorMapCoverageTask
+from .tasks.watchlist import WatchlistSizeTask
+from .tasks.correlation import CorrelationMetadataTask
 from .pipeline import build_minimal_preflight_pipeline
 
 __all__ = [
@@ -39,5 +41,7 @@ __all__ = [
     "WfGateMetadataTask",
     "RegimeLayeredICTask",
     "SectorMapCoverageTask",
+    "WatchlistSizeTask",
+    "CorrelationMetadataTask",
     "build_minimal_preflight_pipeline",
 ]

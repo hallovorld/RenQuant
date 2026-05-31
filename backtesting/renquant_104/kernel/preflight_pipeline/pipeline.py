@@ -11,9 +11,11 @@ from __future__ import annotations
 from .base import PreflightJob, PreflightPipeline
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
+from .tasks.correlation import CorrelationMetadataTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.sector_map import SectorMapCoverageTask
 from .tasks.state import StateFileTask
+from .tasks.watchlist import WatchlistSizeTask
 
 
 class _ArtifactJob(PreflightJob):
@@ -35,10 +37,15 @@ class _GateJob(PreflightJob):
 
 
 class _IdentityJob(PreflightJob):
-    """Identity-of-trained-model group — sector-map coverage (and later
-    config_fingerprint + watchlist + correlation metadata)."""
+    """Identity-of-trained-model group — watchlist consistency, sector-map
+    coverage, correlation metadata. (config_fingerprint lands in a follow-up
+    PR as it's the most complex single check at 129 lines.)"""
 
-    tasks = [SectorMapCoverageTask()]
+    tasks = [
+        WatchlistSizeTask(),
+        SectorMapCoverageTask(),
+        CorrelationMetadataTask(),
+    ]
 
 
 class _StateAndBrokerJob(PreflightJob):
@@ -48,11 +55,13 @@ class _StateAndBrokerJob(PreflightJob):
 
 
 def build_minimal_preflight_pipeline() -> PreflightPipeline:
-    """Return a PreflightPipeline holding the migrated checks (8/16 so far).
+    """Return a PreflightPipeline holding the migrated checks (10/16 so far).
 
     Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
-    artifact → WF gate → regime IC → identity (sector + future fingerprint/
-    watchlist/correlation) → state + broker.
+    artifact → WF gate → regime IC → identity (watchlist + sector + corr) →
+    state + broker. Remaining: config_fingerprint, feature_coverage,
+    artifact_run_id_alignment, meta_label, calibrator_health,
+    calibrator_flat_region.
     """
     return PreflightPipeline(jobs=[
         _ArtifactJob(),
