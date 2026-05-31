@@ -103,6 +103,7 @@ class PreflightPipeline:
     def run(self, ctx: PreflightContext, *, strict: bool = True) -> list:
         from kernel.preflight import PreflightFailed  # noqa: PLC0415
 
+        ctx.results = []
         for job in self.jobs:
             job.run(ctx)
         hard_failures = [r for r in ctx.results if r.severity == "hard" and not r.ok]

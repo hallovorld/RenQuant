@@ -1,4 +1,4 @@
-"""Preflight T/J/P refactor — Track H scaffolding.
+"""Preflight T/J/P refactor — Track H complete pipeline.
 
 Drop-in architecture for ``kernel.preflight.run_preflight`` migration:
 
@@ -9,13 +9,9 @@ Drop-in architecture for ``kernel.preflight.run_preflight`` migration:
   - PreflightPipeline: orchestrates Jobs in declaration order; ``run`` returns
     list[PreflightCheck] identical in shape to the legacy ``run_preflight``
 
-Migration strategy (one PR per group):
-  1. THIS PR: scaffolding + 2 example Tasks (StateFileTask, BrokerConnectTask)
-     proven byte-equivalent to legacy ``_check_state_file`` / ``_check_broker_connect``
-     by paired tests.
-  2. Later PRs lift remaining 14 ``_check_*`` functions into Tasks.
-  3. Final PR retires the legacy functional layout; ``run_preflight`` becomes
-     a thin wrapper around ``PreflightPipeline.run``.
+All 16 checks are represented as Tasks. ``run_preflight`` is wired as a thin
+wrapper in the follow-up PR so production callers keep the legacy API while
+the business logic moves behind Task/Job/Pipeline boundaries.
 """
 from .ctx import PreflightContext
 from .base import PreflightTask, PreflightJob, PreflightPipeline

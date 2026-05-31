@@ -235,3 +235,11 @@ class TestPipelineSmoke:
                           and not r.ok]
         assert len(state_failures) == 1
         assert "unreadable" in state_failures[0].message
+
+    def test_pipeline_run_resets_context_results_between_runs(self, base_ctx):
+        pipeline = build_minimal_preflight_pipeline()
+        first = list(pipeline.run(base_ctx, strict=False))
+        second = pipeline.run(base_ctx, strict=False)
+
+        assert len(second) == len(first)
+        assert [r.name for r in second] == [r.name for r in first]

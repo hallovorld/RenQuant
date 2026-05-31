@@ -1,11 +1,4 @@
-"""Build a minimal PreflightPipeline (state + broker) for Track H proof-of-life.
-
-This factory is the migration entry point. Today it returns a pipeline with
-just StateFileTask + BrokerConnectTask wired into one Job. As remaining 14
-``_check_*`` functions migrate (one per PR), each lands as a new Task in an
-appropriate Job, and ``build_minimal_preflight_pipeline`` is renamed
-``build_preflight_pipeline`` and replaces ``kernel.preflight.run_preflight``.
-"""
+"""Build the Track H PreflightPipeline."""
 from __future__ import annotations
 
 from .base import PreflightJob, PreflightPipeline
@@ -86,9 +79,9 @@ class _StateAndBrokerJob(PreflightJob):
 def build_preflight_pipeline() -> PreflightPipeline:
     """Return the FULL PreflightPipeline holding ALL 16 migrated checks.
 
-    Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
-    artifact → WF gate → regime IC → identity → calibrator → ngboost-aux →
-    meta-label → state + broker.
+    Jobs run in semantic dependency order. ``kernel.preflight.run_preflight``
+    preserves the legacy returned-list order by sorting the results after the
+    pipeline run.
 
     This replaces the prior ``build_minimal_preflight_pipeline()`` factory
     (kept as alias for back-compat). Track H migration COMPLETE at this PR.
