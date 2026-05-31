@@ -12,6 +12,8 @@ from .sector_map import SectorMapCoverageTask
 from .watchlist import WatchlistSizeTask
 from .correlation import CorrelationMetadataTask
 from .calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
+from .feature_coverage import FeatureCoverageTask
+from .run_id import ArtifactRunIdAlignmentTask
 
 __all__ = [
     "StateFileTask",
@@ -26,4 +28,6 @@ __all__ = [
     "CorrelationMetadataTask",
     "CalibratorHealthTask",
     "CalibratorFlatRegionTask",
+    "FeatureCoverageTask",
+    "ArtifactRunIdAlignmentTask",
 ]

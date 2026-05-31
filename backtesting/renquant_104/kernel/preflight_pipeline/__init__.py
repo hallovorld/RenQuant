@@ -27,6 +27,8 @@ from .tasks.sector_map import SectorMapCoverageTask
 from .tasks.watchlist import WatchlistSizeTask
 from .tasks.correlation import CorrelationMetadataTask
 from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
+from .tasks.feature_coverage import FeatureCoverageTask
+from .tasks.run_id import ArtifactRunIdAlignmentTask
 from .pipeline import build_minimal_preflight_pipeline
 
 __all__ = [
@@ -46,5 +48,7 @@ __all__ = [
     "CorrelationMetadataTask",
     "CalibratorHealthTask",
     "CalibratorFlatRegionTask",
+    "FeatureCoverageTask",
+    "ArtifactRunIdAlignmentTask",
     "build_minimal_preflight_pipeline",
 ]

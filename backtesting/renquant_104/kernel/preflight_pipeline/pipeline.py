@@ -13,7 +13,9 @@ from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
 from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 from .tasks.correlation import CorrelationMetadataTask
+from .tasks.feature_coverage import FeatureCoverageTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
+from .tasks.run_id import ArtifactRunIdAlignmentTask
 from .tasks.sector_map import SectorMapCoverageTask
 from .tasks.state import StateFileTask
 from .tasks.watchlist import WatchlistSizeTask
@@ -57,6 +59,14 @@ class _CalibratorJob(PreflightJob):
     tasks = [CalibratorHealthTask(), CalibratorFlatRegionTask()]
 
 
+class _NgboostAuxJob(PreflightJob):
+    """NGBoost-dependent auxiliary checks: feature coverage between the
+    NGBoost head + panel-LTR scorer, and train_run_id alignment. Both checks
+    share the ``_ngboost_activation()`` skip-if-disabled gate."""
+
+    tasks = [FeatureCoverageTask(), ArtifactRunIdAlignmentTask()]
+
+
 class _StateAndBrokerJob(PreflightJob):
     """State + broker connectivity — final checks before live decisions."""
 
@@ -64,18 +74,18 @@ class _StateAndBrokerJob(PreflightJob):
 
 
 def build_minimal_preflight_pipeline() -> PreflightPipeline:
-    """Return a PreflightPipeline holding the migrated checks (12/16 so far).
+    """Return a PreflightPipeline holding the migrated checks (14/16 so far).
 
     Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
-    artifact → WF gate → regime IC → identity (watchlist + sector + corr) →
-    calibrator (health + flat-region) → state + broker. Remaining:
-    config_fingerprint, feature_coverage, artifact_run_id_alignment,
-    meta_label.
+    artifact → WF gate → regime IC → identity → calibrator → ngboost-aux →
+    state + broker. Remaining 2: config_fingerprint (129 lines, most complex)
+    and meta_label (129 lines).
     """
     return PreflightPipeline(jobs=[
         _ArtifactJob(),
         _GateJob(),
         _IdentityJob(),
         _CalibratorJob(),
+        _NgboostAuxJob(),
         _StateAndBrokerJob(),
     ])
