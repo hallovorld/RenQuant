@@ -6,5 +6,12 @@ here to surface a clean public symbol set.
 """
 from .state import StateFileTask
 from .broker import BrokerConnectTask
+from .artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 
-__all__ = ["StateFileTask", "BrokerConnectTask"]
+__all__ = [
+    "StateFileTask",
+    "BrokerConnectTask",
+    "ModelArtifactTask",
+    "PanelContractTask",
+    "BestIterTask",
+]

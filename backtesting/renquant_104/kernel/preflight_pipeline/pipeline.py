@@ -9,22 +9,33 @@ appropriate Job, and ``build_minimal_preflight_pipeline`` is renamed
 from __future__ import annotations
 
 from .base import PreflightJob, PreflightPipeline
+from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
 from .tasks.state import StateFileTask
 
 
+class _ArtifactJob(PreflightJob):
+    """Artifact group — checks the active scorer artifact exists, parses,
+    carries the contract metadata, and was trained to a healthy best_iter."""
+
+    tasks = [
+        ModelArtifactTask(),
+        PanelContractTask(),
+        BestIterTask(),
+    ]
+
+
 class _StateAndBrokerJob(PreflightJob):
-    """Light-weight Job for the 2 migrated checks. Will be split as more
-    checks migrate (artifact / fingerprint / watchlist / etc.)."""
+    """State + broker connectivity — final checks before live decisions."""
 
     tasks = [StateFileTask(), BrokerConnectTask()]
 
 
 def build_minimal_preflight_pipeline() -> PreflightPipeline:
-    """Return a PreflightPipeline holding only the migrated checks.
+    """Return a PreflightPipeline holding the migrated checks (5/16 so far).
 
-    Intentionally minimal — exists so ``kernel.preflight.run_preflight`` can
-    route a subset of checks through the new T/J/P architecture as a feature
-    flag (off by default during migration).
+    Job order mirrors ``kernel.preflight.run_preflight``'s ALL_CHECKS list:
+    artifact validation runs first, state + broker last. As more checks lift
+    over, they'll be inserted into appropriate Jobs between these two.
     """
-    return PreflightPipeline(jobs=[_StateAndBrokerJob()])
+    return PreflightPipeline(jobs=[_ArtifactJob(), _StateAndBrokerJob()])

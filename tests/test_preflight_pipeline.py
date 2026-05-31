@@ -183,17 +183,28 @@ class TestBrokerConnectTaskParity:
 # ─── End-to-end pipeline smoke ────────────────────────────────────────────────
 
 class TestPipelineSmoke:
-    """build_minimal_preflight_pipeline + run produces 2 results."""
+    """build_minimal_preflight_pipeline + run produces results for ALL migrated
+    Tasks. Per the migration plan, the pipeline grows by one Task per future
+    PR — keep this test focused on shape + ordering, not exact-count."""
 
-    def test_pipeline_runs_both_tasks_in_order(self, base_ctx):
+    def test_pipeline_includes_state_and_broker(self, base_ctx):
         pipeline = build_minimal_preflight_pipeline()
         results = pipeline.run(base_ctx, strict=False)
-        assert [r.name for r in results] == ["P-STATE-FILE", "P-BROKER-CONNECT"]
-        # both soft passes since broker_name/broker are None
-        assert all(r.severity == "soft" and r.ok for r in results)
+        names = [r.name for r in results]
+        # state + broker land in last Job (always present in the minimal pipeline)
+        assert "P-STATE-FILE" in names
+        assert "P-BROKER-CONNECT" in names
+        # state runs before broker (artifact group runs first)
+        assert names.index("P-STATE-FILE") < names.index("P-BROKER-CONNECT")
+        # state + broker checks are soft pass since broker_name/broker are None
+        state = next(r for r in results if r.name == "P-STATE-FILE")
+        broker = next(r for r in results if r.name == "P-BROKER-CONNECT")
+        assert state.severity == "soft" and state.ok
+        assert broker.severity == "soft" and broker.ok
 
-    def test_pipeline_hard_fail_raises_in_strict(self, tmp_path):
-        # Set up a state with bad JSON to trigger a HARD fail
+    def test_pipeline_state_hard_fail_raises_in_strict(self, tmp_path):
+        """State-file HARD fail still raises in strict mode even though
+        artifact-group checks may HARD-fail too (no artifact present)."""
         ctx = PreflightContext(
             config={},
             strategy_dir=tmp_path,
@@ -206,7 +217,10 @@ class TestPipelineSmoke:
         with pytest.raises(PreflightFailed):
             pipeline.run(ctx, strict=True)
 
-    def test_pipeline_hard_fail_returns_in_non_strict(self, tmp_path):
+    def test_pipeline_state_hard_fail_returns_in_non_strict(self, tmp_path):
+        """In non-strict, the state-file HARD fail surfaces in the result list
+        alongside other HARD fails (e.g. missing artifact). Each named check
+        is reported exactly once."""
         ctx = PreflightContext(
             config={},
             strategy_dir=tmp_path,
@@ -216,6 +230,8 @@ class TestPipelineSmoke:
 
         pipeline = build_minimal_preflight_pipeline()
         results = pipeline.run(ctx, strict=False)
-        hard_failures = [r for r in results if r.severity == "hard" and not r.ok]
-        assert len(hard_failures) == 1
-        assert hard_failures[0].name == "P-STATE-FILE"
+        state_failures = [r for r in results
+                          if r.name == "P-STATE-FILE" and r.severity == "hard"
+                          and not r.ok]
+        assert len(state_failures) == 1
+        assert "unreadable" in state_failures[0].message

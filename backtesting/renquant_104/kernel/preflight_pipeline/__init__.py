@@ -21,6 +21,7 @@ from .ctx import PreflightContext
 from .base import PreflightTask, PreflightJob, PreflightPipeline
 from .tasks.state import StateFileTask
 from .tasks.broker import BrokerConnectTask
+from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .pipeline import build_minimal_preflight_pipeline
 
 __all__ = [
@@ -30,5 +31,8 @@ __all__ = [
     "PreflightPipeline",
     "StateFileTask",
     "BrokerConnectTask",
+    "ModelArtifactTask",
+    "PanelContractTask",
+    "BestIterTask",
     "build_minimal_preflight_pipeline",
 ]
