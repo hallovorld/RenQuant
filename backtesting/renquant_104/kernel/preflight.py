@@ -1724,6 +1724,29 @@ ALL_CHECKS = tuple(c if c is not None else _check_calibrator_health for c in ALL
 ALL_CHECKS = ALL_CHECKS + (_check_calibrator_flat_region,)
 
 
+# Canonical ALL_CHECKS ordering — preserves legacy run_preflight result order
+# even though the new PreflightPipeline groups Tasks semantically (so Task
+# execution order differs from this).
+_LEGACY_CHECK_ORDER: tuple[str, ...] = (
+    "P-MODEL-ARTIFACT",
+    "P-PANEL-CONTRACT",
+    "P-WF-GATE",
+    "P-REGIME-IC",
+    "P-BEST-ITER",
+    "P-CONFIG-FP",
+    "P-WATCHLIST",
+    "P-SECTOR-MAP",
+    "P-CORR-METADATA",
+    "P-FEATURE-COVER",
+    "P-STATE-FILE",
+    "P-BROKER-CONNECT",
+    "P-RUN-ID",
+    "P-META-LABEL",
+    "P-CALIBRATOR-HEALTH",
+    "P-CALIBRATOR-FLAT-REGION",
+)
+
+
 def run_preflight(
     config: dict,
     broker: Any = None,
@@ -1733,8 +1756,25 @@ def run_preflight(
     strict: bool = True,
     run_mode: str | None = None,
 ) -> list[PreflightCheck]:
-    """Run all checks. Raise PreflightFailed if any HARD check fails
-    (when strict=True). Returns the full result list either way."""
+    """Run all preflight checks via the new PreflightPipeline.
+
+    Track H follow-up (2026-05-30): this function is now a thin wrapper
+    around ``kernel.preflight_pipeline.build_preflight_pipeline()``. The
+    16 ``_check_*`` legacy functions are kept in this module as the
+    implementation that the new Tasks bridge to — deleting them is a
+    later cleanup step.
+
+    Contract preserved exactly:
+      • Returns ``list[PreflightCheck]`` in ``_LEGACY_CHECK_ORDER`` (the
+        original ALL_CHECKS tuple order), NOT the Job/Task declaration
+        order from the new pipeline. Operator log markers, however, appear
+        in pipeline (semantic) order during execution — cosmetic-only
+        change for log readers.
+      • Raises ``PreflightFailed`` if any HARD check fails and
+        ``strict=True``.
+      • The PreflightFailed.failures list is ordered to match
+        ``_LEGACY_CHECK_ORDER``.
+    """
     if strategy_dir is None:
         raise ValueError("run_preflight requires strategy_dir")
     sd = Path(strategy_dir)
@@ -1742,38 +1782,26 @@ def run_preflight(
         broker_name = getattr(broker, "broker_name", None)
     effective_run_mode = run_mode or config.get("_run_mode")
 
-    results: list[PreflightCheck] = []
-    for fn in ALL_CHECKS:
-        try:
-            sig = fn.__code__.co_varnames[:fn.__code__.co_argcount]
-            kwargs: dict[str, Any] = {"config": config}
-            if "strategy_dir" in sig:
-                kwargs["strategy_dir"] = sd
-            if "broker_name" in sig:
-                kwargs["broker_name"] = broker_name
-            if "run_mode" in sig:
-                kwargs["run_mode"] = effective_run_mode
-            if "broker" in sig:
-                kwargs = {"broker": broker}    # broker check has different sig
-            res = fn(**kwargs) if "broker" in sig else fn(**kwargs)
-        except Exception as exc:
-            sell_only = _is_sell_only_run(effective_run_mode)
-            res = PreflightCheck(
-                fn.__name__,
-                "soft" if sell_only else "hard",
-                True if sell_only else False,
-                f"check raised unexpectedly: {exc}; "
-                + (
-                    "sell-only risk exits are allowed"
-                    if sell_only else
-                    "full/buy preflight fails closed"
-                ),
-            )
-        results.append(res)
-        marker = "✓" if res.ok else "✗"
-        sev = res.severity.upper()
-        log.info("preflight %s %-22s [%s] %s", marker, res.name, sev, res.message)
-
+    # Deferred import — avoids circular import (preflight_pipeline imports
+    # from this module via bridge).
+    from kernel.preflight_pipeline import (  # noqa: PLC0415
+        PreflightContext,
+        build_preflight_pipeline,
+    )
+    ctx = PreflightContext(
+        config=config,
+        strategy_dir=sd,
+        broker=broker,
+        broker_name=broker_name,
+        run_mode=effective_run_mode,
+    )
+    # Pipeline.run logs each marker inside PreflightTask.run(); we still
+    # want strict-mode hard-fail to raise PreflightFailed AFTER we sort
+    # to legacy order, so request strict=False here and re-evaluate below.
+    pipeline = build_preflight_pipeline()
+    results = pipeline.run(ctx, strict=False)
+    results.sort(key=lambda r: _LEGACY_CHECK_ORDER.index(r.name)
+                 if r.name in _LEGACY_CHECK_ORDER else len(_LEGACY_CHECK_ORDER))
     hard_failures = [r for r in results if r.severity == "hard" and not r.ok]
     if hard_failures and strict:
         raise PreflightFailed(hard_failures)
