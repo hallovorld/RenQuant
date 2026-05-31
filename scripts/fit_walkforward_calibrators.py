@@ -61,11 +61,26 @@ def _fit_one(
     *,
     calibrator_root: Path,
     training_window_years: float,
+    calibrator_window_years: float | None,
     method: str,
     panel: str | None,
     raw_label_panel: str | None,
     overwrite: bool,
 ) -> dict[str, Any]:
+    # Bug G (2026-05-31): compressed per-cut calibrator output (range 0.07-0.13
+    # at fit time vs daily-shadow's 0.49) tracks to the calibrator-fit data
+    # window being narrower than what's needed for the calibrator to see a
+    # representative score-vs-label distribution. ``training_window_years``
+    # controls the model-training horizon (3.0 keeps the model from over-fitting
+    # ancient regimes); ``calibrator_window_years`` decouples the calibrator
+    # window so it can widen (default 0.0 → full history up to the per-cut
+    # cutoff-minus-lookahead boundary) without changing the model window.
+    # ``None`` preserves the legacy "use training_window_years for both" path.
+    effective_years = (
+        float(calibrator_window_years)
+        if calibrator_window_years is not None
+        else float(training_window_years)
+    )
     cutoff = pd.Timestamp(row["cutoff_date"])
     scorer_path = Path(str(row["artifact_uri"]))
     out_path = _calibrator_path(calibrator_root, cutoff)
@@ -74,14 +89,15 @@ def _fit_one(
         stamped["calibrator_uri"] = str(out_path)
         stamped["calibrator_data_start"], stamped["calibrator_data_end"] = _date_window(
             cutoff,
-            training_window_years,
+            effective_years,
             int(row.get("lookahead_days", 60)),
         )
+        stamped["calibrator_window_years"] = effective_years
         return stamped
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lookahead_days = int(row.get("lookahead_days", 60))
-    data_start, data_end = _date_window(cutoff, training_window_years, lookahead_days)
+    data_start, data_end = _date_window(cutoff, effective_years, lookahead_days)
     # Dispatch by artifact type (2026-05-30 Bug C fix):
     #   .json  → GBDT panel-LTR fitter
     #   .pt    → HF PatchTST sequence fitter (same CLI surface)
@@ -122,6 +138,7 @@ def _fit_one(
     stamped["calibrator_data_end"] = data_end
     stamped["calibrator_method"] = method
     stamped["calibrator_cutoff_contract"] = "date < cutoff_date - lookahead_days BDay"
+    stamped["calibrator_window_years"] = effective_years
     return stamped
 
 
@@ -140,6 +157,21 @@ def main() -> int:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--panel", default=None)
     parser.add_argument("--raw-label-panel", default=None)
+    parser.add_argument("--continue-on-failure", action="store_true",
+                        help="Don't abort the manifest run if a single cutoff's "
+                             "calibrator fit fails (e.g. degenerate scorer output). "
+                             "Stamps partial coverage; failed cutoffs are logged. "
+                             "Useful when per-cut models have weak signal (Bug G).")
+    parser.add_argument("--calibrator-window-years", type=float, default=None,
+                        help="Bug G fix (2026-05-31): decouple the calibrator-fit "
+                             "data window from the model-training window. The "
+                             "model-training window (manifest's training_window_years) "
+                             "stays narrow to avoid over-fitting ancient regimes, "
+                             "but the calibrator needs a wider score-vs-label "
+                             "distribution to keep its output non-compressed. "
+                             "0.0 = full history up to per-cut "
+                             "cutoff-minus-lookahead. Omitted → legacy behavior "
+                             "(calibrator window = training_window_years).")
     args = parser.parse_args()
 
     manifest_path = _resolve_strategy_path(args.manifest)
@@ -152,6 +184,7 @@ def main() -> int:
     training_window_years = float(payload.get("training_window_years", 3.0))
 
     fitted: list[dict[str, Any]] = []
+    failed_cutoffs: list[dict[str, Any]] = []
     with cf.ThreadPoolExecutor(max_workers=max(1, int(args.jobs))) as ex:
         futures = [
             ex.submit(
@@ -159,6 +192,7 @@ def main() -> int:
                 row,
                 calibrator_root=calibrator_root,
                 training_window_years=training_window_years,
+                calibrator_window_years=args.calibrator_window_years,
                 method=args.method,
                 panel=args.panel,
                 raw_label_panel=args.raw_label_panel,
@@ -167,7 +201,16 @@ def main() -> int:
             for row in rows
         ]
         for fut in cf.as_completed(futures):
-            fitted.append(fut.result())
+            try:
+                fitted.append(fut.result())
+            except Exception as exc:  # noqa: BLE001
+                # Bug C v6 (2026-05-30): degenerate per-cut scorers (Bug G
+                # symptom) raise here. Record + continue so the manifest gets
+                # partial coverage instead of zero coverage.
+                if not bool(getattr(args, "continue_on_failure", False)):
+                    raise
+                failed_cutoffs.append({"error": repr(exc)[:300]})
+                print(f"  (skipped: {exc!s})", flush=True)
 
     by_cutoff = {str(r["cutoff_date"]): r for r in fitted}
     stamped_rows = []
@@ -180,8 +223,21 @@ def main() -> int:
     out_payload["calibrator_stamped_at_utc"] = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
     out_payload["calibrator_policy"] = {
         "method": args.method,
-        "fit_window": "training_window_through_effective_cutoff",
+        "fit_window": (
+            "calibrator_window_through_effective_cutoff"
+            if args.calibrator_window_years is not None
+            else "training_window_through_effective_cutoff"
+        ),
         "data_end": "cutoff_date_minus_lookahead_bday_exclusive",
+        # Bug G stamp: decoupled calibrator window. ``training_window_years``
+        # is the model window from the manifest; ``calibrator_window_years``
+        # is the override (None = legacy, == training_window_years).
+        "training_window_years": training_window_years,
+        "calibrator_window_years": (
+            float(args.calibrator_window_years)
+            if args.calibrator_window_years is not None
+            else training_window_years
+        ),
     }
     out_manifest.parent.mkdir(parents=True, exist_ok=True)
     out_manifest.write_text(json.dumps(out_payload, indent=2, sort_keys=False) + "\n")
