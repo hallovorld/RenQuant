@@ -37,16 +37,23 @@ class _Cand:
 
 class _Ctx:
     """Minimal InferenceContext fixture."""
-    def __init__(self, candidates, config):
+    def __init__(self, candidates, config, *, run_type: str | None = "sim"):
         self.candidates = candidates
         self.config = config
+        if run_type is not None:
+            self._run_type = run_type
         # VetoWeakBuysTask writes ctx.counters["panel_vetoed"] when floor fires
         self.counters: dict = {}
         # ApplyScoresTask normally sets _blocked_by_ticker; needed for veto path
         self._blocked_by_ticker: dict = {}
 
 
-def _make_ctx(scores: list[float], buy_floor: float | str | None = 0.50):
+def _make_ctx(
+    scores: list[float],
+    buy_floor: float | str | None = 0.50,
+    *,
+    run_type: str | None = "sim",
+):
     return _Ctx(
         candidates=[_Cand(f"T{i}", s) for i, s in enumerate(scores)],
         config={
@@ -59,6 +66,7 @@ def _make_ctx(scores: list[float], buy_floor: float | str | None = 0.50):
                 },
             },
         },
+        run_type=run_type,
     )
 
 
@@ -82,13 +90,29 @@ class TestSimBypassBuyFloor:
         assert kept == {"T2", "T3"}
 
     def test_env_set_to_one_bypasses_floor(self, monkeypatch):
-        """RQ_SIM_BYPASS_BUY_FLOOR=1 → ALL candidates pass."""
+        """RQ_SIM_BYPASS_BUY_FLOOR=1 + sim context → ALL candidates pass."""
         monkeypatch.setenv("RQ_SIM_BYPASS_BUY_FLOOR", "1")
         ctx = _make_ctx([0.10, 0.30, 0.55, 0.80])
         VetoWeakBuysTask().run(ctx)
         # All 4 kept — even those below the configured 0.50 floor
         kept = {c.ticker for c in ctx.candidates}
         assert kept == {"T0", "T1", "T2", "T3"}
+
+    def test_env_set_to_one_ignored_for_live_run_type(self, monkeypatch):
+        """The escape hatch is sim-only; live keeps the buy floor strict."""
+        monkeypatch.setenv("RQ_SIM_BYPASS_BUY_FLOOR", "1")
+        ctx = _make_ctx([0.10, 0.30, 0.55, 0.80], run_type="live")
+        VetoWeakBuysTask().run(ctx)
+        kept = {c.ticker for c in ctx.candidates}
+        assert kept == {"T2", "T3"}
+
+    def test_env_set_to_one_ignored_when_run_type_unknown(self, monkeypatch):
+        """An untagged context must fail closed and keep the floor active."""
+        monkeypatch.setenv("RQ_SIM_BYPASS_BUY_FLOOR", "1")
+        ctx = _make_ctx([0.10, 0.30, 0.55, 0.80], run_type=None)
+        VetoWeakBuysTask().run(ctx)
+        kept = {c.ticker for c in ctx.candidates}
+        assert kept == {"T2", "T3"}
 
     def test_bypass_works_with_adaptive_floor(self, monkeypatch):
         """When floor is the adaptive_mean_std rule (the actual prod-derived
