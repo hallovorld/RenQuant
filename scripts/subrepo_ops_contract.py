@@ -108,6 +108,24 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="daily_iv_snapshot_uses_base_data",
+        path="scripts/daily_iv_snapshot.sh",
+        required=(
+            "renquant_base_data.options_iv_refresh",
+            "$GITHUB_DIR/renquant-base-data/src",
+            "RQ_DAILY_IV_STRICT",
+        ),
+    ),
+    Check(
+        name="daily_news_fetch_uses_base_data",
+        path="scripts/daily_news_sentiment_refresh.sh",
+        required=(
+            "renquant_base_data.alpaca_news_refresh",
+            "$GITHUB_DIR/renquant-base-data/src",
+            "RQ_DAILY_NEWS_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_calibrator_refresh_uses_model_repo",
         path="scripts/monthly_calibrator_refresh.sh",
         required=(

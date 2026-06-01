@@ -20,7 +20,12 @@
 #      ~/Library/LaunchAgents/com.renquant.daily-news-sentiment.plist
 
 set -e
-cd /Users/renhao/git/github/RenQuant
+REPO_DIR="/Users/renhao/git/github/RenQuant"
+VENV_DIR="$REPO_DIR/.venv"
+PYTHON="$VENV_DIR/bin/python"
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+
+cd "$REPO_DIR"
 mkdir -p logs/news_daily
 
 LOG="logs/news_daily/$(date +%Y-%m-%d).log"
@@ -32,10 +37,27 @@ set +a
 
 # 1. Fetch yesterday's news (and weekend backlog on Mondays)
 echo "--- step 1: fetch Alpaca News ---" >> "$LOG"
-.venv/bin/python -u scripts/fetch_news_alpaca.py 2>&1 | tee -a "$LOG"
+export PYTHONPATH="$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
+if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_base_data.alpaca_news_refresh  # noqa: F401
+PY
+then
+    "$PYTHON" -u -m renquant_base_data.alpaca_news_refresh \
+        --strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json" \
+        --data-dir "$REPO_DIR/data" \
+        --json 2>&1 | tee -a "$LOG"
+elif [ "${RQ_DAILY_NEWS_STRICT:-0}" = "1" ]; then
+    echo "ERROR: renquant_base_data.alpaca_news_refresh unavailable and RQ_DAILY_NEWS_STRICT=1" \
+        | tee -a "$LOG"
+    exit 1
+else
+    echo "WARN: renquant_base_data.alpaca_news_refresh unavailable; falling back to umbrella script." \
+        | tee -a "$LOG"
+    "$PYTHON" -u scripts/fetch_news_alpaca.py 2>&1 | tee -a "$LOG"
+fi
 
 # 2. Re-score with FinBERT (per-ticker parquet append; idempotent)
 echo "--- step 2: FinBERT score ---" >> "$LOG"
-.venv/bin/python -u scripts/score_news_finbert.py 2>&1 | tee -a "$LOG"
+"$PYTHON" -u scripts/score_news_finbert.py 2>&1 | tee -a "$LOG"
 
 echo "=== $(date) — Daily news+sentiment done ===" | tee -a "$LOG"
