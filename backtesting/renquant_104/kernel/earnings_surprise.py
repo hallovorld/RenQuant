@@ -89,7 +89,7 @@ def _fetch_from_yfinance(symbol: str) -> pd.DataFrame:
     tolerate missing values — the z-score step sector-median-fills
     nulls. The 2026-04-23 incident was a yfinance hang on
     `.earnings_dates` with no timeout; now wrapped in a 20 s hard
-    timeout via `kernel.net_safety.call_with_timeout`.
+    timeout via `renquant_common.net_safety.call_with_timeout`.
     """
     from .net_safety import call_with_timeout  # noqa: PLC0415
 
@@ -182,7 +182,7 @@ def fetch_earnings_surprise_watchlist(
     """Per-ticker hard timeout + batch budget. Each ticker's
     `fetch_earnings_surprise` is wrapped in `call_with_timeout` so a
     single stalled yf.earnings_dates call can't block the loop."""
-    from kernel.net_safety import FetchBudget, call_with_timeout
+    from renquant_common.net_safety import FetchBudget, call_with_timeout
     budget = FetchBudget(total_sec=total_budget_sec,
                           label="fetch_earnings_surprise_watchlist")
     out: dict[str, pd.DataFrame] = {}

@@ -12,7 +12,7 @@ stores inherit from. Provides:
 2. **Incremental fetch** — only fetch the delta since the cache's
    latest bar (for time-series data). Falls back to full fetch for
    non-time-series data (snapshots like fundamentals).
-3. **Hard timeout** via `kernel.net_safety.call_with_timeout`.
+3. **Hard timeout** via `renquant_common.net_safety.call_with_timeout`.
 4. **Concurrent dedup** — per-key threading.Lock so two sim threads
    fetching the same ticker serialize, the second gets the first's
    write from cache.
@@ -188,7 +188,7 @@ class CachedStore:
             fetch_start = None
 
         # Timeout-protected fetch
-        from kernel.net_safety import call_with_timeout  # noqa: PLC0415
+        from renquant_common.net_safety import call_with_timeout  # noqa: PLC0415
         label = f"CachedStore[{self.file_pattern}]({symbol})"
         # Round-2 audit (#R2-16): the previous `try/except TypeError` was
         # dead code — call_with_timeout swallows ALL exceptions and
