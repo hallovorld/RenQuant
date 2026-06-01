@@ -553,6 +553,81 @@ def _post_ntfy_with_retries(
     return post_ntfy_alert(url, event, logger=log)
 
 
+def _no_trade_reason(ctx) -> str:
+    """Pure rollup of "why no trade" for a decision cycle.
+
+    Lifted from a closure inside ``_notify_decision`` 2026-06-01 so the
+    priority contract (codex PR #48 review #2) can be regression-tested
+    without constructing a full ntfy stack.
+
+    Priority — surfaces the BINDING constraint, not the FIRST upstream
+    drop. Old ordering put ``risk_gate_vol_dropped`` ahead of admission/QP
+    and surfaced "no trade (vol_dropped(10))" even when 72 of 82
+    candidates survived the vol gate and were blocked downstream by
+    admission + QP infeasibility.
+    """
+    if getattr(ctx, "bear_only", False):
+        return "bear_only"
+    rs = getattr(ctx, "regime_state", None)
+    if rs is not None and getattr(rs, "in_transition", False):
+        return "transition_window"
+    counters = getattr(ctx, "counters", {}) or {}
+    specific_blocks = (
+        # Earliest-stage fail-closed (no scorer / no calibration)
+        ("panel_scoring_fail_closed", "panel_scoring_fail_closed"),
+        ("qp_mu_contract_block", "qp_mu_contract_block"),
+        # Mid-pipeline: regime admission cleared all buy candidates
+        ("regime_admission_blocked", "regime_admission_blocked"),
+        # Late-pipeline: QP solver could not produce orders (binding)
+        ("qp_infeasible", "qp_infeasible"),
+        ("qp_missing_solution", "qp_missing_solution"),
+        ("qp_optimal_no_signal", "qp_optimal_no_signal"),
+        ("qp_other_nonoptimal", "qp_other_nonoptimal"),
+        # Pre-scoring drop — only the cause when nothing later applied
+        ("risk_gate_vol_dropped", "risk_gate_vol_dropped"),
+    )
+    for key, label in specific_blocks:
+        n = int(counters.get(key, 0) or 0)
+        if n > 0:
+            return f"{label}({n})"
+    if counters.get("qp_blocked_buys", 0):
+        if getattr(ctx, "skip_buys", False):
+            return "drawdown_halt"
+        if getattr(ctx, "buy_blocked", False):
+            return "buy_blocked"
+    qp_reasons = (
+        ("qp_skipped_band", "qp_no_trade_band"),
+        ("qp_delta_below_min_dw", "qp_delta_below_min_dw"),
+        ("qp_zero_shares", "qp_zero_shares"),
+        ("qp_no_buy_delta", "qp_no_buy_delta"),
+        ("qp_not_selected", "qp_not_selected"),
+    )
+    qp_counts = [
+        (int(counters.get(key, 0) or 0), label)
+        for key, label in qp_reasons
+        if int(counters.get(key, 0) or 0) > 0
+    ]
+    if qp_counts:
+        n_qp, qp_label = max(qp_counts, key=lambda item: item[0])
+        return f"{qp_label}({n_qp})"
+    if getattr(ctx, "skip_buys", False):
+        return "drawdown_halt"
+    if getattr(ctx, "buy_blocked", False):
+        return "buy_blocked"
+    if counters.get("defensive_non_bear_blocks", 0):
+        return f"defensives_filtered({counters['defensive_non_bear_blocks']})"
+    if counters.get("sector_blocks", 0):
+        return f"sector_full({counters['sector_blocks']})"
+    if counters.get("corr_blocks", 0):
+        return f"correlation({counters['corr_blocks']})"
+    if counters.get("blocked_wash", 0):
+        return f"wash_sale({counters['blocked_wash']})"
+    ranked = getattr(ctx, "ranked", None) or []
+    if len(ranked) == 0:
+        return "no_candidates"
+    return "tier_threshold"
+
+
 def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = False) -> None:
     """Fire ntfy on every decision cycle.
 
@@ -601,84 +676,11 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     eq     = getattr(ctx, "portfolio_value", None)
     n_held = len(getattr(ctx, "holdings", {}) or {})
 
-    # Rough "why" rollup for zero-trade summaries. Order the checks so
-    # the MOST specific cause is surfaced first.
+    # Module-level _why_no_trade is testable via direct import (see
+    # tests/test_no_trade_priority.py). Closure removed 2026-06-01.
+
     def _why_no_trade() -> str:
-        if getattr(ctx, "bear_only", False):
-            return "bear_only"
-        rs = getattr(ctx, "regime_state", None)
-        if rs is not None and getattr(rs, "in_transition", False):
-            return "transition_window"
-        counters = getattr(ctx, "counters", {}) or {}
-        # Contract/risk fail-closed paths also set ctx.skip_buys=True. Do not
-        # collapse them into "drawdown_halt"; that makes ntfy actively
-        # misleading when the model artifact/QP contract, not portfolio
-        # drawdown, blocked the trade.
-        #
-        # Fix 2026-06-01 (decision-tree audit): order surfaces the BINDING
-        # constraint (regime admission / QP infeasibility) BEFORE earlier
-        # cosmetic drops (vol gate). Old ordering put risk_gate_vol_dropped
-        # ahead of admission/QP and surfaced "no trade (vol_dropped(10))"
-        # even when 72 of 82 candidates survived the vol gate and were
-        # blocked downstream by admission + QP infeasibility.
-        specific_blocks = (
-            # Earliest-stage fail-closed (no scorer / no calibration)
-            ("panel_scoring_fail_closed", "panel_scoring_fail_closed"),
-            ("qp_mu_contract_block", "qp_mu_contract_block"),
-            # Mid-pipeline: regime admission cleared all buy candidates
-            ("regime_admission_blocked", "regime_admission_blocked"),
-            # Late-pipeline: QP solver could not produce orders (binding constraint)
-            ("qp_infeasible", "qp_infeasible"),
-            ("qp_missing_solution", "qp_missing_solution"),
-            ("qp_optimal_no_signal", "qp_optimal_no_signal"),
-            ("qp_other_nonoptimal", "qp_other_nonoptimal"),
-            # Pre-scoring drop — only the cause when nothing later applied
-            ("risk_gate_vol_dropped", "risk_gate_vol_dropped"),
-        )
-        for key, label in specific_blocks:
-            n = int(counters.get(key, 0) or 0)
-            if n > 0:
-                return f"{label}({n})"
-        # A global buy gate is the cause only when it actually suppressed a
-        # QP buy. If every QP delta was below action thresholds anyway, keep
-        # the summary on the tighter per-solver reason.
-        if counters.get("qp_blocked_buys", 0):
-            if getattr(ctx, "skip_buys", False):
-                return "drawdown_halt"
-            if getattr(ctx, "buy_blocked", False):
-                return "buy_blocked"
-        qp_reasons = (
-            ("qp_skipped_band", "qp_no_trade_band"),
-            ("qp_delta_below_min_dw", "qp_delta_below_min_dw"),
-            ("qp_zero_shares", "qp_zero_shares"),
-            ("qp_no_buy_delta", "qp_no_buy_delta"),
-            ("qp_not_selected", "qp_not_selected"),
-        )
-        qp_counts = [
-            (int(counters.get(key, 0) or 0), label)
-            for key, label in qp_reasons
-            if int(counters.get(key, 0) or 0) > 0
-        ]
-        if qp_counts:
-            n_qp, qp_label = max(qp_counts, key=lambda item: item[0])
-            return f"{qp_label}({n_qp})"
-        if getattr(ctx, "skip_buys", False):
-            return "drawdown_halt"
-        if getattr(ctx, "buy_blocked", False):
-            return "buy_blocked"
-        # Counter-based: if we had candidates but none were selected
-        if counters.get("defensive_non_bear_blocks", 0):
-            return f"defensives_filtered({counters['defensive_non_bear_blocks']})"
-        if counters.get("sector_blocks", 0):
-            return f"sector_full({counters['sector_blocks']})"
-        if counters.get("corr_blocks", 0):
-            return f"correlation({counters['corr_blocks']})"
-        if counters.get("blocked_wash", 0):
-            return f"wash_sale({counters['blocked_wash']})"
-        ranked = getattr(ctx, "ranked", None) or []
-        if len(ranked) == 0:
-            return "no_candidates"
-        return "tier_threshold"
+        return _no_trade_reason(ctx)
 
     parts: list[str] = []
     for o in orders:
