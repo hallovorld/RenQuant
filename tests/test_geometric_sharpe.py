@@ -25,7 +25,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
-from kernel.risk_metrics import (  # noqa: E402
+from renquant_common.risk_metrics import (  # noqa: E402
     TRADING_DAYS_PER_YEAR,
     compute_risk_metrics,
     geometric_sharpe_ratio,
@@ -264,7 +264,7 @@ class TestRiskFreeFromConfig:
         adapter, eq = self._build_synthetic(rf_annual=0.0)
 
         # Compute expected directly via compute_risk_metrics
-        from kernel.risk_metrics import compute_risk_metrics as _crm
+        from renquant_common.risk_metrics import compute_risk_metrics as _crm
         # Replicate adapter's APY computation: simple total-return approx
         total = float(eq["portfolio"].iloc[-1] / eq["portfolio"].iloc[0] - 1)
         n_years = (len(eq) - 1) / 252
@@ -292,8 +292,8 @@ class TestRiskFreeFromConfig:
         """cfg with rf=0.05 must lower geo Sharpe vs cfg with rf=0.0
         by exactly -rf_daily/σ × √252 (the canonical formula).
         """
-        from kernel.risk_metrics import compute_risk_metrics as _crm
-        from kernel.risk_metrics import (
+        from renquant_common.risk_metrics import compute_risk_metrics as _crm
+        from renquant_common.risk_metrics import (
             daily_returns_from_equity,
             risk_free_rate_annual_to_daily,
         )

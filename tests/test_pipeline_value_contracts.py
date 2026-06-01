@@ -469,35 +469,35 @@ class TestSharpeContract(unittest.TestCase):
     """sharpe_ratio: NaN on degenerate input, finite on non-degenerate."""
 
     def test_constant_series_returns_nan(self):
-        from kernel.risk_metrics import sharpe_ratio
+        from renquant_common.risk_metrics import sharpe_ratio
         s = pd.Series([0.001] * 252)
         self.assertTrue(math.isnan(sharpe_ratio(s)))
 
     def test_too_short_returns_nan(self):
-        from kernel.risk_metrics import sharpe_ratio
+        from renquant_common.risk_metrics import sharpe_ratio
         self.assertTrue(math.isnan(sharpe_ratio(pd.Series([0.01]))))
 
     def test_normal_returns_finite(self):
-        from kernel.risk_metrics import sharpe_ratio
+        from renquant_common.risk_metrics import sharpe_ratio
         rng = np.random.default_rng(42)
         s = pd.Series(rng.normal(0.0005, 0.01, 252))
         v = sharpe_ratio(s)
         self.assertTrue(math.isfinite(v))
 
     def test_positive_drift_positive_sharpe(self):
-        from kernel.risk_metrics import sharpe_ratio
+        from renquant_common.risk_metrics import sharpe_ratio
         rng = np.random.default_rng(0)
         s = pd.Series(rng.normal(0.001, 0.01, 252))  # +0.1% daily drift
         self.assertGreater(sharpe_ratio(s), 0.0)
 
     def test_negative_drift_negative_sharpe(self):
-        from kernel.risk_metrics import sharpe_ratio
+        from renquant_common.risk_metrics import sharpe_ratio
         rng = np.random.default_rng(0)
         s = pd.Series(rng.normal(-0.001, 0.01, 252))
         self.assertLess(sharpe_ratio(s), 0.0)
 
     def test_nan_returns_handled(self):
-        from kernel.risk_metrics import sharpe_ratio
+        from renquant_common.risk_metrics import sharpe_ratio
         s = pd.Series([0.01, np.nan, 0.02, np.nan, -0.01, 0.005])
         v = sharpe_ratio(s)
         # 4 valid observations — should be finite
@@ -506,20 +506,20 @@ class TestSharpeContract(unittest.TestCase):
 
 class TestSortinoContract(unittest.TestCase):
     def test_constant_above_target_returns_nan(self):
-        from kernel.risk_metrics import sortino_ratio
+        from renquant_common.risk_metrics import sortino_ratio
         s = pd.Series([0.001] * 252)
         # No downside observations
         self.assertTrue(math.isnan(sortino_ratio(s)))
 
     def test_normal_returns_finite(self):
-        from kernel.risk_metrics import sortino_ratio
+        from renquant_common.risk_metrics import sortino_ratio
         rng = np.random.default_rng(0)
         s = pd.Series(rng.normal(0.0005, 0.01, 252))
         self.assertTrue(math.isfinite(sortino_ratio(s)))
 
     def test_sortino_geq_sharpe_when_skewed_positive(self):
         # Heavily right-skewed → downside std ≪ full std → Sortino > Sharpe
-        from kernel.risk_metrics import sharpe_ratio, sortino_ratio
+        from renquant_common.risk_metrics import sharpe_ratio, sortino_ratio
         # Lognormal-ish: mostly small ups with rare big ones, few downs
         rng = np.random.default_rng(0)
         rets = rng.normal(0.0, 0.005, 252)
@@ -534,7 +534,7 @@ class TestSortinoContract(unittest.TestCase):
 
 class TestMaxDDContract(unittest.TestCase):
     def test_dd_non_negative(self):
-        from kernel.risk_metrics import max_drawdown
+        from renquant_common.risk_metrics import max_drawdown
         # Random walk equity curve
         rng = np.random.default_rng(0)
         equity = pd.Series(np.cumprod(1.0 + rng.normal(0.0005, 0.01, 252)))
@@ -543,27 +543,27 @@ class TestMaxDDContract(unittest.TestCase):
         self.assertLessEqual(v, 1.0)
 
     def test_monotone_curve_zero_dd(self):
-        from kernel.risk_metrics import max_drawdown
+        from renquant_common.risk_metrics import max_drawdown
         equity = pd.Series([100.0, 101, 102, 103.5, 110, 120])
         self.assertEqual(max_drawdown(equity), 0.0)
 
     def test_dd_in_unit_fraction(self):
-        from kernel.risk_metrics import max_drawdown
+        from renquant_common.risk_metrics import max_drawdown
         equity = pd.Series([100.0, 110, 90, 95])  # peak 110, trough 90 → dd 18.18%
         self.assertAlmostEqual(max_drawdown(equity), (110 - 90) / 110, places=5)
 
 
 class TestCalmarContract(unittest.TestCase):
     def test_zero_dd_returns_nan(self):
-        from kernel.risk_metrics import calmar_ratio
+        from renquant_common.risk_metrics import calmar_ratio
         self.assertTrue(math.isnan(calmar_ratio(0.10, 0.0)))
 
     def test_negative_dd_returns_nan(self):
-        from kernel.risk_metrics import calmar_ratio
+        from renquant_common.risk_metrics import calmar_ratio
         self.assertTrue(math.isnan(calmar_ratio(0.10, -0.05)))
 
     def test_normal_inputs_finite(self):
-        from kernel.risk_metrics import calmar_ratio
+        from renquant_common.risk_metrics import calmar_ratio
         v = calmar_ratio(0.10, 0.20)
         self.assertAlmostEqual(v, 0.5)
 

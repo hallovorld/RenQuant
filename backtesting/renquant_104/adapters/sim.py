@@ -2470,7 +2470,7 @@ class SimAdapter:
         # from the equity curve so they reflect the full OOS window. NaN
         # is propagated when there's insufficient data — caller (sim
         # runner / B2 hold-out) renders NaN as "—" rather than zero.
-        from kernel.risk_metrics import (  # noqa: PLC0415
+        from renquant_common.risk_metrics import (  # noqa: PLC0415
             alpha_vs_benchmark,
             beta_vs_benchmark,
             compute_risk_metrics,

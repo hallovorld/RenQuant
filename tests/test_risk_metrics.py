@@ -18,7 +18,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
-from kernel.risk_metrics import (   # noqa: E402
+from renquant_common.risk_metrics import (   # noqa: E402
     TRADING_DAYS_PER_YEAR,
     annualized_volatility,
     calmar_ratio,
