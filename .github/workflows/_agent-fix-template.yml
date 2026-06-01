@@ -47,26 +47,42 @@ jobs:
       # label / branch / checkout work.
       - name: Resolve PR context
         id: pr
+        # SHELL INJECTION SAFETY: all user-controlled event fields
+        # (review.body, comment.body, login) MUST be passed via env:,
+        # NOT direct ${{ ... }} interpolation in `run:`. A reviewer
+        # writing `"; rm -rf /; "` in their review body would otherwise
+        # execute against the runner. The shell only ever sees these
+        # as opaque environment-variable values, not source code.
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER_FROM_PR: ${{ github.event.pull_request.number }}
+          PR_NUMBER_FROM_ISSUE: ${{ github.event.issue.number }}
+          ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+          REVIEW_BODY_FROM_REVIEW: ${{ github.event.review.body }}
+          REVIEW_BODY_FROM_COMMENT: ${{ github.event.comment.body }}
+          REVIEW_STATE_RAW: ${{ github.event.review.state }}
+          ACTOR_FROM_REVIEW: ${{ github.event.review.user.login }}
+          ACTOR_FROM_COMMENT: ${{ github.event.comment.user.login }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request_review" ]; then
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-            REVIEW_BODY="${{ github.event.review.body }}"
-            REVIEW_STATE="${{ github.event.review.state }}"
-            ACTOR="${{ github.event.review.user.login }}"
-          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
-            if [ -z "${{ github.event.issue.pull_request.url }}" ]; then
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            PR_NUMBER="$PR_NUMBER_FROM_PR"
+            REVIEW_BODY="$REVIEW_BODY_FROM_REVIEW"
+            REVIEW_STATE="$REVIEW_STATE_RAW"
+            ACTOR="$ACTOR_FROM_REVIEW"
+          elif [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ -z "$ISSUE_PR_URL" ]; then
               echo "issue_comment on non-PR issue — skipping"
               echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
             fi
-            PR_NUMBER="${{ github.event.issue.number }}"
-            REVIEW_BODY="${{ github.event.comment.body }}"
+            PR_NUMBER="$PR_NUMBER_FROM_ISSUE"
+            REVIEW_BODY="$REVIEW_BODY_FROM_COMMENT"
             REVIEW_STATE=""
-            ACTOR="${{ github.event.comment.user.login }}"
+            ACTOR="$ACTOR_FROM_COMMENT"
           else
-            echo "::error::unsupported event ${{ github.event_name }}"
+            echo "::error::unsupported event $EVENT_NAME"
             exit 1
           fi
           gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json \

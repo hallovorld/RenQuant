@@ -33,13 +33,19 @@ if [ -z "$CMD" ]; then
 fi
 
 # Per-agent expected strings (must match doc/ops/agent-automation.md §2.2 / §2.4).
+# AGENT_TITLE is the capitalized form. NOT using ${AGENT^} — that's a Bash 4+
+# feature, and macOS ships Bash 3.2 by default. This script runs as a Claude
+# Code PostToolUse hook on operator macOS as well as Linux CI, so the
+# implementation must be Bash 3.2-compatible.
 case "$AGENT" in
   claude)
+    AGENT_TITLE="Claude"
     EXPECTED_FOOTER="🤖 Generated with"
     EXPECTED_TRAILER="Co-Authored-By: Claude"
     EXPECTED_ORIGIN="Agent-Origin: Claude"
     ;;
   codex)
+    AGENT_TITLE="Codex"
     EXPECTED_FOOTER="🤖 Generated with"
     EXPECTED_TRAILER="Co-Authored-By: Codex"
     EXPECTED_ORIGIN="Agent-Origin: Codex"
@@ -71,7 +77,7 @@ line (§2.2). Body should end with both:
 
   ${EXPECTED_ORIGIN}
   Agent-Policy: auto-fix-on-review
-  ${EXPECTED_FOOTER} [${AGENT^} Code](...)
+  ${EXPECTED_FOOTER} [${AGENT_TITLE} Code](...)
 MSG
     fi
     # Warning only — don't block, the agent should self-correct on

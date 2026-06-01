@@ -18,46 +18,34 @@ appended at the bottom of this prompt.
    that targets the changed area, run it. If no test exists for what
    you changed, ADD ONE per CLAUDE.md §7.1 (every fix has a paired test).
 
-4. **Commit** with a clear message naming each finding addressed:
-
-   ```
-   fix(<scope>): address review findings #1, #3
-
-   ... brief explanation of what was changed for each ...
-
-   Co-Authored-By: <Agent> <agent-noreply-email>
-   ```
-
-5. **Push** with `--force-with-lease` to the PR branch. The workflow
-   captures the result and posts a summary comment via `gh`.
+4. **Leave your edits in the working tree — DO NOT commit or push.**
+   The wrapping G3 workflow's "Commit + push fix" step is the ONLY
+   commit-and-push authority. It detects your working-tree changes,
+   signs the commit with the canonical `Co-Authored-By` trailer for
+   your agent identity, and pushes with `--force-with-lease`. If you
+   commit yourself, the workflow either double-commits (annoying) or
+   silently skips its push (worse — locally committed but never pushed).
 
 ## What you MUST NOT do
 
+- **No commits, no pushes** — see step 4. The wrapping workflow owns
+  those operations. Your job is the edit + test phase only.
 - **No drift fixes**: only address findings explicitly in this review.
   Adjacent code that "could also use cleanup" goes in a separate PR.
 - **No untested changes**: every Edit/Write must have a passing test
   that exercises the new behavior, or a CLAUDE.md §7-justifiable
   reason for none.
 - **No silent skips**: if a finding can't be addressed (out of scope,
-  requires upstream change, etc.), say so explicitly in the PR
-  comment — don't drop it.
+  requires upstream change, etc.), name it in your run output so the
+  wrapping workflow's summary comment surfaces it.
 - **No new dependencies** unless the reviewer specifically requests
   one. Adding deps is its own PR.
 
 ## Tools available
 
-`Bash`, `Edit`, `Write`, `Read`, `gh`, `git` — full repo write
-access during this session. Tests can be invoked via `Bash`. PR
-comment posting is automated by the wrapping workflow — you don't
-need to `gh pr comment` yourself unless the wrapping step is
-disabled.
-
-## Output expectations
-
-The wrapping workflow posts a summary comment after your run. Make
-sure your commit message + diff communicate clearly what you fixed
-and what (if anything) you skipped. Don't write a long PR-comment
-narrative — the diff + commit message ARE the explanation.
+`Bash`, `Edit`, `Write`, `Read`, `gh`, `git` (read-only operations
+like `log`, `diff`, `status` — NOT `commit` or `push`). The wrapping
+workflow posts a summary comment automatically.
 
 ---
 

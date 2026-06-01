@@ -136,36 +136,29 @@ jobs:
           prompt: ${{ steps.prompt.outputs.prompt }}
           model: ${{ inputs.model }}
 
-      - name: Post review comment
-        # If the agent didn't post its review itself via the gh tool
-        # (which it should under the prompt instructions), this fallback
-        # surfaces whatever the action returned as `final-message` so
-        # the reviewer can see SOMETHING per PR head.
-        if: always()
+      # Fallback comment for Codex ONLY — claude-code-action self-posts
+      # PR comments via its built-in `use_sticky_comment` /
+      # `include_comments_by_actor` mechanism and does NOT expose a
+      # `result` output a wrapper could read. A Claude fallback step
+      # would be dead code (verified against the action.yml on 2026-06-01;
+      # no result output defined). Codex returns `final-message`; we
+      # surface it here for the reviewer to see what the agent
+      # concluded.
+      - name: Post Codex fallback comment
+        if: inputs.agent == 'codex' && always()
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          AGENT: ${{ inputs.agent }}
-          # The actions' final-message output id may differ; verify
-          # against canonical docs. Working assumption: .outputs.result
-          # for Claude, .outputs.final-message for Codex.
-          CLAUDE_RESULT: ${{ steps.claude.outputs.result }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CODEX_RESULT: ${{ steps.codex.outputs.final-message }}
         run: |
           set -uo pipefail
-          if [ "$AGENT" = "claude" ]; then
-            RESULT="$CLAUDE_RESULT"
-          else
-            RESULT="$CODEX_RESULT"
-          fi
-          # If the agent already posted via gh, RESULT may be empty or a
-          # success marker — skip the fallback in that case.
-          if [ -z "$RESULT" ] || [ "$RESULT" = "ok" ]; then
-            echo "Agent (${AGENT}) posted its review directly; no fallback needed"
+          if [ -z "${CODEX_RESULT:-}" ] || [ "${CODEX_RESULT}" = "ok" ]; then
+            echo "Codex posted its review directly OR returned no message; no fallback needed"
             exit 0
           fi
           # Marker so re-runs on the same head SHA don't double-post.
-          MARKER="<!-- agent-review:${AGENT}:${{ github.event.pull_request.head.sha }} -->"
-          BODY=$(printf '%s\n\n%s\n\n_Posted by %s agent-review workflow on commit %s._' \
-            "$MARKER" "$RESULT" "$AGENT" "${{ github.event.pull_request.head.sha }}")
+          MARKER="<!-- agent-review:codex:${HEAD_SHA} -->"
+          BODY=$(printf '%s\n\n%s\n\n_Posted by codex agent-review workflow on commit %s._' \
+            "$MARKER" "$CODEX_RESULT" "$HEAD_SHA")
           gh pr comment "$PR_NUMBER" --body "$BODY"
