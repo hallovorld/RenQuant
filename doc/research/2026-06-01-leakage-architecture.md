@@ -58,7 +58,7 @@ E (this design): multi-gate + policy-bound derived status + Ed25519-signed scope
 
 ## 5 · Contract code
 
-### 5.1 `TriadPolicy` (NEW v8) — frozen, hash-bound to artifact
+### 5.1 `TriadPolicy` — frozen, hash-bound to artifact, version-stamped
 
 ```python
 # renquant-common/src/renquant_common/contracts/triad.py (excerpt)
@@ -89,7 +89,7 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# --- v8 NEW: TriadPolicy -----------------------------------------------------
+# --- TriadPolicy: frozen, hash-bound, version-stamped ------------------------
 
 class TriadPolicy(pydantic.BaseModel):
     """Frozen policy bound to artifact via `policy_hash()`.
@@ -274,7 +274,7 @@ class TriadBinding(pydantic.BaseModel):
 
 
 def _derive_status(
-    policy: TriadPolicy,                          # v8: explicit policy, no hidden defaults
+    policy: TriadPolicy,                          # explicit policy, no hidden defaults
     scorer_sanity: ScorerSanityReport,
     trainer_placebo: TrainerPlaceboReport | None,
 ) -> tuple[Literal["pending", "passed", "failed"], list[str]]:
@@ -292,7 +292,7 @@ def _derive_status(
 class TriadReport(pydantic.BaseModel):
     triad_status: Literal["pending", "passed", "failed"]
     failure_reasons: list[str]
-    policy: TriadPolicy                            # v8: stored ON the report
+    policy: TriadPolicy                            # stored ON the report; hash-bound to binding
     scorer_sanity: ScorerSanityReport
     trainer_placebo: TrainerPlaceboReport | None
     binding: TriadBinding
