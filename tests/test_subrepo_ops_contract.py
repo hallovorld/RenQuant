@@ -27,9 +27,8 @@ def test_subrepo_ops_contract_passes_current_entrypoints() -> None:
     assert result["ok"], result["failures"]
     assert not result["failures"]
     assert "daily_live_defaults_to_multirepo" in result["passed"]
-    assert "alpha158_linear_retrain_still_umbrella" in {
-        item["name"] for item in result["known_gaps"]
-    }
+    assert "alpha158_linear_retrain_defaults_to_orchestrator" in result["passed"]
+    assert result["known_gaps"] == []
 
 
 def test_subrepo_ops_contract_cli_json() -> None:
@@ -42,4 +41,4 @@ def test_subrepo_ops_contract_cli_json() -> None:
     )
 
     assert '"ok": true' in proc.stdout
-    assert "alpha158_linear_retrain_still_umbrella" in proc.stdout
+    assert '"known_gaps": []' in proc.stdout

@@ -79,6 +79,16 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="alpha158_linear_retrain_defaults_to_orchestrator",
+        path="scripts/retrain_alpha158_linear.sh",
+        required=(
+            'RQ_ALPHA158_LINEAR_RUNNER:-multirepo',
+            "renquant_orchestrator.retrain_alpha158_linear",
+            "$GITHUB_DIR/renquant-orchestrator/src",
+            "RQ_ALPHA158_LINEAR_STRICT",
+        ),
+    ),
+    Check(
         name="patchtst_wf_uses_model_repo",
         path="scripts/train_walkforward_patchtst.py",
         required=(
@@ -111,17 +121,7 @@ LAUNCHD_PLISTS: tuple[str, ...] = (
 )
 
 
-KNOWN_GAPS: tuple[dict[str, str], ...] = (
-    {
-        "name": "alpha158_linear_retrain_still_umbrella",
-        "path": "scripts/retrain_alpha158_linear.sh",
-        "reason": (
-            "Side-strategy PanelLinearScorer training still calls umbrella "
-            "scripts/train_panel_linear.py and scripts/fit_alpha158_linear_calibrator.py. "
-            "Do not delete the umbrella implementation until a multirepo owner exists."
-        ),
-    },
-)
+KNOWN_GAPS: tuple[dict[str, str], ...] = ()
 
 
 def _read(rel: str) -> str:
