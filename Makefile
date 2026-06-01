@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 SUBREPO_DAILY_ARGS :=
 ifneq ($(strip $(BROKER_TYPE)),)
 SUBREPO_DAILY_ARGS += --broker-type $(BROKER_TYPE)
