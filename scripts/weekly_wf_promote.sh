@@ -68,7 +68,7 @@ run_wf_gate() {
         return $?
     fi
     if "$PYTHON" - <<'PY' >/dev/null 2>&1
-import renquant_backtesting.wf_gate  # noqa: F401
+import renquant_backtesting.wf_gate.runner  # noqa: F401
 PY
     then
         "$PYTHON" - <<'PY' >&2
