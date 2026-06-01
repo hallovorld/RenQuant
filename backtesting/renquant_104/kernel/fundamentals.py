@@ -139,7 +139,7 @@ def _fetch_from_openbb(symbol: str) -> dict[str, float]:
     # was a yfinance hang that blocked PanelDataJob for 10+ minutes;
     # every external call now abandons after 20 s and returns None,
     # letting the caller continue with whatever metadata it has.
-    from .net_safety import call_with_timeout  # noqa: PLC0415
+    from renquant_common.net_safety import call_with_timeout  # noqa: PLC0415
 
     # Metrics endpoint: trailing-12m snapshot covering EY / ROE / B/P.
     m = call_with_timeout(
@@ -262,7 +262,7 @@ def fetch_fundamentals_watchlist(
     skip (logged). Per-call timeouts still apply within
     `fetch_fundamentals`.
     """
-    from .net_safety import FetchBudget, call_with_timeout  # noqa: PLC0415
+    from renquant_common.net_safety import FetchBudget, call_with_timeout  # noqa: PLC0415
     budget = FetchBudget(total_sec=total_budget_sec,
                           label="fetch_fundamentals_watchlist")
     out: dict[str, dict[str, float]] = {}

@@ -91,7 +91,7 @@ def _fetch_from_yfinance(symbol: str) -> pd.DataFrame:
     `.earnings_dates` with no timeout; now wrapped in a 20 s hard
     timeout via `renquant_common.net_safety.call_with_timeout`.
     """
-    from .net_safety import call_with_timeout  # noqa: PLC0415
+    from renquant_common.net_safety import call_with_timeout  # noqa: PLC0415
 
     def _fetch():
         import yfinance as yf  # noqa: PLC0415
