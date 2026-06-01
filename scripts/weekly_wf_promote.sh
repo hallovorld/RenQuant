@@ -53,6 +53,39 @@ if [ -f "$CRED_FILE" ]; then
     set +a
 fi
 
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_DIR"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
+export RENQUANT_REPO_ROOT="$REPO_DIR"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
+
+run_wf_gate() {
+    if [ "${RQ_WF_GATE_RUNNER:-multirepo}" = "umbrella" ]; then
+        "$PYTHON" scripts/run_wf_gate.py "$@"
+        return $?
+    fi
+    if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_backtesting.wf_gate  # noqa: F401
+PY
+    then
+        "$PYTHON" - <<'PY' >&2
+import renquant_backtesting.wf_gate.runner as m
+print(f"renquant_backtesting.wf_gate.runner={m.__file__}")
+PY
+        "$PYTHON" -m renquant_backtesting.wf_gate "$@"
+        return $?
+    fi
+    if [ "${RQ_WF_GATE_STRICT:-0}" = "1" ]; then
+        echo "ERROR: renquant_backtesting.wf_gate unavailable and RQ_WF_GATE_STRICT=1"
+        return 1
+    fi
+    echo "WARN: renquant_backtesting.wf_gate unavailable; falling back to umbrella run_wf_gate.py."
+    "$PYTHON" scripts/run_wf_gate.py "$@"
+}
+
 exec >> "$LOG" 2>&1
 echo "=== weekly_wf_promote started at $(date) ==="
 
@@ -164,7 +197,7 @@ fi
 
 # ── Step 4: Run WF gate (3-cut WF + §5.2 sanity battery) ──────────────────
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
-if ! "$PYTHON" scripts/run_wf_gate.py \
+if ! run_wf_gate \
     --artifact "$STAGING_ART" \
     --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json \
     --derive-config-from-prod \
@@ -201,8 +234,13 @@ import os
 import shutil
 import sys
 
-sys.path.insert(0, "backtesting/renquant_104")
-from kernel.model_acceptance import promote
+try:
+    from renquant_backtesting.forensics.model_acceptance import promote
+    print("promote=renquant_backtesting.forensics.model_acceptance", file=sys.stderr)
+except Exception as exc:  # noqa: BLE001
+    print(f"WARN: subrepo model_acceptance unavailable ({exc}); using umbrella kernel.model_acceptance", file=sys.stderr)
+    sys.path.insert(0, "backtesting/renquant_104")
+    from kernel.model_acceptance import promote
 
 model_src = Path("$STAGING_ART")
 model_dst = Path("$ACTIVE_ART")

@@ -43,6 +43,14 @@ def test_retrain_wrapper_defaults_to_orchestrator_with_rollback() -> None:
 
 def test_weekly_still_calls_wrapper_with_explicit_staging_paths() -> None:
     weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+    assert "scripts/subrepo_env.sh" in weekly
+    assert 'renquant_load_subrepo_env "$REPO_DIR"' in weekly
+    assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in weekly
     assert "bash scripts/daily_retrain_alpha158_fund.sh" in weekly
+    assert "renquant_backtesting.wf_gate" in weekly
+    assert 'RQ_WF_GATE_RUNNER:-multirepo' in weekly
+    assert "RQ_WF_GATE_STRICT" in weekly
+    assert "scripts/run_wf_gate.py" in weekly
+    assert "renquant_backtesting.forensics.model_acceptance" in weekly
     assert '--xgb-artifact-out "$STAGING_ART"' in weekly
     assert '--calibrator-out "$STAGING_CAL"' in weekly
