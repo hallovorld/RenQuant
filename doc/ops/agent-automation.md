@@ -226,17 +226,33 @@ jobs:
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
+          # ENFORCE: §2.1 contract — exactly ONE authorship label.
+          # Branching on `if/elif` (first match wins) silently resolves
+          # double-labelled PRs as the first agent in the chain, hiding
+          # a real misconfig where two agents claim authorship. Count
+          # explicitly and fail loud on != 1.
+          AUTHORSHIP_COUNT=0
+          AGENT_LABEL=""
+          EXPECTED_ORIGIN=""
+          EXPECTED_TRAILER_PATTERN=""
           if echo "$LABELS" | grep -q '"agent:claude"'; then
+            AUTHORSHIP_COUNT=$((AUTHORSHIP_COUNT + 1))
             AGENT_LABEL="agent:claude"
             EXPECTED_ORIGIN="Claude"
             EXPECTED_TRAILER_PATTERN="Co-Authored-By: Claude .*<noreply@anthropic.com>"
-          elif echo "$LABELS" | grep -q '"agent:codex"'; then
+          fi
+          if echo "$LABELS" | grep -q '"agent:codex"'; then
+            AUTHORSHIP_COUNT=$((AUTHORSHIP_COUNT + 1))
             AGENT_LABEL="agent:codex"
             EXPECTED_ORIGIN="Codex"
             EXPECTED_TRAILER_PATTERN="Co-Authored-By: Codex <noreply@openai.com>"
-          else
-            echo "::error::no agent:* label present; this job should not have fired"
+          fi
+          if [ "$AUTHORSHIP_COUNT" -eq 0 ]; then
+            echo "::error::no agent:* authorship label present; this job should not have fired"
             exit 2
+          elif [ "$AUTHORSHIP_COUNT" -gt 1 ]; then
+            echo "::error::multiple authorship labels present (count=${AUTHORSHIP_COUNT}); §2.1 mandates exactly one — to invite a second agent's G3, use agent:fix:<name>, not the authorship label"
+            exit 1
           fi
           {
             echo "agent_label=${AGENT_LABEL}"
@@ -495,7 +511,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 | Identity primary | **Labels** (not branch prefix, not bot user) |
 | Reusable workflow location | Umbrella `RenQuant/.github/workflows/_agent-*-template.yml` |
 | Bot identity | PAT for P0; GitHub App in P1 |
-| G3 trigger | `agent:auto-fix` label + (CHANGES_REQUESTED OR `@<agent> fix`) |
+| G3 trigger | `agent:fix:<name>` executor-permission label + (CHANGES_REQUESTED OR `@<name> fix`); see §4.3.2 |
 | G2 model | Sonnet 4.6 / GPT-5-mini |
 | G3 model | Opus 4.7 / GPT-5-Codex |
 | Rollout pilot | `renquant-model` |
