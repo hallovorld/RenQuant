@@ -402,7 +402,7 @@ def fetch_insider_trades_watchlist(
     up after `per_ticker_sec` even if the inner loop is still chewing.
     """
     import time
-    from kernel.net_safety import FetchBudget, call_with_timeout
+    from renquant_common.net_safety import FetchBudget, call_with_timeout
     budget = FetchBudget(total_sec=total_budget_sec,
                           label="fetch_insider_trades_watchlist")
     out: dict[str, pd.DataFrame] = {}
