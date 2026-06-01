@@ -11,6 +11,7 @@ any test). User: "能不能靠谱点！另外这些没有 test guard 吗？！"
 """
 from __future__ import annotations
 import json
+import plistlib
 import re
 import sys
 from pathlib import Path
@@ -310,6 +311,56 @@ class TestP0_17_BackupSizeGuard:
             "backup script must not use `if ! git push`; it masks PUSH_RC"
         assert "PUSH_LOG" in sh and "if git push origin main >\"$PUSH_LOG\" 2>&1" in sh, \
             "backup script must capture git push output and exit code directly"
+
+    def test_backup_defaults_to_multirepo_orchestrator_pipeline(self):
+        sh = (REPO / "scripts/backup_to_github.sh").read_text()
+        assert 'RQ_STATE_BACKUP_RUNNER:-multirepo' in sh
+        assert "renquant_orchestrator.state_backup" in sh
+        assert "RQ_STATE_BACKUP_STRICT" in sh
+        assert "renquant-orchestrator/src" in sh
+
+
+class TestP0_18_WeeklyApyMonitor:
+    """Weekly APY monitor must be a subrepo-backed wrapper."""
+
+    def test_weekly_apy_defaults_to_orchestrator_pipeline(self):
+        src = (REPO / "scripts/weekly_apy_check.py").read_text()
+        assert 'os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo")' in src
+        assert "renquant_orchestrator.weekly_apy_monitor" in src
+        assert "RQ_WEEKLY_APY_STRICT" in src
+
+    def test_weekly_apy_plist_uses_project_venv(self):
+        plist = (REPO / "scripts/launchd/com.renquant.weekly-apy104.plist").read_text()
+        assert "/Users/renhao/git/github/RenQuant/.venv/bin/python" in plist
+        assert "/Users/renhao/miniconda3" not in plist
+
+
+class TestP0_19_LaunchdInventory:
+    """Active 104 LaunchAgents must be tracked in repo, not only in ~/Library."""
+
+    def test_daily_intraday_and_retrain_panel_plists_are_tracked(self):
+        launchd = REPO / "scripts" / "launchd"
+        for name in (
+            "com.renquant.daily104.plist",
+            "com.renquant.intraday104.plist",
+            "com.renquant.retrain-panel104.plist",
+        ):
+            payload = plistlib.loads((launchd / name).read_bytes())
+            assert payload["Label"] == name.removesuffix(".plist")
+            assert "/Users/renhao/miniconda3" not in (launchd / name).read_text()
+
+    def test_intraday104_plist_keeps_12_minute_market_cadence(self):
+        payload = plistlib.loads(
+            (REPO / "scripts/launchd/com.renquant.intraday104.plist").read_bytes()
+        )
+        intervals = payload["StartCalendarInterval"]
+        assert len(intervals) >= 100
+        assert {"Weekday": 1, "Hour": 6, "Minute": 30} in intervals
+        assert {"Weekday": 5, "Hour": 13, "Minute": 0} in intervals
+
+    def test_install_launchagents_includes_backup_plist(self):
+        src = (REPO / "scripts/install_launchagents.sh").read_text()
+        assert 'scripts/com.renquant.backup.plist' in src
 
 
 class TestP0_19_QPProductionPath:

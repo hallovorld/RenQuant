@@ -7,8 +7,8 @@
   panel+ngboost is ready for that bar's trading decision.
 
   Triggers:
-    SPY |daily Δ| > 2%   → train_104.py --force --trigger=anomaly_spy_2pct
-    VIX |daily Δ| > 5%   → train_104.py --force --trigger=anomaly_vix_5pct
+    SPY daily move greater than 2% runs train_104.py with force trigger=anomaly_spy_2pct
+    VIX daily move greater than 5% runs train_104.py with force trigger=anomaly_vix_5pct
 
   Install:
     cp scripts/launchd/com.renquant.conditional-retrain104.plist \

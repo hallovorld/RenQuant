@@ -11,8 +11,8 @@
   Steps (delegate to scripts/weekly_wf_promote.sh):
     1. smoke test
     2. retrain panel-LTR (alpha158 + 5 fund + 3 PEAD + 3 SUE)
-    3. run_wf_gate.py --strict (3-cut WF + §5.2 sanity battery)
-    4. promote() — refused if wf_gate_metadata.passed != True
+    3. run_wf_gate.py strict mode (3-cut WF + section 5.2 sanity battery)
+    4. promote() refused if wf_gate_metadata.passed != True
     5. ntfy alert with verdict
 
   Install:

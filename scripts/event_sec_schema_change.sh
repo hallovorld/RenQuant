@@ -8,8 +8,8 @@
 # regenerated and a new retrain runs.
 #
 # This script:
-#   1. Re-runs fetch_sec_fundamentals.py to regenerate the parquet
-#      (~60 min, hits SEC EDGAR — RATE-LIMITED, BE PATIENT)
+#   1. Re-runs the SEC fundamentals refresh pipeline to regenerate parquet
+#      outputs (~60 min, hits SEC EDGAR; rate-limited, be patient)
 #   2. Triggers a full weekly_wf_promote run on the fresh data
 #
 # Usage::
@@ -19,6 +19,9 @@
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
+GITHUB_DIR="$(cd "$REPO_DIR/.." && pwd)"
+VENV_DIR="$REPO_DIR/.venv"
+PYTHON="$VENV_DIR/bin/python"
 SKIP_FETCH=0
 for arg in "$@"; do
     case "$arg" in
@@ -26,9 +29,35 @@ for arg in "$@"; do
     esac
 done
 
+run_sec_refresh() {
+    if [ "${RQ_EVENT_SEC_REFRESH_RUNNER:-multirepo}" = "legacy" ]; then
+        "$PYTHON" scripts/fetch_sec_fundamentals.py
+        return $?
+    fi
+
+    local base_data_src="$GITHUB_DIR/renquant-base-data/src"
+    if PYTHONPATH="$base_data_src:${PYTHONPATH:-}" "$PYTHON" - <<'PY'
+import renquant_base_data.sec_fundamentals  # noqa: F401
+PY
+    then
+        PYTHONPATH="$base_data_src:${PYTHONPATH:-}" "$PYTHON" -m renquant_base_data.sec_fundamentals \
+            --data-dir "$REPO_DIR/data" \
+            --mode both
+        return $?
+    fi
+
+    if [ "${RQ_EVENT_SEC_REFRESH_STRICT:-0}" = "1" ]; then
+        echo "ERROR: renquant_base_data.sec_fundamentals unavailable and RQ_EVENT_SEC_REFRESH_STRICT=1"
+        return 2
+    fi
+
+    echo "WARN: renquant_base_data.sec_fundamentals unavailable; falling back to umbrella SEC fetch."
+    "$PYTHON" scripts/fetch_sec_fundamentals.py
+}
+
 echo "=== event_sec_schema_change started at $(date) ==="
 if [ "$SKIP_FETCH" -eq 0 ]; then
-    echo "Step 1: Regenerate sec_fundamentals_daily.parquet"
+    echo "Step 1: Regenerate SEC fundamentals parquet outputs"
     echo "  This hits SEC EDGAR API (rate-limited, ~60 min)."
     read -p "  Continue with fetch? (y/N) " confirm
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
@@ -36,12 +65,11 @@ if [ "$SKIP_FETCH" -eq 0 ]; then
         exit 1
     fi
     cd "$REPO_DIR"
-    if ! "/Users/renhao/miniconda3/envs/renquant/bin/python" \
-            scripts/fetch_sec_fundamentals.py; then
-        echo "fetch_sec_fundamentals.py FAILED — preserving prior parquet."
+    if ! run_sec_refresh; then
+        echo "SEC fundamentals refresh FAILED — preserving prior parquet."
         exit 1
     fi
-    echo "Parquet regenerated at $(date)."
+    echo "SEC parquet outputs regenerated at $(date)."
 else
     echo "Step 1: --skip-fetch given, using existing parquet."
 fi

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install every .plist under scripts/launchd/ into ~/Library/LaunchAgents
-# and launchctl-load it. Idempotent: unload+reload existing ones.
+# Install active RenQuant launchd plists into ~/Library/LaunchAgents and
+# launchctl-load them. Idempotent: unload+reload existing ones.
 #
 # 2026-04-24: two new plists shipped this session —
 #   com.renquant.conditional-retrain104.plist  (13:10 PT Mon-Fri)
@@ -23,7 +23,9 @@ fi
 
 mkdir -p "$DEST_DIR"
 
-for plist_src in "$SRC_DIR"/*.plist; do
+plists=("$SRC_DIR"/*.plist "$REPO_DIR/scripts/com.renquant.backup.plist")
+
+for plist_src in "${plists[@]}"; do
     [ -f "$plist_src" ] || { echo "No plists found under $SRC_DIR"; exit 0; }
     label=$(basename "$plist_src" .plist)
     plist_dst="$DEST_DIR/$(basename "$plist_src")"

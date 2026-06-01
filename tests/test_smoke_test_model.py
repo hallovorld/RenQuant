@@ -119,6 +119,18 @@ class TestScheduleDocConsistency:
             assert name in doc, f"{name} missing from schedule doc"
             assert (REPO / "scripts" / name).exists(), f"{name} missing from scripts/"
 
+    def test_event_sec_schema_change_uses_base_data_pipeline(self):
+        src = (REPO / "scripts" / "event_sec_schema_change.sh").read_text()
+        non_comment = "\n".join(
+            line for line in src.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "/Users/renhao/miniconda3" not in non_comment
+        assert 'VENV_DIR="$REPO_DIR/.venv"' in src
+        assert 'RQ_EVENT_SEC_REFRESH_RUNNER:-multirepo' in src
+        assert "renquant_base_data.sec_fundamentals" in src
+        assert "--mode both" in src
+
     def test_weekly_plist_exists_and_lints(self):
         plist = REPO / "scripts" / "launchd" / "com.renquant.weekly-wf-promote.plist"
         assert plist.exists()
@@ -304,8 +316,12 @@ class TestConditionalRetrainInvariants:
         assert "CONDA_PREFIX" not in non_comment
         assert "miniconda" not in non_comment
         assert 'VENV_DIR="$REPO_DIR/.venv"' in src
+        assert 'RQ_CONDITIONAL_TRIGGER_RUNNER:-multirepo' in src
+        assert "renquant_orchestrator.anomaly_triggers" in src
         assert "scripts/train_104.py" not in non_comment
         assert "scripts/weekly_wf_promote.sh" in non_comment
+        assert 'if [ "$TRIGGER_RC" -ne 1 ]; then' in src
+        assert "not firing retrain" in src
 
 
 class TestRetrainPanelWrapperInvariants:

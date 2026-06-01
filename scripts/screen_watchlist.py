@@ -34,6 +34,7 @@ import datetime
 import json
 import logging
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -47,6 +48,57 @@ log = logging.getLogger("screen-watchlist")
 
 TRADING_DAYS_PER_YEAR = 252
 NTFY_TOPIC = "renquant"
+
+
+def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
+    """Delegate to renquant-base-data when the sibling repo is available."""
+    if os.environ.get("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo") != "multirepo":
+        return False
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--strategy", default="renquant_104")
+    parser.add_argument("--strategy-dir-root", default=None)
+    parser.add_argument("--lookback-days", type=int, default=180)
+    parser.add_argument("--top-add-candidates", type=int, default=10)
+    parser.add_argument("--cache-root", default="data/ohlcv")
+    parser.add_argument("--spy-symbol", default="SPY")
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        return False
+
+    root = Path(args.strategy_dir_root) if args.strategy_dir_root else REPO_ROOT
+    cache_root = Path(args.cache_root)
+    if cache_root.is_absolute():
+        # The subrepo CLI owns the canonical RenQuant data-dir contract
+        # (data/ohlcv). Keep legacy behavior for one-off custom cache roots.
+        return False
+    if cache_root.as_posix().rstrip("/") != "data/ohlcv":
+        return False
+
+    github_dir = REPO_ROOT.parent
+    for rel in ("renquant-base-data/src", "renquant-common/src"):
+        path = str(github_dir / rel)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    try:
+        from renquant_base_data.watchlist_screen import main as subrepo_main
+    except Exception as exc:  # noqa: BLE001
+        if os.environ.get("RQ_SCREEN_WATCHLIST_STRICT") == "1":
+            raise RuntimeError(
+                "renquant_base_data.watchlist_screen unavailable and "
+                "RQ_SCREEN_WATCHLIST_STRICT=1"
+            ) from exc
+        log.warning("base-data watchlist screen unavailable; using umbrella implementation: %s", exc)
+        return False
+
+    subrepo_main([
+        "--strategy-config", str(root / "backtesting" / args.strategy / "strategy_config.json"),
+        "--data-dir", str(root / "data"),
+        "--output-dir", str(root / "logs" / "watchlist_screen"),
+        "--lookback-days", str(args.lookback_days),
+        "--top-add-candidates", str(args.top_add_candidates),
+        "--spy-symbol", args.spy_symbol,
+    ])
+    return True
 
 
 def _perf_stats(closes: "pd.Series") -> dict:
@@ -118,6 +170,9 @@ def _notify(title: str, body: str) -> None:
 
 
 def main() -> None:
+    if _try_subrepo_screen(sys.argv[1:]):
+        return
+
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--strategy", default="renquant_104")
     p.add_argument("--strategy-dir-root", default=None,

@@ -17,7 +17,12 @@
 # prevents bad rows from polluting history).
 
 set -e
-cd /Users/renhao/git/github/RenQuant
+REPO_DIR="/Users/renhao/git/github/RenQuant"
+VENV_DIR="$REPO_DIR/.venv"
+PYTHON="$VENV_DIR/bin/python"
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+
+cd "$REPO_DIR"
 mkdir -p logs/iv_snapshot
 
 LOG="logs/iv_snapshot/daily_$(date +%Y%m%d).log"
@@ -27,6 +32,23 @@ set -a
 source .env
 set +a
 
-.venv/bin/python -u scripts/fetch_options_iv_alpaca.py 2>&1 | tee -a "$LOG"
+export PYTHONPATH="$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
+if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_base_data.options_iv_refresh  # noqa: F401
+PY
+then
+    "$PYTHON" -u -m renquant_base_data.options_iv_refresh \
+        --strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json" \
+        --data-dir "$REPO_DIR/data" \
+        --json 2>&1 | tee -a "$LOG"
+elif [ "${RQ_DAILY_IV_STRICT:-0}" = "1" ]; then
+    echo "ERROR: renquant_base_data.options_iv_refresh unavailable and RQ_DAILY_IV_STRICT=1" \
+        | tee -a "$LOG"
+    exit 1
+else
+    echo "WARN: renquant_base_data.options_iv_refresh unavailable; falling back to umbrella script." \
+        | tee -a "$LOG"
+    "$PYTHON" -u scripts/fetch_options_iv_alpaca.py 2>&1 | tee -a "$LOG"
+fi
 
 echo "=== $(date) — Daily IV snapshot done ===" | tee -a "$LOG"

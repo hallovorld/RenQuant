@@ -49,24 +49,61 @@ notify() {
 
 cd "$REPO_DIR"
 source "$VENV_DIR/bin/activate"
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+export PYTHONPATH="$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
 echo "[$(date '+%H:%M:%S')] Weekly fundamental refresh — $DATE" | tee -a "$LOG"
 
-# ── Step 1: SEC EDGAR fundamentals ──────────────────────────────────
-echo "[$(date '+%H:%M:%S')] Step 1: SEC EDGAR fund refresh …" | tee -a "$LOG"
-$PYTHON scripts/fetch_sec_fundamentals.py --end-year "$(date +%Y)" \
-    >> "$LOG" 2>&1
-STEP1_RC=$?
-
-# ── Step 2: Extended fundamentals ───────────────────────────────────
-echo "[$(date '+%H:%M:%S')] Step 2: extended fund refresh …" | tee -a "$LOG"
-$PYTHON scripts/build_extended_fundamentals.py >> "$LOG" 2>&1
-STEP2_RC=$?
+# ── Steps 1-2: SEC EDGAR fundamentals ───────────────────────────────
+echo "[$(date '+%H:%M:%S')] Steps 1-2: SEC EDGAR daily + extended fund refresh …" | tee -a "$LOG"
+if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_base_data.sec_fundamentals  # noqa: F401
+PY
+then
+    $PYTHON -m renquant_base_data.sec_fundamentals \
+        --mode both \
+        --universe "$REPO_DIR/scripts/watchlist_universe.json" \
+        --data-dir "$REPO_DIR/data" \
+        --end-year "$(date +%Y)" \
+        --json >> "$LOG" 2>&1
+    STEP1_RC=$?
+    STEP2_RC=$STEP1_RC
+elif [ "${RQ_DATA_REFRESH_STRICT:-0}" = "1" ]; then
+    echo "ERROR: renquant_base_data.sec_fundamentals unavailable and RQ_DATA_REFRESH_STRICT=1" \
+        >> "$LOG"
+    STEP1_RC=1
+    STEP2_RC=1
+else
+    echo "WARN: renquant_base_data.sec_fundamentals unavailable; falling back to umbrella scripts." \
+        >> "$LOG"
+    $PYTHON scripts/fetch_sec_fundamentals.py --end-year "$(date +%Y)" \
+        >> "$LOG" 2>&1
+    STEP1_RC=$?
+    $PYTHON scripts/build_extended_fundamentals.py >> "$LOG" 2>&1
+    STEP2_RC=$?
+fi
 
 # ── Step 3: PEAD/SUE earnings surprises ─────────────────────────────
 echo "[$(date '+%H:%M:%S')] Step 3: PEAD/SUE refresh …" | tee -a "$LOG"
-$PYTHON scripts/fetch_earnings_surprise.py --strategy renquant_104 \
-    >> "$LOG" 2>&1
-STEP3_RC=$?
+if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_base_data.earnings_surprise_refresh  # noqa: F401
+PY
+then
+    $PYTHON -m renquant_base_data.earnings_surprise_refresh \
+        --strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json" \
+        --data-dir "$REPO_DIR/data" \
+        --json >> "$LOG" 2>&1
+    STEP3_RC=$?
+elif [ "${RQ_DATA_REFRESH_STRICT:-0}" = "1" ]; then
+    echo "ERROR: renquant_base_data.earnings_surprise_refresh unavailable and RQ_DATA_REFRESH_STRICT=1" \
+        >> "$LOG"
+    STEP3_RC=1
+else
+    echo "WARN: renquant_base_data.earnings_surprise_refresh unavailable; falling back to umbrella script." \
+        >> "$LOG"
+    $PYTHON scripts/fetch_earnings_surprise.py --strategy renquant_104 \
+        >> "$LOG" 2>&1
+    STEP3_RC=$?
+fi
 
 # ── Step 4: freshness gate (info-only — filings have inherent lag) ──
 GATE_REPORT=$($PYTHON <<PY 2>>"$LOG"
