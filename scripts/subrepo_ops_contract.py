@@ -119,6 +119,17 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="event_sec_schema_change_uses_base_data",
+        path="scripts/event_sec_schema_change.sh",
+        required=(
+            "renquant_base_data.sec_fundamentals",
+            "--mode both",
+            "$GITHUB_DIR/renquant-base-data/src",
+            "RQ_EVENT_SEC_REFRESH_STRICT",
+        ),
+        forbidden=("/Users/renhao/miniconda3",),
+    ),
+    Check(
         name="daily_iv_snapshot_uses_base_data",
         path="scripts/daily_iv_snapshot.sh",
         required=(

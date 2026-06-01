@@ -31,6 +31,7 @@ def test_subrepo_ops_contract_passes_current_entrypoints() -> None:
     assert "conditional_trigger_uses_orchestrator" in result["passed"]
     assert "weekly_fundamental_refresh_uses_base_data_earnings" in result["passed"]
     assert "weekly_fundamental_refresh_uses_base_data_sec" in result["passed"]
+    assert "event_sec_schema_change_uses_base_data" in result["passed"]
     assert "daily_iv_snapshot_uses_base_data" in result["passed"]
     assert "daily_news_fetch_uses_base_data" in result["passed"]
     assert "daily_news_sentiment_uses_model_repo" in result["passed"]
