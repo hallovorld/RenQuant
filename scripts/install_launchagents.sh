@@ -9,6 +9,7 @@
 # Usage:
 #   bash scripts/install_launchagents.sh
 #   bash scripts/install_launchagents.sh --dry-run
+#   bash scripts/install_launchagents.sh --check
 #
 set -euo pipefail
 
@@ -17,13 +18,25 @@ SRC_DIR="$REPO_DIR/scripts/launchd"
 DEST_DIR="$HOME/Library/LaunchAgents"
 
 DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ]; then
-    DRY_RUN=1
-fi
+CHECK_ONLY=0
+case "${1:-}" in
+    --dry-run) DRY_RUN=1 ;;
+    --check) CHECK_ONLY=1 ;;
+    "") ;;
+    *)
+        echo "Usage: bash scripts/install_launchagents.sh [--dry-run|--check]" >&2
+        exit 2
+        ;;
+esac
 
 mkdir -p "$DEST_DIR"
 
 plists=("$SRC_DIR"/*.plist "$REPO_DIR/scripts/com.renquant.backup.plist")
+
+if [ "$CHECK_ONLY" = "1" ]; then
+    python3 "$REPO_DIR/scripts/check_launchagents.py" --launchagents-dir "$DEST_DIR"
+    exit $?
+fi
 
 for plist_src in "${plists[@]}"; do
     [ -f "$plist_src" ] || { echo "No plists found under $SRC_DIR"; exit 0; }
@@ -53,6 +66,7 @@ done
 echo ""
 echo "Done. Inspect with:"
 echo "  launchctl list | grep renquant"
+echo "  bash scripts/install_launchagents.sh --check"
 echo ""
 echo "Uninstall one:"
 echo "  launchctl unload ~/Library/LaunchAgents/com.renquant.XYZ.plist"
