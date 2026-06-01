@@ -69,7 +69,7 @@ def main() -> None:
 
     from kernel.data import fetch_ohlcv          # noqa: PLC0415
     from sim.runner import run_backtest          # noqa: PLC0415
-    from kernel.risk_metrics import (            # noqa: PLC0415
+    from renquant_common.risk_metrics import (            # noqa: PLC0415
         compute_risk_metrics,
         daily_returns_from_equity,
         geometric_sharpe_ratio,

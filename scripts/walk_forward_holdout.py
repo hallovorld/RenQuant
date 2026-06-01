@@ -56,7 +56,7 @@ def _spy_benchmark(start: str, end: str) -> dict:
     """Compute SPY buy-and-hold Sharpe + APY for the window."""
     sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
     from kernel.data import fetch_ohlcv  # noqa: PLC0415
-    from kernel.risk_metrics import (  # noqa: PLC0415
+    from renquant_common.risk_metrics import (  # noqa: PLC0415
         sharpe_ratio, daily_returns_from_equity,
     )
     spy = fetch_ohlcv("SPY")

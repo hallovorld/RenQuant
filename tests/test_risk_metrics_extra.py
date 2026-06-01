@@ -21,7 +21,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
-from kernel.risk_metrics import (   # noqa: E402
+from renquant_common.risk_metrics import (   # noqa: E402
     TRADING_DAYS_PER_YEAR,
     alpha_vs_benchmark,
     beta_vs_benchmark,
@@ -198,7 +198,7 @@ class TestNYearsConsistency:
         build_result MUST use (len - 1) / 252 — N prices imply N-1 trading
         days of returns. Pre-fix sim.py:1029 used len/252 (off-by-one).
         """
-        from kernel.risk_metrics import compute_risk_metrics
+        from renquant_common.risk_metrics import compute_risk_metrics
 
         # Construct an equity series of 253 points (= 252 returns = 1 year).
         n_points = 253
