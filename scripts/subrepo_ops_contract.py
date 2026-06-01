@@ -17,6 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONDA_PREFIX = "/Users/renhao/miniconda3"
+# Personal-workstation contract: active launchd plists are installed for this
+# operator account and must resolve the project venv at this absolute path.
 VENV_BIN = "/Users/renhao/git/github/RenQuant/.venv/bin"
 
 
@@ -309,7 +311,13 @@ def run_contract() -> dict[str, object]:
                 "path": rel,
                 "reason": f"forbidden old conda path present: {CONDA_PREFIX}",
             })
-        if "EnvironmentVariables" in text and "PATH" in text and VENV_BIN not in text:
+        if "EnvironmentVariables" not in text or "PATH" not in text:
+            failures.append({
+                "check": "launchd_uses_project_venv",
+                "path": rel,
+                "reason": "active launchd plist must declare EnvironmentVariables.PATH",
+            })
+        elif VENV_BIN not in text:
             failures.append({
                 "check": "launchd_uses_project_venv",
                 "path": rel,
