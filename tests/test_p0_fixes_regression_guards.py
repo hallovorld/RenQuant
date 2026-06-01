@@ -358,6 +358,10 @@ class TestP0_19_LaunchdInventory:
         assert {"Weekday": 1, "Hour": 6, "Minute": 30} in intervals
         assert {"Weekday": 5, "Hour": 13, "Minute": 0} in intervals
 
+    def test_install_launchagents_includes_backup_plist(self):
+        src = (REPO / "scripts/install_launchagents.sh").read_text()
+        assert 'scripts/com.renquant.backup.plist' in src
+
 
 class TestP0_19_QPProductionPath:
     """QP must use the same production gates/artifacts as rotation."""
