@@ -36,9 +36,12 @@ agent:codex          # Codex-authored
 agent:auto-fix       # opted into G3 auto-fix on review (set together with agent:<name>)
 agent:manual-hold    # stop ALL agent automation on this PR
 agent:needs-review   # force a review even if normally skipped
-agent:fix-attempt-1  # auto-fix iteration counter (incremented by G3)
-agent:fix-attempt-2
-agent:fix-attempt-3  # third strike → G3 disabled until human resets
+agent:claude:fix-attempt-1   # PER-AGENT counter — one agent exhausting
+agent:claude:fix-attempt-2     # its budget must NOT block another agent
+agent:claude:fix-attempt-3     # third strike → Claude G3 disabled until human resets
+agent:codex:fix-attempt-1
+agent:codex:fix-attempt-2
+agent:codex:fix-attempt-3
 ```
 
 ### 2.2 · PR body footer (signed contract)
@@ -85,21 +88,23 @@ Bot-user-based identity breaks when a human commits via the agent's identity (or
 
 ## 3 · Building blocks
 
-| Block | Provided by | Notes |
+| Block | Provided by | What it actually gives us |
 |---|---|---|
-| Claude Code GitHub Action | `anthropics/claude-code-action` (official) | Modes: `review`, `fix`, `comment` |
-| Codex GitHub Action | `openai/codex-action` (whatever the canonical equivalent is) | Equivalent modes |
+| Claude Code GitHub Action | `anthropics/claude-code-action` | A prompt-driven runner. NOT mode-based — the workflow passes a prompt + `claude_args`, the action invokes Claude with `Bash`/`Edit`/`gh` tools available. Posting comments, choosing tools, deciding when to push commits is the **workflow's** job, not the action's. |
+| Codex GitHub Action | `openai/codex-action` | A `codex exec` wrapper that returns `final-message`. Same shape: it runs Codex against a prompt; the workflow consumes the result and posts/commits/pushes. |
 | Reusable workflows | GitHub native | One template, multiple agents — see §3.1 |
 | Claude Code CLI hooks | `claude-code` (this tool) | `PostToolUse` on `Bash` for G1 client-side enforcement |
-| Codex CLI hooks | (equivalent) | Same |
-| `gh` CLI | already required by [`CLAUDE.md §3.1`](../../CLAUDE.md#31--pr-based-workflow--strict) | PR creation + commenting surface |
+| Codex CLI hooks | Codex CLI native | Same hook surface |
+| `gh` CLI | already required by [`CLAUDE.md §3.1`](../../CLAUDE.md#31--pr-based-workflow--strict) | PR creation + commenting + label mutation. Wrappers call `gh pr review` / `gh pr comment` / `git commit && git push` directly — actions don't auto-comment for us. |
 | GitHub repo / org secrets | GitHub | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
+
+**Implication for the design**: there is **no built-in `review` / `fix` / `comment` mode** in either action. Our wrapper workflow owns the orchestration: it prompts the agent with the right context (PR diff, review comments, repo invariants), waits for the agent's response, then decides whether to post a review comment (G2) or push a commit (G3). The action is the LLM dispatch; the wrapper is the policy.
 
 No new infra. No webhook server. No DB. Stateless.
 
 ### 3.1 · Reusable workflow strategy
 
-Each renquant repo references ONE shared workflow that takes `agent: <name>` as input. New agents add a single line, not a whole file:
+Each renquant repo references ONE shared workflow that takes `agent: <name>` as input. New agents add a single line, not a whole file. **Cost gates from §6 are mandatory in the per-repo wrapper, not advisory** — otherwise the pilot will be easy to copy without the cost controls:
 
 ```yaml
 # .github/workflows/agent-review.yml in EACH renquant repo
@@ -107,21 +112,34 @@ name: agent-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    # MANDATORY: skip docs-only PRs (zero-value LLM spend).
+    paths-ignore:
+      - 'doc/**'
+      - '**/*.md'
+      - '.github/**'
+concurrency:
+  # MANDATORY: only review the latest commit when a PR is pushed
+  # in quick succession — older runs cancel.
+  group: agent-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   claude-review:
+    # MANDATORY size gate: skip mega-PRs (human-only review territory).
+    if: github.event.pull_request.changed_files < 100
     uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
     with: { agent: claude, model: claude-sonnet-4-6 }
     secrets:
       api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
   codex-review:
+    if: github.event.pull_request.changed_files < 100
     uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
     with: { agent: codex, model: gpt-5-codex }
     secrets:
       api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-The template lives ONCE in the umbrella RenQuant repo. Per-repo workflow files are 10-line wrappers. Drift across 13 repos becomes a non-issue.
+The template lives ONCE in the umbrella RenQuant repo. Per-repo workflow files are ~25-line wrappers (mostly cost gates). Drift across 13 repos becomes a non-issue.
 
 ---
 
@@ -155,6 +173,8 @@ Script inspects the bash command. If it was `gh pr create` or `git commit` witho
 
 **Layer C — server-side workflow check** (`.github/workflows/agent-attribution-check.yml`):
 
+The naive form (`git log origin/main..HEAD | grep -q Co-Authored-By:`) is theatrical — `actions/checkout@v4` doesn't fetch `origin/main` by default so the range is empty, and a single matching trailer anywhere passes the grep. Real form: fetch the base, enumerate every commit in the PR, and derive the expected `Agent-Origin` + `Co-Authored-By` value from the actual `agent:*` label so a mislabeled PR fails loud:
+
 ```yaml
 name: agent-attribution-check
 on:
@@ -168,18 +188,79 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          set -e
-          BODY=$(gh pr view ${{ github.event.pull_request.number }} --json body -q .body)
-          echo "$BODY" | grep -q "^Agent-Origin: \(Claude\|Codex\)" || {
-            echo "::error::PR body missing 'Agent-Origin' footer"; exit 1
-          }
-          git log --format=%B origin/main..HEAD | grep -q "Co-Authored-By:" || {
-            echo "::error::Agent commits missing Co-Authored-By trailer"; exit 1
-          }
+        with:
+          # MUST: fetch full history including base ref so the commit
+          # enumeration below has real range. Default checkout depth=1
+          # would make `git log ${BASE}..HEAD` empty.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Derive expected agent identity from labels
+        id: agent
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if echo "$LABELS" | grep -q '"agent:claude"'; then
+            AGENT_LABEL="agent:claude"
+            EXPECTED_ORIGIN="Claude"
+            EXPECTED_TRAILER_PATTERN="Co-Authored-By: Claude .*<noreply@anthropic.com>"
+          elif echo "$LABELS" | grep -q '"agent:codex"'; then
+            AGENT_LABEL="agent:codex"
+            EXPECTED_ORIGIN="Codex"
+            EXPECTED_TRAILER_PATTERN="Co-Authored-By: Codex <noreply@openai.com>"
+          else
+            echo "::error::no agent:* label present; this job should not have fired"
+            exit 2
+          fi
+          {
+            echo "agent_label=${AGENT_LABEL}"
+            echo "expected_origin=${EXPECTED_ORIGIN}"
+            echo "expected_trailer_pattern=${EXPECTED_TRAILER_PATTERN}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Validate PR body footer matches label
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_ORIGIN: ${{ steps.agent.outputs.expected_origin }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh pr view ${{ github.event.pull_request.number }} --json body -q .body)
+          # MUST cross-check: label is agent:X but body MUST say
+          # "Agent-Origin: X" too. Mismatch = mislabeled PR, fail.
+          if ! grep -qx "Agent-Origin: ${EXPECTED_ORIGIN}" <<< "$BODY"; then
+            echo "::error::PR labeled ${{ steps.agent.outputs.agent_label }} but body missing 'Agent-Origin: ${EXPECTED_ORIGIN}' footer"
+            exit 1
+          fi
+      - name: Validate every commit in PR range has matching trailer
+        env:
+          EXPECTED_TRAILER_PATTERN: ${{ steps.agent.outputs.expected_trailer_pattern }}
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          # Fetch base ref explicitly — checkout@v4 fetched HEAD only.
+          git fetch --no-tags origin "${BASE}"
+          # Enumerate EACH commit in the range, not just whether ANY
+          # commit has a trailer. Mixed-trailer PRs (some Claude, some
+          # Codex) fail too — a single PR must be one agent's work.
+          missing=()
+          for sha in $(git rev-list "${BASE}..${HEAD}"); do
+            if ! git show -s --format='%B' "$sha" | grep -Eq "$EXPECTED_TRAILER_PATTERN"; then
+              missing+=("$sha")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::commits missing expected trailer matching '$EXPECTED_TRAILER_PATTERN':"
+            printf '  %s\n' "${missing[@]}"
+            exit 1
+          fi
 ```
+
+What this enforces, that the naive form did not:
+
+1. **Fetched base** — `fetch-depth: 0` + explicit `git fetch origin <base.sha>` means `git rev-list base..HEAD` returns real SHAs.
+2. **Per-commit enumeration** — every commit in the PR range is checked, not "at least one has some trailer".
+3. **Label ↔ Origin ↔ Trailer cross-check** — a PR labeled `agent:codex` with `Agent-Origin: Claude` AND a `Co-Authored-By: Codex` line fails because the body says Claude but label says Codex (and vice versa).
+4. **Trailer regex pins identity-email** — `Co-Authored-By: Claude .*<noreply@anthropic.com>` won't pass a generic `Co-Authored-By: Dependabot <...>` trailer.
 
 Layer A → convention, Layer B → self-feedback, Layer C → enforced gate. Layer C runs only when an `agent:*` label is present.
 
@@ -239,22 +320,73 @@ Review prompt comes from `.github/agent-review-prompt.md` (per-repo customizatio
 
 Same reusable-workflow pattern. Triggered on `pull_request_review:submitted` and `issue_comment:created`.
 
-**Trigger logic** (in template):
+#### 4.3.1 · Event-context resolution (do this BEFORE label/branch checks)
 
-```text
-skip if PR lacks agent:<name>
-skip if PR lacks agent:auto-fix
-skip if PR has agent:manual-hold
-skip if PR has agent:fix-attempt-3 (third strike)
-skip if review/comment from agent's own automation (loop guard)
-skip if actor is not trusted (owners, members, write-collaborators)
-run if review state == CHANGES_REQUESTED
-run if review/comment body starts with `@<agent> fix`
+`pull_request_review` and `issue_comment` have different event payloads. **Most subtle: `issue_comment` does NOT have `github.event.pull_request`** — only `github.event.issue.pull_request` (which is a partial reference, not the full PR object). Naive workflows that read `github.event.pull_request.labels.*.name` for `issue_comment` events get an empty list and silently skip every fix request.
+
+Resolve the PR object explicitly as the FIRST step:
+
+```yaml
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve PR context for both event shapes
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Two event shapes converge here:
+          #   pull_request_review → event.pull_request.number     (full PR object)
+          #   issue_comment       → event.issue.number            (issue ref; .pull_request only if comment is on a PR)
+          if [ "${{ github.event_name }}" = "pull_request_review" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            # issue_comment — verify the issue is actually a PR.
+            if [ -z "${{ github.event.issue.pull_request.url }}" ]; then
+              echo "issue_comment on non-PR issue; skipping"; exit 0
+            fi
+            PR_NUMBER="${{ github.event.issue.number }}"
+          fi
+          # Fetch the full PR object for label / head-ref / draft / etc checks.
+          gh pr view "$PR_NUMBER" --json \
+            number,labels,headRefName,headRefOid,baseRefName,baseRefOid,isDraft,author \
+            > pr.json
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "labels=$(jq -c '[.labels[].name]' pr.json)"
+            echo "head_ref=$(jq -r .headRefName pr.json)"
+            echo "head_sha=$(jq -r .headRefOid pr.json)"
+            echo "base_ref=$(jq -r .baseRefName pr.json)"
+          } >> "$GITHUB_OUTPUT"
+      # ... subsequent label / trust / attempt checks use steps.pr.outputs.* ...
 ```
 
-Attempt counter via label: workflow adds `agent:fix-attempt-N` after each fix run. Third strike disables G3 until human resets (removes the label).
+Without this step, the design will recreate the same event-context bug across both agents. Treat §4.3.1 as mandatory implementation surface, not just documentation.
 
-**Permissions**: `contents: write`, `pull-requests: write` — only fires under the gate above, never on untrusted PR head from a fork.
+#### 4.3.2 · Trigger logic (in template, AFTER resolve step)
+
+```text
+skip if labels lack agent:<name>                            # per-agent ownership
+skip if labels lack agent:auto-fix                          # explicit opt-in
+skip if labels include agent:manual-hold                    # universal stop
+skip if labels include agent:<name>:fix-attempt-3           # PER-AGENT third strike
+                                                            # — Claude's exhausted budget
+                                                            # MUST NOT block Codex G3
+skip if review/comment from agent's own bot user            # loop guard
+skip if actor not in {owners, members, write-collaborators} # trust check
+run if review.state == CHANGES_REQUESTED
+run if review/comment body starts with `@<name> fix`
+```
+
+#### 4.3.3 · Attempt counter (PER-AGENT, not global)
+
+Each fix run increments `agent:<name>:fix-attempt-N` (not the global `agent:fix-attempt-N` from earlier drafts). Per-agent isolation is mandatory because a single PR can have BOTH `agent:claude:auto-fix` and `agent:codex:auto-fix` (cross-second-opinion is a legitimate use case from §3.5 of this doc). A global counter would let Claude burn 3 attempts and block Codex from ever running, which is wrong.
+
+#### 4.3.4 · Permissions + secret-leakage safety
+
+`contents: write` + `pull-requests: write` — only fires under §4.3.2 gates, never on untrusted PR head from a fork.
 
 **`pull_request_target` is NEVER used to check out untrusted code with write secrets** (per Codex doc §"Safety Rules"). Use `pull_request` for the checkout job, `pull_request_target` only for metadata operations (labeling, commenting) where the workspace isn't populated from the PR head.
 
@@ -298,7 +430,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 | **Self-review loop** | `if: !contains(labels, 'agent:<own>')` — agent skips its own PRs |
 | **Cross-agent review loop** | Same gate per agent — Claude reviews `agent:codex`, Codex reviews `agent:claude`, neither reviews own |
 | **Force-push race** | `--force-with-lease` (standard); `concurrency: cancel-in-progress: false` for G3 |
-| **Runaway autonomy** | Manual merge always required (CLAUDE.md §3.1); `agent:fix-attempt-3` stop; `agent:manual-hold` opt-out; `if: changed_files < 100` |
+| **Runaway autonomy** | Manual merge always required (CLAUDE.md §3.1); per-agent `agent:<name>:fix-attempt-3` stop (§4.3.3); `agent:manual-hold` opt-out; `if: changed_files < 100` |
 | **Secret leakage in PR diff** | G2 runs `contents: read`; G3 only with `pull_request_target` for metadata ops; PR head never checked out under write secrets from forks (per Codex doc) |
 | **Cost runaway** | Org-level API spend alert; `paths-ignore`; `concurrency: cancel-in-progress`; model downgrade per workflow |
 | **Hostile contributor** | G3 trust check (`actor in owners/members/write-collaborators`); G3 only fires on `agent:*`-labeled PR (outside contributor can't trigger autofix) |
@@ -316,7 +448,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 
 4. **Bot identity for write actions**: PAT (start) vs GitHub App (production). PAT for pilot, migrate to App in P1.
 
-5. **Cross-agent coordination**: when Claude and Codex both auto-fix the same PR (concurrent), who wins? Resolution: G3's `concurrency: cancel-in-progress: false` plus label-based attempt counter (`agent:claude:fix-attempt-N`, `agent:codex:fix-attempt-N`) — they queue rather than race. But should this even happen? Probably not — each PR should be owned by ONE agent's G3 (whichever set `agent:auto-fix` on label-set).
+5. **Cross-agent coordination**: when Claude and Codex both auto-fix the same PR (concurrent), who wins? Resolution: G3's `concurrency: cancel-in-progress: false` plus the per-agent attempt counter from §4.3.3 (`agent:claude:fix-attempt-N`, `agent:codex:fix-attempt-N` — never global) means they queue rather than race AND one agent exhausting its budget doesn't block the other. Cross-second-opinion (e.g. reviewer types `@codex fix` on a Claude PR) becomes a first-class use case rather than an edge case.
 
 ---
 
