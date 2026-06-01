@@ -34,7 +34,7 @@ from kernel.pipeline.pipeline import Task
 # Refactored 2026-05-11 — kernel/exit_types.META_LABEL_VETO_ELIGIBLE
 # owns the lookup. Only PATH_RULE_CORE names (no synonyms) because the
 # meta-label classifier was trained on those canonical exit_types.
-from kernel.exit_types import META_LABEL_VETO_ELIGIBLE as _PATH_RULE_EXITS  # noqa: E402
+from renquant_pipeline.kernel.exit_types import META_LABEL_VETO_ELIGIBLE as _PATH_RULE_EXITS  # noqa: E402
 
 # Regime → integer encoding — must match
 # kernel/meta_label/task_snapshot.py::_REGIME_CODE.

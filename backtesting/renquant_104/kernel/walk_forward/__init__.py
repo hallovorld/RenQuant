@@ -13,16 +13,16 @@ Adding a parallel implementation requires deleting this one first.
 """
 from __future__ import annotations
 
-from kernel.walk_forward.correlation_guard import (
+from renquant_pipeline.kernel.walk_forward.correlation_guard import (
     assert_correlation_no_leakage,
     parse_correlation_artifact,
 )
-from kernel.walk_forward.gmm_guard import (
+from renquant_pipeline.kernel.walk_forward.gmm_guard import (
     assert_gmm_no_leakage,
     gmm_artifact_as_of,
 )
-from kernel.walk_forward.leakage_guard import assert_no_leakage
-from kernel.walk_forward.lean_guard import assert_lean_panel_no_leakage
+from renquant_pipeline.kernel.walk_forward.leakage_guard import assert_no_leakage
+from renquant_pipeline.kernel.walk_forward.lean_guard import assert_lean_panel_no_leakage
 from kernel.walk_forward.loader import (
     RetrainEntry,
     WalkForwardModelLoader,
