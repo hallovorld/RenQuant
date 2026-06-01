@@ -76,7 +76,12 @@ run_multirepo() {
 
 export RENQUANT_REPO_ROOT="$REPO_DIR"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
-export PYTHONPATH="$GITHUB_DIR/renquant-orchestrator/src:$GITHUB_DIR/renquant-common/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-artifacts/src:$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-pipeline/src:$GITHUB_DIR/renquant-execution/src:$GITHUB_DIR/renquant-strategy-104/src:$GITHUB_DIR/renquant-backtesting/src:${PYTHONPATH:-}"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_DIR"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator renquant-common renquant-base-data renquant-artifacts renquant-model renquant-pipeline renquant-execution renquant-strategy-104 renquant-backtesting):${PYTHONPATH:-}"
 
 RUNNER="${RQ_ALPHA158_LINEAR_RUNNER:-multirepo}"
 if [ "$RUNNER" = "multirepo" ]; then

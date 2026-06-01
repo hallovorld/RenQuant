@@ -26,6 +26,11 @@ PYTHON="$VENV_DIR/bin/python"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
 
 cd "$REPO_DIR"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_DIR"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 mkdir -p logs/news_daily
 
 LOG="logs/news_daily/$(date +%Y-%m-%d).log"
@@ -37,7 +42,7 @@ set +a
 
 # 1. Fetch yesterday's news (and weekend backlog on Mondays)
 echo "--- step 1: fetch Alpaca News ---" >> "$LOG"
-export PYTHONPATH="$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-base-data renquant-common):${PYTHONPATH:-}"
 if "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_base_data.alpaca_news_refresh  # noqa: F401
 PY

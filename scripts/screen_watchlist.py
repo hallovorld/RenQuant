@@ -38,6 +38,8 @@ import os
 import sys
 from pathlib import Path
 
+from subrepo_paths import resolve_subrepo_root
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 logging.basicConfig(
@@ -51,7 +53,7 @@ NTFY_TOPIC = "renquant"
 
 
 def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
-    """Delegate to renquant-base-data when the sibling repo is available."""
+    """Delegate to renquant-base-data when the subrepo runtime is available."""
     if os.environ.get("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo") != "multirepo":
         return False
     parser = argparse.ArgumentParser(add_help=False)
@@ -74,9 +76,9 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     if cache_root.as_posix().rstrip("/") != "data/ohlcv":
         return False
 
-    github_dir = REPO_ROOT.parent
+    subrepo_root = resolve_subrepo_root(REPO_ROOT)
     for rel in ("renquant-base-data/src", "renquant-common/src"):
-        path = str(github_dir / rel)
+        path = str(subrepo_root / rel)
         if path not in sys.path:
             sys.path.insert(0, path)
     try:

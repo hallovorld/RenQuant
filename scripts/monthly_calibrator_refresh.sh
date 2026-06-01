@@ -72,7 +72,12 @@ export NUMEXPR_NUM_THREADS="$THREADS"
 
 cd "$REPO_DIR"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
-export PYTHONPATH="$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-common/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-artifacts/src:${PYTHONPATH:-}"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_DIR"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
 
 # ── Step 1: Smoke test — abort if model broken ───────────────────────────
 echo "--- Step 1: Pre-flight smoke test ---"

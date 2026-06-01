@@ -37,6 +37,11 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GITHUB_DIR="$(cd "$REPO_ROOT/.." && pwd)"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_ROOT"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_ROOT" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 VENV_DIR="$REPO_ROOT/.venv"
 PYTHON="$VENV_DIR/bin/python"
 BACKUP_REPO="${BACKUP_REPO:-$HOME/.renquant-state-backup}"
@@ -55,7 +60,8 @@ notify_failure() {
 trap 'notify_failure "Script failed at line $LINENO"' ERR
 
 run_multirepo_backup() {
-    local orchestrator_src="$GITHUB_DIR/renquant-orchestrator/src"
+    local orchestrator_src
+    orchestrator_src="$(renquant_subrepo_src "$SUBREPO_ROOT" renquant-orchestrator)"
     if PYTHONPATH="$orchestrator_src:${PYTHONPATH:-}" "$PYTHON" - <<'PY'
 import renquant_orchestrator.state_backup  # noqa: F401
 PY

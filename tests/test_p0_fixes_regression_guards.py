@@ -317,7 +317,10 @@ class TestP0_17_BackupSizeGuard:
         assert 'RQ_STATE_BACKUP_RUNNER:-multirepo' in sh
         assert "renquant_orchestrator.state_backup" in sh
         assert "RQ_STATE_BACKUP_STRICT" in sh
-        assert "renquant-orchestrator/src" in sh
+        assert "scripts/subrepo_env.sh" in sh
+        assert 'renquant_load_subrepo_env "$REPO_ROOT"' in sh
+        assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in sh
+        assert 'renquant_subrepo_src "$SUBREPO_ROOT" renquant-orchestrator' in sh
 
 
 class TestP0_18_WeeklyApyMonitor:
@@ -327,6 +330,8 @@ class TestP0_18_WeeklyApyMonitor:
         src = (REPO / "scripts/weekly_apy_check.py").read_text()
         assert 'os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo")' in src
         assert "renquant_orchestrator.weekly_apy_monitor" in src
+        assert "from subrepo_paths import resolve_subrepo_root" in src
+        assert "resolve_subrepo_root(REPO_ROOT)" in src
         assert "RQ_WEEKLY_APY_STRICT" in src
 
     def test_weekly_apy_plist_uses_project_venv(self):
@@ -361,6 +366,11 @@ class TestP0_19_LaunchdInventory:
     def test_install_launchagents_includes_backup_plist(self):
         src = (REPO / "scripts/install_launchagents.sh").read_text()
         assert 'scripts/com.renquant.backup.plist' in src
+
+    def test_install_launchagents_check_runs_subrepo_ops_contract(self):
+        src = (REPO / "scripts/install_launchagents.sh").read_text()
+        assert "scripts/check_launchagents.py" in src
+        assert "scripts/subrepo_ops_contract.py" in src
 
 
 class TestP0_19_QPProductionPath:

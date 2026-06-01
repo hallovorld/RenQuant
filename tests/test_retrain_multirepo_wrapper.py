@@ -23,10 +23,14 @@ def test_retrain_wrapper_defaults_to_orchestrator_with_rollback() -> None:
     assert 'RQ_RETRAIN_RUNNER:-multirepo' in src
     assert "RQ_RETRAIN_RUNNER=umbrella" in src
     assert "renquant_orchestrator.retrain_alpha158_fund" in src
-    assert "renquant-orchestrator/src" in src
-    assert "renquant-model/src" in src
-    assert "renquant-pipeline/src" in src
-    assert "renquant-execution/src" in src
+    assert "scripts/subrepo_env.sh" in src
+    assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
+    assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
+    assert 'renquant_subrepo_pythonpath "$SUBREPO_ROOT"' in src
+    assert "renquant-orchestrator" in src
+    assert "renquant-model" in src
+    assert "renquant-pipeline" in src
+    assert "renquant-execution" in src
     assert "training_panel.daily_retrain_alpha158_fund" in src
     assert "RQ_RETRAIN_STRICT" in src
     assert "renquant_orchestrator.retrain_alpha158_fund={m.__file__}" in src
@@ -39,6 +43,14 @@ def test_retrain_wrapper_defaults_to_orchestrator_with_rollback() -> None:
 
 def test_weekly_still_calls_wrapper_with_explicit_staging_paths() -> None:
     weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+    assert "scripts/subrepo_env.sh" in weekly
+    assert 'renquant_load_subrepo_env "$REPO_DIR"' in weekly
+    assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in weekly
     assert "bash scripts/daily_retrain_alpha158_fund.sh" in weekly
+    assert "renquant_backtesting.wf_gate" in weekly
+    assert 'RQ_WF_GATE_RUNNER:-multirepo' in weekly
+    assert "RQ_WF_GATE_STRICT" in weekly
+    assert "scripts/run_wf_gate.py" in weekly
+    assert "renquant_backtesting.forensics.model_acceptance" in weekly
     assert '--xgb-artifact-out "$STAGING_ART"' in weekly
     assert '--calibrator-out "$STAGING_CAL"' in weekly

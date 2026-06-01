@@ -11,7 +11,6 @@ when local sibling checkouts do not match ``subrepos.lock.json``.
 from __future__ import annotations
 
 import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -21,6 +20,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from subrepo_pin_guard import enforce_or_warn, resolve_subrepo_src_roots
 from subrepo_pin_guard import strict_clean_enabled
+from subrepo_paths import resolve_subrepo_root
 
 REPO = Path(__file__).resolve().parent.parent
 SIBLINGS = REPO.parent
@@ -46,7 +46,7 @@ def _subrepo_src_roots() -> tuple[list[Path], list[str]]:
         lock_file=LOCK_FILE,
         names=_PIN_SRCS,
         siblings=SIBLINGS,
-        root_override=os.environ.get("RENQUANT_SUBREPO_ROOT"),
+        root_override=str(resolve_subrepo_root(REPO)),
         check_dirty=strict_clean_enabled(),
     )
     missing = [issue.repo for issue in issues if issue.reason == "missing local src root"]
@@ -62,7 +62,7 @@ def _bootstrap_multirepo() -> list[str]:
         lock_file=LOCK_FILE,
         names=_PIN_SRCS,
         siblings=SIBLINGS,
-        root_override=os.environ.get("RENQUANT_SUBREPO_ROOT"),
+        root_override=str(resolve_subrepo_root(REPO)),
         check_dirty=strict_clean_enabled(),
     )
     enforce_or_warn(pin_issues)
