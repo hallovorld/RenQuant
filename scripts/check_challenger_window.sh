@@ -23,6 +23,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${REPO_ROOT}/.venv/bin/python"
 STRATEGY="${1:-renquant_104}"
 STRATEGY_DIR="${REPO_ROOT}/backtesting/${STRATEGY}"
 CONFIG="${STRATEGY_DIR}/strategy_config.json"
@@ -72,7 +73,7 @@ fi
 
 # Compute window-end = earliest + window_days
 # Use Python for date math — bash date doesn't handle ISO + day-add cleanly on macOS
-WINDOW_END="$(/Users/renhao/miniconda3/envs/renquant/bin/python -c "
+WINDOW_END="$("$PYTHON" -c "
 import sys, datetime as dt
 earliest = '${EARLIEST}'.split(' ')[0].split('T')[0]
 y,m,d = earliest.split('-')
@@ -87,7 +88,7 @@ if [[ "${TODAY}" < "${WINDOW_END}" ]]; then
 fi
 
 echo "[check-challenger] window CLOSED — running finalize_challenger.py"
-if /Users/renhao/miniconda3/envs/renquant/bin/python "${REPO_ROOT}/scripts/finalize_challenger.py" \
+if "$PYTHON" "${REPO_ROOT}/scripts/finalize_challenger.py" \
   --strategy "${STRATEGY}" \
   --challenger-name "${NAME}" \
   --start-date "${EARLIEST%% *}" \
