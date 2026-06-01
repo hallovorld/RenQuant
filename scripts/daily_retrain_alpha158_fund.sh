@@ -98,17 +98,12 @@ run_multirepo() {
 }
 
 # Delegate the actual work to a Python pipeline. Bash only handles lock, log
-# redirect, runner selection, and fallback before the multirepo module exists.
+# redirect, runner selection, and fallback if the multirepo module is missing.
 export RENQUANT_REPO_ROOT="$REPO_DIR"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
 export PYTHONPATH="$GITHUB_DIR/renquant-orchestrator/src:$GITHUB_DIR/renquant-common/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-artifacts/src:$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-pipeline/src:$GITHUB_DIR/renquant-execution/src:$GITHUB_DIR/renquant-strategy-104/src:$GITHUB_DIR/renquant-backtesting/src:${PYTHONPATH:-}"
 RUNNER="${RQ_RETRAIN_RUNNER:-multirepo}"
 if [ "$RUNNER" = "umbrella" ]; then
-    CMD=run_umbrella
-elif printf '%s\n' "$@" | grep -q -- "--staged"; then
-    # TODO(renquant-orchestrator#2): move implicit staging paths into
-    # renquant_orchestrator.retrain_alpha158_fund before removing this bridge.
-    echo "WARN: --staged is umbrella-only until orchestrator supports implicit staging paths."
     CMD=run_umbrella
 elif "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_orchestrator.retrain_alpha158_fund  # noqa: F401
