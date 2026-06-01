@@ -29,7 +29,7 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
-from kernel.regime import compute_hurst  # noqa: E402
+from renquant_common.hurst import compute_hurst  # noqa: E402
 
 # Same defaults as strategy_config.golden.json::regime
 BEAR_VOL_THR     = 0.35

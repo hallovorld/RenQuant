@@ -25,7 +25,7 @@ class TestTF3HurstProxyIsRealHurst:
         real R/S Hurst exponent (range [0, 1]), not lag-1 autocorr (range
         [-1, +1]). A clean trending series should produce H > 0.5; a clean
         anti-correlated series produces H < 0.5."""
-        from kernel.regime import compute_hurst, rolling_hurst
+        from renquant_common.hurst import compute_hurst, rolling_hurst
         # Strong upward trend → R/S Hurst should be ABOVE 0.5
         rng = np.random.default_rng(0)
         n = 200
@@ -44,8 +44,8 @@ class TestTF3HurstProxyIsRealHurst:
         """Sanity: build_training_features imports rolling_hurst from
         kernel.regime (not the old lag-1 autocorr inline lambda)."""
         src = (_STRATEGY_DIR / "training" / "features.py").read_text()
-        assert "from kernel.regime import rolling_hurst" in src, (
-            "TF-3 fix: hurst_proxy must use kernel.regime.rolling_hurst "
+        assert "from renquant_common.hurst import rolling_hurst" in src, (
+            "TF-3 fix: hurst_proxy must use renquant_common.hurst.rolling_hurst "
             "instead of the old corrcoef(x[:-1], x[1:]) lag-1 autocorr."
         )
 
