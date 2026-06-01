@@ -135,6 +135,15 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="screen_watchlist_uses_base_data",
+        path="scripts/screen_watchlist.py",
+        required=(
+            "renquant_base_data.watchlist_screen",
+            "renquant-base-data/src",
+            "RQ_SCREEN_WATCHLIST_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_calibrator_refresh_uses_model_repo",
         path="scripts/monthly_calibrator_refresh.sh",
         required=(
