@@ -273,6 +273,29 @@ After any non-trivial change, sync: [`doc/arch/overview.md`](doc/arch/overview.m
 [`doc/ops/schedule.md`](doc/ops/schedule.md), [`doc/roadmap.md`](doc/roadmap.md),
 and this file. Code wins on conflict.
 
+### 3.7 · Agent attribution + auto-review + auto-fix
+
+Cross-repo agent automation (Claude, Codex, future) — branch identity,
+PR attribution, auto-review of non-agent PRs, auto-fix on reviewer
+findings — is canonicalized in
+[`doc/ops/agent-automation.md`](doc/ops/agent-automation.md). That doc
+is the single source of truth; subrepo `CLAUDE.md` (or future
+`AGENTS.md`) MUST point here rather than duplicate the design.
+
+Bottom-line rules every agent-opened branch / commit / PR must obey:
+
+1. **Authorship label** — exactly ONE of `agent:claude` / `agent:codex` set at PR open ([§2.1](doc/ops/agent-automation.md#21--canonical-labels)).
+2. **PR body footer** — ends with `Agent-Origin: <Name>` + the standard `🤖 Generated with [<Agent Name> Code]` line.
+3. **Commit trailer** — every commit carries `Co-Authored-By: <Agent> <bot-email>` (Claude: `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`; Codex: `Co-Authored-By: Codex <noreply@openai.com>`).
+4. **Cross-agent invites** use `agent:fix:<name>` (executor-permission label) — NEVER add a second authorship label to invite another agent's G3.
+5. **Stop knobs**: `agent:manual-hold` halts ALL agent automation on a PR; `agent:fix:<name>:attempt-3` halts that one agent's G3 retries.
+
+Where the machinery actually lives:
+
+- Reusable workflow templates: `RenQuant/.github/workflows/_agent-*-template.yml` (umbrella canon — referenced via `uses: hallovorld/RenQuant/...@main`)
+- Per-repo wrappers (~25 lines): `.github/workflows/agent-{review,autofix,attribution-check}.yml` in each renquant repo
+- Repo-local agent context: future per-subrepo `AGENTS.md` for tests / layout / forbidden-imports — distinct from this cross-repo canon
+
 ---
 
 ## 4 · Environment & invocation modes
