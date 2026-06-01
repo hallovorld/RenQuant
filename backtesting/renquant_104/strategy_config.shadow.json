@@ -711,7 +711,8 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "../../artifacts/patchtst_deployable/hf_patchtst_all_seed42_model.pt",
+      "_artifact_path_fix_2026-06-01": "Previously '../../artifacts/patchtst_deployable/hf_patchtst_all_seed42_model.pt' — file never existed on disk (deployable build never landed), so shadow preflight P-CONFIG-FP + P-WATCHLIST hard-failed and LoadScorerTask aborted at panel_scoring fail-closed every run. Repointed to the seed_44 pt07-strict artifact that strategy_config.golden.json::shadow_models[0] already loads successfully in main runs.",
+      "artifact_path": "../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std",
       "buy_floor_adaptive_cap": 0.3,

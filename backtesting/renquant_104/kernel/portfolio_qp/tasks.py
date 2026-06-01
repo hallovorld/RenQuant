@@ -62,6 +62,59 @@ def _stamp_all_qp_blocks(ctx, reason: str) -> None:
         _stamp_qp_ticker_block(ctx, str(ticker), reason)
 
 
+def _stamp_qp_failure_counter(ctx, status: str) -> None:
+    """Single source for the no-trade observability counters (codex PR #48
+    review #1). Every QP failure path that sets ``ctx._qp_status`` /
+    ``ctx._qp_failure_reason`` MUST also call this helper so that
+    ``live.runner._why_no_trade()`` surfaces the binding QP failure instead of
+    falling through to an earlier upstream drop.
+
+    Idempotent per ctx (codex PR #48 v2 review): SolveMarkowitzQPTask stamps
+    on non-optimal status but does NOT return False; the job then runs
+    EmitOrdersFromQPSolutionTask which sees the same status and would stamp
+    again — producing ``qp_infeasible=2`` for a single bar. Once stamped,
+    subsequent calls within the same context are no-ops via the
+    ``ctx._qp_failure_counter_stamped`` sentinel.
+
+    Paths covered:
+      - ``ComputeFullSigmaTask._fail_full_sigma`` (infeasible:<cov-reason>,
+        returns False so emit never runs)
+      - ``SolveMarkowitzQPTask`` unsupported-cvxportfolio branch
+        (sets infeasible solution, returns False)
+      - ``SolveMarkowitzQPTask`` non-optimal solver outcome
+        (does NOT return False — emit still runs but is now idempotent)
+      - ``EmitOrdersFromQPSolutionTask`` non-optimal handling
+        (catches paths that reach emit directly; idempotent against Solve)
+
+    Counter keys mirror live.runner._why_no_trade() precedence:
+      qp_infeasible / qp_missing_solution / qp_optimal_no_signal /
+      qp_other_nonoptimal.
+    """
+    counters = getattr(ctx, "counters", None)
+    if not isinstance(counters, dict):
+        return
+    if getattr(ctx, "_qp_failure_counter_stamped", False):
+        return                              # idempotent: one stamp per QP failure event
+    s = (status or "").strip()
+    if not s:
+        return
+    if "infeasible" in s:
+        key = "qp_infeasible"
+    elif s == "missing_solution":
+        key = "qp_missing_solution"
+    elif s == "optimal_no_signal":
+        key = "qp_optimal_no_signal"
+    elif s.startswith("optimal"):
+        return                              # successful path; do not stamp a failure counter
+    else:
+        key = "qp_other_nonoptimal"
+    counters[key] = counters.get(key, 0) + 1
+    try:
+        ctx._qp_failure_counter_stamped = True  # noqa: SLF001
+    except Exception:                        # context may be read-only mock
+        pass
+
+
 # ── 1. Build w_current from shares × prices / NAV ────────────────────────────
 
 class BuildWeightVectorTask(Task):
@@ -223,6 +276,7 @@ class ComputeFullSigmaTask(Task):
             "invalid_pairs": list(invalid_pairs or [])[:25],
         }
         _stamp_all_qp_blocks(ctx, reason)
+        _stamp_qp_failure_counter(ctx, ctx._qp_status)  # noqa: SLF001 (codex PR #48 #1)
         log.error(
             "ComputeFullSigmaTask: full covariance required but unavailable "
             "(reason=%s missing_pairs=%d invalid_pairs=%d); blocking QP orders",
@@ -1521,6 +1575,7 @@ class SolveMarkowitzQPTask(Task):
                 ctx._qp_diagnostics = dict(sol.diagnostics)  # noqa: SLF001
                 ctx._qp_failure_reason = f"qp_global:{sol.status}"  # noqa: SLF001
                 _stamp_all_qp_blocks(ctx, ctx._qp_failure_reason)
+                _stamp_qp_failure_counter(ctx, ctx._qp_status)  # noqa: SLF001 (codex PR #48 #1)
                 ctx._qp_n_buys = 0  # noqa: SLF001
                 ctx._qp_n_sells = 0  # noqa: SLF001
                 log.error(
@@ -1543,6 +1598,7 @@ class SolveMarkowitzQPTask(Task):
         if sol.status != "optimal":
             reason = "qp_no_signal" if sol.status == "optimal_no_signal" else f"qp_global:{sol.status}"
             ctx._qp_failure_reason = reason  # noqa: SLF001
+            _stamp_qp_failure_counter(ctx, ctx._qp_status)  # noqa: SLF001 (codex PR #48 #1)
             _stamp_all_qp_blocks(ctx, reason)
         ctx._qp_n_buys = 0  # noqa: SLF001
         ctx._qp_n_sells = 0  # noqa: SLF001
@@ -2424,18 +2480,23 @@ class EmitOrdersFromQPSolutionTask(Task):
     def run(self, ctx) -> bool | None:
         sol = _get_path(ctx, "_qp_solution")
         if sol is None or sol.status != "optimal":
+            status = str(sol.status if sol else "missing_solution")
             reason = (
                 "qp_missing_solution" if sol is None
                 else ("qp_no_signal" if sol.status == "optimal_no_signal"
                       else f"qp_global:{sol.status}")
             )
-            ctx._qp_status = str(sol.status if sol else "missing_solution")  # noqa: SLF001
+            ctx._qp_status = status  # noqa: SLF001
             ctx._qp_failure_reason = reason  # noqa: SLF001
             if sol is not None:
                 ctx._qp_diagnostics = dict(getattr(sol, "diagnostics", {}) or {})  # noqa: SLF001
             _stamp_all_qp_blocks(ctx, reason)
-            log.warning("EmitOrdersFromQPSolutionTask: status=%s — skip",
-                         sol.status if sol else "none")
+            # Codex PR #48 #1: route through shared helper so emit + earlier
+            # short-circuit paths (ComputeFullSigma._fail_full_sigma,
+            # SolveMarkowitzQP unsupported-cvxportfolio branch, non-optimal
+            # solver result) all stamp the same counter set.
+            _stamp_qp_failure_counter(ctx, status)
+            log.warning("EmitOrdersFromQPSolutionTask: status=%s — skip", status)
             return False
         env = self._build_env(ctx, sol)
         self._log_holding_solves(env)
