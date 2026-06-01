@@ -1,9 +1,9 @@
-# RenQuant Multirepo Leakage Defense — Architecture (v8)
+# RenQuant Multirepo Leakage Defense — Architecture (v9)
 
 **Status**: Design under review (RenQuant PR #38)
 **Authors**: Claude
-**Reviewers**: Codex (6 review rounds; v7 found 3 HIGH + 2 MED in policy binding / artifact integrity / signature primitive — all addressed)
-**Supersedes**: v1-v7 (commit history is the audit trail)
+**Reviewers**: Codex (7 review rounds; v8 found 3 HIGH + 2 MED + 1 LOW: policy-strength direction inversion, runtime binding gap, model_uri vs storage contract, policy versioning, env-scoped bypass, import gaps — all addressed in v9)
+**Supersedes**: v1-v8 (commit history is the audit trail)
 **Companion**: `doc/research/2026-06-01-leakage-reflection.md`
 
 ---
@@ -26,8 +26,11 @@ Design ships when **every one is mechanically true**:
 8. Bypass entry signed for gate X is **rejected by gate Y** (per-gate scope binding).
 9. Artifact whose recomputed `sha256(model.pt bytes)` ≠ `binding.model_sha` rejected at `Scorer.load()`. (artifact integrity)
 10. Reducer policy used at validation time is the policy whose `sha256(canonical)` = `binding.triad_config_hash`. Mismatch ⇒ reject.
-11. Consumer with `minimum_acceptable_policy` stricter than artifact's policy rejects the artifact, regardless of `triad_status`. (policy-strength gate)
+11. Consumer with `minimum_acceptable_policy` stricter than artifact's policy rejects the artifact, regardless of `triad_status`. Direction-correct per-field: larger `p_threshold` ⇒ stricter, larger `min_n` ⇒ stricter, smaller `max_placebo_real_ratio` ⇒ stricter, smaller `aa_drift_max` ⇒ stricter, larger `bootstrap_n_iters` ⇒ stricter.
 12. E2E nightly runs 3 fixtures (good/leak/noise) × synthetic Tier-2 under 5 min wall clock.
+13. **Runtime binding** (v9 NEW): `assert_artifact_validated()` takes a `RuntimeDataBinding(feature_schema_hash, label_hash)` from the call site; rejects if not equal to artifact's `binding.feature_schema_hash` and `binding.label_hash`. A passed model inserted into a manifest using different features is rejected at the gate.
+14. **Bypass environment scope** (v9 NEW): `allowed_environments: list[Env]` is part of the signed payload; staging bypass cannot authorize prod.
+15. **Artifact store abstraction** (v9 NEW): `ScorerArtifact.load(sidecar_path, store=ArtifactStore)` resolves `model_uri` through a store (local FS, S3 with versionId, etc.) and uses the store's authoritative content hash. The model URI is NOT silently derived from sidecar filename.
 
 **Any false ⇒ design failed ⇒ revert.**
 
@@ -89,13 +92,28 @@ def utc_now() -> datetime:
 # --- v8 NEW: TriadPolicy -----------------------------------------------------
 
 class TriadPolicy(pydantic.BaseModel):
-    """The set of thresholds that determine pass/fail. Frozen.
+    """Frozen policy bound to artifact via `policy_hash()`.
 
-    `policy_hash()` is the canonical SHA-256 that goes into
-    TriadBinding.triad_config_hash. Reducer takes a TriadPolicy explicitly;
-    no hidden defaults.
+    DIRECTION SEMANTICS (v9 fix to v8 bug):
+      The gate FAILS when `placebo_p_value < tier_p_threshold`.
+      So LARGER threshold ⇒ MORE artifacts fail ⇒ STRICTER.
+      v8's `strength_score()` had `-tier_p_threshold`, treating 0.01 as
+      stricter than 0.05 — backwards. Fixed in `weaker_than()` below
+      with per-field explicit direction; `strength_score()` removed.
+
+    POLICY VERSIONING (v9 NEW per codex v8 #4):
+      `policy_schema_version` bumps on adding/removing fields (this
+      class's structural change). `stats_algorithm_version` bumps on
+      changing the math (e.g., bootstrap → block bootstrap, p
+      computation direction). Both are in `policy_hash()` so old
+      artifacts keep their hash AS-WRITTEN; intentional migration is
+      explicit.
     """
     model_config = pydantic.ConfigDict(frozen=True)
+
+    # Version stamps (v9 NEW)
+    policy_schema_version: Annotated[int, Field(gt=0)] = 1
+    stats_algorithm_version: Annotated[int, Field(gt=0)] = 1
 
     # Tier 1 (scorer sanity)
     tier1_p_threshold: PValue = 0.05
@@ -113,32 +131,49 @@ class TriadPolicy(pydantic.BaseModel):
     bootstrap_rng_seed: int = 0
 
     def policy_hash(self) -> str:
-        """Canonical SHA-256. The ONLY way to compute binding.triad_config_hash."""
+        """Canonical SHA-256. The ONLY way to compute binding.triad_config_hash.
+
+        Old artifacts whose hash was computed before a new field was added
+        are NOT silently rehashable: their stored hash matches their stored
+        policy_schema_version=N record; consumers refuse mismatched-version
+        policies via `weaker_than` (any newer-version policy is "different",
+        and the per-field strictness comparison enforces direction).
+        """
         import hashlib, json
         payload = json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
-    def strength_score(self) -> tuple:
-        """Used by `weaker_than`. Larger tuple ⇒ stricter policy.
-
-        Comparison: tighter p (smaller value), more seeds, more dates, lower
-        placebo ratio. We negate the small-is-tight ones for tuple ordering.
-        """
-        return (
-            -self.tier1_p_threshold,
-            -self.tier2_p_threshold,
-            self.tier1_min_n_val_dates,
-            self.tier2_min_n_seeds,
-            self.tier2_min_n_dates_per_regime,
-            -self.tier2_max_placebo_real_ratio,
-        )
-
 
 def weaker_than(a: TriadPolicy, minimum: TriadPolicy) -> bool:
-    """Return True iff `a` is strictly weaker than `minimum` on ANY axis."""
-    a_s = a.strength_score()
-    m_s = minimum.strength_score()
-    return any(av < mv for av, mv in zip(a_s, m_s))
+    """True iff `a` is strictly weaker (LESS strict, lets MORE artifacts pass)
+    than `minimum` on ANY axis. Per-field correct direction (v9 fix).
+
+    DIRECTION TABLE (gate fails when placebo_p < threshold):
+       p_threshold:                LARGER ⇒ stricter (blocks more marginal placebos)
+       min_n_val_dates:            LARGER ⇒ stricter (more evidence required)
+       min_n_seeds:                LARGER ⇒ stricter
+       min_n_dates_per_regime:     LARGER ⇒ stricter
+       aa_drift_max:               SMALLER ⇒ stricter (tighter drift tolerance)
+       max_placebo_real_ratio:     SMALLER ⇒ stricter (tighter ratio tolerance)
+       bootstrap_n_iters:          LARGER ⇒ stricter (smaller MC error in p)
+
+    Also requires identical version stamps; differing algorithm versions
+    cannot be ordered along axes, so they fail the comparison.
+    """
+    if a.policy_schema_version != minimum.policy_schema_version:
+        return True   # different schema versions: artifact policy is "different", treat as weaker
+    if a.stats_algorithm_version != minimum.stats_algorithm_version:
+        return True
+    return (
+        a.tier1_p_threshold < minimum.tier1_p_threshold
+        or a.tier2_p_threshold < minimum.tier2_p_threshold
+        or a.tier1_min_n_val_dates < minimum.tier1_min_n_val_dates
+        or a.tier2_min_n_seeds < minimum.tier2_min_n_seeds
+        or a.tier2_min_n_dates_per_regime < minimum.tier2_min_n_dates_per_regime
+        or a.tier1_aa_drift_max > minimum.tier1_aa_drift_max
+        or a.tier2_max_placebo_real_ratio > minimum.tier2_max_placebo_real_ratio
+        or a.bootstrap_n_iters < minimum.bootstrap_n_iters
+    )
 
 
 # --- ScorerSanityReport / TrainerPlaceboReport — now take policy ------------
@@ -311,66 +346,196 @@ class TriadReport(pydantic.BaseModel):
 
 **Why this addresses codex v7 #1**: `triad_config_hash` is now functionally bound — `_derive_status(policy, ...)` requires policy explicitly, the Pydantic validator verifies `policy.policy_hash() == binding.triad_config_hash`. A consumer cannot accept an artifact whose reducer ran with policy A while binding claims policy B's hash.
 
-### 5.2 `ScorerArtifact.load()` — artifact-byte verification (v8 NEW)
+### 5.2 `ScorerArtifact.load()` — artifact-byte verification through ArtifactStore (v9)
 
 ```python
 # renquant-common/src/renquant_common/contracts/scorer.py
 import hashlib
 from pathlib import Path
+from typing import Iterator, Protocol
 import pydantic
+from urllib.parse import urlparse
 from renquant_common.contracts.triad import TriadReport
 
 
 class ArtifactBytesMismatch(RuntimeError):
-    """Recomputed sha256(model.pt) does not match binding.model_sha."""
+    """Recomputed sha256(model bytes) does not match binding.model_sha."""
+
+
+class UnsupportedArtifactScheme(RuntimeError):
+    """ArtifactStore does not implement the URI scheme."""
+
+
+class ArtifactStore(Protocol):
+    """Resolves `model_uri` and provides an authoritative content hash.
+
+    Implementations must verify object identity at fetch time (e.g., S3 versionId
+    in the URI; ETag preconditions on read; local filesystem stat).
+    """
+    def supports(self, uri: str) -> bool: ...
+    def stream_bytes(self, uri: str) -> Iterator[bytes]: ...
+    def authoritative_sha256(self, uri: str) -> str: ...
+    """Either object-store-attested (e.g., S3 GetObjectAttributes returns
+    Checksum) OR streamed-and-hashed locally. MUST be the same answer either
+    way; consumers cannot trust a sha computed elsewhere without revalidation."""
+
+
+class LocalFileArtifactStore:
+    """For `file://` and bare local paths."""
+    def supports(self, uri: str) -> bool:
+        p = urlparse(uri)
+        return p.scheme in ("", "file")
+
+    def _to_path(self, uri: str) -> Path:
+        p = urlparse(uri)
+        return Path(p.path) if p.scheme in ("", "file") else Path(uri)
+
+    def stream_bytes(self, uri: str) -> Iterator[bytes]:
+        path = self._to_path(uri)
+        if not path.exists():
+            raise FileNotFoundError(f"local artifact missing: {path}")
+        with path.open("rb") as f:
+            yield from iter(lambda: f.read(65536), b"")
+
+    def authoritative_sha256(self, uri: str) -> str:
+        h = hashlib.sha256()
+        for chunk in self.stream_bytes(uri):
+            h.update(chunk)
+        return h.hexdigest()
+
+
+class S3VersionedArtifactStore:
+    """`s3://bucket/key?versionId=...` REQUIRES versionId for integrity binding.
+
+    Object overwrite without versionId ⇒ ambiguous; rejected.
+    """
+    def __init__(self, s3_client):
+        self._s3 = s3_client
+
+    def supports(self, uri: str) -> bool:
+        return urlparse(uri).scheme == "s3"
+
+    def _parse(self, uri: str) -> tuple[str, str, str]:
+        p = urlparse(uri)
+        bucket = p.netloc
+        key = p.path.lstrip("/")
+        from urllib.parse import parse_qs
+        qs = parse_qs(p.query)
+        if "versionId" not in qs:
+            raise ValueError(
+                f"S3 artifact URI MUST include versionId for integrity binding: {uri!r}"
+            )
+        return bucket, key, qs["versionId"][0]
+
+    def stream_bytes(self, uri: str) -> Iterator[bytes]:
+        bucket, key, vid = self._parse(uri)
+        obj = self._s3.get_object(Bucket=bucket, Key=key, VersionId=vid)
+        body = obj["Body"]
+        try:
+            for chunk in body.iter_chunks(chunk_size=65536):
+                yield chunk
+        finally:
+            body.close()
+
+    def authoritative_sha256(self, uri: str) -> str:
+        bucket, key, vid = self._parse(uri)
+        # Prefer ChecksumSHA256 attribute when bucket has checksums enabled
+        attrs = self._s3.get_object_attributes(
+            Bucket=bucket, Key=key, VersionId=vid,
+            ObjectAttributes=["Checksum"],
+        )
+        cks = attrs.get("Checksum", {}).get("ChecksumSHA256")
+        if cks:
+            import base64
+            return base64.b64decode(cks).hex()
+        # Fallback: stream and hash
+        h = hashlib.sha256()
+        for chunk in self.stream_bytes(uri):
+            h.update(chunk)
+        return h.hexdigest()
+
+
+def make_default_store() -> ArtifactStore:
+    """Composite store. MVP: local-only. S3 added when execution lift lands."""
+    return LocalFileArtifactStore()
 
 
 class ScorerArtifact(pydantic.BaseModel):
-    model_uri: str                            # path or s3:// to model.pt
-    feature_cols: list[str]                   # closed list
-    seq_len: int | None = None                # for sequence models
-    triad_report: TriadReport                 # required (after S2 migration)
+    model_uri: str                            # local path / file:// / s3://bucket/key?versionId=...
+    feature_cols: list[str]
+    seq_len: int | None = None
+    triad_report: TriadReport
     # ... other existing fields ...
 
     @classmethod
-    def load(cls, sidecar_path: Path) -> "ScorerArtifact":
-        """The ONLY entry point that consumers use. Verifies artifact bytes."""
+    def load(cls, sidecar_path: Path, *, store: ArtifactStore | None = None) -> "ScorerArtifact":
+        """The ONLY entry point that consumers use.
+
+        Uses `model_uri` (NOT derived from sidecar filename — v9 fix to v8 #3).
+        Resolves through the supplied `store` so local+remote paths share the
+        same integrity invariant.
+        """
+        store = store or make_default_store()
         artifact = cls.model_validate_json(sidecar_path.read_text())
-        model_path = sidecar_path.parent / sidecar_path.stem.replace(".pt.metadata", ".pt")
-        if not model_path.exists():
-            raise FileNotFoundError(f"model file missing for sidecar: {model_path}")
-        # Recompute bytes hash
-        h = hashlib.sha256()
-        with model_path.open("rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-        actual = h.hexdigest()
+        if not store.supports(artifact.model_uri):
+            raise UnsupportedArtifactScheme(
+                f"no store supports {artifact.model_uri!r}; "
+                f"available: {type(store).__name__}"
+            )
+        actual = store.authoritative_sha256(artifact.model_uri)
         if actual != artifact.triad_report.binding.model_sha:
             raise ArtifactBytesMismatch(
-                f"model.pt bytes hash mismatch:\n"
+                f"model bytes hash mismatch:\n"
                 f"  expected (binding.model_sha): {artifact.triad_report.binding.model_sha}\n"
-                f"  actual   (recomputed):        {actual}\n"
-                f"  sidecar:                      {sidecar_path}\n"
-                f"  model:                        {model_path}\n"
-                f"A copied sidecar cannot vouch for a different model file."
+                f"  actual   (store-authoritative): {actual}\n"
+                f"  sidecar:                       {sidecar_path}\n"
+                f"  model_uri:                     {artifact.model_uri}\n"
             )
         return artifact
 ```
 
-**Why this addresses codex v7 #2**: every consumer goes through `ScorerArtifact.load()`. A passing sidecar copied next to a different `.pt` raises `ArtifactBytesMismatch` before any gate even runs. `model_sha` becomes a meaningful integrity check, not metadata.
+```python
+# renquant-common/src/renquant_common/contracts/runtime_binding.py  (v9 NEW)
+
+class RuntimeDataBinding(pydantic.BaseModel):
+    """Computed at the GATE CALL SITE from the data/manifest the consumer is
+    actually about to use. Passed into assert_artifact_validated().
+
+    The gate verifies:
+       runtime.feature_schema_hash == artifact.binding.feature_schema_hash
+       runtime.label_hash          == artifact.binding.label_hash
+
+    Without this, a passed-and-byte-verified model can still be inserted into
+    a manifest using a different feature definition or label window.
+
+    Computed at:
+      G3 (pipeline scorer.load): hash the inference-time feature manifest +
+                                  the label currently being scored against
+      G4 (manifest_row):          hash the WF training feature manifest +
+                                  the lookahead window referenced in the row
+      G5 (broker submit):         hash the manifest_row's binding (just pass
+                                  through from G4's stamping)
+    """
+    feature_schema_hash: Annotated[str, Field(min_length=64, max_length=64)]
+    label_hash: Annotated[str, Field(min_length=64, max_length=64)]
+```
+
+**Why this addresses codex v8 #2, #3**:
+- #2: `RuntimeDataBinding` parameter on `assert_artifact_validated` forces every gate to bind runtime data hashes to artifact's binding. A passed model in the wrong manifest fails the gate.
+- #3: `model_uri` is the source of truth via `ArtifactStore`. Local-only MVP uses `LocalFileArtifactStore`; S3 backend requires `versionId` for integrity binding (no ambiguous "bucket/key" without version).
 
 ### 5.3 Ed25519-signed, scope-bound bypass (v8 NEW — replaces HMAC)
 
 ```python
 # renquant-common/src/renquant_common/contracts/leakage_config.py
-import json, logging, os
-from datetime import datetime
+import json, logging, math, os, hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 import pydantic
 from pydantic import Field
 import nacl.signing, nacl.exceptions, nacl.encoding
-from renquant_common.contracts.triad import AwareDatetime, utc_now
+from renquant_common.contracts.triad import AwareDatetime, TriadPolicy, utc_now
 
 log = logging.getLogger("renquant_common.leakage_guards.bypass")
 
@@ -382,6 +547,16 @@ GateCaller = Literal[
     "orchestrator:manifest_row",
     "execution:submit_order",
 ]
+
+Environment = Literal["dev", "shadow_sim", "wf_backfill", "prod_cron", "prod_live"]
+"""Closed taxonomy. v9 NEW per codex v8 #5: bypass scope must include environment.
+
+   dev:           operator iteration, no live impact
+   shadow_sim:    backtesting/sim runs that DO NOT affect any live decision
+   wf_backfill:   filling triad_status on existing artifacts during S2 migration
+   prod_cron:     daily_104 cron path producing manifest rows
+   prod_live:     execution submits orders against this manifest
+"""
 
 # Public verify keys live in repo (committed); private signing key is offline-only.
 ARCHITECT_PUBKEYS_PATH = Path(__file__).parent.parent / "keys" / "architect_pubkeys.json"
@@ -446,10 +621,11 @@ class TriadBypassEntryUnsigned(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(frozen=True)
 
     artifact_fingerprint: Annotated[str, Field(min_length=64, max_length=64)]
-    allowed_gates: Annotated[list[GateCaller], Field(min_length=1)]   # v8 NEW: scope binding
+    allowed_gates: Annotated[list[GateCaller], Field(min_length=1)]
+    allowed_environments: Annotated[list[Environment], Field(min_length=1)]  # v9 NEW per codex v8 #5
     expires_at: AwareDatetime
     reason: str
-    approved_by: str                              # GitHub handle (informational)
+    approved_by: str                              # GitHub handle (informational; verified separately by CODEOWNERS)
     pr_url: str
     approved_at: AwareDatetime
     key_id: str                                   # which architect pubkey signed
@@ -515,23 +691,49 @@ class LeakageGuardConfig(pydantic.BaseModel):
 
 ```python
 # renquant-common/src/renquant_common/leakage_guards/gate.py
+from renquant_common.contracts.runtime_binding import RuntimeDataBinding
+
 def assert_artifact_validated(
     artifact: ScorerArtifact, *,
     cfg: LeakageGuardConfig,
     caller: GateCaller,
+    runtime_binding: RuntimeDataBinding,   # v9 NEW per codex v8 #2
+    environment: Environment,              # v9 NEW per codex v8 #5
 ) -> None:
     fp = artifact.triad_report.binding.fingerprint()
     s = artifact.triad_report.triad_status
+    b = artifact.triad_report.binding
 
-    # v8: policy strength gate — refuse artifacts whose policy is weaker than minimum acceptable
+    # v9: runtime data binding match. Even byte-verified passed artifact rejected
+    # if features/labels currently in use disagree with what was trained on.
+    if b.feature_schema_hash != runtime_binding.feature_schema_hash:
+        telemetry.emit_event("gate_block_feature_schema_mismatch",
+                             caller=caller, artifact_fingerprint=fp,
+                             artifact_hash=b.feature_schema_hash,
+                             runtime_hash=runtime_binding.feature_schema_hash)
+        raise ArtifactNotValidated(
+            f"{caller}: feature_schema_hash mismatch:\n"
+            f"  artifact (train-time): {b.feature_schema_hash[:16]}\n"
+            f"  runtime (call-site):   {runtime_binding.feature_schema_hash[:16]}"
+        )
+    if b.label_hash != runtime_binding.label_hash:
+        telemetry.emit_event("gate_block_label_mismatch",
+                             caller=caller, artifact_fingerprint=fp,
+                             artifact_hash=b.label_hash,
+                             runtime_hash=runtime_binding.label_hash)
+        raise ArtifactNotValidated(
+            f"{caller}: label_hash mismatch:\n"
+            f"  artifact (train-time): {b.label_hash[:16]}\n"
+            f"  runtime (call-site):   {runtime_binding.label_hash[:16]}"
+        )
+
+    # Policy strength gate (v8) — per-field direction-correct (v9 fix)
     if weaker_than(artifact.triad_report.policy, cfg.minimum_acceptable_policy):
         telemetry.emit_event("gate_block_policy_weak", caller=caller, artifact_fingerprint=fp,
                              artifact_policy_hash=artifact.triad_report.policy.policy_hash(),
                              minimum_policy_hash=cfg.minimum_acceptable_policy.policy_hash())
         raise ArtifactNotValidated(
-            f"{caller}: refusing scorer fp={fp[:16]} whose triad policy is weaker than minimum.\n"
-            f"  artifact policy hash: {artifact.triad_report.policy.policy_hash()[:16]}\n"
-            f"  required minimum:     {cfg.minimum_acceptable_policy.policy_hash()[:16]}"
+            f"{caller}: refusing scorer fp={fp[:16]} whose triad policy is weaker than minimum."
         )
 
     if s == "failed":
@@ -545,38 +747,40 @@ def assert_artifact_validated(
 
     if s == "passed":
         telemetry.emit_event("gate_allow", caller=caller, artifact_fingerprint=fp,
-                             triad_status="passed")
+                             triad_status="passed", environment=environment)
         return
 
-    # pending — verified+scoped bypass match
+    # pending — verified bypass must match fingerprint AND allowed_gates AND allowed_environments
     now = utc_now()
     matching = [
         b for b in cfg.triad_bypasses
         if b.artifact_fingerprint == fp
         and b.expires_at > now
-        and caller in b.allowed_gates                # v8: per-gate scope check
+        and caller in b.allowed_gates
+        and environment in b.allowed_environments    # v9 NEW per codex v8 #5
     ]
     if not matching:
         telemetry.emit_event("gate_block", caller=caller, artifact_fingerprint=fp,
-                             triad_status="pending",
+                             triad_status="pending", environment=environment,
                              reason="no verified+scoped bypass match",
                              total_verified_bypasses=len(cfg.triad_bypasses))
         raise ArtifactNotValidated(
-            f"{caller}: refusing scorer fp={fp[:16]} status=pending; "
-            f"no verified bypass entry matches both fingerprint AND allowed_gates=...{caller}... "
-            f"(verified entries: {len(cfg.triad_bypasses)})"
+            f"{caller}: refusing scorer fp={fp[:16]} status=pending env={environment}; "
+            f"no verified bypass entry matches (fingerprint ∧ gate∈allowed_gates ∧ env∈allowed_environments)."
         )
     entry = matching[0]
     telemetry.emit_event("gate_bypass", caller=caller, artifact_fingerprint=fp,
-                         triad_status="pending",
+                         triad_status="pending", environment=environment,
                          bypass_expires_at=entry.expires_at.isoformat(),
                          bypass_approved_by=entry.approved_by,
                          bypass_pr_url=entry.pr_url,
-                         bypass_key_id=entry.key_id)
+                         bypass_key_id=entry.key_id,
+                         allowed_gates=list(entry.allowed_gates),
+                         allowed_environments=list(entry.allowed_environments))
     log.warning(
-        "TRIAD BYPASS: %s fp=%s expires=%s key_id=%s approved_by=%s pr=%s allowed_gates=%s",
-        caller, fp[:16], entry.expires_at.isoformat(), entry.key_id,
-        entry.approved_by, entry.pr_url, entry.allowed_gates,
+        "TRIAD BYPASS: %s fp=%s env=%s expires=%s key_id=%s approved_by=%s pr=%s gates=%s envs=%s",
+        caller, fp[:16], environment, entry.expires_at.isoformat(), entry.key_id,
+        entry.approved_by, entry.pr_url, entry.allowed_gates, entry.allowed_environments,
     )
 ```
 
@@ -599,6 +803,7 @@ def test_golden_canonical_payload():
     unsigned = {
         "artifact_fingerprint": "a" * 64,
         "allowed_gates": ["pipeline:scorer_load", "backtesting:manifest_row"],
+        "allowed_environments": ["wf_backfill", "shadow_sim"],
         "expires_at": datetime(2026, 6, 15, 12, 0, 0, 123456, tzinfo=timezone.utc),
         "reason": "B_tuned backfill grace period 7 days",
         "approved_by": "architect-user",
@@ -607,7 +812,8 @@ def test_golden_canonical_payload():
         "key_id": "v1",
     }
     expected = (
-        b'{"allowed_gates":["pipeline:scorer_load","backtesting:manifest_row"],'
+        b'{"allowed_environments":["wf_backfill","shadow_sim"],'
+        b'"allowed_gates":["pipeline:scorer_load","backtesting:manifest_row"],'
         b'"approved_at":"2026-06-01T20:30:00.000000Z",'
         b'"approved_by":"architect-user",'
         b'"artifact_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
@@ -666,18 +872,16 @@ Falsifiers from v7 carry forward (1-8). New v8 falsifiers:
 | Race two Tier-2 runners | CAS on `(binding, current_status)`; second runner gets `StaleBindingError` |
 | Force `failed → passed` by sidecar rewrite | `_VALID_TRANSITIONS` table at CAS layer rejects |
 
-## 11 · Codex v7 → v8 — addressed
+## 11 · Codex v8 → v9 — addressed
 
-| # | Sev | Finding | Resolution |
+| # | Sev | v8 finding | v9 resolution |
 |---|---|---|---|
-| 1 | HIGH | `triad_config_hash` decorative; reducer used hardcoded defaults | §5.1 `TriadPolicy` Pydantic + `policy.policy_hash()` + `_derive_status(policy, ...)` + Pydantic validator `policy.policy_hash() == binding.triad_config_hash` |
-| 2 | HIGH | `binding.model_sha` trusted from metadata; no byte verification | §5.2 `ScorerArtifact.load()` recomputes `sha256(model.pt)` and raises `ArtifactBytesMismatch` if not equal to `binding.model_sha` |
-| 3 | HIGH | HMAC means verifier == signer ⇒ blast-radius / no rotation | §5.3 Ed25519 asymmetric. Public keys in repo `keys/architect_pubkeys.json` keyed by `key_id`. Signing key offline. Rotation = remove key entry. |
-| 4 | MED | Bypass scope too broad (backfill bypass also auths G5) | §5.3 `allowed_gates: list[GateCaller]` in SIGNED payload; gate refuses if `caller` not in allowed set |
-| 5 | MED | Canonicalization underspecified (datetime format, ordering, default=str) | §5.3 single `canonical_payload()` for both sign + verify; explicit `strftime` for tz-aware UTC; §5.4 golden vector test pinned in repo; `TriadBypassEntryUnsigned` validated before signing |
-
-Plus v8 self-added (preempting next round):
-- **policy strength gate**: consumer can require `minimum_acceptable_policy`; an artifact with weaker thresholds is rejected. Prevents an "old artifact with lax thresholds" attack.
+| 1 | HIGH | `weaker_than` p-threshold direction backwards; missing `aa_drift_max` + `bootstrap_n_iters` axes | §5.1 `strength_score()` removed entirely; `weaker_than(a, minimum)` is direct per-field comparison with explicit DIRECTION TABLE in docstring: larger threshold = stricter (blocks more), larger min_n = stricter, smaller aa_drift_max = stricter, smaller max_placebo_real_ratio = stricter, larger bootstrap_n_iters = stricter. All axes including aa_drift_max + bootstrap_n_iters checked. |
+| 2 | HIGH | `feature_schema_hash` + `label_hash` trusted from metadata at consumer time | §5.2 `RuntimeDataBinding` parameter on `assert_artifact_validated`; gate checks `runtime.feature_schema_hash == artifact.binding.feature_schema_hash` AND `runtime.label_hash == artifact.binding.label_hash`. Computed at G3/G4/G5 call sites from the manifest/data actually in use. |
+| 3 | HIGH | `model_uri` declared `path or s3://` but `load()` derived local path from sidecar | §5.2 `ArtifactStore` Protocol; `LocalFileArtifactStore` + `S3VersionedArtifactStore` (requires `versionId` in URI); `ScorerArtifact.load(sidecar_path, store=...)` routes through store using `artifact.model_uri`. No silent local-derivation. |
+| 4 | MED | `TriadPolicy.policy_hash()` not versioned ⇒ future schema bumps silently rehash old reports | §5.1 `policy_schema_version` + `stats_algorithm_version` Pydantic fields; both in `model_dump()` hashed payload; `weaker_than` returns True (= reject) on differing schema/algorithm versions — intentional migration required. |
+| 5 | MED | Bypass scope per-gate but not per-environment | §5.3 `Environment = Literal["dev","shadow_sim","wf_backfill","prod_cron","prod_live"]`; `TriadBypassEntryUnsigned.allowed_environments` in SIGNED payload; gate now takes `environment` parameter and checks `environment in entry.allowed_environments`. Staging bypass cannot authorize prod. |
+| 6 | LOW | `canonical_payload()` snippet missing `import math` and `from datetime import timezone` | §5.3 imports corrected: `import json, logging, math, os, hashlib`; `from datetime import datetime, timezone` |
 
 ## 12 · Open questions
 
@@ -709,15 +913,15 @@ Full architecture wave (split parquet, typed train sig, ban `pd.read_parquet`) d
 
 ---
 
-## 15 · v7 → v8 changelog (codex v7 resolution + self-preempted next-round)
+## 15 · v8 → v9 changelog (codex v8 resolution)
 
-| Element | v7 | v8 |
+| Element | v8 | v9 |
 |---|---|---|
-| Policy binding | `triad_config_hash` field on binding; reducer used hardcoded defaults | `TriadPolicy` Pydantic; `binding.triad_config_hash = policy.policy_hash()`; Pydantic validator enforces consistency; `_derive_status(policy, ...)` |
-| Artifact bytes | trusted from `binding.model_sha` metadata | `ScorerArtifact.load()` recomputes `sha256(model.pt)`, raises `ArtifactBytesMismatch` |
-| Bypass crypto | HMAC-SHA256 (verifier = signer = blast radius) | Ed25519 asymmetric; pubkeys committed `keys/architect_pubkeys.json`; signing offline; `key_id` rotation |
-| Bypass scope | global per fingerprint | `allowed_gates: list[GateCaller]` in signed payload; gate checks `caller in allowed_gates` |
-| Canonicalization | `model_dump(mode="json")` + `default=str` underspecified | single `canonical_payload()` with explicit `strftime("%Y-%m-%dT%H:%M:%S.%fZ")`; `TriadBypassEntryUnsigned` validated before signing; golden vector test |
-| Policy strength gate (v8 self-added) | none | `LeakageGuardConfig.minimum_acceptable_policy`; consumer refuses artifacts whose `weaker_than(artifact.policy, minimum)` |
-| Falsifiers | 8 (v7 §9) | 14 (added byte-hash, policy-hash, scope binding, key_id enrollment, golden vector, policy-strength) |
-| Attack-surface table | not enumerated | §10 explicit attack → mitigation table |
+| Policy strictness direction | `strength_score()` negated p-thresholds; treated 0.01 as stricter than 0.05 (backwards: gate fails p<threshold, so larger threshold = stricter); missing `aa_drift_max` + `bootstrap_n_iters` | `strength_score` REMOVED; `weaker_than(a, minimum)` is direct per-field comparison with explicit DIRECTION TABLE; all 8 axes including aa_drift_max + bootstrap_n_iters checked |
+| Runtime data binding | `feature_schema_hash` + `label_hash` decorative at gate site | `RuntimeDataBinding(feature_schema_hash, label_hash)` parameter; gate refuses if not equal to artifact binding |
+| Artifact storage abstraction | `ScorerArtifact.load()` derived local path from sidecar filename, ignoring `model_uri` | `ArtifactStore` Protocol + `LocalFileArtifactStore` + `S3VersionedArtifactStore` (requires versionId); `load(sidecar_path, store=...)` resolves via `model_uri` |
+| Policy versioning | `policy_hash()` over unversioned fields; future schema bump silently rehashes old | `policy_schema_version` + `stats_algorithm_version` in policy; both in hash; `weaker_than` rejects on mismatch |
+| Bypass environment scope | per-gate only | + `allowed_environments: list[Environment]` in SIGNED payload; gate takes `environment` parameter |
+| Imports | snippet missing `math`, `timezone` | added |
+| Falsifiers | 14 (v8 §9) | 17 (added: runtime binding mismatch, env-scope rejection, policy-version mismatch) |
+| Completion criteria | 12 (v8 §2) | 15 (added: runtime binding, environment, store abstraction) |
