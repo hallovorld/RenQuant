@@ -20,7 +20,7 @@ from typing import Any
 
 from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Task
-from kernel.exit_types import META_LABEL_VETO_ELIGIBLE
+from renquant_pipeline.kernel.exit_types import META_LABEL_VETO_ELIGIBLE
 
 # Regime → integer code (snapshot column `regime_code`). Pinned here
 # so the meta-label classifier sees a stable encoding.
