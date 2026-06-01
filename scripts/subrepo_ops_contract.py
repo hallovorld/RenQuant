@@ -54,6 +54,17 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="subrepo_daily_contract_uses_runtime_root",
+        path="scripts/subrepo_daily_contract.py",
+        required=(
+            "from subrepo_paths import resolve_subrepo_root",
+            "SUBREPO_ROOT = resolve_subrepo_root(ROOT)",
+            'SUBREPO_ROOT / entry["name"] / "src"',
+            '_subrepo_path("renquant-strategy-104")',
+        ),
+        forbidden=("Path(_entry(\"renquant-strategy-104\")[\"local_path\"])",),
+    ),
+    Check(
         name="daily_live_defaults_to_multirepo",
         path="scripts/daily_104.sh",
         required=(
