@@ -17,8 +17,10 @@ def test_preopen_wrapper_defaults_to_execution_subrepo_with_rollback() -> None:
     src = (REPO / "scripts" / "preopen_cancel_gate.sh").read_text()
     assert 'RQ_PREOPEN_GATE_RUNNER:-multirepo' in src
     assert "RQ_PREOPEN_GATE_RUNNER=umbrella" in src
-    assert "../renquant-execution/src" in src
-    assert "../renquant-common/src" in src
+    assert "scripts/subrepo_env.sh" in src
+    assert "RENQUANT_SUBREPO_ROOT" in (REPO / "scripts" / "subrepo_env.sh").read_text()
+    assert 'renquant_subrepo_src "$SUBREPO_ROOT" renquant-execution' in src
+    assert 'renquant_subrepo_src "$SUBREPO_ROOT" renquant-common' in src
     assert "python -m renquant_execution.preopen_cancel_gate" in src
     assert "renquant_execution.preopen_cancel_gate={m.__file__}" in src
     assert "exec python scripts/preopen_cancel_gate.py" in src

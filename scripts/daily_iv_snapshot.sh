@@ -23,6 +23,9 @@ PYTHON="$VENV_DIR/bin/python"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
 
 cd "$REPO_DIR"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 mkdir -p logs/iv_snapshot
 
 LOG="logs/iv_snapshot/daily_$(date +%Y%m%d).log"
@@ -32,7 +35,7 @@ set -a
 source .env
 set +a
 
-export PYTHONPATH="$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common):${PYTHONPATH:-}"
 if "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_base_data.options_iv_refresh  # noqa: F401
 PY

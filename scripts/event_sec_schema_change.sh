@@ -20,6 +20,9 @@ set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
 GITHUB_DIR="$(cd "$REPO_DIR/.." && pwd)"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 VENV_DIR="$REPO_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
 SKIP_FETCH=0
@@ -35,7 +38,8 @@ run_sec_refresh() {
         return $?
     fi
 
-    local base_data_src="$GITHUB_DIR/renquant-base-data/src"
+    local base_data_src
+    base_data_src="$(renquant_subrepo_src "$SUBREPO_ROOT" renquant-base-data)"
     if PYTHONPATH="$base_data_src:${PYTHONPATH:-}" "$PYTHON" - <<'PY'
 import renquant_base_data.sec_fundamentals  # noqa: F401
 PY

@@ -48,8 +48,12 @@ if [ "$RUNNER" = "umbrella" ]; then
 fi
 
 export RENQUANT_REPO_ROOT="$PWD"
-SUBREPO_SRC="$PWD/../renquant-execution/src"
-COMMON_SRC="$PWD/../renquant-common/src"
+GITHUB_DIR="$(cd "$PWD/.." && pwd)"
+# shellcheck disable=SC1091
+source "$PWD/scripts/subrepo_env.sh"
+SUBREPO_ROOT="$(renquant_subrepo_root "$PWD" "$GITHUB_DIR")"
+SUBREPO_SRC="$(renquant_subrepo_src "$SUBREPO_ROOT" renquant-execution)"
+COMMON_SRC="$(renquant_subrepo_src "$SUBREPO_ROOT" renquant-common)"
 export PYTHONPATH="$SUBREPO_SRC:$COMMON_SRC:${PYTHONPATH:-}"
 
 if python - <<'PY' >/dev/null 2>&1

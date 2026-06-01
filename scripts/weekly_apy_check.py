@@ -209,7 +209,8 @@ def main() -> int:
 
 
 def _run_multirepo_weekly_apy(argv: list[str]) -> int:
-    orchestrator_src = REPO_ROOT.parent / "renquant-orchestrator" / "src"
+    subrepo_root = Path(os.environ.get("RENQUANT_SUBREPO_ROOT", str(REPO_ROOT.parent)))
+    orchestrator_src = subrepo_root / "renquant-orchestrator" / "src"
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{orchestrator_src}{os.pathsep}{env.get('PYTHONPATH', '')}"
     probe = subprocess.run(

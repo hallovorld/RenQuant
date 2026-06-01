@@ -41,7 +41,10 @@ notify() {
 cd "$REPO_DIR"
 source "$VENV_DIR/bin/activate"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
-export PYTHONPATH="$GITHUB_DIR/renquant-backtesting/src:$GITHUB_DIR/renquant-pipeline/src:$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-common/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-artifacts/src:${PYTHONPATH:-}"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
 
 HAVE_BACKTESTING_SIM=0
 if "$PYTHON" - <<'PY' >/dev/null 2>&1

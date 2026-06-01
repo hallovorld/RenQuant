@@ -13,6 +13,9 @@ set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
 GITHUB_DIR="$(cd "$REPO_DIR/.." && pwd)"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 VENV_DIR="$REPO_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
 LOG_DIR="$REPO_DIR/logs/conditional_retrain_104"
@@ -49,7 +52,8 @@ run_trigger_check() {
         return $?
     fi
 
-    local orch_src="$GITHUB_DIR/renquant-orchestrator/src"
+    local orch_src
+    orch_src="$(renquant_subrepo_src "$SUBREPO_ROOT" renquant-orchestrator)"
     if PYTHONPATH="$orch_src:${PYTHONPATH:-}" "$PYTHON" - <<'PY'
 import renquant_orchestrator.anomaly_triggers  # noqa: F401
 PY

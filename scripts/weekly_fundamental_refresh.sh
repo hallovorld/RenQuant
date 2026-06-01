@@ -50,7 +50,10 @@ notify() {
 cd "$REPO_DIR"
 source "$VENV_DIR/bin/activate"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
-export PYTHONPATH="$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common):${PYTHONPATH:-}"
 echo "[$(date '+%H:%M:%S')] Weekly fundamental refresh — $DATE" | tee -a "$LOG"
 
 # ── Steps 1-2: SEC EDGAR fundamentals ───────────────────────────────

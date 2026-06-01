@@ -23,10 +23,12 @@ def test_retrain_wrapper_defaults_to_orchestrator_with_rollback() -> None:
     assert 'RQ_RETRAIN_RUNNER:-multirepo' in src
     assert "RQ_RETRAIN_RUNNER=umbrella" in src
     assert "renquant_orchestrator.retrain_alpha158_fund" in src
-    assert "renquant-orchestrator/src" in src
-    assert "renquant-model/src" in src
-    assert "renquant-pipeline/src" in src
-    assert "renquant-execution/src" in src
+    assert "scripts/subrepo_env.sh" in src
+    assert 'renquant_subrepo_pythonpath "$SUBREPO_ROOT"' in src
+    assert "renquant-orchestrator" in src
+    assert "renquant-model" in src
+    assert "renquant-pipeline" in src
+    assert "renquant-execution" in src
     assert "training_panel.daily_retrain_alpha158_fund" in src
     assert "RQ_RETRAIN_STRICT" in src
     assert "renquant_orchestrator.retrain_alpha158_fund={m.__file__}" in src

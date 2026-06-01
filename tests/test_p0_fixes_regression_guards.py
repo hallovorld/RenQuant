@@ -317,7 +317,8 @@ class TestP0_17_BackupSizeGuard:
         assert 'RQ_STATE_BACKUP_RUNNER:-multirepo' in sh
         assert "renquant_orchestrator.state_backup" in sh
         assert "RQ_STATE_BACKUP_STRICT" in sh
-        assert "renquant-orchestrator/src" in sh
+        assert "scripts/subrepo_env.sh" in sh
+        assert 'renquant_subrepo_src "$SUBREPO_ROOT" renquant-orchestrator' in sh
 
 
 class TestP0_18_WeeklyApyMonitor:
@@ -327,6 +328,7 @@ class TestP0_18_WeeklyApyMonitor:
         src = (REPO / "scripts/weekly_apy_check.py").read_text()
         assert 'os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo")' in src
         assert "renquant_orchestrator.weekly_apy_monitor" in src
+        assert "RENQUANT_SUBREPO_ROOT" in src
         assert "RQ_WEEKLY_APY_STRICT" in src
 
     def test_weekly_apy_plist_uses_project_venv(self):
