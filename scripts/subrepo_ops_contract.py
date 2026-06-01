@@ -98,6 +98,16 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="weekly_fundamental_refresh_uses_base_data_sec",
+        path="scripts/weekly_fundamental_refresh.sh",
+        required=(
+            "renquant_base_data.sec_fundamentals",
+            "--mode both",
+            "$GITHUB_DIR/renquant-base-data/src",
+            "RQ_DATA_REFRESH_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_calibrator_refresh_uses_model_repo",
         path="scripts/monthly_calibrator_refresh.sh",
         required=(
