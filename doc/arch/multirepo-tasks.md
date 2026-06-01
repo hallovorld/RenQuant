@@ -71,7 +71,7 @@ Goal: `kernel/*` lives in umbrella; split between renquant-pipeline (runtime), r
 | **C2.11** | kernel/panel_pipeline/ (16 files) → renquant-pipeline | ✅ done | 8 tests |
 | **C2.12** | 4 missing kernel/pipeline/pp_*.py → renquant-pipeline | ✅ done | 5 tests |
 | C3 | sim/exits/regime → renquant-backtesting (bulk move) | ⏳ optional | Most already in subrepos via C2 chunks; remainder are individual file inventory |
-| C4 | umbrella kernel/ as back-compat shim | ✅ done | scripts/daily_multirepo.py updated for new pin landings + meta_label bridge |
+| C4 | umbrella kernel/ as back-compat shim | ✅ done | scripts/daily_multirepo.py remains intact; scripts/live_multirepo.py adds shared intraday/shadow bridge coverage |
 | C5 | kernel.* imports in wf_gate/runner.py resolve from package | ⏳ deferred | Would break Phase 1 byte-equivalence; needed only at Phase 5 caller-flip |
 
 **TRACK C IS ESSENTIALLY DONE.** Umbrella kernel/* is now 1:1 mirrored in subrepos (modulo intentional shadows). C3/C5 remain optional — they need a planned Phase 5 cutover, not standalone chunks.

@@ -240,12 +240,9 @@ BUY_BLOCKED_BY_PREFLIGHT=0
 PREFLIGHT_SYSTEM_FAILURE=0
 
 # 2026-05-27: route the daily decision pipeline through the pinned subrepos
-# (multi-repo). scripts/daily_multirepo.py aliases every lifted kernel.* module
-# to renquant-pipeline (+ common/model/execution/backtesting/...) then delegates
-# to live.runner.main() with the SAME argv — broker/execution code stays umbrella,
-# only the decision tree runs from the pins. Verified byte-identical to plain
-# `-m live.runner` on the readonly path (preflight gates, 105 candidates, vol-gate
-# drops, fail-closed decision all matched, 2026-05-27). Instant rollback (§5.5):
+# (multi-repo). scripts/daily_multirepo.py aliases lifted kernel.* modules to
+# sibling subrepos (+ common/model/execution/backtesting/...) then delegates to
+# live.runner.main() with the same argv. Instant rollback (§5.5):
 #   RQ_DAILY_RUNNER=umbrella  → plain `-m live.runner` (the untouched baseline).
 if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
     RUNNER_ARGS=(-m live.runner)
@@ -444,11 +441,16 @@ SHADOW_LOG="$LOG_DIR/${DATE}_shadow.log"
 # Keep a wall-clock kill switch, but size it for the actual workload.
 SHADOW_TIMEOUT_SEC="${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}"
 if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 "$PYTHON" - <<PY > "$SHADOW_LOG" 2>&1
+import os
 import subprocess
 import sys
 
-cmd = [
-    sys.executable, "-m", "live.runner",
+if os.environ.get("RQ_DAILY_RUNNER", "multirepo") == "umbrella":
+    runner = [sys.executable, "-m", "live.runner"]
+else:
+    runner = [sys.executable, "$REPO_DIR/scripts/live_multirepo.py"]
+
+cmd = runner + [
     "--strategy", "renquant_104",
     "--broker", "readonly-alpaca",
     "--once",
