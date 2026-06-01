@@ -25,6 +25,7 @@ GITHUB_DIR="$(dirname "$REPO_DIR")"
 cd "$REPO_DIR"
 # shellcheck disable=SC1091
 source "$REPO_DIR/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 mkdir -p logs/iv_snapshot
 

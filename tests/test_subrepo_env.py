@@ -47,3 +47,42 @@ def test_subrepo_pythonpath_preserves_repo_order() -> None:
         "/tmp/renquant-runtime/renquant-orchestrator/src:"
         "/tmp/renquant-runtime/renquant-common/src"
     )
+
+
+def test_subrepo_root_loads_current_env_runtime_root(tmp_path: Path) -> None:
+    repo = tmp_path / "RenQuant"
+    runtime = tmp_path / "runtime" / "repos"
+    env_dir = repo / ".subrepo_assembly"
+    env_dir.mkdir(parents=True)
+    runtime.mkdir(parents=True)
+    (env_dir / "current.env").write_text(
+        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
+        encoding="utf-8",
+    )
+
+    out = _bash(
+        'source scripts/subrepo_env.sh; '
+        f'renquant_load_subrepo_env "{repo}"; '
+        f'renquant_subrepo_root "{repo}" "/fallback"'
+    )
+    assert out == str(runtime)
+
+
+def test_subrepo_root_uses_loaded_assembly_repos(tmp_path: Path) -> None:
+    repo = tmp_path / "RenQuant"
+    assembly = tmp_path / "assembly"
+    repos = assembly / "repos"
+    env_dir = repo / ".subrepo_assembly"
+    env_dir.mkdir(parents=True)
+    repos.mkdir(parents=True)
+    (env_dir / "current.env").write_text(
+        f"export RENQUANT_ASSEMBLY_DIR={assembly}\n",
+        encoding="utf-8",
+    )
+
+    out = _bash(
+        'source scripts/subrepo_env.sh; '
+        f'renquant_load_subrepo_env "{repo}"; '
+        f'renquant_subrepo_root "{repo}" "/fallback"'
+    )
+    assert out == str(repos)

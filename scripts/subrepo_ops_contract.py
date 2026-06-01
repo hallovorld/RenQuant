@@ -36,9 +36,21 @@ CHECKS: tuple[Check, ...] = (
         path="scripts/subrepo_env.sh",
         required=(
             "RENQUANT_SUBREPO_ROOT",
+            "renquant_load_subrepo_env()",
             "renquant_subrepo_root()",
             "renquant_subrepo_src()",
             "renquant_subrepo_pythonpath()",
+        ),
+    ),
+    Check(
+        name="subrepo_paths_support_runtime_root",
+        path="scripts/subrepo_paths.py",
+        required=(
+            "RENQUANT_SUBREPO_ROOT",
+            "RENQUANT_ASSEMBLY_DIR",
+            ".subrepo_assembly",
+            "current.env",
+            "current.json",
         ),
     ),
     Check(
@@ -67,6 +79,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             'RQ_PREOPEN_GATE_RUNNER:-multirepo',
             'source "$PWD/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$PWD"',
             'renquant_subrepo_root "$PWD" "$GITHUB_DIR"',
             'renquant_subrepo_src "$SUBREPO_ROOT" renquant-execution',
             'renquant_subrepo_src "$SUBREPO_ROOT" renquant-common',
@@ -90,6 +103,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             'RQ_CONDITIONAL_TRIGGER_RUNNER:-multirepo',
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR"',
             'renquant_subrepo_src "$SUBREPO_ROOT" renquant-orchestrator',
             "renquant_orchestrator.anomaly_triggers",
@@ -102,6 +116,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             'RQ_RETRAIN_RUNNER:-multirepo',
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT"',
             "renquant_orchestrator.retrain_alpha158_fund",
             "renquant-orchestrator",
@@ -117,6 +132,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             'RQ_ALPHA158_LINEAR_RUNNER:-multirepo',
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT"',
             "renquant_orchestrator.retrain_alpha158_linear",
             "renquant-orchestrator",
@@ -132,6 +148,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             "renquant_base_data.earnings_surprise_refresh",
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common',
             "RQ_DATA_REFRESH_STRICT",
         ),
@@ -143,6 +160,7 @@ CHECKS: tuple[Check, ...] = (
             "renquant_base_data.sec_fundamentals",
             "--mode both",
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common',
             "RQ_DATA_REFRESH_STRICT",
         ),
@@ -154,6 +172,7 @@ CHECKS: tuple[Check, ...] = (
             "renquant_base_data.sec_fundamentals",
             "--mode both",
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_src "$SUBREPO_ROOT" renquant-base-data',
             "RQ_EVENT_SEC_REFRESH_STRICT",
         ),
@@ -165,6 +184,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             "renquant_base_data.options_iv_refresh",
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common',
             "RQ_DAILY_IV_STRICT",
         ),
@@ -175,6 +195,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             "renquant_base_data.alpaca_news_refresh",
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-base-data renquant-common',
             "RQ_DAILY_NEWS_STRICT",
         ),
@@ -193,7 +214,8 @@ CHECKS: tuple[Check, ...] = (
         path="scripts/screen_watchlist.py",
         required=(
             "renquant_base_data.watchlist_screen",
-            "RENQUANT_SUBREPO_ROOT",
+            "from subrepo_paths import resolve_subrepo_root",
+            "resolve_subrepo_root(REPO_ROOT)",
             "renquant-base-data/src",
             "RQ_SCREEN_WATCHLIST_STRICT",
         ),
@@ -204,6 +226,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             "renquant_model_common.meta_label_exit",
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT"',
             "renquant-model",
             "RQ_META_LABEL_STRICT",
@@ -225,6 +248,7 @@ CHECKS: tuple[Check, ...] = (
         required=(
             "renquant_model_gbdt.fit_calibrator_alpha158_fund",
             'source "$REPO_DIR/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_DIR"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT"',
             "renquant-model",
             "RQ_MONTHLY_CALIBRATOR_STRICT",
@@ -253,6 +277,7 @@ CHECKS: tuple[Check, ...] = (
             'RQ_STATE_BACKUP_RUNNER:-multirepo',
             "renquant_orchestrator.state_backup",
             'source "$REPO_ROOT/scripts/subrepo_env.sh"',
+            'renquant_load_subrepo_env "$REPO_ROOT"',
             'renquant_subrepo_src "$SUBREPO_ROOT" renquant-orchestrator',
             "RQ_STATE_BACKUP_STRICT",
         ),
@@ -263,7 +288,8 @@ CHECKS: tuple[Check, ...] = (
         required=(
             'os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo")',
             "renquant_orchestrator.weekly_apy_monitor",
-            "RENQUANT_SUBREPO_ROOT",
+            "from subrepo_paths import resolve_subrepo_root",
+            "resolve_subrepo_root(REPO_ROOT)",
             'subrepo_root / "renquant-orchestrator" / "src"',
             "RQ_WEEKLY_APY_STRICT",
         ),

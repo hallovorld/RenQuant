@@ -39,6 +39,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GITHUB_DIR="$(cd "$REPO_ROOT/.." && pwd)"
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_ROOT"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_ROOT" "$GITHUB_DIR")"
 VENV_DIR="$REPO_ROOT/.venv"
 PYTHON="$VENV_DIR/bin/python"

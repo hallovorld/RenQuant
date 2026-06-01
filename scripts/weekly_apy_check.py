@@ -32,6 +32,8 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from subrepo_paths import resolve_subrepo_root
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDIT_LOG = REPO_ROOT / "logs" / "live_104" / "audit.jsonl"
@@ -209,7 +211,7 @@ def main() -> int:
 
 
 def _run_multirepo_weekly_apy(argv: list[str]) -> int:
-    subrepo_root = Path(os.environ.get("RENQUANT_SUBREPO_ROOT", str(REPO_ROOT.parent)))
+    subrepo_root = resolve_subrepo_root(REPO_ROOT)
     orchestrator_src = subrepo_root / "renquant-orchestrator" / "src"
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{orchestrator_src}{os.pathsep}{env.get('PYTHONPATH', '')}"

@@ -43,6 +43,7 @@ source "$VENV_DIR/bin/activate"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
 # shellcheck disable=SC1091
 source "$REPO_DIR/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
 

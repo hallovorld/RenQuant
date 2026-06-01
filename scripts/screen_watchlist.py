@@ -38,6 +38,8 @@ import os
 import sys
 from pathlib import Path
 
+from subrepo_paths import resolve_subrepo_root
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 logging.basicConfig(
@@ -74,7 +76,7 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     if cache_root.as_posix().rstrip("/") != "data/ohlcv":
         return False
 
-    subrepo_root = Path(os.environ.get("RENQUANT_SUBREPO_ROOT", str(REPO_ROOT.parent)))
+    subrepo_root = resolve_subrepo_root(REPO_ROOT)
     for rel in ("renquant-base-data/src", "renquant-common/src"):
         path = str(subrepo_root / rel)
         if path not in sys.path:

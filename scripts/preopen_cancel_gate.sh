@@ -51,6 +51,7 @@ export RENQUANT_REPO_ROOT="$PWD"
 GITHUB_DIR="$(cd "$PWD/.." && pwd)"
 # shellcheck disable=SC1091
 source "$PWD/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$PWD"
 SUBREPO_ROOT="$(renquant_subrepo_root "$PWD" "$GITHUB_DIR")"
 SUBREPO_SRC="$(renquant_subrepo_src "$SUBREPO_ROOT" renquant-execution)"
 COMMON_SRC="$(renquant_subrepo_src "$SUBREPO_ROOT" renquant-common)"
