@@ -49,8 +49,8 @@ def test_date_window_applies_training_window_before_effective_cutoff() -> None:
 #   4. main() stamps the chosen window into calibrator_policy + per-row.
 
 
-def _row_fixture(tmp_path: Path) -> dict[str, object]:
-    scorer = tmp_path / "scorer.json"
+def _row_fixture(tmp_path: Path, suffix: str = ".json") -> dict[str, object]:
+    scorer = tmp_path / f"scorer{suffix}"
     scorer.write_text("{}")
     return {
         "cutoff_date": "2024-01-02",
@@ -89,6 +89,47 @@ def _captured_argv(fake: MagicMock) -> list[str]:
     cmd = fake.call_args.args[0]
     assert isinstance(cmd, list)
     return cmd
+
+
+def test_fit_one_uses_model_repo_gbdt_fitter_for_json_artifact(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    _fit_one(
+        _row_fixture(tmp_path, ".json"),
+        calibrator_root=tmp_path / "out",
+        training_window_years=3.0,
+        calibrator_window_years=0.0,
+        method="platt",
+        panel=None,
+        raw_label_panel=None,
+        overwrite=True,
+    )
+    argv = _captured_argv(fake_subprocess)
+    assert "-m" in argv
+    assert "renquant_model_gbdt.fit_calibrator_alpha158_fund" in argv
+    assert "fit_calibrator_alpha158_fund.py" not in " ".join(argv)
+
+
+def test_fit_one_uses_model_repo_patchtst_fitter_for_pt_artifact(
+    tmp_path: Path, fake_subprocess: MagicMock,
+) -> None:
+    _fit_one(
+        _row_fixture(tmp_path, ".pt"),
+        calibrator_root=tmp_path / "out",
+        training_window_years=3.0,
+        calibrator_window_years=0.0,
+        method="platt",
+        panel="data/transformer_v4_wl200_clean.parquet",
+        raw_label_panel="data/alpha158_291_fundamental_dataset_rawlabel.parquet",
+        overwrite=True,
+    )
+    argv = _captured_argv(fake_subprocess)
+    joined = " ".join(argv)
+    assert "-m" in argv
+    assert "renquant_model_patchtst.fit_calibrator" in argv
+    assert "fit_hf_patchtst_calibrator.py" not in joined
+    assert "--panel data/transformer_v4_wl200_clean.parquet" in joined
+    assert "--raw-label-panel data/alpha158_291_fundamental_dataset_rawlabel.parquet" in joined
 
 
 def test_fit_one_legacy_path_uses_training_window_years_for_calibrator(

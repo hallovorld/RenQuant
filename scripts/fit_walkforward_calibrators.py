@@ -12,6 +12,7 @@ import concurrent.futures as cf
 import copy
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,12 +22,44 @@ import pandas as pd
 
 
 REPO = Path(__file__).resolve().parent.parent
+CANDIDATE_GITHUB_ROOTS = [
+    REPO.parent,
+    Path.home() / "git" / "github",
+]
 STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
+GBDT_FITTER_MODULE = "renquant_model_gbdt.fit_calibrator_alpha158_fund"
+PATCHTST_FITTER_MODULE = "renquant_model_patchtst.fit_calibrator"
+MULTIREPO_REPOS = [
+    "renquant-model",
+    "renquant-common",
+    "renquant-base-data",
+    "renquant-artifacts",
+]
+MULTIREPO_SRC_PATHS = list(dict.fromkeys(
+    root / repo / "src"
+    for root in CANDIDATE_GITHUB_ROOTS
+    for repo in MULTIREPO_REPOS
+))
 
 
 def _resolve_strategy_path(raw: str | Path, *, base: Path = STRATEGY_DIR) -> Path:
     p = Path(raw)
     return p if p.is_absolute() else base / p
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    src_paths = [str(p) for p in MULTIREPO_SRC_PATHS if p.exists()]
+    if src_paths:
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = os.pathsep.join(src_paths + ([existing] if existing else []))
+    return env
+
+
+def _fitter_module_for(scorer_path: Path) -> str:
+    if scorer_path.suffix == ".pt":
+        return PATCHTST_FITTER_MODULE
+    return GBDT_FITTER_MODULE
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
@@ -205,18 +238,13 @@ def _fit_one(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lookahead_days = int(row.get("lookahead_days", 60))
     data_start, data_end = _date_window(cutoff, effective_years, lookahead_days)
-    # Dispatch by artifact type (2026-05-30 Bug C fix):
-    #   .json  → GBDT panel-LTR fitter
-    #   .pt    → HF PatchTST sequence fitter (same CLI surface)
-    # Pre-fix: hardcoded to GBDT script, which crashed
-    # UnicodeDecodeError on torch pickles.
-    if scorer_path.suffix == ".pt":
-        fitter_script = "fit_hf_patchtst_calibrator.py"
-    else:
-        fitter_script = "fit_calibrator_alpha158_fund.py"
+    # Dispatch by artifact type through model-repo modules. The old umbrella
+    # script paths are kept only as standalone compatibility wrappers.
+    fitter_module = _fitter_module_for(scorer_path)
     cmd = [
         sys.executable,
-        str(REPO / "scripts" / fitter_script),
+        "-m",
+        fitter_module,
         "--scorer-artifact",
         str(scorer_path),
         "--out",
@@ -232,7 +260,13 @@ def _fit_one(
         cmd.extend(["--panel", panel])
     if raw_label_panel:
         cmd.extend(["--raw-label-panel", raw_label_panel])
-    proc = subprocess.run(cmd, cwd=str(REPO), text=True, capture_output=True)
+    proc = subprocess.run(
+        cmd,
+        cwd=str(REPO),
+        text=True,
+        capture_output=True,
+        env=_subprocess_env(),
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             f"calibrator fit failed for cutoff={cutoff.date()} "
