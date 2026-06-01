@@ -21,6 +21,16 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.check_output(("git", "-C", str(repo), *args), text=True).strip()
 
 
+def test_runtime_root_output_is_gitignored() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    subprocess.run(
+        ("git", "check-ignore", ".subrepo_runtime/repos/renquant-common/.git"),
+        cwd=repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+
 def _make_remote(tmp_path: Path, name: str) -> tuple[Path, str]:
     src = tmp_path / f"{name}-src"
     (src / "src").mkdir(parents=True)
