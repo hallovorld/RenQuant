@@ -6,9 +6,11 @@ LIFTED kernel module to the pinned `renquant-pipeline` subrepo, so the decision
 tree genuinely runs out of the multi-repo packages — while the umbrella RenQuant
 stays the untouched baseline/rollback (copy-not-move).
 
-Bridge state (2026-05-30, after Track C2.4/C2.9/C2.11):
+Bridge state (2026-06-01):
   * `kernel.preflight`     → renquant-pipeline.kernel.preflight (lifted)
   * `kernel.panel_pipeline`→ renquant-pipeline.kernel.panel_pipeline (lifted)
+  * `renquant_pipeline.panel_scoring`
+                            → renquant-pipeline.kernel.panel_pipeline.job_panel_scoring
   * `kernel.meta_label`    → renquant-backtesting.meta_label (lifted; bridged here)
   * everything else        → renquant-pipeline (already lifted)
 The umbrella `kernel/` retains all of these as byte-equivalent copies for
@@ -42,8 +44,8 @@ _PIN_SRCS = [
 def _bootstrap_multirepo() -> list[str]:
     """Put pinned subrepos on path and alias every lifted kernel.* module to the
     pin. Returns the list of aliased module names (for the run report)."""
-    # umbrella + strategy dir first so non-lifted kernel.* (preflight/
-    # panel_pipeline/meta_label) and `live`/`adapters` still resolve locally.
+    # umbrella + strategy dir first so `live`/`adapters` and explicit rollback
+    # paths still resolve locally; lifted kernel.* modules are overwritten below.
     for p in (str(REPO), str(STRATEGY_DIR)):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -88,17 +90,15 @@ def _bootstrap_multirepo() -> list[str]:
         except Exception:
             pass
 
-    # pp_inference does `from renquant_pipeline.panel_scoring import PanelScoringJob`,
-    # but the pin's panel_scoring.py is a *consolidated rewrite* of the model
-    # boundary that (unlike the umbrella) does NOT fail-close on an unfingerprinted
-    # artifact — a parity gap AND a safety divergence (§5.13.15). Route it to the
-    # umbrella's proven PanelScoringJob until the model boundary is homed into
-    # renquant-model. The fail-closed gate is a pure artifact-metadata check, so the
-    # decision is identical regardless of the (pin-provided) feature/data source.
+    # pp_inference imports `renquant_pipeline.panel_scoring.PanelScoringJob`.
+    # Production daily needs the byte-equivalent fail-closed scorer job lifted
+    # under renquant-pipeline.kernel.panel_pipeline, not the experimental
+    # load_scorer rewrite exposed at renquant_pipeline.panel_scoring.
     try:
         sys.modules["renquant_pipeline.panel_scoring"] = importlib.import_module(
-            "kernel.panel_pipeline.job_panel_scoring")
-        aliased.append("renquant_pipeline.panel_scoring←umbrella.job_panel_scoring")
+            "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")
+        aliased.append(
+            "renquant_pipeline.panel_scoring←renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")
     except Exception:
         pass
     return aliased
@@ -108,7 +108,8 @@ def main() -> int:
     aliased = _bootstrap_multirepo()
     sys.stderr.write(
         f"[multirepo] routed {len(aliased)} kernel modules to renquant-pipeline; "
-        f"preflight/panel_pipeline/meta_label resolve from umbrella (bridge).\n"
+        "preflight/panel_pipeline/panel_scoring resolve from pinned subrepos; "
+        "meta_label resolves from renquant-backtesting when available.\n"
     )
     # Hand off to the real production runner with the original CLI args.
     if "--strategy" not in sys.argv:

@@ -23,6 +23,8 @@ def test_daily_multirepo_keeps_standalone_umbrella_bridge() -> None:
     assert "def _bootstrap_multirepo()" in src
     assert 'importlib.import_module("live.runner")' in src
     assert "from live_multirepo import main" not in src
+    assert "umbrella.job_panel_scoring" not in src
+    assert 'importlib.import_module(\n            "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")' in src
 
 
 def test_live_multirepo_resolves_subrepos_from_lock() -> None:
@@ -87,8 +89,13 @@ def test_live_multirepo_aliases_critical_lifted_modules() -> None:
 
     preflight = sys.modules.get("kernel.preflight")
     panel_pipeline = sys.modules.get("kernel.panel_pipeline")
+    panel_scoring = sys.modules.get("renquant_pipeline.panel_scoring")
 
     assert preflight is not None
     assert preflight.__name__ == "renquant_pipeline.kernel.preflight"
     assert panel_pipeline is not None
     assert panel_pipeline.__name__ == "renquant_pipeline.kernel.panel_pipeline"
+    assert panel_scoring is not None
+    assert panel_scoring.__name__ == (
+        "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring"
+    )
