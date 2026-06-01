@@ -59,15 +59,27 @@ done
 ```bash
 cd /Users/renhao/git/github/RenQuant
 
-# Dry-run first to see what would happen (no PRs opened):
+# Dry-run first to see what would happen (no PRs, no clones):
 ./scripts/fan_out_agent_automation.sh
 
-# Real run — opens 8 PRs (one per target repo):
+# Real run — clones each target into /tmp/fanout-<hash>/<repo>/
+# (NEVER touches your working clones at ~/git/github/<repo>),
+# opens 8 PRs:
 ./scripts/fan_out_agent_automation.sh --execute
 
 # Or one at a time during verification:
 ./scripts/fan_out_agent_automation.sh --execute --only renquant-common
+
+# Cleanup after: temp clones live at the workdir printed at the
+# top of the run output. To remove:
+rm -rf /tmp/fanout-agent-automation-XXXXX
 ```
+
+**Non-destructive guarantee** (per PR #21 codex review): the script
+clones each target repo into a fresh temp directory and operates
+there. Your existing working clones at `~/git/github/<repo>` are
+never touched. In-flight branches in those clones survive the
+fan-out unchanged.
 
 ## Post-fan-out verification
 
