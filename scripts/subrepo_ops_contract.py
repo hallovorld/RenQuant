@@ -17,6 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONDA_PREFIX = "/Users/renhao/miniconda3"
+# Personal-workstation contract: active launchd plists are installed for this
+# operator account and must resolve the project venv at this absolute path.
 VENV_BIN = "/Users/renhao/git/github/RenQuant/.venv/bin"
 
 

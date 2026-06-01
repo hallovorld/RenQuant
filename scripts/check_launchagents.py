@@ -13,6 +13,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
+# Personal-workstation contract: active launchd plists are installed for this
+# operator account and must resolve the project venv at this absolute path.
 VENV_BIN = "/Users/renhao/git/github/RenQuant/.venv/bin"
 
 
@@ -53,16 +55,17 @@ def _load_plist(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return data, None
 
 
-def _check_path_env(path: Path, data: dict[str, Any]) -> Issue | None:
+def _check_path_env(path: Path, data: dict[str, Any]) -> list[Issue]:
+    issues: list[Issue] = []
     env = data.get("EnvironmentVariables")
     if not isinstance(env, dict):
-        return Issue("error", str(path), "missing EnvironmentVariables dict")
+        return [Issue("error", str(path), "missing EnvironmentVariables dict")]
     launch_path = env.get("PATH")
     if not isinstance(launch_path, str) or not launch_path:
-        return Issue("error", str(path), "missing EnvironmentVariables.PATH")
-    if VENV_BIN not in launch_path:
-        return Issue("error", str(path), f"PATH must include {VENV_BIN}")
-    return None
+        issues.append(Issue("error", str(path), "missing EnvironmentVariables.PATH"))
+    elif VENV_BIN not in launch_path:
+        issues.append(Issue("error", str(path), f"PATH must include {VENV_BIN}"))
+    return issues
 
 
 def inspect_launchagents(
@@ -84,9 +87,7 @@ def inspect_launchagents(
             source_hash = None
         else:
             source_hash = _sha256(source)
-            path_issue = _check_path_env(source, source_data or {})
-            if path_issue:
-                issues.append(path_issue)
+            issues.extend(_check_path_env(source, source_data or {}))
 
         installed = launchagents_dir / source.name
         row: dict[str, Any] = {
@@ -118,9 +119,7 @@ def inspect_launchagents(
         if installed_error:
             issues.append(Issue("error", str(installed), f"installed plist is invalid: {installed_error}"))
         else:
-            path_issue = _check_path_env(installed, installed_data or {})
-            if path_issue:
-                issues.append(path_issue)
+            issues.extend(_check_path_env(installed, installed_data or {}))
         entries.append(row)
 
     extra_severity = "error" if strict_extra else "warning"

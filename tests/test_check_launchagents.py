@@ -28,6 +28,18 @@ def _plist(label: str) -> bytes:
     )
 
 
+def _old_env_plist(label: str) -> bytes:
+    return plistlib.dumps(
+        {
+            "Label": label,
+            "ProgramArguments": ["/Users/renhao/git/github/RenQuant/scripts/noop.sh"],
+            "EnvironmentVariables": {
+                "PATH": "/Users/renhao/miniconda3/envs/renquant/bin:/usr/bin:/bin",
+            },
+        }
+    )
+
+
 def _write_active_plists(repo_root: Path) -> None:
     launchd = repo_root / "scripts" / "launchd"
     launchd.mkdir(parents=True)
@@ -74,6 +86,28 @@ def test_launchagent_check_fails_on_installed_drift(tmp_path):
     reasons = {issue["reason"] for issue in result["issues"]}
     assert any("drifted from repo source" in reason for reason in reasons)
     assert any("installed plist is invalid" in reason for reason in reasons)
+
+
+def test_launchagent_check_reports_old_installed_path(tmp_path):
+    module = _load_module()
+    repo_root = tmp_path / "repo"
+    agents = tmp_path / "agents"
+    _write_active_plists(repo_root)
+    agents.mkdir()
+    for source in [
+        repo_root / "scripts" / "launchd" / "com.renquant.daily104.plist",
+        repo_root / "scripts" / "com.renquant.backup.plist",
+    ]:
+        (agents / source.name).write_bytes(source.read_bytes())
+    (agents / "com.renquant.daily104.plist").write_bytes(
+        _old_env_plist("com.renquant.daily104")
+    )
+
+    result = module.inspect_launchagents(repo_root=repo_root, launchagents_dir=agents)
+
+    assert result["ok"] is False
+    reasons = [issue["reason"] for issue in result["issues"]]
+    assert "PATH must include /Users/renhao/git/github/RenQuant/.venv/bin" in reasons
 
 
 def test_launchagent_check_warns_on_extra_by_default(tmp_path):
