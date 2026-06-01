@@ -126,6 +126,15 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="daily_news_sentiment_uses_model_repo",
+        path="scripts/daily_news_sentiment_refresh.sh",
+        required=(
+            "renquant_model_common.news_sentiment_finbert",
+            "$GITHUB_DIR/renquant-model/src",
+            "RQ_DAILY_NEWS_SENTIMENT_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_calibrator_refresh_uses_model_repo",
         path="scripts/monthly_calibrator_refresh.sh",
         required=(

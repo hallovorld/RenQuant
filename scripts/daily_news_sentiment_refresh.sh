@@ -37,7 +37,7 @@ set +a
 
 # 1. Fetch yesterday's news (and weekend backlog on Mondays)
 echo "--- step 1: fetch Alpaca News ---" >> "$LOG"
-export PYTHONPATH="$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
+export PYTHONPATH="$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
 if "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_base_data.alpaca_news_refresh  # noqa: F401
 PY
@@ -58,6 +58,21 @@ fi
 
 # 2. Re-score with FinBERT (per-ticker parquet append; idempotent)
 echo "--- step 2: FinBERT score ---" >> "$LOG"
-"$PYTHON" -u scripts/score_news_finbert.py 2>&1 | tee -a "$LOG"
+if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_model_common.news_sentiment_finbert  # noqa: F401
+PY
+then
+    "$PYTHON" -u -m renquant_model_common.news_sentiment_finbert \
+        --data-dir "$REPO_DIR/data" \
+        --json 2>&1 | tee -a "$LOG"
+elif [ "${RQ_DAILY_NEWS_SENTIMENT_STRICT:-0}" = "1" ]; then
+    echo "ERROR: renquant_model_common.news_sentiment_finbert unavailable and RQ_DAILY_NEWS_SENTIMENT_STRICT=1" \
+        | tee -a "$LOG"
+    exit 1
+else
+    echo "WARN: renquant_model_common.news_sentiment_finbert unavailable; falling back to umbrella script." \
+        | tee -a "$LOG"
+    "$PYTHON" -u scripts/score_news_finbert.py 2>&1 | tee -a "$LOG"
+fi
 
 echo "=== $(date) — Daily news+sentiment done ===" | tee -a "$LOG"
