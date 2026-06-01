@@ -33,8 +33,8 @@ def test_retrain_wrapper_defaults_to_orchestrator_with_rollback() -> None:
     assert "RETRAIN_FALLBACK" in src
     assert "Priority: low" in src
     assert ".subrepo_fallback_alert_stamp" in src
-    assert 'grep -q -- "--staged"' in src
-    assert "TODO(renquant-orchestrator#2)" in src
+    assert 'grep -q -- "--staged"' not in src
+    assert "--staged is umbrella-only" not in src
 
 
 def test_weekly_still_calls_wrapper_with_explicit_staging_paths() -> None:
