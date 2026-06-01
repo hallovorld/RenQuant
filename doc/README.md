@@ -48,6 +48,7 @@ Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking, **172 fe
 | [golden-config.md](ops/golden-config.md) | Current golden state + drift policy |
 | [insider-trades-setup.md](ops/insider-trades-setup.md) | SEC EDGAR User-Agent setup |
 | [cloud-backup-setup.md](ops/cloud-backup-setup.md) | Backup configuration |
+| [codex-agent-automation.md](ops/codex-agent-automation.md) | Codex PR identity, automatic review, and auto-fix design |
 
 ## research/ — background
 
