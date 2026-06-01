@@ -67,7 +67,40 @@ def test_pin_guard_accepts_matching_clean_repo(tmp_path):
     assert issues == []
 
 
+def test_pin_metadata_cache_hits_without_second_git_call(tmp_path, monkeypatch):
+    module = _load_module()
+    repo = tmp_path / "test-repo"
+    _make_repo(repo)
+    module.CACHE_PATH = tmp_path / "cache.json"
+
+    expected = module._pin_metadata(repo)
+
+    def fail_git(*_args, **_kwargs):
+        raise AssertionError("cache miss")
+
+    monkeypatch.setattr(module, "_git", fail_git)
+
+    assert module._pin_metadata(repo) == expected
+
+
 def test_pin_guard_reports_dirty_repo(tmp_path):
+    module = _load_module()
+    repo = tmp_path / "test-repo"
+    commit = _make_repo(repo)
+    lock_path = _write_lock(tmp_path, repo, commit)
+    (repo / "src" / "pkg.py").write_text("VALUE = 2\n")
+
+    _, issues = module.resolve_subrepo_src_roots(
+        lock_file=lock_path,
+        names=["test-repo"],
+        siblings=tmp_path,
+        check_dirty=True,
+    )
+
+    assert [issue.reason for issue in issues] == ["working tree is dirty"]
+
+
+def test_pin_guard_skips_dirty_check_by_default(tmp_path):
     module = _load_module()
     repo = tmp_path / "test-repo"
     commit = _make_repo(repo)
@@ -80,4 +113,43 @@ def test_pin_guard_reports_dirty_repo(tmp_path):
         siblings=tmp_path,
     )
 
-    assert [issue.reason for issue in issues] == ["working tree is dirty"]
+    assert issues == []
+
+
+def test_old_strict_subrepo_paths_env_still_fails_closed(monkeypatch):
+    module = _load_module()
+    monkeypatch.setenv("RENQUANT_STRICT_SUBREPO_PATHS", "1")
+
+    issue = module.PinIssue(
+        repo="test-repo",
+        path="/tmp/test-repo",
+        reason="HEAD abc does not match lock commit def",
+    )
+
+    try:
+        module.enforce_or_warn([issue])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("expected SystemExit")
+
+
+def test_dirty_requires_clean_strict_env(monkeypatch):
+    module = _load_module()
+    monkeypatch.setenv("RENQUANT_STRICT_SUBREPO_PATHS", "1")
+    issue = module.PinIssue(
+        repo="test-repo",
+        path="/tmp/test-repo",
+        reason="working tree is dirty",
+        kind="dirty",
+    )
+
+    module.enforce_or_warn([issue])
+
+    monkeypatch.setenv("RENQUANT_STRICT_SUBREPO_CLEAN", "1")
+    try:
+        module.enforce_or_warn([issue])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("expected SystemExit")

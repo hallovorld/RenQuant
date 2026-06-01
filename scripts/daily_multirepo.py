@@ -29,7 +29,12 @@ import os
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from subrepo_pin_guard import enforce_or_warn, resolve_subrepo_src_roots
+from subrepo_pin_guard import strict_clean_enabled
 
 REPO = Path(__file__).resolve().parent.parent
 SIBLINGS = REPO.parent
@@ -57,6 +62,7 @@ def _bootstrap_multirepo() -> list[str]:
         names=_PIN_SRCS,
         siblings=SIBLINGS,
         root_override=os.environ.get("RENQUANT_SUBREPO_ROOT"),
+        check_dirty=strict_clean_enabled(),
     )
     enforce_or_warn(pin_issues)
     for src in src_roots:

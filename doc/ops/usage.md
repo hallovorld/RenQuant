@@ -165,6 +165,8 @@ The runner auto-detects strategy shape from `strategy_config.json`. For 104, `Ru
 
 **Daily log** (104) includes: REGIME PARAMS block (regime name, confidence, stop/hold/reserve values), price source tag (`[Alpaca]` or `[OHLCV <date>]`), max_hold exits with realized P&L, per-buy position sizing math, panel scoring summary, dropped candidates from `VetoWeakBuysTask`, rotation reject reasons (incl. `panel_advantage`).
 
+**Multirepo pin guard:** `scripts/live_multirepo.py` and `scripts/daily_multirepo.py` resolve sibling repos through `subrepos.lock.json` and warn when local checkouts drift from the pinned commit or remote. Set `RENQUANT_STRICT_SUBREPO_PATHS=1` to fail closed on missing path, commit, or remote drift (`RENQUANT_STRICT_SUBREPO_PINS=1` is accepted as an alias). Dirty worktrees are only checked when `RENQUANT_STRICT_SUBREPO_CLEAN=1`; use that for production cron after local development worktrees are clean or a pinned assembly is in use.
+
 ---
 
 ## Scheduled mode (macOS launchd)

@@ -5,7 +5,8 @@ Runs the real ``live.runner`` while routing lifted RenQuant modules through
 ``subrepos.lock.json`` local paths. This is the shared entry point for
 production daily, intraday sell-only, and readonly shadow runs; set
 ``RQ_DAILY_RUNNER=umbrella`` in the shell wrapper to bypass this bridge and use
-the umbrella baseline.
+the umbrella baseline. Set ``RENQUANT_STRICT_SUBREPO_PATHS=1`` to fail closed
+when local sibling checkouts do not match ``subrepos.lock.json``.
 """
 from __future__ import annotations
 
@@ -14,7 +15,12 @@ import os
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from subrepo_pin_guard import enforce_or_warn, resolve_subrepo_src_roots
+from subrepo_pin_guard import strict_clean_enabled
 
 REPO = Path(__file__).resolve().parent.parent
 SIBLINGS = REPO.parent
@@ -35,6 +41,18 @@ _PIN_SRCS = [
 ]
 
 
+def _subrepo_src_roots() -> tuple[list[Path], list[str]]:
+    roots, issues = resolve_subrepo_src_roots(
+        lock_file=LOCK_FILE,
+        names=_PIN_SRCS,
+        siblings=SIBLINGS,
+        root_override=os.environ.get("RENQUANT_SUBREPO_ROOT"),
+        check_dirty=strict_clean_enabled(),
+    )
+    missing = [issue.repo for issue in issues if issue.reason == "missing local src root"]
+    return roots, missing
+
+
 def _bootstrap_multirepo() -> list[str]:
     """Put sibling subrepos on sys.path and alias lifted kernel modules."""
     for path in (str(REPO), str(STRATEGY_DIR)):
@@ -45,6 +63,7 @@ def _bootstrap_multirepo() -> list[str]:
         names=_PIN_SRCS,
         siblings=SIBLINGS,
         root_override=os.environ.get("RENQUANT_SUBREPO_ROOT"),
+        check_dirty=strict_clean_enabled(),
     )
     enforce_or_warn(pin_issues)
     for src in src_roots:
