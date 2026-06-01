@@ -28,7 +28,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 try:
-	from kernel.metrics.perf_summary import compute_perf_triple  # noqa: E402
+	from renquant_common.metrics.perf_summary import compute_perf_triple  # noqa: E402
 except ImportError:  # scipy missing in some minimal envs
 	compute_perf_triple = None  # type: ignore[assignment]
 

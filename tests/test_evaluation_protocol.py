@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 class TestNeweyWestSE:
 
     def test_lag_selection_andrews_1991(self):
-        from kernel.metrics.hac_se import andrews_optimal_lag
+        from renquant_common.metrics.hac_se import andrews_optimal_lag
         # n=100 → L=4 × (1)^(2/9) = 4
         assert andrews_optimal_lag(100) == 4
         # n=252 → L=4 × (2.52)^(2/9) ≈ 4.84 → floor=4
@@ -39,7 +39,7 @@ class TestNeweyWestSE:
 
     def test_se_matches_naive_for_iid(self):
         """White-noise series: HAC SE ≈ naive SE (no inflation needed)."""
-        from kernel.metrics.hac_se import newey_west_se
+        from renquant_common.metrics.hac_se import newey_west_se
         rng = np.random.default_rng(42)
         r = rng.normal(0, 1, size=500)
         se_naive = r.std(ddof=0) / math.sqrt(len(r))
@@ -51,7 +51,7 @@ class TestNeweyWestSE:
 
     def test_se_inflated_for_ar1(self):
         """Strong AR(1) series: HAC SE strictly LARGER than naive."""
-        from kernel.metrics.hac_se import newey_west_se
+        from renquant_common.metrics.hac_se import newey_west_se
         rng = np.random.default_rng(42)
         n = 500
         phi = 0.5
@@ -71,7 +71,7 @@ class TestNeweyWestSE:
 
     def test_t_stat_normal_under_null(self):
         """White noise mean ≈ 0 → |t| < 2 with high probability."""
-        from kernel.metrics.hac_se import hac_t_stat
+        from renquant_common.metrics.hac_se import hac_t_stat
         rng = np.random.default_rng(123)
         r = rng.normal(0, 1, size=500)
         res = hac_t_stat(r)
@@ -79,7 +79,7 @@ class TestNeweyWestSE:
 
     def test_t_stat_detects_signal(self):
         """Mean = 0.5σ should give t ≈ 0.5 × √n."""
-        from kernel.metrics.hac_se import hac_t_stat
+        from renquant_common.metrics.hac_se import hac_t_stat
         rng = np.random.default_rng(42)
         n = 500
         r = rng.normal(0.05, 1.0, size=n)  # mean / σ = 0.05
@@ -93,14 +93,14 @@ class TestNeweyWestSE:
 class TestStationaryBootstrap:
 
     def test_optimal_block_length_sensible(self):
-        from kernel.metrics.block_bootstrap import optimal_block_length
+        from renquant_common.metrics.block_bootstrap import optimal_block_length
         # n=100 → ~5; arch will pick something in [2, 20]
         L = optimal_block_length(np.random.default_rng(0).normal(0, 1, 100))
         assert 2 <= L <= 30
 
     def test_ci_covers_true_mean_for_iid(self):
         """Bootstrap 95% CI should cover the true mean for iid data."""
-        from kernel.metrics.block_bootstrap import stationary_bootstrap_ci
+        from renquant_common.metrics.block_bootstrap import stationary_bootstrap_ci
         rng = np.random.default_rng(42)
         true_mu = 0.3
         s = rng.normal(true_mu, 1.0, size=500)
@@ -110,7 +110,7 @@ class TestStationaryBootstrap:
         )
 
     def test_point_estimate_matches_sample_mean(self):
-        from kernel.metrics.block_bootstrap import stationary_bootstrap_ci
+        from renquant_common.metrics.block_bootstrap import stationary_bootstrap_ci
         s = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
         res = stationary_bootstrap_ci(s, B=100)
         assert res["point"] == pytest.approx(3.5)

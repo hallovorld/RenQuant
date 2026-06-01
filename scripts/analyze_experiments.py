@@ -120,7 +120,7 @@ def collect_configs(log_root: Path) -> dict[str, dict]:
 
 def compute_dsr_pbo(per_window_returns: list[float], k_trials: int) -> dict:
     """Compute DSR (Bailey-LdP 2014) + (optional) PBO from per-window returns."""
-    from kernel.metrics.deflated_sharpe import deflated_sharpe_ratio
+    from renquant_common.metrics.deflated_sharpe import deflated_sharpe_ratio
     arr = np.asarray([x for x in per_window_returns if np.isfinite(x)])
     if len(arr) < 2:
         return {'dsr': np.nan, 'sr_observed': np.nan}

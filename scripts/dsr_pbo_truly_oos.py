@@ -108,7 +108,7 @@ def main() -> int:
     # under-correct. Use n_trials = 5 since we look at 5 regime tracks.
     # Each regime gives a different mean IC; the "winning" one (BEAR
     # +0.345) was selected post-hoc.
-    from kernel.metrics.deflated_sharpe import deflated_sharpe_ratio  # noqa: PLC0415
+    from renquant_common.metrics.deflated_sharpe import deflated_sharpe_ratio  # noqa: PLC0415
     n_trials = 5
     dsr = deflated_sharpe_ratio(
         sr_observed=sr_obs,
