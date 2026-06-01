@@ -233,12 +233,15 @@ CHECKS: tuple[Check, ...] = (
 
 LAUNCHD_PLISTS: tuple[str, ...] = (
     "scripts/launchd/com.renquant.conditional-retrain104.plist",
+    "scripts/launchd/com.renquant.daily104.plist",
     "scripts/launchd/com.renquant.daily-iv-snapshot.plist",
     "scripts/launchd/com.renquant.daily-news-sentiment.plist",
+    "scripts/launchd/com.renquant.intraday104.plist",
     "scripts/launchd/com.renquant.monthly-calibrator-refresh.plist",
     "scripts/launchd/com.renquant.monthly-meta-label-retrain.plist",
     "scripts/launchd/com.renquant.preopen-cancel-gate.plist",
     "scripts/launchd/com.renquant.retrain-alpha158-linear.plist",
+    "scripts/launchd/com.renquant.retrain-panel104.plist",
     "scripts/launchd/com.renquant.screen-watchlist.plist",
     "scripts/launchd/com.renquant.weekly-fundamental-refresh.plist",
     "scripts/launchd/com.renquant.weekly-apy104.plist",

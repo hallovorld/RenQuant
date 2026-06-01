@@ -11,6 +11,7 @@ any test). User: "能不能靠谱点！另外这些没有 test guard 吗？！"
 """
 from __future__ import annotations
 import json
+import plistlib
 import re
 import sys
 from pathlib import Path
@@ -332,6 +333,30 @@ class TestP0_18_WeeklyApyMonitor:
         plist = (REPO / "scripts/launchd/com.renquant.weekly-apy104.plist").read_text()
         assert "/Users/renhao/git/github/RenQuant/.venv/bin/python" in plist
         assert "/Users/renhao/miniconda3" not in plist
+
+
+class TestP0_19_LaunchdInventory:
+    """Active 104 LaunchAgents must be tracked in repo, not only in ~/Library."""
+
+    def test_daily_intraday_and_retrain_panel_plists_are_tracked(self):
+        launchd = REPO / "scripts" / "launchd"
+        for name in (
+            "com.renquant.daily104.plist",
+            "com.renquant.intraday104.plist",
+            "com.renquant.retrain-panel104.plist",
+        ):
+            payload = plistlib.loads((launchd / name).read_bytes())
+            assert payload["Label"] == name.removesuffix(".plist")
+            assert "/Users/renhao/miniconda3" not in (launchd / name).read_text()
+
+    def test_intraday104_plist_keeps_12_minute_market_cadence(self):
+        payload = plistlib.loads(
+            (REPO / "scripts/launchd/com.renquant.intraday104.plist").read_bytes()
+        )
+        intervals = payload["StartCalendarInterval"]
+        assert len(intervals) >= 100
+        assert {"Weekday": 1, "Hour": 6, "Minute": 30} in intervals
+        assert {"Weekday": 5, "Hour": 13, "Minute": 0} in intervals
 
 
 class TestP0_19_QPProductionPath:

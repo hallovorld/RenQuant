@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Compatibility Sunday retrain entrypoint.
+  scripts/retrain_panel.sh delegates to weekly_wf_promote.sh, so this plist
+  keeps the old LaunchAgent path while preserving the strict WF trust boundary.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.retrain-panel104</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/retrain_panel.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>0</integer>
+        <key>Hour</key><integer>10</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/retrain_panel/launchd_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/retrain_panel/launchd_stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/renhao/git/github/RenQuant</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>RENQUANT_SEC_UA</key>
+        <string>Ren Hao renhao.overflow@gmail.com</string>
+    </dict>
+</dict>
+</plist>
