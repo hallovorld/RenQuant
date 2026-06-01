@@ -536,7 +536,7 @@ def inspect_artifact_usage(strategy_config: str, artifact_path: Path) -> dict:
 def cut_market_context(start: str, end: str) -> dict:
     """SPY benchmark + regime distribution for one WF cut."""
     import pandas as _pd
-    from kernel.hmm_regime_labels import compute_hmm_regime_labels  # noqa: PLC0415
+    from renquant_common.hmm_regime_labels import compute_hmm_regime_labels  # noqa: PLC0415
     # Lifted to renquant-common (umbrella PR #5 in that repo, 2026-06-01).
     from renquant_common.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
 
