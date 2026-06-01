@@ -62,6 +62,65 @@ for arg in "$@"; do
     esac
 done
 
+ARTIFACT="$REPO_DIR/backtesting/renquant_104/artifacts/panel-ltr.alpha158_linear.json"
+PREV_ARTIFACT="$REPO_DIR/backtesting/renquant_104/artifacts/panel-ltr.alpha158_linear.previous.json"
+CALIB="$REPO_DIR/backtesting/renquant_104/artifacts/panel-rank-calibration.alpha158_linear.json"
+
+run_multirepo() {
+    local args=(--repo-dir "$REPO_DIR" --scorer-out "$ARTIFACT" --calibrator-out "$CALIB")
+    if [ "$SKIP_FEATURES" -eq 1 ]; then
+        args+=(--skip-features)
+    fi
+    "$PYTHON" -m renquant_orchestrator.retrain_alpha158_linear "${args[@]}"
+}
+
+export RENQUANT_REPO_ROOT="$REPO_DIR"
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+export PYTHONPATH="$GITHUB_DIR/renquant-orchestrator/src:$GITHUB_DIR/renquant-common/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-artifacts/src:$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-pipeline/src:$GITHUB_DIR/renquant-execution/src:$GITHUB_DIR/renquant-strategy-104/src:$GITHUB_DIR/renquant-backtesting/src:${PYTHONPATH:-}"
+
+RUNNER="${RQ_ALPHA158_LINEAR_RUNNER:-multirepo}"
+if [ "$RUNNER" = "multirepo" ]; then
+    if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_orchestrator.retrain_alpha158_linear  # noqa: F401
+PY
+    then
+        "$PYTHON" - <<'PY' >&2
+import renquant_orchestrator.retrain_alpha158_linear as m
+print(f"renquant_orchestrator.retrain_alpha158_linear={m.__file__}")
+PY
+        if [ -f "$ARTIFACT" ]; then
+            cp "$ARTIFACT" "$PREV_ARTIFACT"
+            echo "Backed up current artifact -> $(basename "$PREV_ARTIFACT")"
+        fi
+        run_multirepo "$@"
+        RUN_RC=$?
+        if [ "$RUN_RC" -eq 0 ]; then
+            echo "=== retrain_alpha158_linear COMPLETE at $(date) ==="
+            ARTIFACT_AGE=$(date -r "$ARTIFACT" "+%Y-%m-%d %H:%M:%S")
+            curl -s -H "Title: RENQUANT-104 alpha158 retrain OK" \
+                 -d "Artifact refreshed: $ARTIFACT_AGE" \
+                 "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
+            exit 0
+        fi
+        echo "FATAL: renquant_orchestrator.retrain_alpha158_linear failed (rc=$RUN_RC)"
+        if [ -f "$PREV_ARTIFACT" ]; then
+            cp "$PREV_ARTIFACT" "$ARTIFACT"
+            echo "Rolled back to previous artifact"
+        fi
+        curl -s -H "Title: RENQUANT-104 retrain FAIL" -d "alpha158_linear multirepo retrain failed (rc=$RUN_RC)" \
+             "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
+        exit "$RUN_RC"
+    elif [ "${RQ_ALPHA158_LINEAR_STRICT:-0}" = "1" ]; then
+        echo "ERROR: renquant_orchestrator.retrain_alpha158_linear unavailable and RQ_ALPHA158_LINEAR_STRICT=1"
+        exit 1
+    else
+        echo "WARN: renquant_orchestrator.retrain_alpha158_linear unavailable; falling back to umbrella retrain."
+    fi
+elif [ "$RUNNER" != "umbrella" ]; then
+    echo "ERROR: unknown RQ_ALPHA158_LINEAR_RUNNER=$RUNNER (expected multirepo or umbrella)"
+    exit 2
+fi
+
 # ── Phase 1: rebuild alpha158 dataset (unless skip) ────────────────────────
 if [ "$SKIP_FEATURES" -eq 0 ]; then
     echo "--- Phase 1/3: rebuild alpha158 dataset ---"
@@ -78,13 +137,11 @@ fi
 
 # ── Phase 2: refit alpha158_linear scorer ──────────────────────────────────
 echo "--- Phase 2/3: refit PanelLinearScorer (sklearn LinearRegression on z-scored fwd_5d_excess) ---"
-ARTIFACT="$REPO_DIR/backtesting/renquant_104/artifacts/panel-ltr.alpha158_linear.json"
-PREV_ARTIFACT="$REPO_DIR/backtesting/renquant_104/artifacts/panel-ltr.alpha158_linear.previous.json"
 
 # Backup current artifact for rollback
 if [ -f "$ARTIFACT" ]; then
     cp "$ARTIFACT" "$PREV_ARTIFACT"
-    echo "Backed up current artifact → $(basename $PREV_ARTIFACT)"
+    echo "Backed up current artifact -> $(basename "$PREV_ARTIFACT")"
 fi
 
 "$PYTHON" scripts/train_panel_linear.py \
@@ -106,7 +163,6 @@ fi
 
 # ── Phase 3: refit calibrator ──────────────────────────────────────────────
 echo "--- Phase 3/3: refit alpha158_linear calibrator ---"
-CALIB="$REPO_DIR/backtesting/renquant_104/artifacts/panel-rank-calibration.alpha158_linear.json"
 "$PYTHON" scripts/fit_alpha158_linear_calibrator.py --out "$CALIB"
 CALIB_RC=$?
 
