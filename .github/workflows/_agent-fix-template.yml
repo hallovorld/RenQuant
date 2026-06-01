@@ -178,8 +178,41 @@ jobs:
           # branch-protection bypass works as the bot expects.
           token: ${{ secrets.git_push_token }}
 
-      # TODO(P0 before pilot): action API verification per §_agent-review-template.yml.
-      # Same uncertainty applies here for the LLM dispatch step.
+      # Note: action input shapes already corrected at the use: sites
+      # below. See README's "Action API contract (verified)" section.
+
+      # Action input shapes verified 2026-06-01 against live action.yml:
+      #   - anthropics/claude-code-action@v1: underscores (prompt only —
+      #     no prompt_file variant), anthropic_api_key, claude_args.
+      #   - openai/codex-action@v1: dashes (prompt-file, openai-api-key).
+      #
+      # Claude has no prompt_file input, so we read the file content
+      # inline into a step output and pass it as `prompt`. Codex supports
+      # prompt-file directly.
+
+      - name: Load fix prompt (Claude needs inline content; Codex reads file)
+        if: steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
+        id: load_prompt
+        env:
+          PROMPT_PATH: ${{ inputs.prompt_path }}
+          REVIEW_BODY: ${{ steps.pr.outputs.review_body }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROMPT_PATH" ]; then
+            echo "::warning::fix prompt template missing at $PROMPT_PATH; using minimal default"
+            BODY="You are fixing review findings on PR #${PR_NUMBER}. Read the review below, identify each finding, make the minimal code change that addresses it, run tests, and push."
+          else
+            BODY=$(cat "$PROMPT_PATH")
+          fi
+          {
+            echo "prompt<<PROMPT_EOF"
+            echo "$BODY"
+            echo ""
+            echo "## Review feedback to address"
+            echo "$REVIEW_BODY"
+            echo "PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run agent (Claude)
         if: steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
@@ -187,9 +220,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.api_key }}
-          # Fix prompt — assembled separately (loaded from inputs.prompt_path
-          # if present, else inline default below).
-          prompt_file: ${{ inputs.prompt_path }}
+          # Inline content — Claude's prompt input has no _file variant.
+          prompt: ${{ steps.load_prompt.outputs.prompt }}
           # Fix-mode needs Edit + Write tools, not just Bash read access.
           claude_args: |
             --allowed-tools "Bash(gh:*),Bash(git:*),Edit,Write,Read,Bash(*)"
@@ -201,8 +233,10 @@ jobs:
         id: codex
         uses: openai/codex-action@v1
         with:
-          openai_api_key: ${{ secrets.api_key }}
-          prompt_file: ${{ inputs.prompt_path }}
+          # codex-action@v1 inputs use DASHES (openai-api-key, prompt-file).
+          # Underscored names are silently ignored by the action.
+          openai-api-key: ${{ secrets.api_key }}
+          prompt-file: ${{ inputs.prompt_path }}
           model: ${{ inputs.model }}
 
       - name: Commit + push fix

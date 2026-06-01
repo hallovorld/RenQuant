@@ -106,16 +106,8 @@ jobs:
             echo "PROMPT_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # TODO(P0 before pilot): the next step needs the canonical API
-      # of anthropics/claude-code-action and openai/codex-action verified
-      # against their current README. The shape below is the working
-      # assumption from the doc:
-      #   - claude-code-action: prompt-driven with claude_args; the
-      #     action invokes Claude with Bash/Edit/gh tools available
-      #   - codex-action: codex exec wrapper returning final-message
-      # If either differs (e.g. requires a different input name for
-      # the prompt, or doesn't auto-grant gh tool access), the action
-      # call below needs adjustment. Reviewer (codex) should validate.
+      # Note: action input shapes already corrected at the use: sites
+      # below. See README's "Action API contract (verified)" section.
 
       - name: Run agent (Claude)
         if: inputs.agent == 'claude'
@@ -136,9 +128,11 @@ jobs:
         id: codex
         uses: openai/codex-action@v1
         with:
-          openai_api_key: ${{ secrets.api_key }}
-          # The action's documented input names need verification.
-          # Working assumption: prompt + model + bounded turn count.
+          # codex-action@v1 inputs use DASHES (verified against
+          # action.yml at v1 on 2026-06-01). The underscore form
+          # `openai_api_key` was silently ignored — the action would
+          # have run without the API key.
+          openai-api-key: ${{ secrets.api_key }}
           prompt: ${{ steps.prompt.outputs.prompt }}
           model: ${{ inputs.model }}
 

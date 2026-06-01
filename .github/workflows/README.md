@@ -22,11 +22,12 @@ name: agent-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:    # mandatory cost gates per §3.1
+    paths-ignore:    # mandatory cost gate per §3.1
       - 'doc/**'
-      - '**/*.md'
-    # NB: do NOT add '.github/**' to paths-ignore — that's the
-    # security control plane (workflows, CODEOWNERS).
+    # NB: do NOT add '.github/**' OR '**/*.md' — both are control
+    # planes. `.github/**` houses workflows + CODEOWNERS;
+    # `.github/agent-*.md` is the automation's own prompt template.
+    # `doc/**` is project docs only and safe to skip for cost.
 concurrency:
   group: agent-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -90,30 +91,39 @@ jobs:
 Set via repo Settings → Secrets and variables → Actions, OR as an
 org-wide secret accessible to all renquant repos.
 
-## Per-repo customization point
+## Per-repo customization points
 
-`.github/agent-review-prompt.md` in each subrepo. The umbrella ships a
-[default](../agent-review-prompt.md) that uses `CLAUDE.md §7` as the
-review canon. Subrepos can override with repo-specific framing
-(e.g. backtesting-specific data-flow gotchas, model-specific
-calibrator invariants) — the templates read whichever file is at
-`.github/agent-review-prompt.md` (or pass a different path via the
-`prompt_path` input).
+Each subrepo ships TWO prompt files for the umbrella templates to read:
 
-## Open verification needed before pilot ships
+| File | Used by | Default | Notes |
+|---|---|---|---|
+| `.github/agent-review-prompt.md` | G2 review template | umbrella's [agent-review-prompt.md](../agent-review-prompt.md) | sets review framing — CLAUDE.md §7 canon |
+| `.github/agent-fix-prompt.md` | G3 fix template | umbrella's [agent-fix-prompt.md](../agent-fix-prompt.md) | sets fix-mode framing — minimal change, run tests, commit |
 
-The G2 and G3 templates invoke `anthropics/claude-code-action@v1` and
-`openai/codex-action@v1` with assumed input shapes. **Verify against
-canonical action docs before merging into a repo that will actually
-run them.** Specifically:
+Subrepos can override either with repo-specific framing (backtesting
+data-flow gotchas, model calibrator invariants, etc.) — the templates
+read whichever file is at the documented path. Or pass a different
+path via the `prompt_path` input.
 
-- Does `claude-code-action` accept `prompt` + `claude_args` + `--model`
-  as documented? Or does it use `model` as a separate input?
-- Does `codex-action` accept `prompt` (inline) or only `prompt_file`?
-- Output names: `result` (Claude) vs `final-message` (Codex)?
-- Does either action auto-post a PR comment when invoked under
-  `pull-requests: write`, or does the wrapper need to handle that?
+## Action API contract (verified)
 
-These are flagged inline as `TODO(P0 before pilot)` in the templates.
-The G1 attribution-check template has no such uncertainty — it's pure
-bash + git + gh.
+Verified 2026-06-01 against live `action.yml` for each action:
+
+- **`anthropics/claude-code-action@v1`** uses underscored input names:
+  - `prompt` (inline content — NO `prompt_file` variant)
+  - `anthropic_api_key`
+  - `claude_args` (CLI passthrough — includes `--model`, `--allowed-tools`, `--max-turns`)
+
+- **`openai/codex-action@v1`** uses dashed input names:
+  - `prompt` (inline) OR `prompt-file` (path) — either supported
+  - `openai-api-key`
+  - `model`
+  - `codex-args`
+
+Earlier drafts used the wrong convention on both (underscored
+`openai_api_key` + `prompt_file` for both actions). GitHub Actions
+silently ignores unknown inputs — would have run without the API
+key or prompt and silently failed.
+
+The G1 attribution-check template has NO LLM dispatch — pure bash +
+git + gh.
