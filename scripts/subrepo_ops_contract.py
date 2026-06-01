@@ -89,6 +89,15 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="weekly_fundamental_refresh_uses_base_data_earnings",
+        path="scripts/weekly_fundamental_refresh.sh",
+        required=(
+            "renquant_base_data.earnings_surprise_refresh",
+            "$GITHUB_DIR/renquant-base-data/src",
+            "RQ_DATA_REFRESH_STRICT",
+        ),
+    ),
+    Check(
         name="patchtst_wf_uses_model_repo",
         path="scripts/train_walkforward_patchtst.py",
         required=(
