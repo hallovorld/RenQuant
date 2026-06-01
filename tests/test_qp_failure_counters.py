@@ -73,12 +73,16 @@ def test_missing_counters_dict_is_noop():
     _stamp_qp_failure_counter(ctx, "infeasible")
 
 
-def test_repeated_calls_accumulate():
+def test_repeated_calls_are_idempotent_within_ctx():
+    """Codex PR #48 v2: subsequent calls within the same ctx are no-ops.
+    SolveMarkowitzQPTask stamps on non-optimal, then EmitOrdersFromQPSolutionTask
+    runs and would stamp the same status again — must not double-count."""
     ctx = _ctx()
     _stamp_qp_failure_counter(ctx, "infeasible")
     _stamp_qp_failure_counter(ctx, "infeasible:cov")
     _stamp_qp_failure_counter(ctx, "missing_solution")
-    assert ctx.counters == {"qp_infeasible": 2, "qp_missing_solution": 1}
+    # Only the first stamp wins — bar-level idempotency.
+    assert ctx.counters == {"qp_infeasible": 1}
 
 
 def test_compute_full_sigma_fail_stamps_counter():
@@ -88,3 +92,38 @@ def test_compute_full_sigma_fail_stamps_counter():
     task._fail_full_sigma(ctx, "cov_nan_pair")
     assert ctx._qp_status.startswith("infeasible:")
     assert ctx.counters.get("qp_infeasible") == 1
+
+
+# ── Codex PR #48 v2 review: Solve → Emit must not double-count ───────────────
+
+def test_solve_then_emit_does_not_double_stamp():
+    """SolveMarkowitzQPTask stamps on non-optimal but does NOT return False;
+    EmitOrdersFromQPSolutionTask then sees the same status and calls the
+    helper again. Counter must remain exactly 1."""
+    ctx = _ctx()
+    _stamp_qp_failure_counter(ctx, "infeasible")
+    assert ctx.counters["qp_infeasible"] == 1
+    assert getattr(ctx, "_qp_failure_counter_stamped", False) is True
+    _stamp_qp_failure_counter(ctx, "infeasible")
+    assert ctx.counters["qp_infeasible"] == 1   # idempotent
+
+
+def test_idempotent_across_status_variants_within_one_ctx():
+    """Even if a later caller passes a different status, idempotency holds
+    for the lifetime of the ctx."""
+    ctx = _ctx()
+    _stamp_qp_failure_counter(ctx, "infeasible")
+    _stamp_qp_failure_counter(ctx, "optimal_no_signal")
+    _stamp_qp_failure_counter(ctx, "missing_solution")
+    assert ctx.counters == {"qp_infeasible": 1}
+
+
+def test_fresh_ctx_stamps_again():
+    """A new ctx (next bar) gets its own stamp — not blocked by a previous
+    ctx's flag."""
+    ctx1 = _ctx()
+    _stamp_qp_failure_counter(ctx1, "infeasible")
+    assert ctx1.counters == {"qp_infeasible": 1}
+    ctx2 = _ctx()
+    _stamp_qp_failure_counter(ctx2, "infeasible")
+    assert ctx2.counters == {"qp_infeasible": 1}

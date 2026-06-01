@@ -63,29 +63,38 @@ def _stamp_all_qp_blocks(ctx, reason: str) -> None:
 
 
 def _stamp_qp_failure_counter(ctx, status: str) -> None:
-    """Single source for the no-trade observability counters (codex PR #48 #9
+    """Single source for the no-trade observability counters (codex PR #48
     review #1). Every QP failure path that sets ``ctx._qp_status`` /
     ``ctx._qp_failure_reason`` MUST also call this helper so that
     ``live.runner._why_no_trade()`` surfaces the binding QP failure instead of
     falling through to an earlier upstream drop.
 
-    Paths that previously short-circuited before EmitOrdersFromQPSolutionTask
-    and thus left no counter trace:
-      - ``ComputeFullSigmaTask._fail_full_sigma`` (infeasible:<cov-reason>)
+    Idempotent per ctx (codex PR #48 v2 review): SolveMarkowitzQPTask stamps
+    on non-optimal status but does NOT return False; the job then runs
+    EmitOrdersFromQPSolutionTask which sees the same status and would stamp
+    again — producing ``qp_infeasible=2`` for a single bar. Once stamped,
+    subsequent calls within the same context are no-ops via the
+    ``ctx._qp_failure_counter_stamped`` sentinel.
+
+    Paths covered:
+      - ``ComputeFullSigmaTask._fail_full_sigma`` (infeasible:<cov-reason>,
+        returns False so emit never runs)
       - ``SolveMarkowitzQPTask`` unsupported-cvxportfolio branch
         (sets infeasible solution, returns False)
-      - ``SolveMarkowitzQPTask`` non-optimal solver outcome (also short-
-        circuits the emit chain when ``return False`` later)
-      - ``EmitOrdersFromQPSolutionTask`` non-optimal handling (still calls
-        this for completeness, since some flows reach emit directly).
+      - ``SolveMarkowitzQPTask`` non-optimal solver outcome
+        (does NOT return False — emit still runs but is now idempotent)
+      - ``EmitOrdersFromQPSolutionTask`` non-optimal handling
+        (catches paths that reach emit directly; idempotent against Solve)
 
-    Counter keys mirror the live.runner._why_no_trade() precedence:
+    Counter keys mirror live.runner._why_no_trade() precedence:
       qp_infeasible / qp_missing_solution / qp_optimal_no_signal /
       qp_other_nonoptimal.
     """
     counters = getattr(ctx, "counters", None)
     if not isinstance(counters, dict):
         return
+    if getattr(ctx, "_qp_failure_counter_stamped", False):
+        return                              # idempotent: one stamp per QP failure event
     s = (status or "").strip()
     if not s:
         return
@@ -100,6 +109,10 @@ def _stamp_qp_failure_counter(ctx, status: str) -> None:
     else:
         key = "qp_other_nonoptimal"
     counters[key] = counters.get(key, 0) + 1
+    try:
+        ctx._qp_failure_counter_stamped = True  # noqa: SLF001
+    except Exception:                        # context may be read-only mock
+        pass
 
 
 # ── 1. Build w_current from shares × prices / NAV ────────────────────────────
