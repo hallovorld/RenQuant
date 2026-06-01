@@ -1,29 +1,29 @@
-# RenQuant Multirepo Leakage Defense — Architecture (v6)
+# RenQuant Multirepo Leakage Defense — Architecture (v7)
 
-**Status**: Design under review (RenQuant PR #38)  
-**Authors**: Claude  
-**Reviewers**: Codex (4 review rounds, 13 findings addressed — see §11)  
-**Supersedes**: v1-v5 (history archived at `doc/research/2026-06-01-leakage-reflection-history.md`)  
-**Companion**: `doc/research/2026-06-01-leakage-reflection.md` (the process post-mortem that motivated this)
+**Status**: Design under review (RenQuant PR #38)
+**Authors**: Claude
+**Reviewers**: Codex (5 review rounds; latest v6 found 7 new contract-correctness bugs introduced by my v6 fixes — all addressed here)
+**Supersedes**: v1-v6 (commit history is the audit trail)
+**Companion**: `doc/research/2026-06-01-leakage-reflection.md`
 
 ---
 
-## 1 · Problem statement (1 paragraph)
+## 1 · Problem statement
 
-`renquant-model-patchtst::B_tuned` shows shuffle/timeshift placebo IC (+0.041) ≈ real IC (+0.041) across 2 independent seeds (5/31 and 6/01 runs). PR #9 fixed the cross-split timeshift boundary; the placebo failure persists. The 5/31 memo and 6/01 BG re-run prove **the leak is not a single feature engineering bug — the architecture has no enforced layer that prevents a model with placebo IC ≈ real IC from reaching production.** The umbrella has 4 downstream consumers of trained scorers (`renquant-pipeline`, `renquant-backtesting`, `renquant-orchestrator`, `renquant-execution`) and none of them check whether the artifact's trainer-level placebos pass.
+`renquant-model-patchtst::B_tuned` shows shuffle/timeshift placebo IC (+0.041) ≈ real IC (+0.041) across 2 independent seeds (5/31 and 6/01 runs). PR #9 fixed the cross-split timeshift boundary; the placebo failure persists. **The architecture has no enforced layer that prevents a model with placebo IC ≈ real IC from reaching production.** 4 downstream consumers of trained scorers (`renquant-pipeline`, `renquant-backtesting`, `renquant-orchestrator`, `renquant-execution`) and none of them check trainer-level placebos.
 
 ## 2 · Completion criteria (falsifiable)
 
 The design ships when **every one of these is mechanically true**:
 
-1. A model artifact whose Tier-2 trainer-level placebo IC exceeds threshold relative to real IC **cannot** be loaded by `renquant-pipeline.PanelScorer.load()`. (G3)
-2. The same artifact **cannot** be inserted into any walk-forward manifest by `renquant-orchestrator` or `renquant-backtesting`. (G4)
-3. The same artifact **cannot** source a live order in `renquant-execution`. (G5)
-4. A feature parquet that contains a column name from the label set (declared) **cannot** be written by `renquant-base-data`. (G0)
-5. A model trainer that does not run Tier-1 scorer sanity **cannot** save an artifact. (G1)
-6. Disabling any of G0-G5 in code (e.g. early return in `assert_artifact_validated`) is detected by CI on every PR to `renquant-common` (gate-disable detector grep + AST scan).
-7. Operating without architect-signed `agent:emergency:bypass-triad` override, every `triad_status != "passed"` artifact is refused.
-8. The full multirepo loop (base-data → model → pipeline → backtesting → orchestrator → execution refused on unvalidated) runs as a nightly E2E test under 5 minutes wall clock.
+1. A model artifact whose Tier-2 trainer-level placebos are statistically distinguishable from null (p < 0.05) or close to real IC (per-regime ratio > 0.5) **cannot** be loaded by `renquant-pipeline.PanelScorer.load()`. (G3)
+2. The same artifact **cannot** be inserted into any walk-forward manifest. (G4)
+3. The same artifact **cannot** source a live order. (G5)
+4. A feature parquet containing label column names **cannot** be written. (G0)
+5. A trainer that does not run Tier-1 scorer sanity **cannot** save an artifact. (G1)
+6. Disabling any of G0-G5 in code is detected by CI on `renquant-common` PRs (AST scan + regex).
+7. Bypass entries without valid HMAC signature from the architect key are rejected at config-load time. (§5.2)
+8. The E2E nightly test runs all 5 gates with **synthetic** Tier-2 runner (not 75-min real one) under 5 minutes wall clock, exercising 3 fixtures: good / leak / noise models.
 
 **If any of (1)-(8) is false after MVP merges → design failed → revert.**
 
@@ -31,154 +31,174 @@ The design ships when **every one of these is mechanically true**:
 
 | Approach | Rejected because |
 |---|---|
-| A) Add `validate_triad()` helper, ask developers to call it | Advisory rule, not enforced (the original `feedback_research_pipeline_must_gate_with_sanity_triad` memory — failed exactly this test). |
-| B) Type annotations alone: `train(features: FeatureFrame, ...)` | Python annotations don't stop callers at runtime (codex v4 finding 2). |
-| C) Single monolithic "validate model" wrapper at orchestrator | One choke point, but doesn't prevent unvalidated artifact from being *built*. Lower defense in depth. |
-| D) Disable PatchTST entirely until issue solved | Hammer, not architecture. Doesn't fix GBDT or future models that have the same risk. |
-| **E) Multi-layer gate network + Pydantic-enforced artifact contract + Tier-2 async with CAS** (this design) | Chosen. 5 independent gates, each fail-closed, sharing a single helper; Pydantic enforces at boundary; threshold contract makes status mechanically derived from reports. |
+| A) Advisory `validate_triad()` helper | `feedback_research_pipeline_must_gate_with_sanity_triad` was advisory and failed exactly this test. |
+| B) Type annotations alone | Don't stop callers at runtime (codex v4 #2). |
+| C) Single choke point at orchestrator | Doesn't prevent unvalidated artifact from being *built*; lower defense in depth. |
+| D) Disable PatchTST until issue solved | Hammer, not architecture; doesn't generalize. |
+| **E) Multi-gate + derived status + HMAC-signed bypass + CAS-with-transition** (this) | Chosen. Each gate independent fail-closed; status is mechanical reduction; bypass requires cryptographic architect approval; sidecar transitions enforced. |
 
-## 4 · Invariants (the design in one page)
+## 4 · Invariants
 
-**I1 — Artifact contract**: Every `ScorerArtifact` carries a `TriadReport` whose `triad_status ∈ {pending, passed, failed}` is **deterministically derived** from `scorer_sanity` (Tier 1) and `trainer_placebo` (Tier 2) reports by an explicit reducer. Status cannot be set independently of reports.
+- **I1 (Artifact contract)**: Every `ScorerArtifact` carries `TriadReport` whose `triad_status` is **deterministically derived** from `scorer_sanity` (Tier 1) and `trainer_placebo` (Tier 2) by an explicit reducer.
+- **I2 (Terminal failure)**: `failed` and `passed` are **terminal at the sidecar layer**. Transitions enforced by CAS, not only by Pydantic. Re-validation requires a new binding-tuple = new artifact.
+- **I3 (Gate symmetry)**: G3/G4/G5 share one helper.
+- **I4 (Cryptographic bypass)**: Bypass entries carry HMAC-SHA256 signature over `(fingerprint, expires_at, reason, approved_by, pr_url, approved_at)`. Architect's HMAC key lives in `~/.renquant/secrets/architect_hmac.key` (outside repo, 0600). Unsigned/invalid-signed entries are dropped at config load.
+- **I5 (CAS + transition)**: Sidecar update is compare-and-swap on `TriadBinding` AND on `triad_status`. Tier-2 runner declares `expected_current_status="pending"`; if anything else is found → abort.
+- **I6 (Disable detection)**: CI AST scan fails PRs that replace gate bodies with `return`, `pass`, `if False`, or bare `assert`.
+- **I7 (Statistical, n-aware, direction-correct)**: Pass/fail uses bootstrap p-values **with H0/H1 explicit and gate-aligned**: shuffle-placebo fail = reject H0(placebo IC = 0); real-vs-placebo fail = cannot reject H0(real ≤ placebo). Static IC thresholds are wrong.
+- **I8 (Tz-aware datetimes)**: All `datetime` are timezone-aware UTC; naive datetimes rejected at validation.
+- **I9 (Finite floats + non-empty regime maps)**: All p-values ∈ [0,1], all IC values finite (no NaN), regime key sets equal across real/shuffle/timeshift/n-dates dicts, dicts non-empty.
+- **I10 (Migration declared breaking)**: `triad_report` required is MAJOR semver bump. S0-S3 staged migration with `agent:contract:breaking` label.
 
-**I2 — State machine**: `pending → passed` and `pending → failed` are terminal transitions per binding-tuple `(model_sha, feature_schema_hash, label_hash, code_sha, triad_config_hash)`. If any binding-tuple element changes, the artifact is a **new** artifact (new fingerprint) and starts at `pending`. `failed → passed` is **never** allowed; remediation requires a new artifact.
+## 5 · Contract code
 
-**I3 — Gate symmetry**: G3/G4/G5 share **one** helper (`assert_artifact_validated`); change one site = changes all. §7.5 enforced.
-
-**I4 — Bypass narrowness**: Emergency bypass is **per-fingerprint allowlist** with expiry + reason + approver + audit trail. **There is no global "allow any pending"**. `failed` is **never** bypassable.
-
-**I5 — CAS write**: Sidecar updates are compare-and-swap on the binding-tuple. A stale or duplicate Tier-2 runner cannot overwrite a sidecar that has moved on.
-
-**I6 — Disable detection**: CI on `renquant-common` PRs runs a gate-disable detector (AST + regex) that fails the PR if any guard's body is replaced with `return`, `pass`, or `if False` paths.
-
-**I7 — Statistical thresholds**: Pass/fail decisions use a **permutation null distribution** scaled by `n_val_dates` and per-regime sample size. Static 0.01 IC thresholds (v4) are wrong because they false-fail small samples and false-pass noisy regimes.
-
-**I8 — Migration safety**: The schema change adding `triad_report` is **declared breaking** (MAJOR semver). Two-step migration: optional-at-schema during stage S1 with telemetry only ("would have blocked"); hard fail-closed at stage S3+ after consumer PRs and artifact backfill.
-
-## 5 · Contract code (correct, not pseudo)
-
-### 5.1 `TriadReport` — derived status, explicit raises
+### 5.1 `TriadReport` — derived status, finite/range-validated, tz-aware
 
 ```python
 # renquant-common/src/renquant_common/contracts/triad.py
-"""
-Triad contract.
-
-DERIVED status: triad_status is computed from (scorer_sanity, trainer_placebo)
-by a single explicit reducer. Consumers cannot set status independently.
-
-EXPLICIT raises: NO `assert` — assertions are stripped under python -O and
-are the wrong tool for contract invariants (codex finding 2).
-"""
 from __future__ import annotations
-from datetime import datetime
-from typing import Literal
+import math
+from datetime import datetime, timezone
+from typing import Annotated, Literal
 import pydantic
+from pydantic import Field, field_validator
 
 TriadStatus = Literal["pending", "passed", "failed"]
 
 
-class ScorerSanityReport(pydantic.BaseModel):
-    """Tier 1: fixed scorer vs perturbed labels (seconds). Catches label-calc bugs only."""
-    aa_split_real_ic_replicate: float
-    aa_split_drift_ic: float
-    shuffled_val_ic: float
-    timeshifted_val_ic: float
-    label_col: str
-    n_val_dates: int
-    permutation_null_p_value_shuffled: float    # ≥ 0.05 = passes
-    permutation_null_p_value_timeshifted: float
+def _check_finite(v: float) -> float:
+    if not math.isfinite(v):
+        raise ValueError(f"value must be finite, got {v!r}")
+    return v
 
-    def fail_reasons(self) -> list[str]:
-        """Empty list = pass. Each entry is a deterministic threshold violation."""
+
+FiniteFloat = Annotated[float, pydantic.AfterValidator(_check_finite)]
+PValue = Annotated[float, Field(ge=0.0, le=1.0), pydantic.AfterValidator(_check_finite)]
+
+
+def _require_aware(v: datetime) -> datetime:
+    if v.tzinfo is None:
+        raise ValueError(f"datetime must be timezone-aware (got naive {v!r})")
+    return v.astimezone(timezone.utc)
+
+
+AwareDatetime = Annotated[datetime, pydantic.AfterValidator(_require_aware)]
+
+
+def utc_now() -> datetime:
+    """Single source for "now" — always tz-aware UTC. Use everywhere."""
+    return datetime.now(timezone.utc)
+
+
+class ScorerSanityReport(pydantic.BaseModel):
+    """Tier 1: fixed scorer vs perturbed val labels (seconds). Catches label-calc bugs."""
+    aa_split_real_ic_replicate: FiniteFloat
+    aa_split_drift_ic_abs: Annotated[FiniteFloat, Field(ge=0.0)]   # explicitly pre-absolute
+    shuffled_val_ic: FiniteFloat
+    timeshifted_val_ic: FiniteFloat
+    label_col: str
+    n_val_dates: Annotated[int, Field(gt=0)]
+    # p-values: small p ⇒ REJECT H0(perturbed_ic = 0) ⇒ LEAK SUSPECTED
+    shuffled_p_value_against_zero: PValue
+    timeshifted_p_value_against_zero: PValue
+
+    def fail_reasons(self, *, p_threshold: float = 0.05, min_n: int = 30,
+                     aa_drift_max: float = 0.03) -> list[str]:
+        """Empty = pass. Direction: small p ⇒ leak detected ⇒ fail."""
         out: list[str] = []
-        if self.n_val_dates < 30:
-            out.append(f"insufficient n_val_dates={self.n_val_dates} (need ≥30)")
-        if self.permutation_null_p_value_shuffled < 0.05:
+        if self.n_val_dates < min_n:
+            out.append(f"insufficient n_val_dates={self.n_val_dates} (need ≥{min_n})")
+        if self.shuffled_p_value_against_zero < p_threshold:
             out.append(
-                f"shuffled_val_ic={self.shuffled_val_ic:+.4f} significant "
-                f"(p={self.permutation_null_p_value_shuffled:.3f} < 0.05)"
+                f"shuffled IC distinguishable from zero "
+                f"(IC={self.shuffled_val_ic:+.4f}, p={self.shuffled_p_value_against_zero:.4f} < {p_threshold})"
             )
-        if self.permutation_null_p_value_timeshifted < 0.05:
+        if self.timeshifted_p_value_against_zero < p_threshold:
             out.append(
-                f"timeshifted_val_ic={self.timeshifted_val_ic:+.4f} significant "
-                f"(p={self.permutation_null_p_value_timeshifted:.3f} < 0.05)"
+                f"timeshifted IC distinguishable from zero "
+                f"(IC={self.timeshifted_val_ic:+.4f}, p={self.timeshifted_p_value_against_zero:.4f} < {p_threshold})"
             )
-        if self.aa_split_drift_ic > 0.03:
-            out.append(f"aa_split_drift_ic={self.aa_split_drift_ic:.4f} > 0.03")
+        if self.aa_split_drift_ic_abs > aa_drift_max:
+            out.append(f"aa_split_drift_ic={self.aa_split_drift_ic_abs:.4f} > {aa_drift_max}")
         return out
 
 
 class TrainerPlaceboReport(pydantic.BaseModel):
     """Tier 2: RETRAIN on shuffled/timeshifted labels. Catches train-time leakage."""
-    real_ic_mean: float
-    real_ic_per_regime: dict[str, float]
-    real_ic_n_dates_per_regime: dict[str, int]
-    shuffle_placebo_ic_mean: float
-    shuffle_placebo_ic_per_regime: dict[str, float]
-    shuffle_placebo_p_value: float           # bootstrap p that shuffle_ic == 0 vs real_ic
-    timeshift_placebo_ic_mean: float
-    timeshift_placebo_ic_per_regime: dict[str, float]
-    timeshift_placebo_p_value: float
-    n_seeds: int
-    n_val_dates: int
+    real_ic_mean: FiniteFloat
+    real_ic_per_regime: dict[str, FiniteFloat]
+    real_ic_n_dates_per_regime: dict[str, Annotated[int, Field(ge=0)]]
+    shuffle_placebo_ic_mean: FiniteFloat
+    shuffle_placebo_ic_per_regime: dict[str, FiniteFloat]
+    # p that placebo IC is significantly different from zero (small ⇒ LEAK)
+    shuffle_placebo_p_value_against_zero: PValue
+    timeshift_placebo_ic_mean: FiniteFloat
+    timeshift_placebo_ic_per_regime: dict[str, FiniteFloat]
+    timeshift_placebo_p_value_against_zero: PValue
+    n_seeds: Annotated[int, Field(gt=0)]
+    n_val_dates: Annotated[int, Field(gt=0)]
 
-    def fail_reasons(self) -> list[str]:
+    @pydantic.model_validator(mode="after")
+    def regime_keys_consistent(self) -> "TrainerPlaceboReport":
+        keys_r = set(self.real_ic_per_regime.keys())
+        keys_n = set(self.real_ic_n_dates_per_regime.keys())
+        keys_s = set(self.shuffle_placebo_ic_per_regime.keys())
+        keys_t = set(self.timeshift_placebo_ic_per_regime.keys())
+        if not keys_r:
+            raise ValueError("regime maps cannot be empty")
+        if not (keys_r == keys_n == keys_s == keys_t):
+            raise ValueError(
+                f"regime key sets must be identical:\n"
+                f"  real:      {sorted(keys_r)}\n"
+                f"  n_dates:   {sorted(keys_n)}\n"
+                f"  shuffle:   {sorted(keys_s)}\n"
+                f"  timeshift: {sorted(keys_t)}"
+            )
+        return self
+
+    def fail_reasons(self, *, p_threshold: float = 0.05,
+                     min_seeds: int = 3, min_n_per_regime: int = 20,
+                     max_placebo_real_ratio: float = 0.50) -> list[str]:
         out: list[str] = []
-        if self.n_seeds < 3:
-            out.append(f"insufficient n_seeds={self.n_seeds} (need ≥3)")
+        if self.n_seeds < min_seeds:
+            out.append(f"insufficient n_seeds={self.n_seeds} (need ≥{min_seeds})")
         for regime, n in self.real_ic_n_dates_per_regime.items():
-            if n < 20:
-                out.append(f"regime {regime}: n_dates={n} < 20")
-        if self.shuffle_placebo_p_value < 0.05:
+            if n < min_n_per_regime:
+                out.append(f"regime {regime}: n_dates={n} < {min_n_per_regime}")
+        if self.shuffle_placebo_p_value_against_zero < p_threshold:
             out.append(
-                f"shuffle placebo IC={self.shuffle_placebo_ic_mean:+.4f} "
-                f"distinguishable from null (p={self.shuffle_placebo_p_value:.3f})"
+                f"shuffle placebo IC distinguishable from zero "
+                f"(IC={self.shuffle_placebo_ic_mean:+.4f}, "
+                f"p={self.shuffle_placebo_p_value_against_zero:.4f} < {p_threshold})"
             )
-        if self.timeshift_placebo_p_value < 0.05:
+        if self.timeshift_placebo_p_value_against_zero < p_threshold:
             out.append(
-                f"timeshift placebo IC={self.timeshift_placebo_ic_mean:+.4f} "
-                f"distinguishable from null (p={self.timeshift_placebo_p_value:.3f})"
+                f"timeshift placebo IC distinguishable from zero "
+                f"(IC={self.timeshift_placebo_ic_mean:+.4f}, "
+                f"p={self.timeshift_placebo_p_value_against_zero:.4f} < {p_threshold})"
             )
-        # Per-regime guard: a regime with placebo > 50% real is suspicious
+        # Per-regime ratio guard: placebo > 50% of real ⇒ suspect even if small absolute IC
         for regime in self.real_ic_per_regime:
-            r = abs(self.real_ic_per_regime.get(regime, 0))
-            sp = abs(self.shuffle_placebo_ic_per_regime.get(regime, 0))
-            tp = abs(self.timeshift_placebo_ic_per_regime.get(regime, 0))
-            if r > 0.01 and (sp > 0.5 * r or tp > 0.5 * r):
+            r = abs(self.real_ic_per_regime[regime])
+            sp = abs(self.shuffle_placebo_ic_per_regime[regime])
+            tp = abs(self.timeshift_placebo_ic_per_regime[regime])
+            if r > 0.01 and (sp > max_placebo_real_ratio * r or tp > max_placebo_real_ratio * r):
                 out.append(
-                    f"regime {regime}: placebo IC > 50% of real "
+                    f"regime {regime}: placebo>50%×real "
                     f"(real={r:+.4f} shuffle={sp:+.4f} timeshift={tp:+.4f})"
                 )
         return out
 
 
-def _derive_status(
-    scorer_sanity: ScorerSanityReport,
-    trainer_placebo: TrainerPlaceboReport | None,
-) -> tuple[TriadStatus, list[str]]:
-    """The ONLY function that decides triad_status. Pure, deterministic."""
-    s1_reasons = scorer_sanity.fail_reasons()
-    if s1_reasons:
-        return "failed", s1_reasons
-    if trainer_placebo is None:
-        return "pending", []
-    s2_reasons = trainer_placebo.fail_reasons()
-    if s2_reasons:
-        return "failed", s2_reasons
-    return "passed", []
-
-
 class TriadBinding(pydantic.BaseModel):
-    """Identity tuple. Any element change ⇒ new artifact, new pending triad."""
-    model_sha: str                          # sha256(model.pt bytes)
-    feature_schema_hash: str
-    label_hash: str                         # sha256(label column bytes from training)
-    code_sha: str                           # git rev of trainer at save time
-    triad_config_hash: str                  # sha256({n_seeds, thresholds, label_shift_days})
+    """Identity tuple. Any element change ⇒ new artifact, fresh pending lifeline."""
+    model_sha: Annotated[str, Field(min_length=64, max_length=64)]
+    feature_schema_hash: Annotated[str, Field(min_length=64, max_length=64)]
+    label_hash: Annotated[str, Field(min_length=64, max_length=64)]
+    code_sha: Annotated[str, Field(min_length=7)]
+    triad_config_hash: Annotated[str, Field(min_length=64, max_length=64)]
 
     def fingerprint(self) -> str:
-        """Combined identity. 16-hex prefix used in logs/telemetry."""
         import hashlib
         h = hashlib.sha256(
             f"{self.model_sha}|{self.feature_schema_hash}|{self.label_hash}|"
@@ -187,50 +207,59 @@ class TriadBinding(pydantic.BaseModel):
         return h.hexdigest()
 
 
+def _derive_status(
+    scorer_sanity: ScorerSanityReport,
+    trainer_placebo: TrainerPlaceboReport | None,
+) -> tuple[TriadStatus, list[str]]:
+    """The ONLY function that decides triad_status. Pure, deterministic, gate-aligned."""
+    s1 = scorer_sanity.fail_reasons()
+    if s1:
+        return "failed", s1
+    if trainer_placebo is None:
+        return "pending", []
+    s2 = trainer_placebo.fail_reasons()
+    if s2:
+        return "failed", s2
+    return "passed", []
+
+
 class TriadReport(pydantic.BaseModel):
-    triad_status: TriadStatus                # DERIVED — never set by hand
-    failure_reasons: list[str]               # empty iff passed; populated otherwise
+    triad_status: TriadStatus
+    failure_reasons: list[str]
     scorer_sanity: ScorerSanityReport
     trainer_placebo: TrainerPlaceboReport | None
     binding: TriadBinding
-    triad_started_at: datetime
-    triad_completed_at: datetime | None      # None iff pending
+    triad_started_at: AwareDatetime
+    triad_completed_at: AwareDatetime | None
 
     @pydantic.model_validator(mode="after")
     def status_is_derived(self) -> "TriadReport":
         expected_status, expected_reasons = _derive_status(self.scorer_sanity, self.trainer_placebo)
         if self.triad_status != expected_status:
             raise ValueError(
-                f"triad_status={self.triad_status!r} inconsistent with reducer "
-                f"output={expected_status!r}. Status MUST be derived via "
-                f"_derive_status, never set by hand."
+                f"triad_status={self.triad_status!r} inconsistent with reducer="
+                f"{expected_status!r}; status MUST be derived by _derive_status"
             )
         if self.failure_reasons != expected_reasons:
             raise ValueError(
-                f"failure_reasons inconsistent with reducer output.\n"
+                f"failure_reasons inconsistent:\n"
                 f"  declared: {self.failure_reasons}\n"
                 f"  expected: {expected_reasons}"
             )
-        # Completion timestamp consistency
-        if self.triad_status == "pending" and self.triad_completed_at is not None:
-            raise ValueError("triad_completed_at must be None when status=pending")
-        if self.triad_status in ("passed", "failed") and self.triad_completed_at is None:
-            raise ValueError(
-                f"triad_completed_at required when status={self.triad_status!r}"
-            )
+        if self.triad_status == "pending":
+            if self.triad_completed_at is not None:
+                raise ValueError("triad_completed_at must be None when pending")
+        else:
+            if self.triad_completed_at is None:
+                raise ValueError(f"triad_completed_at required when {self.triad_status}")
         return self
 
     @classmethod
-    def build(
-        cls,
-        scorer_sanity: ScorerSanityReport,
-        trainer_placebo: TrainerPlaceboReport | None,
-        binding: TriadBinding,
-        triad_started_at: datetime,
-    ) -> "TriadReport":
-        """The ONLY public constructor — guarantees derivation invariant."""
+    def build(cls, scorer_sanity: ScorerSanityReport,
+              trainer_placebo: TrainerPlaceboReport | None,
+              binding: TriadBinding,
+              triad_started_at: datetime) -> "TriadReport":
         status, reasons = _derive_status(scorer_sanity, trainer_placebo)
-        completed_at = datetime.utcnow() if status != "pending" else None
         return cls(
             triad_status=status,
             failure_reasons=reasons,
@@ -238,73 +267,124 @@ class TriadReport(pydantic.BaseModel):
             trainer_placebo=trainer_placebo,
             binding=binding,
             triad_started_at=triad_started_at,
-            triad_completed_at=completed_at,
+            triad_completed_at=utc_now() if status != "pending" else None,
         )
 ```
 
-**Why this addresses codex findings 1, 2, 5**:
-- Finding 1: status is **derived** by `_derive_status`; reducer checks BOTH tiers. Consumer cannot construct a `passed` `TriadReport` that bypassed Tier 1.
-- Finding 2: zero `assert`; every invariant uses `raise ValueError`.
-- Finding 5: `failed` is exactly the case `len(failure_reasons) > 0`; reasons are derived from reports.
-
-### 5.2 Bypass (allowlist, not date-globally)
+### 5.2 Bypass — HMAC-signed, allowlist-per-fingerprint, tz-aware
 
 ```python
 # renquant-common/src/renquant_common/contracts/leakage_config.py
+import hmac, hashlib, json, os, logging
+from pathlib import Path
+from datetime import datetime
+from typing import Literal
+import pydantic
+from pydantic import Field
+from renquant_common.contracts.triad import AwareDatetime
+
+log = logging.getLogger("renquant_common.leakage_guards.bypass")
+ARCHITECT_KEY_PATH = Path.home() / ".renquant" / "secrets" / "architect_hmac.key"
+
+
+def _load_architect_key() -> bytes | None:
+    """Returns HMAC key bytes if file exists with mode 0600, else None.
+
+    Refuses to load if the key file is world-readable (defense in depth against
+    key leak via accidental commit / shared filesystem).
+    """
+    if not ARCHITECT_KEY_PATH.exists():
+        return None
+    st = ARCHITECT_KEY_PATH.stat()
+    if st.st_mode & 0o077:
+        log.error("architect HMAC key at %s has too-permissive mode %o; refusing to load",
+                  ARCHITECT_KEY_PATH, st.st_mode & 0o777)
+        return None
+    return ARCHITECT_KEY_PATH.read_bytes()
+
+
+def _canonical_payload(entry: dict) -> bytes:
+    """Stable JSON serialization for HMAC. Drops 'signature' field if present."""
+    payload = {k: v for k, v in entry.items() if k != "signature"}
+    return json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+
 
 class TriadBypassEntry(pydantic.BaseModel):
-    artifact_fingerprint: str             # 64-hex; full sha256, not prefix
-    expires_at: datetime
+    """Architect-signed permission for ONE pending artifact fingerprint."""
+    artifact_fingerprint: Annotated[str, Field(min_length=64, max_length=64)]
+    expires_at: AwareDatetime
     reason: str
-    approved_by: str                      # GitHub username of architect / signer
-    pr_url: str                           # PR that introduced this entry
-    approved_at: datetime
+    approved_by: str                              # GitHub username; verified via PR review CODEOWNER, not by string
+    pr_url: str
+    approved_at: AwareDatetime
+    signature: str                                # base64(hmac_sha256(architect_key, canonical_payload))
 
     @pydantic.field_validator("reason")
     @classmethod
     def reason_nontrivial(cls, v: str) -> str:
         if len(v.strip()) < 20:
-            raise ValueError(
-                f"bypass reason too short ({len(v.strip())} chars); "
-                f"explain the operational situation in ≥20 chars"
-            )
+            raise ValueError(f"reason too short ({len(v.strip())} chars); explain ≥20 chars")
         return v
+
+    def verify(self, key: bytes) -> bool:
+        """Returns True iff signature matches HMAC-SHA256(key, canonical_payload)."""
+        canonical = _canonical_payload(self.model_dump(mode="json"))
+        expected = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, self.signature)
+
+
+def sign_bypass_entry(entry_without_signature: dict, key: bytes) -> str:
+    """Architect-side helper. Used by tools/sign_bypass.py to produce signature.
+
+    Architect runs this LOCALLY with their key; pastes resulting signature
+    into the PR's strategy_config.golden.json. Never run in CI.
+    """
+    return hmac.new(key, _canonical_payload(entry_without_signature), hashlib.sha256).hexdigest()
 
 
 class LeakageGuardConfig(pydantic.BaseModel):
-    # Tier 1
     tier1_min_n_val_dates: int = 30
     tier1_pvalue_threshold: float = 0.05
     tier1_aa_drift_max: float = 0.03
-    # Tier 2
     tier2_n_seeds_required: int = 3
     tier2_pvalue_threshold: float = 0.05
     tier2_min_n_dates_per_regime: int = 20
-    tier2_max_placebo_real_ratio_per_regime: float = 0.50
+    tier2_max_placebo_real_ratio: float = 0.50
     tier2_label_shift_days: int = 10
-    tier2_run_strategy: Literal["subprocess_inline", "subprocess_queue", "manual"] = "subprocess_inline"
-    # Bypass — allowlist, NOT date-globally
-    triad_bypasses: list[TriadBypassEntry] = pydantic.Field(default_factory=list)
-    # Alerting
+    tier2_run_strategy: Literal["subprocess_inline", "subprocess_queue", "manual", "synthetic"] = "subprocess_inline"
+    triad_bypasses_raw: list[TriadBypassEntry] = Field(default_factory=list)
     alert_channel: Literal["slack", "log", "none"] = "log"
     alert_slack_webhook_url: str | None = None
+
+    @pydantic.computed_field
+    @property
+    def triad_bypasses(self) -> list[TriadBypassEntry]:
+        """Verified-only bypass entries. Invalid signatures dropped with WARN log."""
+        key = _load_architect_key()
+        if key is None:
+            if self.triad_bypasses_raw:
+                log.error(
+                    "%d bypass entries present but architect key not loadable; "
+                    "treating all as unverified (= disabled).",
+                    len(self.triad_bypasses_raw),
+                )
+            return []
+        verified: list[TriadBypassEntry] = []
+        for entry in self.triad_bypasses_raw:
+            if entry.verify(key):
+                verified.append(entry)
+            else:
+                log.error("bypass for fp=%s has INVALID signature; dropped.",
+                          entry.artifact_fingerprint[:16])
+        return verified
 ```
 
 ```python
 # renquant-common/src/renquant_common/leakage_guards/gate.py
-
 def assert_artifact_validated(
-    artifact: ScorerArtifact,
-    *,
-    cfg: LeakageGuardConfig,
-    caller: str,
+    artifact: ScorerArtifact, *,
+    cfg: LeakageGuardConfig, caller: str,
 ) -> None:
-    """SINGLE implementation used by G3/G4/G5.
-
-    failed: ALWAYS blocked, regardless of bypass.
-    passed: allowed.
-    pending: allowed IFF an active bypass entry matches THIS artifact's fingerprint.
-    """
     s = artifact.triad_report.triad_status
     fp = artifact.triad_report.binding.fingerprint()
 
@@ -314,8 +394,7 @@ def assert_artifact_validated(
                              failure_reasons=artifact.triad_report.failure_reasons)
         raise ArtifactNotValidated(
             f"{caller}: refusing scorer fp={fp[:16]} with triad_status='failed'. "
-            f"Reasons: {artifact.triad_report.failure_reasons}. "
-            f"No bypass allowed for failed."
+            f"Reasons: {artifact.triad_report.failure_reasons}. No bypass allowed for failed."
         )
 
     if s == "passed":
@@ -323,22 +402,17 @@ def assert_artifact_validated(
                              triad_status="passed")
         return
 
-    # pending — require allowlist match
-    now = datetime.utcnow()
-    matching = [
-        b for b in cfg.triad_bypasses
-        if b.artifact_fingerprint == fp and b.expires_at > now
-    ]
+    # pending — verified bypass allowlist only (signatures already checked by cfg property)
+    now = utc_now()
+    matching = [b for b in cfg.triad_bypasses
+                if b.artifact_fingerprint == fp and b.expires_at > now]
     if not matching:
         telemetry.emit_event("gate_block", caller=caller, artifact_fingerprint=fp,
-                             triad_status="pending",
-                             reason="no matching bypass entry")
+                             triad_status="pending", reason="no verified bypass match")
         raise ArtifactNotValidated(
-            f"{caller}: refusing scorer fp={fp[:16]} with triad_status='pending' "
-            f"and no matching bypass entry in cfg.triad_bypasses (active entries: "
-            f"{len(cfg.triad_bypasses)})."
+            f"{caller}: refusing scorer fp={fp[:16]} status='pending'; "
+            f"no verified bypass entry matches (verified entries: {len(cfg.triad_bypasses)})."
         )
-
     entry = matching[0]
     telemetry.emit_event("gate_bypass", caller=caller, artifact_fingerprint=fp,
                          triad_status="pending",
@@ -346,36 +420,60 @@ def assert_artifact_validated(
                          bypass_approved_by=entry.approved_by,
                          bypass_pr_url=entry.pr_url)
     log.warning(
-        "TRIAD BYPASS ACTIVE: %s loading PENDING artifact fp=%s "
-        "(bypass expires %s, approved_by=%s, pr=%s)",
+        "TRIAD BYPASS ACTIVE: %s fp=%s expires=%s approved_by=%s pr=%s",
         caller, fp[:16], entry.expires_at.isoformat(), entry.approved_by, entry.pr_url,
     )
 ```
 
-**Why this addresses codex finding 3**: bypass is **per-fingerprint allowlist** with required `reason ≥ 20 chars`, `approved_by`, `pr_url`, `expires_at`. A fresh unvalidated artifact built after the bypass entry was written **does not match** any fingerprint → blocked. `failed` is unconditionally blocked.
+**Defense in depth on top of HMAC**: `.github/CODEOWNERS` requires architect approval for `strategy_config.golden.json` changes; PR auto-label `agent:emergency:bypass-triad` triggers required-review workflow. The HMAC binds the entry contents; CODEOWNERS binds who can merge.
 
-### 5.3 Sidecar CAS write
+### 5.3 CAS — compare-and-swap on (binding, status)
 
 ```python
 # renquant-common/src/renquant_common/leakage_guards/sidecar.py
+"""LOCAL POSIX/Linux/macOS only. Object-store sidecars NOT supported in MVP;
+use a separate ETag/generation-precondition backend for cloud."""
+import fcntl, json, os, tempfile, time
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+from renquant_common.contracts.triad import TriadBinding, TriadStatus, _derive_status
 
-class StaleBindingError(RuntimeError):
-    """Raised when Tier-2 runner finds the sidecar binding has moved on."""
+_VALID_TRANSITIONS: set[tuple[TriadStatus, TriadStatus]] = {
+    ("pending", "pending"),    # idempotent retry
+    ("pending", "passed"),
+    ("pending", "failed"),
+}
+
+
+class SidecarConcurrencyError(RuntimeError): ...
+class StaleBindingError(RuntimeError): ...
+class IllegalTriadTransition(RuntimeError): ...
 
 
 def atomic_cas_update_sidecar(
     sidecar_path: Path,
     expected_binding: TriadBinding,
+    expected_current_status: TriadStatus,   # CAS on (binding, status) BOTH
     transformer: Callable[[dict], dict],
     *,
     timeout_seconds: float = 30.0,
 ) -> dict:
-    """Compare-And-Swap update of triad sidecar JSON.
+    """Compare-And-Swap update of triad sidecar.
 
-    Acquires flock, reads current sidecar, verifies binding matches
-    expected_binding, applies transformer, validates schema + transition,
-    writes atomically. Raises StaleBindingError if binding has changed
-    since Tier 2 started.
+    Atomically:
+      1. flock the sidecar lockfile.
+      2. Read current JSON; parse binding + status.
+      3. Verify (current.binding == expected_binding) AND (current.status == expected_current_status).
+         Mismatch ⇒ StaleBindingError (someone updated since we started).
+      4. Apply transformer(current) → new.
+      5. Verify (current.status, new.status) ∈ _VALID_TRANSITIONS.
+         Particularly: passed→anything is REJECTED; failed→anything is REJECTED.
+         passed/failed are TERMINAL at the sidecar level — re-validation requires
+         a new binding-tuple = new artifact = new sidecar with status=pending.
+      6. Full-validate new as ScorerArtifact (catches reducer inconsistency).
+      7. Write temp, fsync, os.replace (POSIX atomic-on-existing), fsync dir.
+      8. Release lock.
     """
     lockfile = sidecar_path.with_suffix(sidecar_path.suffix + ".lock")
     deadline = time.monotonic() + timeout_seconds
@@ -387,31 +485,41 @@ def atomic_cas_update_sidecar(
                 break
             except BlockingIOError:
                 if time.monotonic() > deadline:
-                    raise SidecarConcurrencyError(
-                        f"timeout acquiring lock on {sidecar_path}"
-                    )
+                    raise SidecarConcurrencyError(f"flock timeout on {sidecar_path}")
                 time.sleep(0.1)
 
         if not sidecar_path.exists():
-            raise FileNotFoundError(
-                f"sidecar absent at CAS update: {sidecar_path}"
-            )
+            raise FileNotFoundError(f"sidecar missing: {sidecar_path}")
         current = json.loads(sidecar_path.read_text())
 
-        # CAS check
-        current_binding = TriadBinding.model_validate(
-            current["triad_report"]["binding"]
-        )
+        # CAS check: binding
+        current_binding = TriadBinding.model_validate(current["triad_report"]["binding"])
         if current_binding != expected_binding:
             raise StaleBindingError(
-                f"binding moved: expected fp={expected_binding.fingerprint()[:16]}, "
-                f"sidecar has fp={current_binding.fingerprint()[:16]}. "
-                f"Tier 2 runner aborting; a newer artifact is in flight."
+                f"binding moved: expected fp={expected_binding.fingerprint()[:16]} "
+                f"actual fp={current_binding.fingerprint()[:16]}"
+            )
+        # CAS check: status
+        current_status: TriadStatus = current["triad_report"]["triad_status"]
+        if current_status != expected_current_status:
+            raise StaleBindingError(
+                f"status moved: expected current={expected_current_status} actual={current_status}; "
+                f"a competing writer finalized the triad."
             )
 
         new = transformer(current)
-        ScorerArtifact.model_validate(new)         # full re-validation
+        new_status: TriadStatus = new["triad_report"]["triad_status"]
+        if (current_status, new_status) not in _VALID_TRANSITIONS:
+            raise IllegalTriadTransition(
+                f"{current_status} → {new_status} is not allowed. "
+                f"Terminal states (passed/failed) require new binding-tuple."
+            )
 
+        # Full schema + derivation validation
+        from renquant_common.contracts.scorer import ScorerArtifact
+        ScorerArtifact.model_validate(new)
+
+        # Atomic write
         tmp = tempfile.NamedTemporaryFile(
             mode="w", dir=sidecar_path.parent, delete=False, suffix=".tmp"
         )
@@ -420,7 +528,7 @@ def atomic_cas_update_sidecar(
             tmp.flush()
             os.fsync(tmp.fileno())
             tmp.close()
-            os.rename(tmp.name, sidecar_path)
+            os.replace(tmp.name, sidecar_path)     # POSIX atomic replace (handles existing dst)
             dir_fd = os.open(sidecar_path.parent, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
@@ -436,187 +544,297 @@ def atomic_cas_update_sidecar(
         os.close(fd)
 ```
 
-**Why this addresses codex finding 7**: every Tier-2 finalization is CAS-bound to the exact `TriadBinding` it started with. A stale runner finds a moved binding → aborts → emits telemetry event; never overwrites.
-
-### 5.4 Statistical thresholds via permutation null
+### 5.4 Statistical helpers — direction-correct, gate-aligned
 
 ```python
 # renquant-common/src/renquant_common/leakage_guards/stats.py
+"""
+Hypothesis tests with EXPLICIT direction:
 
-def permutation_null_p_value(
-    real_ic_per_date: np.ndarray,         # daily IC under real labels
-    perturbed_ic_per_date: np.ndarray,    # daily IC under shuffled/timeshifted labels
-    n_perms: int = 10_000,
-    rng_seed: int = 0,
+H0 / H1 alignment with the gate fail condition is the only thing that matters.
+Failed gates that protect against leakage REJECT H0(perturbed IC = 0) at small p.
+
+Two distinct tests:
+
+  1. bootstrap_p_value_against_zero(perturbed_ic_per_date)
+       H0: mean(perturbed IC) = 0  (no leak)
+       H1: mean(perturbed IC) ≠ 0  (leak — model still extracts signal from perturbed labels)
+       Returns two-sided bootstrap p. small p ⇒ REJECT H0 ⇒ LEAK ⇒ gate FAILS.
+
+  2. bootstrap_p_value_real_dominates(real_ic, perturbed_ic)
+       H0: mean(real) ≤ mean(perturbed)  (model NOT distinguishing real from placebo)
+       H1: mean(real) > mean(perturbed)  (real signal exceeds placebo)
+       Returns one-sided bootstrap p of H0. small p ⇒ REJECT H0 ⇒ PASS (real > perturbed).
+       Currently NOT used as a hard gate (kept for diagnostic), since (1) is strictly stronger.
+"""
+import numpy as np
+
+
+def bootstrap_p_value_against_zero(
+    perturbed_ic_per_date: np.ndarray,
+    *, n_boot: int = 10_000, rng_seed: int = 0,
 ) -> float:
-    """One-sided permutation p that perturbed mean ≥ real mean.
+    """Two-sided bootstrap p that mean(perturbed) = 0.
 
-    Used for both Tier 1 (already-trained scorer eval'd on perturbed val labels)
-    and Tier 2 (separate-retrain perturbed IC distribution).
+    Small p ⇒ perturbed IC distinguishable from zero ⇒ LEAK SUSPECTED.
+
+    Aligned with gate fail condition.
+    Sample-size aware (small n ⇒ wide bootstrap CI ⇒ tends to large p ⇒ tend to pass).
     """
+    if perturbed_ic_per_date.size == 0:
+        raise ValueError("perturbed_ic_per_date is empty")
+    if not np.all(np.isfinite(perturbed_ic_per_date)):
+        raise ValueError("perturbed_ic_per_date contains non-finite values")
     rng = np.random.default_rng(rng_seed)
-    combined = np.concatenate([real_ic_per_date, perturbed_ic_per_date])
-    n_real = len(real_ic_per_date)
-    real_mean = real_ic_per_date.mean()
-    null_means = np.empty(n_perms)
-    for k in range(n_perms):
-        rng.shuffle(combined)
-        null_means[k] = combined[:n_real].mean()
-    # p = fraction of permutations where null mean ≥ observed real mean
-    p = float((null_means >= real_mean).mean())
-    return p
-
-
-def bootstrap_ic_ci(
-    daily_ic: np.ndarray,
-    confidence: float = 0.95,
-    n_boot: int = 10_000,
-    rng_seed: int = 0,
-) -> tuple[float, float]:
-    """BCa-style bootstrap CI on the mean of daily IC."""
-    rng = np.random.default_rng(rng_seed)
-    n = len(daily_ic)
+    n = len(perturbed_ic_per_date)
     boots = np.empty(n_boot)
     for k in range(n_boot):
         idx = rng.integers(0, n, size=n)
-        boots[k] = daily_ic[idx].mean()
-    alpha = (1 - confidence) / 2
-    return float(np.quantile(boots, alpha)), float(np.quantile(boots, 1 - alpha))
+        boots[k] = perturbed_ic_per_date[idx].mean()
+    # two-sided p: how often does the bootstrap mean cross zero from the observed direction
+    observed_mean = perturbed_ic_per_date.mean()
+    if observed_mean >= 0:
+        p_one_sided = float((boots <= 0).mean())
+    else:
+        p_one_sided = float((boots >= 0).mean())
+    return min(1.0, 2 * p_one_sided)
+
+
+def bootstrap_p_value_real_dominates(
+    real_ic_per_date: np.ndarray, perturbed_ic_per_date: np.ndarray,
+    *, n_boot: int = 10_000, rng_seed: int = 0,
+) -> float:
+    """One-sided p of H0(mean(real) ≤ mean(perturbed)) via paired/independent bootstrap.
+
+    Small p ⇒ real significantly exceeds perturbed ⇒ healthy.
+    Currently DIAGNOSTIC ONLY — not a primary gate; bootstrap_p_value_against_zero is stricter.
+    """
+    if real_ic_per_date.size == 0 or perturbed_ic_per_date.size == 0:
+        raise ValueError("input arrays must be non-empty")
+    rng = np.random.default_rng(rng_seed)
+    n_r, n_p = len(real_ic_per_date), len(perturbed_ic_per_date)
+    boots = np.empty(n_boot)
+    for k in range(n_boot):
+        r = real_ic_per_date[rng.integers(0, n_r, size=n_r)].mean()
+        p = perturbed_ic_per_date[rng.integers(0, n_p, size=n_p)].mean()
+        boots[k] = r - p
+    # p that bootstrap (real - perturbed) ≤ 0 = H0
+    return float((boots <= 0).mean())
 ```
 
-**Why this addresses codex finding 6**: thresholds are **statistical**, scaled by sample size. A small-`n` regime gets a wide CI and passes by default (innocent until proven leaky). A large-`n` regime with placebo distinguishable from null fails even at small absolute IC. The `triad_config_hash` includes `(n_perms, n_boot, confidence, rng_seed)` so re-running gives identical decisions.
+**Fixtures for falsification testing** (used by `multirepo-triad-e2e.yml`):
 
-## 6 · State machine + transitions
+```python
+# renquant-common/tests/fixtures/triad_models.py
+def good_model_ic(n_dates=250, rng_seed=0):
+    """Real IC ~+0.05; shuffle/timeshift IC ~0. Should produce status=passed."""
+    rng = np.random.default_rng(rng_seed)
+    real = rng.normal(0.05, 0.15, n_dates)
+    shuffle = rng.normal(0.00, 0.15, n_dates)
+    timeshift = rng.normal(0.00, 0.15, n_dates)
+    return real, shuffle, timeshift
 
-```
-                  ╔══════════════════════════════════════════════════════╗
-                  ║                                                      ║
-                  ║   binding-tuple (model_sha, feat_hash, label_hash,   ║
-                  ║                  code_sha, triad_config_hash)        ║
-                  ║                                                      ║
-                  ║  Every transition is bound to ONE binding-tuple.     ║
-                  ║  Any element change ⇒ new fingerprint ⇒ new lifeline ║
-                  ╚══════════════════════════════════════════════════════╝
+def leak_model_ic(n_dates=250, rng_seed=0):
+    """Real ≈ shuffle ≈ timeshift ≈ +0.04 — the B_tuned incident class. Status=failed."""
+    rng = np.random.default_rng(rng_seed)
+    return (
+        rng.normal(0.04, 0.15, n_dates),
+        rng.normal(0.04, 0.15, n_dates),
+        rng.normal(0.04, 0.15, n_dates),
+    )
 
-                                  ╭─────────────╮
-                                  │   PENDING   │ ◄── (artifact saved with Tier 1 passed,
-                                  │             │      Tier 2 not yet run)
-                                  ╰──────┬──────╯
-                                         │
-                              Tier 2 CAS-updates sidecar
-                                         │
-                          ┌──────────────┴──────────────┐
-                          │                             │
-                  failure_reasons == []          failure_reasons ≠ []
-                          │                             │
-                          ↓                             ↓
-                  ╭─────────────╮              ╭─────────────╮
-                  │    PASSED   │              │   FAILED    │ (terminal,
-                  ╰─────────────╯              ╰─────────────╯  immutable;
-                                                                 binding-tuple
-                                                                 must change
-                                                                 to retry)
-
-   ◆ Any consumer attempting to construct a different transition raises
-     ValueError via TriadReport.status_is_derived.
-   ◆ failed → passed is impossible: requires _derive_status to return passed,
-     which is impossible while failure_reasons is non-empty.
-   ◆ When binding changes (e.g., retrain), a NEW TriadReport is built starting
-     from pending. The old TriadReport for the old binding remains immutable
-     in telemetry/audit.
+def noise_model_ic(n_dates=250, rng_seed=0):
+    """All ~0 — model has no signal but also no leak. Status=passed (gate is for leak,
+    not for skill)."""
+    rng = np.random.default_rng(rng_seed)
+    return (
+        rng.normal(0.00, 0.15, n_dates),
+        rng.normal(0.00, 0.15, n_dates),
+        rng.normal(0.00, 0.15, n_dates),
+    )
 ```
 
-## 7 · Five gates — exact insertion points
+Three required unit tests in `tests/test_stats.py`:
+- `test_good_model_passes`: `bootstrap_p_value_against_zero(shuffle) > 0.05` AND `> 0.05` (timeshift)
+- `test_leak_model_fails`: at least one of shuffle/timeshift `p < 0.05`
+- `test_noise_model_passes`: all p > 0.05 (no signal but also no leak)
 
-| Gate | File | Line/anchor | What it does |
+## 6 · State machine + transitions (enforced at TWO layers)
+
+```
+                  ╭─────────────────────────────────────────────────────╮
+                  │ Layer 1: Pydantic _derive_status                    │
+                  │   tuple(scorer_sanity, trainer_placebo) → status   │
+                  │   Pure deterministic reducer.                       │
+                  │                                                     │
+                  │ Layer 2: atomic_cas_update_sidecar                  │
+                  │   (current_status, new_status) ∈ _VALID_TRANSITIONS │
+                  │   passed/failed terminal at sidecar layer.          │
+                  │                                                     │
+                  │ Two layers ⇒ a buggy reducer can't promote failed  │
+                  │ to passed even via a sidecar rewrite.              │
+                  ╰─────────────────────────────────────────────────────╯
+
+                                     ╭─────────╮
+                                     │ PENDING │ ◄── (initial state: Tier 1 passed,
+                                     │         │      Tier 2 not yet run)
+                                     ╰────┬────╯
+                                          │
+                              Tier 2 runner CAS-updates sidecar
+                                          │
+                          ┌───────────────┼───────────────┐
+                          │               │               │
+                  reducer={passed}  reducer={failed}   pending→pending
+                          │               │           (idempotent retry)
+                          ↓               ↓               │
+                  ╭─────────────╮  ╭─────────────╮  (loop back to pending)
+                  │   PASSED    │  │   FAILED    │
+                  ╰─────────────╯  ╰─────────────╯
+                   TERMINAL          TERMINAL
+                   (CAS rejects      (CAS rejects
+                   any transition    any transition
+                   out)              out)
+```
+
+Tests:
+- `test_failed_to_passed_rejected`: CAS update from failed to passed raises `IllegalTriadTransition`.
+- `test_passed_to_failed_rejected`: ditto (passed terminal too).
+- `test_stale_runner_rejected`: parallel Tier 2 invocations — second one finds status moved → `StaleBindingError`.
+
+## 7 · Five gates + Tier-2 runner abstraction
+
+| Gate | File | Anchor | What it does |
 |---|---|---|---|
-| G0 | `renquant-base-data/src/renquant_base_data/builders/alpha158.py` | `_write_dataset()` end, before `pq.write_table` | `DatasetManifest(...).model_validate(...)` raises if features∩labels ≠ ∅, embargo < label lookahead, lookahead_days non-zero |
-| G1 | `renquant-model-patchtst/src/renquant_model_patchtst/hf_trainer.py::_save_artifact` (and gbdt mirror) | before `torch.save` | `report = run_tier1(...)`; if `report.fail_reasons()`: raise `Tier1Failed`. Always builds TriadReport via `.build()` (status derived). |
-| G2 | `renquant-model-patchtst/src/renquant_model_patchtst/post_save_hook.py` (new) | after artifact persisted | `enqueue_tier2(artifact, binding, cfg)` → spawns CLI subprocess that on completion calls `atomic_cas_update_sidecar(sidecar_path, expected_binding=binding, transformer=lambda d: {...with trainer_placebo populated...})` |
-| G3 | `renquant-pipeline/src/renquant_pipeline/kernel/panel_pipeline/panel_scorer.py::PanelScorer.load` | top of method, after artifact parse | `assert_artifact_validated(artifact, cfg=load_cfg, caller="pipeline:scorer_load")` |
-| G4 | `renquant-orchestrator/src/renquant_orchestrator/build_patchtst_wf_manifest.py::manifest_row` (and gbdt+backtesting siblings) | before append to manifest | `assert_artifact_validated(...)` — failed scorer means the cutoff is treated like training failure (`ctx.failed_cutoffs.append`) |
-| G5 | `renquant-execution/src/renquant_execution/broker_adapter.py::submit_order` (new) | before broker API call | resolve scorer artifact behind the order; `assert_artifact_validated(...)`; refused → no order, telemetry event `refused_order_unvalidated_scorer` |
+| G0 | `renquant-base-data/.../alpha158.py` | `_write_dataset()` end | `DatasetManifest(...).model_validate(...)` |
+| G1 | `renquant-model-*/hf_trainer.py::_save_artifact` | before `torch.save` | `report = run_tier1(...)`; `raise Tier1Failed` if `report.fail_reasons()`; build TriadReport via `.build()` |
+| G2 | `renquant-model-*/post_save_hook.py` (new) | post-save | `enqueue_tier2(..., runner=Tier2RunnerProtocol)` → subprocess invokes runner; runner CAS-updates sidecar |
+| G3 | `renquant-pipeline/.../panel_scorer.py::PanelScorer.load` | top of method | `assert_artifact_validated(...)` |
+| G4 | `renquant-orchestrator/.../build_*_wf_manifest.py::manifest_row` + backtesting `wf_gate/runner.py`, `sim_driver.py`, `scripts/fit_walkforward_calibrators.py` | before manifest insert | `assert_artifact_validated(...)` — failed/pending without bypass → `ctx.failed_cutoffs.append`; do not call calibrator |
+| G5 | `renquant-execution/broker_adapter.py::submit_order` (new) | before broker API | resolve scorer; `assert_artifact_validated(...)`; refused → emit `refused_order_unvalidated_scorer` telemetry; do not submit |
 
-## 8 · Migration — declared breaking, 4 stages
+```python
+# renquant-common/src/renquant_common/leakage_guards/runner.py
+class Tier2RunnerProtocol(Protocol):
+    """Pluggable Tier-2 runner. Used by enqueue_tier2; replaced in E2E test."""
+    def run(self, *, artifact_path: Path, binding: TriadBinding,
+            cfg: LeakageGuardConfig) -> TrainerPlaceboReport: ...
 
-Codex finding 4: requiring `triad_report` on `ScorerArtifact` is **breaking**, not additive. Declared via `agent:contract:breaking` label.
+class ProductionTier2Runner:
+    """Real subprocess: spawns N trainer invocations × 3 modes × ≥3 seeds."""
+    def run(self, *, artifact_path, binding, cfg) -> TrainerPlaceboReport:
+        # ~75 min wall clock for PatchTST; calls model trainer CLI
+        ...
 
-| Stage | Wall clock | Schema | Gates | Action |
+class SyntheticTier2Runner:
+    """In-memory replay against fixture IC arrays. Sub-second.
+    Used by `multirepo-triad-e2e.yml` to exercise all 3 fixtures
+    (good/leak/noise) under the 5-min completion criterion (§2.8)."""
+    def __init__(self, fixture_name: Literal["good", "leak", "noise"], n_dates=250, seeds=(42,43,44)):
+        self.fixture_name = fixture_name
+        self.n_dates = n_dates
+        self.seeds = seeds
+
+    def run(self, *, artifact_path, binding, cfg) -> TrainerPlaceboReport:
+        fixture = {"good": good_model_ic, "leak": leak_model_ic, "noise": noise_model_ic}[self.fixture_name]
+        real_per_seed, shuffle_per_seed, timeshift_per_seed = [], [], []
+        for seed in self.seeds:
+            real, shuffle, timeshift = fixture(self.n_dates, rng_seed=seed)
+            real_per_seed.append(real); shuffle_per_seed.append(shuffle); timeshift_per_seed.append(timeshift)
+        return TrainerPlaceboReport(
+            real_ic_mean=float(np.mean([r.mean() for r in real_per_seed])),
+            real_ic_per_regime={"_synthetic_": float(np.mean([r.mean() for r in real_per_seed]))},
+            real_ic_n_dates_per_regime={"_synthetic_": self.n_dates},
+            shuffle_placebo_ic_mean=float(np.mean([s.mean() for s in shuffle_per_seed])),
+            shuffle_placebo_ic_per_regime={"_synthetic_": float(np.mean([s.mean() for s in shuffle_per_seed]))},
+            shuffle_placebo_p_value_against_zero=bootstrap_p_value_against_zero(np.concatenate(shuffle_per_seed)),
+            timeshift_placebo_ic_mean=float(np.mean([t.mean() for t in timeshift_per_seed])),
+            timeshift_placebo_ic_per_regime={"_synthetic_": float(np.mean([t.mean() for t in timeshift_per_seed]))},
+            timeshift_placebo_p_value_against_zero=bootstrap_p_value_against_zero(np.concatenate(timeshift_per_seed)),
+            n_seeds=len(self.seeds),
+            n_val_dates=self.n_dates,
+        )
+```
+
+## 8 · Migration — 4 stages (unchanged from v6 plan; declared breaking)
+
+| Stage | Wall | Schema | Gates | Action |
 |---|---|---|---|---|
-| **S0** | Day -7 to 0 | `triad_report: TriadReport \| None` (optional) | OFF (telemetry-only "would have blocked") | Tier-1 runner wired in trainer; sidecar gets `triad_report` if computed. Existing artifacts untouched. |
-| **S1** | Day 0-7 | optional | G3/G4/G5 log+pass (`assert_artifact_validated_shadow`) | Telemetry counts how many production calls would fail. Architect reviews. |
-| **S2** | Day 7-14 | optional → required for newly-built artifacts | Tier-2 runner brought online; existing artifacts get `pending` + 7-day per-fingerprint bypass via backfill script. | Architect reviews backfill audit. |
-| **S3** | Day 14-28 | required (`triad_report` mandatory) | G3/G4/G5 enforce. `failed` blocked. `pending` blocked unless matching bypass. | Bypass entries shrink weekly; new artifacts must reach `passed` via Tier 2. |
-| **S4** | Day 28+ | required | All bypass entries expired. Only `passed` artifacts loaded. | Steady state. |
+| S0 | -7d→0 | optional | OFF (shadow telemetry) | Wire Tier-1 in trainer; existing artifacts untouched. |
+| S1 | 0→7d | optional | shadow log "would have blocked" | Telemetry counts cohort that fails. |
+| S2 | 7→14d | required-for-new | Tier-2 online; backfill = pending + 7-day per-fp bypass (signed by architect) | Architect signs backfill cohort once. |
+| S3 | 14→28d | required | G3/G4/G5 enforce; failed always blocked; pending blocked unless verified-signature bypass | Bypass cohort shrinks weekly. |
+| S4 | 28+ | required | Steady state | Only passed loaded. |
 
-**Rollback**: at any stage, architect PR sets `tier2_run_strategy="manual"` + adds bypass entries for live-production fingerprints. Live trading continues; Tier-2 can be re-fired manually. Rollback latency ≤ 5 min from PR push to merge.
+Rollback ≤ 5 min: architect PR sets `tier2_run_strategy="manual"` + adds verified-signed bypass entries for currently-live fingerprints.
 
-## 9 · Falsification — how do we know this design is wrong
+## 9 · Falsification
 
-If after S3:
+If after S3 ANY of these holds, design is wrong (P0):
+1. Passed artifact later proven to have shuffled placebo p < 0.05 on re-run with same `triad_config_hash`.
+2. Pending artifact reached live order without matching verified bypass.
+3. Failed artifact transitioned to passed without binding change (CAS or reducer bug).
+4. Tier 2 sidecar overwritten by stale runner (CAS bug).
+5. Unsigned/forged bypass entry accepted (key-load or HMAC bug).
+6. Bypass for fingerprint A allowed load of artifact with fingerprint B (cross-fingerprint bypass leak).
+7. `datetime.utcnow()` reintroduced anywhere in leakage_guards/ (tz bug regression).
+8. Bare `assert` reintroduced in contracts/triad.py (silent-under-O regression).
 
-1. A passed artifact is later proven to have placebo IC > 0.01 (re-run Tier 2 on it manually) → **derivation or threshold contract is wrong**. Reduce threshold or fix bug; this is a P0 architecture defect.
-2. A pending artifact reaches a live order with no matching bypass → **gate plumbing is wrong**. Audit telemetry; this is a P0 plumbing defect.
-3. A failed artifact transitions to passed without binding change → **state machine is wrong**. Audit `_derive_status` and `model_validator`; this is a P0 invariant defect.
-4. Tier-2 takes > 4× the per-trial training time → **performance budget exceeded**. Re-architect runner (queue / GPU pool / quantization).
-5. Architect bypass list grows monotonically over 30 days → **operational debt accruing**. Either threshold too tight, or model family fundamentally leaky; pause training campaign.
+Tests for (3)-(8) live in `tests/test_falsification.py`.
 
-## 10 · Threat model abridged (full table in companion `2026-06-01-leakage-threat-model.md`)
+## 10 · Threat model (12 leak classes, full table in companion)
 
-12 leak classes (L1-L12) mapped to gate responsibilities:
+L1-L12 mapped to G0-G5; residual risk LOW or 0. **L2 implicit lookahead** is the highest residual; mitigated only by Tier 2 placebo. If a model's features are themselves transforms of future returns, Tier 2 catches it (placebo IC ≈ real IC ⇒ failed) — this is exactly the B_tuned incident class.
 
-| Class | Gate | Residual risk |
-|---|---|---|
-| L1 label in features | G0 | 0 |
-| L2 implicit lookahead | G0 (declared `feature_lookahead_days[c]=0`) + G2 (placebo retrain unmasks via shuffle) | LOW — builder honesty + Tier-2 sanity catch |
-| L3 split_label in features | G0 | 0 |
-| L4 embargo insufficient | G0 + PR #9 | 0 |
-| L5 val labels in callbacks | G2 (Tier 2 disables early stopping) | LOW |
-| L6 preprocessing leak | G2 | LOW |
-| L7 sliding window cross-split | G0 (embargo) | 0 |
-| L8 calibrator fit on train+val | G2 | LOW |
-| L9 EarlyStopping by val IC | G2 | LOW |
-| L10 random seed selection bias | renquant-model PR #15 | 0 (out of scope) |
-| L11 sidecar tampering | G2 (CAS) + G3 (re-validate fingerprint at load) | LOW |
-| L12 stale triad after retrain | binding-tuple + state machine auto-invalidates | 0 |
+## 11 · Codex v6 → v7 — addressed (7 findings)
 
-## 11 · Codex review v4 → v6 — addressed
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | HIGH | Permutation p-value direction inverted (failed healthy, passed leaky) | §5.4 rewrite with explicit H0/H1: `bootstrap_p_value_against_zero(perturbed_ic)` — small p ⇒ leak ⇒ fail. Test fixtures (§5.4) prove all 3 directions: good passes, leak fails, noise passes. |
+| 2 | HIGH | CAS only checks binding, not transition; stale runner can overwrite failed→passed | §5.3 CAS now takes `expected_current_status` parameter; checks `(current, new) ∈ _VALID_TRANSITIONS`; passed/failed terminal at CAS layer. State machine §6 enforced at TWO layers. |
+| 3 | HIGH | Bypass `approved_by` was unverified data | §5.2 `TriadBypassEntry.signature: HMAC-SHA256(architect_key, canonical(entry))`; `LeakageGuardConfig.triad_bypasses` is computed property that drops invalid signatures. CODEOWNERS for `strategy_config.golden.json` adds belt-and-suspenders. |
+| 4 | HIGH | Naive `datetime.utcnow()` breaks tz-aware comparisons | §5.1 `AwareDatetime` Annotated type rejects naive; `utc_now()` single source; every gate uses `datetime.now(timezone.utc)`; comparison `entry.expires_at > utc_now()` always aware vs aware. |
+| 5 | HIGH | Float / regime fields not validated (NaN p-values, missing keys, default-0 placebo) | §5.1 `FiniteFloat` (AfterValidator `math.isfinite`), `PValue` (Field ge=0 le=1 + finite), positive int constraints, `regime_keys_consistent` model_validator forbids empty + requires identical key sets across real/shuffle/timeshift/n_dates. `.get(k, 0)` defaults removed. |
+| 6 | MED | POSIX-only CAS portability | §5.3 explicit "LOCAL POSIX/Linux/macOS only" docstring at top of `sidecar.py`; `os.replace` not `os.rename`; cloud-object-store backend declared as separate concern (use ETag/generation preconditions, out of MVP scope). |
+| 7 | MED | 5-min E2E vs 75-min Tier-2 cost mismatch | §7 `Tier2RunnerProtocol` + `SyntheticTier2Runner` (sub-second, in-memory fixtures); `multirepo-triad-e2e.yml` uses synthetic runner with 3 fixtures (good/leak/noise); E2E proves both pending-refused AND pending→passed path. |
 
-| # | Finding | Resolution |
-|---|---|---|
-| 1 HIGH | Status can be passed without Tier-1 check | §5.1 `_derive_status` is single reducer; checks `scorer_sanity.fail_reasons()` first; `failed` returned if any |
-| 2 HIGH | Bare `assert` stripped under -O | §5.1 every `assert` replaced with `raise ValueError(...)`. AST scan in `gate-disable-detection.yml` (CI) also fails PRs reintroducing `assert` in `leakage_guards/` |
-| 3 HIGH | Date-only bypass too broad | §5.2 `TriadBypassEntry` = per-fingerprint allowlist + `reason ≥ 20 chars` + `approved_by` + `pr_url` + `expires_at`. `failed` never bypassable. |
-| 4 HIGH | Required `triad_report` is breaking, not additive | §8 stage S0-S2: optional, telemetry-only/shadow; stage S3: required + enforced. Declared `agent:contract:breaking`. |
-| 5 MED | `failed` not tied to actual threshold | §5.1 `failure_reasons` populated from `fail_reasons()`; status `failed` iff `len(failure_reasons) > 0`. Mechanically derived. |
-| 6 MED | Static IC thresholds | §5.4 permutation null p-value + bootstrap CI + per-regime `n_min`. Threshold structure: `(p_value < 0.05) ∨ (per-regime n < min) ∨ (placebo > 0.5×real per regime)`. Sample-size aware. |
-| 7 MED | Async sidecar needs CAS | §5.3 `atomic_cas_update_sidecar` reads + verifies `TriadBinding` matches expected; raises `StaleBindingError` if not. |
+## 12 · Open questions (unchanged from v6)
 
-Codex v1-v3 findings (split triad, runtime validators, manifest not regex, MVP first, async + pending, PR #9 preserved): all carried forward from v4.
+1. Permutation `n_boot=10_000` sufficient for n=250 daily IC? Audit by running 100k once and comparing CIs.
+2. Subprocess vs job queue for Tier-2 at scale.
+3. After Tier-2 fail: auto-retrain (selection bias risk) vs hold for architect (cycle latency).
+4. Strategy threshold changes in binding-tuple?
 
-## 12 · Open questions
-
-1. **Q**: Permutation null requires per-date IC arrays. PatchTST val sets are ~250 dates per cut. Is `n_perms=10_000` enough? **Tentative**: yes; Bailey-Lopez de Prado 2014 used 10k for DSR; we can audit by running 100k once and comparing.
-2. **Q**: Subprocess vs queue for Tier 2 runner — at 75min/trial × 3 seeds × 3 modes × N artifacts/day, do we need a job queue? **Tentative**: not yet; current daily cadence is ~1-2 retrains/day, 9 sub-trainings in serial = 7-10h, fits overnight. Revisit if we go multi-strategy.
-3. **Q**: When Tier 2 fails, is the underlying model retrained automatically or held for architect review? **Tentative**: held. Auto-retrain after fail risks accidental selection-bias loop.
-4. **Q**: Should `renquant-strategy-104` configs also be in the binding-tuple (i.e., changing a strategy threshold invalidates the triad)? **Tentative**: no; strategy threshold changes don't change the model's predictive behavior, only how predictions are used downstream. Promotion gate is the right layer for that.
-
-## 13 · MVP PR list (5 PRs, ≤ 2 days)
+## 13 · MVP PR list (5 PRs ≤ 2 days)
 
 | # | Repo | Files | Tests |
 |---|---|---|---|
-| ① | `renquant-common` | `contracts/triad.py`, `contracts/leakage_config.py`, `leakage_guards/{scorer_sanity,trainer_placebo,gate,sidecar,stats,telemetry,alerts}.py`, pyproject 0.x → 0.x.0 (declared breaking MAJOR if `triad_report` mandatory in stage S3; for MVP S0/S1, optional → MINOR) | unit per module + sidecar CAS race test + status state-machine test |
-| ② | `renquant-pipeline` | `kernel/panel_pipeline/panel_scorer.py::PanelScorer.load` | gate-behavior matrix test (passed/failed/pending/bypass-match/bypass-expired) |
-| ③ | `renquant-model-patchtst` | `hf_trainer.py::_save_artifact`, new `post_save_hook.py`, new `triad_replay_mode` CLI arg, `--disable-early-stopping` for Tier 2 | synth-data Tier 1 wiring test + Tier 2 subprocess enqueue test |
-| ④ | `renquant-model-gbdt` | mirror of ③ for GBDT | mirror |
-| ⑤ | `renquant-orchestrator` + `renquant-backtesting` (paired) | `manifest_row()` + `wf_gate/runner.py` + `wf_gate/sim_driver.py` + `scripts/fit_walkforward_calibrators.py` | manifest_row rejects failed/pending, accepts passed; bypass-match path |
+| ① | `renquant-common` | `contracts/triad.py`, `contracts/leakage_config.py`, `leakage_guards/{scorer_sanity,trainer_placebo,gate,sidecar,stats,telemetry,alerts,runner}.py`, `tools/sign_bypass.py`, `tests/fixtures/triad_models.py`, `.github/workflows/gate-disable-detection.yml`, `.github/CODEOWNERS` for triad/* files | unit-per-module + CAS race test + state-machine test + 3-fixture stat tests + HMAC verify test + tz-aware comparison test + `python -O` regression test |
+| ② | `renquant-pipeline` | `kernel/panel_pipeline/panel_scorer.py::load` | gate-behavior matrix (passed/failed/pending/verified-bypass/unsigned-bypass/expired-bypass) |
+| ③ | `renquant-model-patchtst` | `hf_trainer.py::_save_artifact`, new `post_save_hook.py`, new `triad_replay_mode` CLI, `--disable-early-stopping` for Tier-2 | synth Tier-1 wiring + Tier-2 subprocess enqueue + Synthetic runner E2E |
+| ④ | `renquant-model-gbdt` | mirror of ③ | mirror |
+| ⑤ | `renquant-orchestrator` + `renquant-backtesting` (paired) | `build_*_wf_manifest.py::manifest_row`, `wf_gate/runner.py`, `wf_gate/sim_driver.py`, `scripts/fit_walkforward_calibrators.py` | manifest gate behavior matrix |
 
-Full architecture wave (split parquet, typed train signatures, ban `pd.read_parquet`) deferred to weeks 2-3, per codex finding 4 MVP-first.
+Full architecture wave (split parquet, typed train signatures, `pd.read_parquet` ban) deferred to weeks 2-3.
 
 ## 14 · References
 
 - Bailey, D.H., Lopez de Prado, M. (2014). "The Deflated Sharpe Ratio." *J. Portfolio Management* 40(5).
 - López de Prado, M. (2018). *Advances in Financial Machine Learning*, ch. 5 (Combinatorial Purged CV), ch. 7 (Cross-validation in Finance).
 - Pesaran, M.H., Timmermann, A. (2007). "Selection of estimation window in the presence of breaks." *J. Econometrics* 137.
-- v1-v5 evolution: `doc/research/2026-06-01-leakage-reflection-history.md`
-- Process post-mortem motivating this design: `doc/research/2026-06-01-leakage-reflection.md`
+- Efron, B., Tibshirani, R. (1993). *An Introduction to the Bootstrap*. Chapman & Hall. — basis for §5.4 two-sided bootstrap p.
+
+---
+
+## 15 · v6 → v7 changelog (codex resolution)
+
+| Field | v6 | v7 |
+|---|---|---|
+| p-value direction | inverted (codex v6 #1) | corrected: small p ⇒ leak ⇒ fail; H0/H1 explicit in docstrings; 3-fixture tests required |
+| State machine | only at Pydantic; CAS only checked binding (codex v6 #2) | TWO layers: Pydantic reducer + CAS transition table `_VALID_TRANSITIONS`; passed/failed terminal at CAS too |
+| Bypass auth | data field `approved_by` unverified (codex v6 #3) | HMAC-SHA256 over canonical entry; key at `~/.renquant/secrets/architect_hmac.key` with 0600; world-readable refuses to load; computed property drops unsigned + CODEOWNERS belt-and-suspenders |
+| Datetimes | naive `datetime.utcnow()` (codex v6 #4) | `AwareDatetime` Annotated type; `utc_now()` helper; field validator rejects naive |
+| Field validation | floats unbounded; NaN p-values slip; regime maps default 0 (codex v6 #5) | `FiniteFloat` + `PValue` Annotated types; positive int constraints; `regime_keys_consistent` model_validator; explicit `aa_split_drift_ic_abs` pre-absolute |
+| CAS portability | `os.rename` + bare `fcntl` (codex v6 #6) | `os.replace` (POSIX atomic on existing target); explicit "LOCAL POSIX only" constraint at module top; object-store backend separate concern |
+| E2E vs Tier-2 cost | 5min vs 75min contradiction (codex v6 #7) | `Tier2RunnerProtocol` abstraction + `SyntheticTier2Runner` (in-memory, sub-second); 3 fixtures (good/leak/noise); §2.8 falsifiable; tests prove pending→passed path executes |
+| Falsification tests | §9 only descriptive | §9 each criterion has a named pytest in `tests/test_falsification.py` |
+| Codex audit trail | v4 alone | §11 v6 codex review reproduced + v15 changelog |
