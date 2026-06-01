@@ -309,7 +309,13 @@ def run_contract() -> dict[str, object]:
                 "path": rel,
                 "reason": f"forbidden old conda path present: {CONDA_PREFIX}",
             })
-        if "EnvironmentVariables" in text and "PATH" in text and VENV_BIN not in text:
+        if "EnvironmentVariables" not in text or "PATH" not in text:
+            failures.append({
+                "check": "launchd_uses_project_venv",
+                "path": rel,
+                "reason": "active launchd plist must declare EnvironmentVariables.PATH",
+            })
+        elif VENV_BIN not in text:
             failures.append({
                 "check": "launchd_uses_project_venv",
                 "path": rel,

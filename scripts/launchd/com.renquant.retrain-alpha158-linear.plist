@@ -72,6 +72,12 @@
     <key>WorkingDirectory</key>
     <string>/Users/renhao/git/github/RenQuant</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
     <!--
       Match the existing retrain-panel plist's behaviour: don't auto-run
       on load (RunAtLoad=false), launchd only fires on the calendar
