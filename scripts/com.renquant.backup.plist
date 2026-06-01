@@ -48,7 +48,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
         <key>BACKUP_REPO</key>
         <string>/Users/renhao/.renquant-state-backup</string>
     </dict>

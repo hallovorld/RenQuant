@@ -311,6 +311,13 @@ class TestP0_17_BackupSizeGuard:
         assert "PUSH_LOG" in sh and "if git push origin main >\"$PUSH_LOG\" 2>&1" in sh, \
             "backup script must capture git push output and exit code directly"
 
+    def test_backup_defaults_to_multirepo_orchestrator_pipeline(self):
+        sh = (REPO / "scripts/backup_to_github.sh").read_text()
+        assert 'RQ_STATE_BACKUP_RUNNER:-multirepo' in sh
+        assert "renquant_orchestrator.state_backup" in sh
+        assert "RQ_STATE_BACKUP_STRICT" in sh
+        assert "renquant-orchestrator/src" in sh
+
 
 class TestP0_19_QPProductionPath:
     """QP must use the same production gates/artifacts as rotation."""

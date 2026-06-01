@@ -36,6 +36,9 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+GITHUB_DIR="$(cd "$REPO_ROOT/.." && pwd)"
+VENV_DIR="$REPO_ROOT/.venv"
+PYTHON="$VENV_DIR/bin/python"
 BACKUP_REPO="${BACKUP_REPO:-$HOME/.renquant-state-backup}"
 NTFY_TOPIC="${NTFY_TOPIC:-renquant}"
 TS_HUMAN="$(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -50,6 +53,37 @@ notify_failure() {
 }
 
 trap 'notify_failure "Script failed at line $LINENO"' ERR
+
+run_multirepo_backup() {
+    local orchestrator_src="$GITHUB_DIR/renquant-orchestrator/src"
+    if PYTHONPATH="$orchestrator_src:${PYTHONPATH:-}" "$PYTHON" - <<'PY'
+import renquant_orchestrator.state_backup  # noqa: F401
+PY
+    then
+        PYTHONPATH="$orchestrator_src:${PYTHONPATH:-}" "$PYTHON" -m renquant_orchestrator.state_backup \
+            --repo-root "$REPO_ROOT" \
+            --backup-repo "$BACKUP_REPO"
+        return $?
+    fi
+    return 127
+}
+
+if [ "${RQ_STATE_BACKUP_RUNNER:-multirepo}" != "legacy" ]; then
+    if run_multirepo_backup; then
+        exit 0
+    fi
+    BACKUP_RC=$?
+    if [ "$BACKUP_RC" -ne 127 ]; then
+        notify_failure "Multirepo backup pipeline failed rc=$BACKUP_RC at $TS_ISO"
+        exit "$BACKUP_RC"
+    fi
+    if [ "${RQ_STATE_BACKUP_STRICT:-0}" = "1" ]; then
+        notify_failure "renquant_orchestrator.state_backup unavailable and RQ_STATE_BACKUP_STRICT=1"
+        echo "ERROR: renquant_orchestrator.state_backup unavailable and RQ_STATE_BACKUP_STRICT=1"
+        exit 2
+    fi
+    echo "WARN: renquant_orchestrator.state_backup unavailable; falling back to legacy shell backup."
+fi
 
 # ── 1. Ensure backup repo exists locally ──────────────────────────────────────
 if [ ! -d "$BACKUP_REPO/.git" ]; then

@@ -208,6 +208,16 @@ CHECKS: tuple[Check, ...] = (
             'PATCHTST_FITTER_MODULE = "renquant_model_patchtst.fit_calibrator"',
         ),
     ),
+    Check(
+        name="state_backup_uses_orchestrator",
+        path="scripts/backup_to_github.sh",
+        required=(
+            'RQ_STATE_BACKUP_RUNNER:-multirepo',
+            "renquant_orchestrator.state_backup",
+            "$GITHUB_DIR/renquant-orchestrator/src",
+            "RQ_STATE_BACKUP_STRICT",
+        ),
+    ),
 )
 
 
@@ -222,6 +232,7 @@ LAUNCHD_PLISTS: tuple[str, ...] = (
     "scripts/launchd/com.renquant.screen-watchlist.plist",
     "scripts/launchd/com.renquant.weekly-fundamental-refresh.plist",
     "scripts/launchd/com.renquant.weekly-wf-promote.plist",
+    "scripts/com.renquant.backup.plist",
 )
 
 
