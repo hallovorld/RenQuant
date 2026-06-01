@@ -106,13 +106,15 @@ def _bootstrap_multirepo() -> list[str]:
         except Exception:
             pass
 
-    # Keep the proven fail-closed panel scoring path until the model boundary is
-    # fully homed in renquant-model and passes parity.
+    # Keep the proven fail-closed panel scoring path from the lifted
+    # renquant-pipeline kernel package until the load_scorer rewrite passes
+    # production parity.
     try:
         sys.modules["renquant_pipeline.panel_scoring"] = importlib.import_module(
-            "kernel.panel_pipeline.job_panel_scoring"
+            "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring"
         )
-        aliased.append("renquant_pipeline.panel_scoring<-umbrella.job_panel_scoring")
+        aliased.append(
+            "renquant_pipeline.panel_scoring<-renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")
     except Exception:
         pass
     return aliased
