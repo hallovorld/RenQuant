@@ -31,6 +31,21 @@ def test_resolve_subrepo_root_reads_current_env_runtime_root(monkeypatch, tmp_pa
     assert resolve_subrepo_root(repo) == runtime
 
 
+def test_resolve_subrepo_root_makes_current_env_runtime_root_absolute(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_ASSEMBLY_DIR", raising=False)
+    repo = tmp_path / "RenQuant"
+    (repo / ".subrepo_assembly").mkdir(parents=True)
+    (repo / ".subrepo_assembly" / "current.env").write_text(
+        "export RENQUANT_SUBREPO_ROOT=.subrepo_runtime/repos\n",
+        encoding="utf-8",
+    )
+    assert resolve_subrepo_root(repo) == repo / ".subrepo_runtime" / "repos"
+
+
 def test_resolve_subrepo_root_reads_current_env_assembly(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
     monkeypatch.delenv("RENQUANT_ASSEMBLY_DIR", raising=False)

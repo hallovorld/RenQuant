@@ -17,13 +17,29 @@ renquant_load_subrepo_env() {
 renquant_subrepo_root() {
     local repo_dir="${1:?repo_dir required}"
     local default_root="${2:-}"
+    local root
+    local assembly_dir
     if [ -z "$default_root" ]; then
         default_root="$(cd "$repo_dir/.." && pwd)"
     fi
     if [ -n "${RENQUANT_SUBREPO_ROOT:-}" ]; then
-        printf '%s\n' "$RENQUANT_SUBREPO_ROOT"
-    elif [ -n "${RENQUANT_ASSEMBLY_DIR:-}" ] && [ -d "$RENQUANT_ASSEMBLY_DIR/repos" ]; then
-        printf '%s\n' "$RENQUANT_ASSEMBLY_DIR/repos"
+        root="$RENQUANT_SUBREPO_ROOT"
+        case "$root" in
+            /*) ;;
+            *) root="$repo_dir/$root" ;;
+        esac
+        printf '%s\n' "$root"
+    elif [ -n "${RENQUANT_ASSEMBLY_DIR:-}" ]; then
+        assembly_dir="$RENQUANT_ASSEMBLY_DIR"
+        case "$assembly_dir" in
+            /*) ;;
+            *) assembly_dir="$repo_dir/$assembly_dir" ;;
+        esac
+        if [ -d "$assembly_dir/repos" ]; then
+            printf '%s\n' "$assembly_dir/repos"
+        else
+            printf '%s\n' "$default_root"
+        fi
     else
         printf '%s\n' "$default_root"
     fi

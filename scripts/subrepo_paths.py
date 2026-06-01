@@ -18,14 +18,21 @@ def _read_export(path: Path, name: str) -> str | None:
     return None
 
 
+def _abs_path(repo_root: Path, raw: str) -> Path:
+    path = Path(raw)
+    return path if path.is_absolute() else repo_root / path
+
+
 def resolve_subrepo_root(repo_root: Path) -> Path:
     """Return runtime root, current assembly repos dir, or sibling checkout root."""
     if root := os.environ.get("RENQUANT_SUBREPO_ROOT"):
-        return Path(root)
+        return _abs_path(repo_root, root)
 
     assembly_dir = os.environ.get("RENQUANT_ASSEMBLY_DIR")
-    if assembly_dir and (Path(assembly_dir) / "repos").exists():
-        return Path(assembly_dir) / "repos"
+    if assembly_dir:
+        repos = _abs_path(repo_root, assembly_dir) / "repos"
+        if repos.exists():
+            return repos
 
     env_path = Path(
         os.environ.get(
@@ -34,9 +41,9 @@ def resolve_subrepo_root(repo_root: Path) -> Path:
         )
     )
     if root := _read_export(env_path, "RENQUANT_SUBREPO_ROOT"):
-        return Path(root)
+        return _abs_path(repo_root, root)
     if assembly_dir := _read_export(env_path, "RENQUANT_ASSEMBLY_DIR"):
-        repos = Path(assembly_dir) / "repos"
+        repos = _abs_path(repo_root, assembly_dir) / "repos"
         if repos.exists():
             return repos
 

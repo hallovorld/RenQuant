@@ -68,6 +68,23 @@ def test_subrepo_root_loads_current_env_runtime_root(tmp_path: Path) -> None:
     assert out == str(runtime)
 
 
+def test_subrepo_root_resolves_relative_runtime_root_against_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "RenQuant"
+    env_dir = repo / ".subrepo_assembly"
+    env_dir.mkdir(parents=True)
+    (env_dir / "current.env").write_text(
+        "export RENQUANT_SUBREPO_ROOT=.subrepo_runtime/repos\n",
+        encoding="utf-8",
+    )
+
+    out = _bash(
+        'source scripts/subrepo_env.sh; '
+        f'renquant_load_subrepo_env "{repo}"; '
+        f'renquant_subrepo_root "{repo}" "/fallback"'
+    )
+    assert out == str(repo / ".subrepo_runtime" / "repos")
+
+
 def test_subrepo_root_uses_loaded_assembly_repos(tmp_path: Path) -> None:
     repo = tmp_path / "RenQuant"
     assembly = tmp_path / "assembly"
