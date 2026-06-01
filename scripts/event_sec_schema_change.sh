@@ -24,6 +24,7 @@ GITHUB_DIR="$(cd "$REPO_DIR/.." && pwd)"
 source "$REPO_DIR/scripts/subrepo_env.sh"
 renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 VENV_DIR="$REPO_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
 SKIP_FETCH=0

@@ -22,6 +22,8 @@ def test_daily_multirepo_keeps_standalone_umbrella_bridge() -> None:
     src = (REPO / "scripts" / "daily_multirepo.py").read_text()
     assert "def _bootstrap_multirepo()" in src
     assert 'importlib.import_module("live.runner")' in src
+    assert "from subrepo_paths import resolve_subrepo_root" in src
+    assert "resolve_subrepo_root(REPO)" in src
     assert "from live_multirepo import main" not in src
     assert "umbrella.job_panel_scoring" not in src
     assert 'importlib.import_module(\n            "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")' in src
@@ -30,7 +32,8 @@ def test_daily_multirepo_keeps_standalone_umbrella_bridge() -> None:
 def test_live_multirepo_resolves_subrepos_from_lock() -> None:
     src = (REPO / "scripts" / "live_multirepo.py").read_text()
     assert 'LOCK_FILE = REPO / "subrepos.lock.json"' in src
-    assert "RENQUANT_SUBREPO_ROOT" in src
+    assert "from subrepo_paths import resolve_subrepo_root" in src
+    assert "resolve_subrepo_root(REPO)" in src
     assert "RENQUANT_STRICT_SUBREPO_PATHS" in src
     assert "renquant-orchestrator" not in src
 
@@ -63,6 +66,9 @@ def test_live_multirepo_uses_lock_local_paths(tmp_path, monkeypatch) -> None:
 def test_daily_full_run_keeps_existing_daily_multirepo_bridge() -> None:
     src = (REPO / "scripts" / "daily_104.sh").read_text()
     assert 'RQ_DAILY_RUNNER:-multirepo' in src
+    assert 'source "$REPO_DIR/scripts/subrepo_env.sh"' in src
+    assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
+    assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
     assert 'RUNNER_ARGS=("$REPO_DIR/scripts/daily_multirepo.py")' in src
     assert "RUNNER_ARGS=(-m live.runner)" in src
 
@@ -78,6 +84,9 @@ def test_daily_shadow_run_uses_same_multirepo_bridge() -> None:
 def test_intraday_sell_only_defaults_to_shared_multirepo_bridge() -> None:
     src = (REPO / "scripts" / "intraday_sell_104.sh").read_text()
     assert 'RQ_DAILY_RUNNER:-multirepo' in src
+    assert 'source "$REPO_DIR/scripts/subrepo_env.sh"' in src
+    assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
+    assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
     assert 'RUNNER_ARGS=("$REPO_DIR/scripts/live_multirepo.py")' in src
     assert '"${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once' in src
     assert "--sell-only --intraday" in src

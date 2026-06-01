@@ -27,6 +27,7 @@ cd "$REPO_DIR"
 source "$REPO_DIR/scripts/subrepo_env.sh"
 renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 mkdir -p logs/iv_snapshot
 
 LOG="logs/iv_snapshot/daily_$(date +%Y%m%d).log"

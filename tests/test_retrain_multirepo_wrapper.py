@@ -25,6 +25,7 @@ def test_retrain_wrapper_defaults_to_orchestrator_with_rollback() -> None:
     assert "renquant_orchestrator.retrain_alpha158_fund" in src
     assert "scripts/subrepo_env.sh" in src
     assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
+    assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
     assert 'renquant_subrepo_pythonpath "$SUBREPO_ROOT"' in src
     assert "renquant-orchestrator" in src
     assert "renquant-model" in src

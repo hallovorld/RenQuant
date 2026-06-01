@@ -20,6 +20,7 @@ def test_preopen_wrapper_defaults_to_execution_subrepo_with_rollback() -> None:
     assert "scripts/subrepo_env.sh" in src
     assert "RENQUANT_SUBREPO_ROOT" in (REPO / "scripts" / "subrepo_env.sh").read_text()
     assert 'renquant_load_subrepo_env "$PWD"' in src
+    assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
     assert 'renquant_subrepo_src "$SUBREPO_ROOT" renquant-execution' in src
     assert 'renquant_subrepo_src "$SUBREPO_ROOT" renquant-common' in src
     assert "python -m renquant_execution.preopen_cancel_gate" in src

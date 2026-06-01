@@ -319,6 +319,7 @@ class TestP0_17_BackupSizeGuard:
         assert "RQ_STATE_BACKUP_STRICT" in sh
         assert "scripts/subrepo_env.sh" in sh
         assert 'renquant_load_subrepo_env "$REPO_ROOT"' in sh
+        assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in sh
         assert 'renquant_subrepo_src "$SUBREPO_ROOT" renquant-orchestrator' in sh
 
 

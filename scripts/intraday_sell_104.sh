@@ -47,6 +47,15 @@ else
     exit 1
 fi
 
+# Resolve pinned subrepo runtime before invoking live_multirepo.py. Missing
+# assembly env falls back to sibling checkouts.
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/subrepo_env.sh"
+renquant_load_subrepo_env "$REPO_DIR"
+SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
+export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
+
 exec >> "$LOG" 2>&1
 echo "=== intraday_sell started at $(date) (HHMM=$HHMM) ==="
 
