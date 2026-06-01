@@ -109,7 +109,8 @@ def verify_regime_coverage(cut: WalkForwardCut, spy_path: Path,
     Returns dict regime → n_days in val. Raises if require_spiked and no
     SPIKED day present.
     """
-    from kernel.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
+    # Lifted to renquant-common (umbrella PR #5 in that repo, 2026-06-01).
+    from renquant_common.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
 
     regimes = compute_spy_regime_labels(spy_path)
     regimes["date"] = pd.to_datetime(regimes["date"])

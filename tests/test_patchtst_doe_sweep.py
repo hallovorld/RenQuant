@@ -73,12 +73,12 @@ class TestPerRegimeObjective:
     correctly. Pooled mean would pick the wrong model."""
 
     def test_min_across_regimes_picks_worst(self):
-        from kernel.regime_labels import min_across_regimes
+        from renquant_common.regime_labels import min_across_regimes
         per_regime = {"LOW_CALM": 0.10, "MED_NORMAL": 0.05, "HIGH_SPIKED": -0.03}
         assert min_across_regimes(per_regime) == -0.03
 
     def test_per_regime_ic_computes_per_day_then_means(self):
-        from kernel.regime_labels import per_regime_cs_ic
+        from renquant_common.regime_labels import per_regime_cs_ic
         # 20 days, 10 tickers each. Set up so HIGH regime has positive IC,
         # LOW regime has negative IC.
         rng = np.random.default_rng(0)
@@ -107,25 +107,27 @@ class TestPerRegimeObjective:
         assert out["LOW_CALM"] < -0.5
 
     def test_under_sampled_regime_excluded(self):
-        from kernel.regime_labels import per_regime_cs_ic
-        # 3 days of "rare" regime — should be excluded with min_days=10
+        from renquant_common.regime_labels import per_regime_cs_ic
+        # 3 days of "rare" regime — should be excluded with min_days=10.
+        # Use 9-grid <TREND>_<VOL> labels (renquant-common 0.4.0 filters
+        # malformed-shape regimes as warm-up artifacts per PR #5 review).
         rng = np.random.default_rng(0)
         preds, labels, dates, regimes = [], [], [], []
-        for d in range(15):  # 15 days HIGH
+        for d in range(15):  # 15 days HIGH_CALM
             x = rng.normal(0, 1, 10)
             preds.extend(x); labels.extend(x + rng.normal(0, 0.1, 10))
             dates.extend([pd.Timestamp(2024, 1, 1) + pd.Timedelta(days=d)] * 10)
-            regimes.extend(["HIGH"] * 10)
-        for d in range(15, 18):  # 3 days RARE
+            regimes.extend(["HIGH_CALM"] * 10)
+        for d in range(15, 18):  # 3 days LOW_SPIKED — rare
             x = rng.normal(0, 1, 10)
             preds.extend(x); labels.extend(x + rng.normal(0, 0.1, 10))
             dates.extend([pd.Timestamp(2024, 1, 1) + pd.Timedelta(days=d)] * 10)
-            regimes.extend(["RARE"] * 10)
+            regimes.extend(["LOW_SPIKED"] * 10)
         preds_df = pd.DataFrame({"date": dates, "pred": preds, "label": labels})
         regime_df = pd.DataFrame({"date": dates, "regime": regimes}).drop_duplicates()
         out = per_regime_cs_ic(preds_df, regime_df, min_days_per_regime=10)
-        assert "HIGH" in out
-        assert "RARE" not in out  # excluded for under-sampling
+        assert "HIGH_CALM" in out
+        assert "LOW_SPIKED" not in out  # excluded for under-sampling
 
     def test_pooled_mean_vs_min_picks_different_winner(self):
         """Sanity proof of the PRIME DIRECTIVE: a model can beat another on
@@ -135,7 +137,7 @@ class TestPerRegimeObjective:
         # Model B: +0.04 in regime1, +0.03 in regime2. pooled mean = +0.035
         # Pooled mean: A wins. But min-across-regime: B (+0.03) beats A (-0.05).
         # The PRIME DIRECTIVE objective picks B.
-        from kernel.regime_labels import min_across_regimes
+        from renquant_common.regime_labels import min_across_regimes
         a = {"r1": 0.20, "r2": -0.05}
         b = {"r1": 0.04, "r2": +0.03}
         assert np.mean(list(a.values())) > np.mean(list(b.values()))

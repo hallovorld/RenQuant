@@ -537,7 +537,8 @@ def cut_market_context(start: str, end: str) -> dict:
     """SPY benchmark + regime distribution for one WF cut."""
     import pandas as _pd
     from kernel.hmm_regime_labels import compute_hmm_regime_labels  # noqa: PLC0415
-    from kernel.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
+    # Lifted to renquant-common (umbrella PR #5 in that repo, 2026-06-01).
+    from renquant_common.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
 
     spy_path = REPO / "data" / "ohlcv" / "SPY" / "1d.parquet"
     if not spy_path.exists():

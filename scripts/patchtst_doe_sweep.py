@@ -73,8 +73,9 @@ import pyDOE2
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from kernel.regime_labels import (compute_spy_regime_labels,
-                                  per_regime_cs_ic, min_across_regimes)
+# Lifted to renquant-common (umbrella PR #5 in that repo, 2026-06-01).
+from renquant_common.regime_labels import (compute_spy_regime_labels,
+                                            per_regime_cs_ic, min_across_regimes)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
