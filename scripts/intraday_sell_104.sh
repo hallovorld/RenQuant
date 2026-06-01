@@ -72,7 +72,13 @@ fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
 cd "$REPO_DIR"
-if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once \
+if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
+    RUNNER_ARGS=(-m live.runner)
+else
+    RUNNER_ARGS=("$REPO_DIR/scripts/live_multirepo.py")
+fi
+
+if "$PYTHON" "${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once \
         --sell-only --intraday; then
     echo "=== intraday_sell finished at $(date) ==="
 else

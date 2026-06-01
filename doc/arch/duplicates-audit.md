@@ -53,8 +53,9 @@ umbrella `kernel/`) are listed but not resolved here — those belong to Track C
 
 | File | Where | Purpose | Used when |
 |---|---|---|---|
-| `RenQuant/scripts/daily_104.sh` | umbrella | Bash wrapper invoking the multi-repo orchestrator (or umbrella runner) | `RQ_DAILY_RUNNER=multirepo` (default) → calls `daily_multirepo.py`; `RQ_DAILY_RUNNER=umbrella` → calls `python -m live.runner` directly |
-| `renquant_orchestrator.daily_multirepo` | renquant-orchestrator | Python orchestrator: runs the daily flow against pinned subrepos | Default path |
+| `RenQuant/scripts/daily_104.sh` | umbrella | Bash wrapper invoking the daily multi-repo bridge (or umbrella runner) | `RQ_DAILY_RUNNER=multirepo` (default) -> calls `daily_multirepo.py`; `RQ_DAILY_RUNNER=umbrella` -> calls `python -m live.runner` directly |
+| `RenQuant/scripts/live_multirepo.py` | umbrella | Additional shared live bridge for intraday sell-only and shadow runs; executes `live.runner` with lifted modules routed through sibling subrepos | Intraday/shadow default path |
+| `RenQuant/scripts/daily_multirepo.py` | umbrella | Existing standalone daily multirepo bridge retained intact as rollback-era umbrella functionality | Daily default path |
 
 **Status**: NOT a duplicate — explicit rollback design (`feature_no_pr_verbal_merge` memory documents this). Keep both. The bash wrapper is the env-driven router.
 
