@@ -10,10 +10,11 @@ the umbrella baseline.
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import sys
 from pathlib import Path
+
+from subrepo_pin_guard import enforce_or_warn, resolve_subrepo_src_roots
 
 REPO = Path(__file__).resolve().parent.parent
 SIBLINGS = REPO.parent
@@ -34,44 +35,18 @@ _PIN_SRCS = [
 ]
 
 
-def _subrepo_src_roots() -> tuple[list[Path], list[str]]:
-    lock_entries: dict[str, dict] = {}
-    if LOCK_FILE.exists():
-        payload = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
-        lock_entries = {str(e["name"]): e for e in payload.get("subrepos", [])}
-
-    roots: list[Path] = []
-    missing: list[str] = []
-    root_override = os.environ.get("RENQUANT_SUBREPO_ROOT")
-    for name in _PIN_SRCS:
-        candidates: list[Path] = []
-        if root_override:
-            candidates.append(Path(root_override) / name)
-        if name in lock_entries and lock_entries[name].get("local_path"):
-            candidates.append(Path(str(lock_entries[name]["local_path"])))
-        candidates.append(SIBLINGS / name)
-
-        src = next(
-            (candidate / "src" for candidate in candidates if (candidate / "src").is_dir()),
-            None,
-        )
-        if src is None:
-            missing.append(name)
-            continue
-        roots.append(src)
-    return roots, missing
-
-
 def _bootstrap_multirepo() -> list[str]:
     """Put sibling subrepos on sys.path and alias lifted kernel modules."""
     for path in (str(REPO), str(STRATEGY_DIR)):
         if path not in sys.path:
             sys.path.insert(0, path)
-    src_roots, missing = _subrepo_src_roots()
-    if missing:
-        sys.stderr.write(f"[multirepo] missing subrepo src roots: {', '.join(missing)}\n")
-        if os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1":
-            raise SystemExit(2)
+    src_roots, pin_issues = resolve_subrepo_src_roots(
+        lock_file=LOCK_FILE,
+        names=_PIN_SRCS,
+        siblings=SIBLINGS,
+        root_override=os.environ.get("RENQUANT_SUBREPO_ROOT"),
+    )
+    enforce_or_warn(pin_issues)
     for src in src_roots:
         if str(src) not in sys.path:
             sys.path.append(str(src))
