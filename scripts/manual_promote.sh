@@ -20,7 +20,7 @@
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
-PYTHON="/Users/renhao/miniconda3/envs/renquant/bin/python"
+PYTHON="$REPO_DIR/.venv/bin/python"
 
 echo "=== EMERGENCY MANUAL PROMOTE ==="
 echo "This bypasses the weekly walk-forward gate. Use ONLY for emergencies."
