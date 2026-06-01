@@ -22,7 +22,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/renhao/miniconda3/envs/renquant/bin/python</string>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin/python</string>
         <string>/Users/renhao/git/github/RenQuant/scripts/screen_watchlist.py</string>
     </array>
 
@@ -48,7 +48,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/renhao/miniconda3/envs/renquant/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 </dict>
 </plist>

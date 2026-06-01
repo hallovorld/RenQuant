@@ -7,7 +7,7 @@
 | **Research** | Open notebook → tweak | Iterate on features / models without Docker |
 | **Validation** | `lean backtest .` (after `export_lean_watchlist.py --strategy X`) | Final OOS event-driven check |
 | **Analysis** | `python scripts/analyze_backtest.py --strategy X` | Render charts + metrics from a finished backtest |
-| **Live** | `python -m live.runner --strategy X --broker {paper,alpaca-paper,alpaca,ibkr} --once` | One-shot trade |
+| **Live** | `python scripts/live_multirepo.py --strategy X --broker {paper,alpaca-paper,alpaca,ibkr} --once` | One-shot trade through pinned subrepos |
 | **Scheduled** | macOS launchd plists in `scripts/launchd/` | Daily cron-style |
 
 The active strategy is `renquant_104`. The same pipeline classes (`InferencePipeline`, `FullTrainingPipeline`) drive every mode — adapters (`LeanAdapter`, `RunnerAdapter`, `SimAdapter`) translate context.
@@ -39,9 +39,9 @@ python scripts/finalize_challenger.py --strategy renquant_104    # auto-detect w
 python scripts/finalize_challenger.py --strategy renquant_104 --challenger-name macro-enabled --start-date 2026-04-12 --end-date 2026-04-26
 bash scripts/check_challenger_window.sh                          # daily cron poll
 
-# Live trade
-python -m live.runner --strategy renquant_104 --broker alpaca --once
-python -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only
+# Live trade through pinned subrepos
+python scripts/live_multirepo.py --strategy renquant_104 --broker alpaca --once
+python scripts/live_multirepo.py --strategy renquant_104 --broker alpaca --once --sell-only
 
 # B2 Hold-out backtest (single-cut OOS sanity check on a saved artifact)
 python scripts/holdout_backtest.py \
@@ -146,17 +146,17 @@ When `tax` is configured in `strategy_config.json`, LEAN reports after-tax metri
 
 ```bash
 # Local sim (no broker; for development only)
-python -m live.runner --strategy renquant_104 --broker paper --once
+python scripts/live_multirepo.py --strategy renquant_104 --broker paper --once
 
 # Alpaca paper (real API, no real money — cron default)
-python -m live.runner --strategy renquant_104 --broker alpaca-paper --once
+python scripts/live_multirepo.py --strategy renquant_104 --broker alpaca-paper --once
 
 # Alpaca LIVE (real money — e2e / user explicit mandate only)
-nohup bash -c 'set -a; source .env; set +a; .venv/bin/python -m live.runner --strategy renquant_104 --broker alpaca --once' \
+nohup bash -c 'set -a; source .env; set +a; .venv/bin/python scripts/live_multirepo.py --strategy renquant_104 --broker alpaca --once' \
   > logs/live_e2e/e2e_alpaca_live_$(date +%Y%m%d-%H%M%S).log 2>&1 &
 
 # IBKR (stub — see live/ibkr_broker.py)
-python -m live.runner --strategy renquant_104 --broker ibkr --once
+python scripts/live_multirepo.py --strategy renquant_104 --broker ibkr --once
 ```
 
 Broker options: `paper`, `alpaca-paper`, `alpaca`, `ibkr`. Set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` in `.env` (gitignored). `.env` only has LIVE credentials — paper-API calls 401.
@@ -178,7 +178,7 @@ Daily 104 cron family (highlights):
 | Market open | 6:32 AM | `live_only_104.sh --sell-only` (DISABLED `.disabled.20260513`) | Sell-side only at open |
 | Pre-close | 12:44 PM | `live_only_104.sh --sell-only` (DISABLED `.disabled.20260513`) | Sell-side at pre-close |
 | Intraday | 1:30 PM | `intraday104.sh` | Mid-day intraday check |
-| After close | 1:55 PM | `daily_104.sh` | Daily retrain (STAGES only — promotion via weekly) → trade |
+| After close | 1:55 PM | `daily_104.sh` | Daily ops through `daily_multirepo.py` → trade; no model promote |
 | Conditional | 1:10 PM | `conditional_retrain_104.sh` | SPY/VIX anomaly → force retrain (Mon-Fri) |
 | Weekly WF promote | Sat 04:00 AM | `weekly_wf_promote.sh` | Walk-forward gate + sanity → actual promote (post 2026-05-17 enforcement) |
 | Monthly calibrator | 1st-of-month | `monthly_calibrator_refresh.sh` | Calibrator refit + H2a/H2b hard gates |
@@ -220,7 +220,7 @@ Logs:
 ```bash
 python scripts/new_strategy.py --name foo --symbol AAPL --type classification
 cd backtesting/foo && lean backtest .
-python -m live.runner --strategy foo --broker paper --once
+python scripts/live_multirepo.py --strategy foo --broker paper --once
 ```
 
 This scaffolds a 101-style single-stock layout. For panel-LTR-style strategies, copy the `renquant_104/` directory shape (kernel/, training_panel/, adapters/) and adapt.
@@ -262,7 +262,7 @@ scripts/
 ├── check_retrain_triggers.py    Detect SPY/VIX anomalies → force retrain
 ├── compute_portfolio_metrics.py Per-ticker contribution analytics
 ├── conditional_retrain_104.sh   Cron-triggered SPY/VIX-aware retrain
-├── daily_104.sh                 ★ ACTIVE — daily retrain + trade
+├── daily_104.sh                 ★ ACTIVE — daily ops + trade through multirepo bridge
 ├── daily_103.sh                 Rollback strategy daily driver
 ├── enable_hourly_transformer.py Stage C-3 enable / smoke test
 ├── export_lean_data.py          Single-symbol parquet → LEAN format
