@@ -153,6 +153,15 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="monthly_meta_label_snapshot_uses_backtesting_repo",
+        path="scripts/monthly_meta_label_retrain.sh",
+        required=(
+            "renquant_backtesting.wf_gate.sim_driver",
+            "$GITHUB_DIR/renquant-backtesting/src",
+            "RQ_META_LABEL_SIM_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_calibrator_refresh_uses_model_repo",
         path="scripts/monthly_calibrator_refresh.sh",
         required=(
