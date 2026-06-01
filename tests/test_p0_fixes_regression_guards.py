@@ -367,6 +367,11 @@ class TestP0_19_LaunchdInventory:
         src = (REPO / "scripts/install_launchagents.sh").read_text()
         assert 'scripts/com.renquant.backup.plist' in src
 
+    def test_install_launchagents_check_runs_subrepo_ops_contract(self):
+        src = (REPO / "scripts/install_launchagents.sh").read_text()
+        assert "scripts/check_launchagents.py" in src
+        assert "scripts/subrepo_ops_contract.py" in src
+
 
 class TestP0_19_QPProductionPath:
     """QP must use the same production gates/artifacts as rotation."""
