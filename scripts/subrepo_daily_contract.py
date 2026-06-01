@@ -8,13 +8,15 @@ import json
 import sys
 from pathlib import Path
 
+from subrepo_paths import resolve_subrepo_root
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT / "subrepos.lock.json").read_text())
+SUBREPO_ROOT = resolve_subrepo_root(ROOT)
 
 
 for entry in LOCK["subrepos"]:
-    src = Path(entry["local_path"]) / "src"
+    src = SUBREPO_ROOT / entry["name"] / "src"
     if src.exists():
         sys.path.insert(0, str(src))
 
@@ -27,6 +29,10 @@ def _entry(name: str) -> dict:
         if entry["name"] == name:
             return entry
     raise KeyError(name)
+
+
+def _subrepo_path(name: str) -> Path:
+    return SUBREPO_ROOT / name
 
 
 def main() -> int:
@@ -47,7 +53,7 @@ def main() -> int:
         else ROOT / ".subrepo_runs" / run_id
     )
     strategy_config = (
-        Path(_entry("renquant-strategy-104")["local_path"])
+        _subrepo_path("renquant-strategy-104")
         / "configs"
         / "strategy_config.json"
     )
