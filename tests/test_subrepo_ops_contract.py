@@ -37,6 +37,8 @@ def test_subrepo_ops_contract_passes_current_entrypoints() -> None:
     assert "monthly_meta_label_uses_model_repo" in result["passed"]
     assert "monthly_meta_label_snapshot_uses_backtesting_repo" in result["passed"]
     assert "monthly_calibrator_refresh_uses_model_repo" in result["passed"]
+    assert "launchd_plists_parseable" in result["passed"]
+    assert "launchd_uses_project_venv" in result["passed"]
     assert result["known_gaps"] == []
 
 

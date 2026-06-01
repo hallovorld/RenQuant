@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import plistlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,6 +246,16 @@ def run_contract() -> dict[str, object]:
             passed.append(check.name)
 
     for rel in LAUNCHD_PLISTS:
+        path = ROOT / rel
+        try:
+            plistlib.loads(path.read_bytes())
+        except Exception as exc:
+            failures.append({
+                "check": "launchd_plist_parseable",
+                "path": rel,
+                "reason": f"plist XML is not parseable: {exc}",
+            })
+
         text = _read(rel)
         if CONDA_PREFIX in text:
             failures.append({
@@ -258,6 +269,11 @@ def run_contract() -> dict[str, object]:
                 "path": rel,
                 "reason": f"launchd PATH should include project venv: {VENV_BIN}",
             })
+
+    if not any(f["check"] == "launchd_plist_parseable" for f in failures):
+        passed.append("launchd_plists_parseable")
+    if not any(f["check"] == "launchd_uses_project_venv" for f in failures):
+        passed.append("launchd_uses_project_venv")
 
     return {
         "ok": not failures,
