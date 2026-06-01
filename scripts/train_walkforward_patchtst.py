@@ -3,8 +3,8 @@
 
 This is the sequence-model companion to ``train_walkforward_panel.py``. It
 does not train inside this file. Each cutoff is a subprocess call to the
-canonical HF Trainer script, followed by a causal per-fold calibrator fit and a
-standard ``kernel.walk_forward`` manifest entry.
+model-repo HF Trainer module, followed by a causal per-fold calibrator fit from
+the model repo and a standard ``renquant_pipeline`` manifest entry.
 """
 from __future__ import annotations
 
@@ -24,13 +24,33 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_var, "6")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+CANDIDATE_GITHUB_ROOTS = [
+    REPO_ROOT.parent,
+    Path.home() / "git" / "github",
+]
 STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
-TRAIN_SCRIPT = REPO_ROOT / "scripts" / "patchtst_hf.py"
-CALIBRATOR_SCRIPT = REPO_ROOT / "scripts" / "fit_hf_patchtst_calibrator.py"
+TRAIN_MODULE = "renquant_model_patchtst.hf_trainer"
+CALIBRATOR_MODULE = "renquant_model_patchtst.fit_calibrator"
 DEFAULT_ROOT = "walkforward_patchtst"
+MULTIREPO_REPOS = [
+    "renquant-model",
+    "renquant-common",
+    "renquant-base-data",
+    "renquant-artifacts",
+    "renquant-pipeline",
+    "renquant-strategy-104",
+]
+MULTIREPO_SRC_PATHS = list(dict.fromkeys(
+    root / repo / "src"
+    for root in CANDIDATE_GITHUB_ROOTS
+    for repo in MULTIREPO_REPOS
+))
 
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(STRATEGY_DIR))
+for _src_path in reversed(MULTIREPO_SRC_PATHS):
+    if _src_path.exists():
+        sys.path.insert(0, str(_src_path))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,7 +97,7 @@ def sidecar_path_for(model_path: Path) -> Path:
 def train_cmd(args: argparse.Namespace, cutoff: pd.Timestamp,
               out_dir: Path) -> list[str]:
     cmd = [
-        sys.executable, str(TRAIN_SCRIPT),
+        sys.executable, "-m", TRAIN_MODULE,
         "--dataset", args.dataset,
         "--cut", "all",
         "--train-cutoff", cutoff.date().isoformat(),
@@ -106,14 +126,19 @@ def train_cmd(args: argparse.Namespace, cutoff: pd.Timestamp,
 
 def calibrator_cmd(args: argparse.Namespace, cutoff: pd.Timestamp,
                    model_path: Path, cal_path: Path) -> list[str]:
-    return [
-        sys.executable, str(CALIBRATOR_SCRIPT),
+    cmd = [
+        sys.executable, "-m", CALIBRATOR_MODULE,
         "--scorer-artifact", str(model_path),
         "--out", str(cal_path),
+        "--panel", args.dataset,
+        "--raw-label-panel", args.raw_label_panel,
+        "--label-col", args.label,
         "--data-end", data_end_for_cutoff(cutoff, args.label),
         "--batch-size", str(args.calibrator_batch_size),
         "--method", args.calibrator_method,
+        "--min-rows", str(args.calibrator_min_rows),
     ]
+    return cmd
 
 
 def read_contract(model_path: Path) -> dict:
@@ -129,7 +154,8 @@ def read_contract(model_path: Path) -> dict:
 
 def build_entry(cutoff: pd.Timestamp, model_path: Path,
                 cal_path: Path | None, label: str | None):
-    from kernel.walk_forward import RetrainEntry  # noqa: PLC0415
+    from renquant_pipeline.kernel.walk_forward.loader import RetrainEntry  # noqa: PLC0415
+
     contract = read_contract(model_path)
     return RetrainEntry(
         cutoff_date=cutoff,
@@ -143,12 +169,21 @@ def build_entry(cutoff: pd.Timestamp, model_path: Path,
     )
 
 
+def subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    src_paths = [str(p) for p in MULTIREPO_SRC_PATHS if p.exists()]
+    if src_paths:
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = os.pathsep.join(src_paths + ([existing] if existing else []))
+    return env
+
+
 def run_subprocess(cmd: list[str], label: str) -> tuple[bool, str]:
     log.info("%s start: %s", label, " ".join(cmd))
     t0 = time.monotonic()
     proc = subprocess.run(
         cmd, cwd=str(REPO_ROOT), check=False,
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=subprocess_env(),
     )
     elapsed = time.monotonic() - t0
     if proc.returncode != 0:
@@ -236,6 +271,8 @@ def parse_args() -> argparse.Namespace:
                    default=str(STRATEGY_DIR / "artifacts" / "walkforward_patchtst_manifest.json"))
     p.add_argument("--artifact-root", default=None)
     p.add_argument("--dataset", default="data/transformer_v4_wl200_clean.parquet")
+    p.add_argument("--raw-label-panel",
+                   default="data/alpha158_291_fundamental_dataset_rawlabel.parquet")
     p.add_argument("--label", default="fwd_60d_excess")
     p.add_argument("--seed", type=int, default=44)
     p.add_argument("--epochs", type=int, default=5)
@@ -255,6 +292,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--calibrator-batch-size", type=int, default=512)
     p.add_argument("--calibrator-method", default="platt",
                    choices=["platt", "isotonic"])
+    p.add_argument("--calibrator-min-rows", type=int, default=1000)
     p.add_argument("--reuse-existing", action="store_true",
                    help="Reuse existing model sidecar/calibrator artifacts for "
                         "a cutoff instead of rerunning completed subprocesses.")
@@ -278,7 +316,10 @@ def main() -> None:
         print(f"Manifest output: {args.manifest_output}")
         return
 
-    from kernel.walk_forward import WalkForwardManifest, write_manifest  # noqa: PLC0415
+    from renquant_pipeline.kernel.walk_forward.manifest import (  # noqa: PLC0415
+        WalkForwardManifest,
+        write_manifest,
+    )
     entries, failed = train_cutoffs(args, dates)
     manifest = WalkForwardManifest(
         cadence_days=int(args.cadence_days),

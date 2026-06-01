@@ -25,6 +25,7 @@ def _args(**overrides):
     base = dict(
         artifact_root="walkforward_patchtst_test",
         dataset="data/transformer_v4_wl200_clean.parquet",
+        raw_label_panel="data/alpha158_291_fundamental_dataset_rawlabel.parquet",
         label="fwd_60d_excess",
         seed=44,
         epochs=5,
@@ -43,6 +44,7 @@ def _args(**overrides):
         skip_calibrators=False,
         calibrator_batch_size=512,
         calibrator_method="platt",
+        calibrator_min_rows=1000,
         allow_partial_manifest=False,
         reuse_existing=False,
     )
@@ -62,7 +64,8 @@ def test_train_cmd_uses_patchtst_point_in_time_contract(tmp_path):
     args = _args(epochs=2, seq_len=8, d_model=16)
     cmd = mod.train_cmd(args, pd.Timestamp("2024-04-01"), tmp_path)
     joined = " ".join(cmd)
-    assert "scripts/patchtst_hf.py" in joined
+    assert "-m renquant_model_patchtst.hf_trainer" in joined
+    assert "scripts/patchtst_hf.py" not in joined
     assert "--cut all" in joined
     assert "--train-cutoff 2024-04-01" in joined
     assert "--save-model" in cmd
@@ -78,11 +81,15 @@ def test_calibrator_cmd_is_causal_to_cutoff(tmp_path):
         args, pd.Timestamp("2024-04-01"), model_path, cal_path,
     )
     joined = " ".join(cmd)
-    assert "scripts/fit_hf_patchtst_calibrator.py" in joined
+    assert "-m renquant_model_patchtst.fit_calibrator" in joined
+    assert "scripts/fit_hf_patchtst_calibrator.py" not in joined
     assert "--scorer-artifact" in cmd
+    assert "--panel data/transformer_v4_wl200_clean.parquet" in joined
+    assert "--raw-label-panel data/alpha158_291_fundamental_dataset_rawlabel.parquet" in joined
     assert "--data-end 2024-03-04" in joined
     assert "--batch-size 512" in joined
     assert "--method isotonic" in joined
+    assert "--min-rows 1000" in joined
 
 
 def test_build_entry_reads_sidecar_contract(tmp_path):
