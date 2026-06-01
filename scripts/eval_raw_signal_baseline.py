@@ -242,7 +242,8 @@ def attach_regimes(score_frame: pd.DataFrame, spy_path: Path) -> pd.DataFrame:
         out = score_frame.copy()
         out["regime"] = "UNKNOWN"
         return out
-    from kernel.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
+    # Lifted to renquant-common (umbrella PR #5 in that repo, 2026-06-01).
+    from renquant_common.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
 
     regimes = compute_spy_regime_labels(spy_path)
     regimes["date"] = pd.to_datetime(regimes["date"])
