@@ -2424,18 +2424,39 @@ class EmitOrdersFromQPSolutionTask(Task):
     def run(self, ctx) -> bool | None:
         sol = _get_path(ctx, "_qp_solution")
         if sol is None or sol.status != "optimal":
+            status = str(sol.status if sol else "missing_solution")
             reason = (
                 "qp_missing_solution" if sol is None
                 else ("qp_no_signal" if sol.status == "optimal_no_signal"
                       else f"qp_global:{sol.status}")
             )
-            ctx._qp_status = str(sol.status if sol else "missing_solution")  # noqa: SLF001
+            ctx._qp_status = status  # noqa: SLF001
             ctx._qp_failure_reason = reason  # noqa: SLF001
             if sol is not None:
                 ctx._qp_diagnostics = dict(getattr(sol, "diagnostics", {}) or {})  # noqa: SLF001
             _stamp_all_qp_blocks(ctx, reason)
-            log.warning("EmitOrdersFromQPSolutionTask: status=%s — skip",
-                         sol.status if sol else "none")
+            # Fix 2026-06-01 (decision-tree audit): when the solver returned
+            # infeasible / qp_global:<x> the daily ntfy used to surface the
+            # FIRST upstream drop (e.g. risk_gate_vol_dropped) instead of
+            # this binding constraint. Counters here let live.runner's
+            # `_why_no_trade()` see the actual no-trade cause.
+            counters = getattr(ctx, "counters", None)
+            if isinstance(counters, dict):
+                if status.startswith("infeasible") or "infeasible" in status:
+                    counters["qp_infeasible"] = counters.get("qp_infeasible", 0) + 1
+                elif sol is None:
+                    counters["qp_missing_solution"] = (
+                        counters.get("qp_missing_solution", 0) + 1
+                    )
+                elif sol.status == "optimal_no_signal":
+                    counters["qp_optimal_no_signal"] = (
+                        counters.get("qp_optimal_no_signal", 0) + 1
+                    )
+                else:
+                    counters["qp_other_nonoptimal"] = (
+                        counters.get("qp_other_nonoptimal", 0) + 1
+                    )
+            log.warning("EmitOrdersFromQPSolutionTask: status=%s — skip", status)
             return False
         env = self._build_env(ctx, sol)
         self._log_holding_solves(env)

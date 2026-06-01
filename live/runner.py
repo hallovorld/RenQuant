@@ -614,9 +614,25 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         # collapse them into "drawdown_halt"; that makes ntfy actively
         # misleading when the model artifact/QP contract, not portfolio
         # drawdown, blocked the trade.
+        #
+        # Fix 2026-06-01 (decision-tree audit): order surfaces the BINDING
+        # constraint (regime admission / QP infeasibility) BEFORE earlier
+        # cosmetic drops (vol gate). Old ordering put risk_gate_vol_dropped
+        # ahead of admission/QP and surfaced "no trade (vol_dropped(10))"
+        # even when 72 of 82 candidates survived the vol gate and were
+        # blocked downstream by admission + QP infeasibility.
         specific_blocks = (
+            # Earliest-stage fail-closed (no scorer / no calibration)
             ("panel_scoring_fail_closed", "panel_scoring_fail_closed"),
             ("qp_mu_contract_block", "qp_mu_contract_block"),
+            # Mid-pipeline: regime admission cleared all buy candidates
+            ("regime_admission_blocked", "regime_admission_blocked"),
+            # Late-pipeline: QP solver could not produce orders (binding constraint)
+            ("qp_infeasible", "qp_infeasible"),
+            ("qp_missing_solution", "qp_missing_solution"),
+            ("qp_optimal_no_signal", "qp_optimal_no_signal"),
+            ("qp_other_nonoptimal", "qp_other_nonoptimal"),
+            # Pre-scoring drop — only the cause when nothing later applied
             ("risk_gate_vol_dropped", "risk_gate_vol_dropped"),
         )
         for key, label in specific_blocks:

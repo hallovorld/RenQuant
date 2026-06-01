@@ -1475,12 +1475,30 @@ class RegimeModelAdmissionTask(Task):
             ctx._qp_exit_only_tickers = exit_only  # noqa: SLF001
             ctx._qp_exit_only_reasons = exit_only_reasons  # noqa: SLF001
         ctx._blocked_by_ticker = blocked  # noqa: SLF001
-        n = len(candidates)
+        n_candidates = len(candidates)
+        n_holdings_exit_only = len(holdings) if holdings else 0
         ctx.candidates = []
         ctx.counters["regime_admission_blocked"] = (
-            ctx.counters.get("regime_admission_blocked", 0) + n
+            ctx.counters.get("regime_admission_blocked", 0) + n_candidates
         )
-        log.warning("RegimeModelAdmissionTask: blocked %d candidates: %s", n, reason)
+        ctx.counters["regime_admission_holdings_exit_only"] = (
+            ctx.counters.get("regime_admission_holdings_exit_only", 0)
+            + n_holdings_exit_only
+        )
+        # Fix 2026-06-01 (decision-tree audit): old log printed only
+        # "blocked %d candidates" with n derived from ctx.candidates at task
+        # entry. When an upstream task already clears candidates (e.g. NGB
+        # variance-fail, panel_scoring fail-closed), this logs "blocked 0"
+        # while still marking holdings as exit-only and recording the regime
+        # decision — confusing operator output. New format always shows:
+        #   - the decision regime
+        #   - explicit candidate + holdings-exit-only counts
+        #   - the structured reason
+        log.warning(
+            "RegimeModelAdmissionTask: regime=%s decision=BLOCK reason=%s "
+            "candidates_blocked=%d holdings_exit_only=%d",
+            regime, reason, n_candidates, n_holdings_exit_only,
+        )
 
 
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
