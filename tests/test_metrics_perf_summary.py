@@ -11,7 +11,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
-from kernel.metrics.perf_summary import compute_perf_triple  # noqa: E402
+from renquant_common.metrics.perf_summary import compute_perf_triple  # noqa: E402
 
 
 class TestSingleSeriesMode:

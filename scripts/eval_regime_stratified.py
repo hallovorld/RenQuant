@@ -36,8 +36,8 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
-from kernel.metrics.hac_se import hac_t_stat  # noqa: E402
-from kernel.metrics.block_bootstrap import stationary_bootstrap_ci  # noqa: E402
+from renquant_common.metrics.hac_se import hac_t_stat  # noqa: E402
+from renquant_common.metrics.block_bootstrap import stationary_bootstrap_ci  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("eval-regime")

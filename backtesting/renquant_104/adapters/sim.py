@@ -2526,7 +2526,7 @@ class SimAdapter:
         pbo_val = float("nan")
         if not equity_df.empty and "portfolio" in equity_df.columns:
             try:
-                from kernel.metrics import compute_perf_triple  # noqa: PLC0415
+                from renquant_common.metrics import compute_perf_triple  # noqa: PLC0415
                 import numpy as _np  # noqa: PLC0415
                 rets = daily_returns_from_equity(equity_df["portfolio"]).dropna()
                 if len(rets) >= 2:

@@ -33,8 +33,8 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
-from kernel.metrics.hac_se import hac_t_stat, newey_west_se, andrews_optimal_lag  # noqa: E402
-from kernel.metrics.block_bootstrap import stationary_bootstrap_ci, sharpe_ratio_ci, optimal_block_length  # noqa: E402
+from renquant_common.metrics.hac_se import hac_t_stat, newey_west_se, andrews_optimal_lag  # noqa: E402
+from renquant_common.metrics.block_bootstrap import stationary_bootstrap_ci, sharpe_ratio_ci, optimal_block_length  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("eval")
@@ -120,7 +120,7 @@ def pool_across_windows(per_window: list[dict], k_trials: int = 1) -> dict:
     n_pos_windows = sum(1 for w in valid if w["t_stat"] > 0)
     consistency = n_pos_windows / len(valid)
     # DSR (selection-bias correction)
-    from kernel.metrics.deflated_sharpe import deflated_sharpe_ratio
+    from renquant_common.metrics.deflated_sharpe import deflated_sharpe_ratio
     sr_obs = (nw["mean"] / sigma_d) * math.sqrt(252.0) if sigma_d > 0 else 0.0
     skew = float(((pooled - nw["mean"]) ** 3).mean() / sigma_d ** 3) if sigma_d > 0 else 0.0
     kurt = float(((pooled - nw["mean"]) ** 4).mean() / sigma_d ** 4) if sigma_d > 0 else 3.0

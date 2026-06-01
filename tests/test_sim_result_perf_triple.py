@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 # Use bare-minimum imports — we mock SimAdapter init.
 from sim.runner import SimResult   # noqa: E402
 from adapters.sim import SimAdapter  # noqa: E402
-from kernel.metrics import compute_perf_triple  # noqa: E402
+from renquant_common.metrics import compute_perf_triple  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
-from kernel.metrics.pbo import (  # noqa: E402
+from renquant_common.metrics.pbo import (  # noqa: E402
     _logit_omega,
     _slice_sharpe,
     _split_indices,

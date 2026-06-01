@@ -462,7 +462,7 @@ def _aggregate_perf(per_seed_results: "list[SimResult]") -> dict:
     pbo_val = float("nan")
     if matrix is not None:
         try:
-            from kernel.metrics import compute_perf_triple  # noqa: PLC0415
+            from renquant_common.metrics import compute_perf_triple  # noqa: PLC0415
             # Use the headline seed's return series as the "observed"
             # series; the matrix as the K-trial ensemble. n_trials = K
             # so the deflator scales with how many seeds we ran.
