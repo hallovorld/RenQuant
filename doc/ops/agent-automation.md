@@ -31,18 +31,42 @@ Three workflows, agent-agnostic — one mechanism, multiple agent identities.
 ### 2.1 · Canonical labels
 
 ```text
+# Authorship labels — set when the agent OPENS the PR (G1 surface).
+# A PR has at most ONE authorship label.
 agent:claude         # Claude-authored
 agent:codex          # Codex-authored
-agent:auto-fix       # opted into G3 auto-fix on review (set together with agent:<name>)
+
+# Fix-executor labels — DISTINCT from authorship; declare which agent(s)
+# are PERMITTED to run G3 auto-fix on this PR. A Claude-authored PR can
+# add agent:fix:codex to invite Codex for cross-second-opinion fixes,
+# without touching the authorship label (which would conflict with G1).
+agent:fix:claude     # Claude G3 may run on this PR
+agent:fix:codex      # Codex G3 may run on this PR
+
+# Universal controls.
 agent:manual-hold    # stop ALL agent automation on this PR
 agent:needs-review   # force a review even if normally skipped
-agent:claude:fix-attempt-1   # PER-AGENT counter — one agent exhausting
-agent:claude:fix-attempt-2     # its budget must NOT block another agent
-agent:claude:fix-attempt-3     # third strike → Claude G3 disabled until human resets
-agent:codex:fix-attempt-1
-agent:codex:fix-attempt-2
-agent:codex:fix-attempt-3
+
+# Per-fix-executor attempt counters — gated by agent:fix:<name>, not
+# the authorship label. One executor exhausting its budget MUST NOT
+# block another from running on the same PR.
+agent:fix:claude:attempt-1
+agent:fix:claude:attempt-2
+agent:fix:claude:attempt-3   # third strike → Claude G3 disabled
+agent:fix:codex:attempt-1
+agent:fix:codex:attempt-2
+agent:fix:codex:attempt-3    # third strike → Codex G3 disabled
 ```
+
+**Why authorship vs fix-executor split**: prior drafts conflated
+`agent:claude` as both "Claude opened this PR" (G1 attribution gate)
+and "Claude may auto-fix this PR" (G3 execution permission). That
+made cross-second-opinion impossible: a Claude-authored PR adding
+`agent:codex` to invite Codex would gain a second authorship label
+(silently picked first by the attribution gate) AND there was no
+way to opt Codex into G3 without that double-labelling. Now:
+authorship is a single `agent:<name>` label set by G1; G3 execution
+permission is a separate `agent:fix:<name>` label set per-executor.
 
 ### 2.2 · PR body footer (signed contract)
 
@@ -113,10 +137,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     # MANDATORY: skip docs-only PRs (zero-value LLM spend).
+    # NB: `.github/**` is the security control plane (workflows,
+    # CODEOWNERS, branch protection metadata) — explicitly DO NOT
+    # ignore it. Those are the exact PRs that need the MOST review.
     paths-ignore:
       - 'doc/**'
       - '**/*.md'
-      - '.github/**'
 concurrency:
   # MANDATORY: only review the latest commit when a PR is pushed
   # in quick succession — older runs cancel.
@@ -368,21 +394,30 @@ Without this step, the design will recreate the same event-context bug across bo
 #### 4.3.2 · Trigger logic (in template, AFTER resolve step)
 
 ```text
-skip if labels lack agent:<name>                            # per-agent ownership
-skip if labels lack agent:auto-fix                          # explicit opt-in
+skip if labels lack agent:fix:<name>                        # explicit per-agent
+                                                            # opt-in to G3 — NOT
+                                                            # the authorship label
+                                                            # (see §2.1 split)
 skip if labels include agent:manual-hold                    # universal stop
-skip if labels include agent:<name>:fix-attempt-3           # PER-AGENT third strike
-                                                            # — Claude's exhausted budget
-                                                            # MUST NOT block Codex G3
+skip if labels include agent:fix:<name>:attempt-3           # PER-EXECUTOR third
+                                                            # strike — Claude's
+                                                            # exhausted budget MUST
+                                                            # NOT block Codex G3
 skip if review/comment from agent's own bot user            # loop guard
 skip if actor not in {owners, members, write-collaborators} # trust check
 run if review.state == CHANGES_REQUESTED
 run if review/comment body starts with `@<name> fix`
 ```
 
-#### 4.3.3 · Attempt counter (PER-AGENT, not global)
+#### 4.3.3 · Attempt counter (per-executor)
 
-Each fix run increments `agent:<name>:fix-attempt-N` (not the global `agent:fix-attempt-N` from earlier drafts). Per-agent isolation is mandatory because a single PR can have BOTH `agent:claude:auto-fix` and `agent:codex:auto-fix` (cross-second-opinion is a legitimate use case from §3.5 of this doc). A global counter would let Claude burn 3 attempts and block Codex from ever running, which is wrong.
+Each fix run increments `agent:fix:<name>:attempt-N` — keyed on the
+**fix-executor label**, not the authorship label (per §2.1 split).
+Per-executor isolation is mandatory because a single PR can carry
+BOTH `agent:fix:claude` and `agent:fix:codex` (cross-second-opinion
+is a first-class use case, §8 Q5). A global counter — or one keyed
+on authorship — would let one agent burn three attempts and block
+the other from ever running, which is wrong.
 
 #### 4.3.4 · Permissions + secret-leakage safety
 
@@ -430,7 +465,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 | **Self-review loop** | `if: !contains(labels, 'agent:<own>')` — agent skips its own PRs |
 | **Cross-agent review loop** | Same gate per agent — Claude reviews `agent:codex`, Codex reviews `agent:claude`, neither reviews own |
 | **Force-push race** | `--force-with-lease` (standard); `concurrency: cancel-in-progress: false` for G3 |
-| **Runaway autonomy** | Manual merge always required (CLAUDE.md §3.1); per-agent `agent:<name>:fix-attempt-3` stop (§4.3.3); `agent:manual-hold` opt-out; `if: changed_files < 100` |
+| **Runaway autonomy** | Manual merge always required (CLAUDE.md §3.1); per-executor `agent:fix:<name>:attempt-3` stop (§4.3.3); `agent:manual-hold` opt-out; `if: changed_files < 100` |
 | **Secret leakage in PR diff** | G2 runs `contents: read`; G3 only with `pull_request_target` for metadata ops; PR head never checked out under write secrets from forks (per Codex doc) |
 | **Cost runaway** | Org-level API spend alert; `paths-ignore`; `concurrency: cancel-in-progress`; model downgrade per workflow |
 | **Hostile contributor** | G3 trust check (`actor in owners/members/write-collaborators`); G3 only fires on `agent:*`-labeled PR (outside contributor can't trigger autofix) |
@@ -448,7 +483,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 
 4. **Bot identity for write actions**: PAT (start) vs GitHub App (production). PAT for pilot, migrate to App in P1.
 
-5. **Cross-agent coordination**: when Claude and Codex both auto-fix the same PR (concurrent), who wins? Resolution: G3's `concurrency: cancel-in-progress: false` plus the per-agent attempt counter from §4.3.3 (`agent:claude:fix-attempt-N`, `agent:codex:fix-attempt-N` — never global) means they queue rather than race AND one agent exhausting its budget doesn't block the other. Cross-second-opinion (e.g. reviewer types `@codex fix` on a Claude PR) becomes a first-class use case rather than an edge case.
+5. **Cross-agent coordination**: when Claude and Codex both auto-fix the same PR (concurrent), who wins? Resolution: G3's `concurrency: cancel-in-progress: false` plus the per-executor attempt counter from §4.3.3 (`agent:fix:claude:attempt-N`, `agent:fix:codex:attempt-N` — keyed on fix-executor labels per §2.1 split, never on authorship and never global) means they queue rather than race AND one executor exhausting its budget doesn't block the other. Cross-second-opinion (e.g. reviewer types `@codex fix` on a Claude-authored PR — which carries `agent:claude` for authorship + `agent:fix:codex` for the invitation) is a first-class use case rather than an edge case.
 
 ---
 
@@ -484,11 +519,11 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 **Strengths preserved from PR #17** (Codex-side):
 - Label-based identity contract (replaces my branch-prefix approach)
 - `Agent-Origin` footer (machine-readable structured contract)
-- Attempt counter via labels (`agent:fix-attempt-N`)
+- Attempt counter via labels (per-executor `agent:fix:<name>:attempt-N` after §2.1 split)
 - `pull_request_target` safety treatment
 - Trust-check explicit specification (owners/members/write-collaborators)
 - `AGENTS.md` repo-local instruction surface separation
-- Bounded retry with `agent:fix-attempt-3` stop
+- Bounded retry with `agent:fix:<name>:attempt-3` stop (per-executor)
 
 ---
 
