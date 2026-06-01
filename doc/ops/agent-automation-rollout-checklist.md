@@ -39,7 +39,8 @@ done
 ### Cost-gate spot-check
 
 The wrappers each ship the mandatory cost gates from §6:
-- `paths-ignore: ['doc/**', '**/*.md']` (skip docs-only PRs)
+- `paths-ignore: ['doc/**']` (skip project docs only — NOT `.github/**`
+  or `**/*.md`; those are control planes per the §3.1 update)
 - `concurrency: cancel-in-progress: true` on the review workflow
 - `if: github.event.pull_request.changed_files < 100` on each review job
 
