@@ -105,7 +105,7 @@ class TestHurstLagAlignment:
     def test_chunk_loop_includes_trailing_chunk(self):
         """When n is exactly k*lag, the trailing chunk arr[n-lag:n] must be
         included. Pre-fix: range(0, n-lag, lag) excluded it."""
-        from kernel.regime import compute_hurst
+        from renquant_common.hurst import compute_hurst
         # Trending series: 50 evenly-rising bars → H should be > 0.5
         rng = np.random.default_rng(seed=42)
         # Strongly trending random walk

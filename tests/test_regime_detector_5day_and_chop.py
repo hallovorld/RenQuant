@@ -258,7 +258,7 @@ class TestStandaloneAgrees:
         ctx = _ctx(returns, spy_df=spy_df, regime_state=state_t, config={})
         BEAROverrideTask().run(ctx)
         # Manually set hurst_regime for the task path (Hurst task not invoked here)
-        from kernel.regime import compute_hurst
+        from renquant_common.hurst import compute_hurst
         h = compute_hurst(returns, window=63)
         state_t.hurst = h
         state_t.hurst_regime = (

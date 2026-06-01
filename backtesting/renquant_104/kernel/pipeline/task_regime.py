@@ -17,7 +17,7 @@ class HurstTask(Task):
     """Layer 1: compute Hurst exponent → state.hurst, state.hurst_regime."""
 
     def run(self, ctx: InferenceContext) -> bool | None:
-        from kernel.regime import compute_hurst  # noqa: PLC0415
+        from renquant_common.hurst import compute_hurst  # noqa: PLC0415
 
         cfg = ctx.config.get("regime", {})
         hurst_window = int(cfg.get("hurst_window", 63))

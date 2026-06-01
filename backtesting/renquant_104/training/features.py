@@ -115,7 +115,7 @@ def build_training_features(
     # the existing kernel.regime helper. Same column name preserved
     # for backwards-compat with downstream model artifacts'
     # `feature_columns`. Cleaner regime context = better model.
-    from kernel.regime import rolling_hurst as _rolling_hurst  # noqa: PLC0415
+    from renquant_common.hurst import rolling_hurst as _rolling_hurst  # noqa: PLC0415
     result["hurst_proxy"] = _rolling_hurst(spy_rets, window=63).reindex(common_idx)
 
     # Supervised labels: stock outperformance vs SPY over lookahead days
