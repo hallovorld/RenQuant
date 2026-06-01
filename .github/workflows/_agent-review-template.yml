@@ -1,0 +1,177 @@
+name: agent-review-template
+# Reusable G2 (auto-review) workflow. Implementation of
+# `doc/ops/agent-automation.md` §4.2.
+#
+# Per-repo wrapper invokes this PER AGENT:
+#
+#   jobs:
+#     claude-review:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+#       with: { agent: claude, model: claude-sonnet-4-6 }
+#       secrets:
+#         api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+#     codex-review:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+#       with: { agent: codex, model: gpt-5-codex }
+#       secrets:
+#         api_key: ${{ secrets.OPENAI_API_KEY }}
+#
+# The wrapper owns: events (pull_request types), top-level paths-ignore,
+# concurrency, changed_files gate. This template owns: per-agent skip
+# (don't review own PR / manual-hold / draft), checkout, prompt assembly,
+# LLM dispatch, comment posting.
+
+on:
+  workflow_call:
+    inputs:
+      agent:
+        type: string
+        required: true
+        description: "claude or codex (determines which action + API key to use)"
+      model:
+        type: string
+        required: true
+        description: "Specific model id (e.g. claude-sonnet-4-6, gpt-5-codex)"
+      prompt_path:
+        type: string
+        required: false
+        default: ".github/agent-review-prompt.md"
+        description: "Path (relative to repo root) of the review prompt template"
+    secrets:
+      api_key:
+        required: true
+        description: "Anthropic or OpenAI API key, depending on `agent` input"
+
+permissions:
+  contents: read
+  pull-requests: write   # for posting review comments
+
+jobs:
+  review:
+    # Per-agent skip conditions (universal skips like draft / changed_files
+    # gate live in the per-repo wrapper):
+    #
+    #   1. self-review loop guard: agent doesn't review its own PRs
+    #   2. universal manual-hold opt-out
+    #   3. needs-review override (forces review even if normally skipped)
+    if: |
+      !contains(github.event.pull_request.labels.*.name, 'agent:manual-hold') &&
+      (
+        !contains(github.event.pull_request.labels.*.name, format('agent:{0}', inputs.agent)) ||
+        contains(github.event.pull_request.labels.*.name, 'agent:needs-review')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build review prompt
+        id: prompt
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PROMPT_PATH: ${{ inputs.prompt_path }}
+        run: |
+          set -euo pipefail
+          # Pull the per-repo prompt template (sets the review's framing
+          # — CLAUDE.md §7 engineering principles, severity ladder, what
+          # to skip / focus on). Repos can customize by editing this file
+          # in their tree.
+          if [ ! -f "${PROMPT_PATH}" ]; then
+            echo "::error::review prompt template missing at ${PROMPT_PATH}"
+            exit 1
+          fi
+          PROMPT_HEADER=$(cat "${PROMPT_PATH}")
+          # Append the PR-specific context.
+          git fetch --no-tags origin "${BASE_SHA}"
+          DIFF=$(git diff --unified=3 "${BASE_SHA}..HEAD")
+          PR_BODY=$(gh pr view "${PR_NUMBER}" --json body -q .body)
+          # Multi-line output via heredoc-with-EOF (GH Actions standard).
+          {
+            echo "prompt<<PROMPT_EOF"
+            echo "${PROMPT_HEADER}"
+            echo ""
+            echo "## PR #${PR_NUMBER} body"
+            echo "${PR_BODY}"
+            echo ""
+            echo "## Diff (vs base ${BASE_SHA})"
+            echo '```diff'
+            echo "${DIFF}"
+            echo '```'
+            echo "PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # TODO(P0 before pilot): the next step needs the canonical API
+      # of anthropics/claude-code-action and openai/codex-action verified
+      # against their current README. The shape below is the working
+      # assumption from the doc:
+      #   - claude-code-action: prompt-driven with claude_args; the
+      #     action invokes Claude with Bash/Edit/gh tools available
+      #   - codex-action: codex exec wrapper returning final-message
+      # If either differs (e.g. requires a different input name for
+      # the prompt, or doesn't auto-grant gh tool access), the action
+      # call below needs adjustment. Reviewer (codex) should validate.
+
+      - name: Run agent (Claude)
+        if: inputs.agent == 'claude'
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.api_key }}
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          # claude_args restricts tool access: gh CLI for posting comments,
+          # git for context, no Bash(rm) etc. --max-turns bounds runtime.
+          claude_args: |
+            --allowed-tools "Bash(gh:*),Bash(git:*)"
+            --max-turns 10
+            --model ${{ inputs.model }}
+
+      - name: Run agent (Codex)
+        if: inputs.agent == 'codex'
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai_api_key: ${{ secrets.api_key }}
+          # The action's documented input names need verification.
+          # Working assumption: prompt + model + bounded turn count.
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          model: ${{ inputs.model }}
+
+      - name: Post review comment
+        # If the agent didn't post its review itself via the gh tool
+        # (which it should under the prompt instructions), this fallback
+        # surfaces whatever the action returned as `final-message` so
+        # the reviewer can see SOMETHING per PR head.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AGENT: ${{ inputs.agent }}
+          # The actions' final-message output id may differ; verify
+          # against canonical docs. Working assumption: .outputs.result
+          # for Claude, .outputs.final-message for Codex.
+          CLAUDE_RESULT: ${{ steps.claude.outputs.result }}
+          CODEX_RESULT: ${{ steps.codex.outputs.final-message }}
+        run: |
+          set -uo pipefail
+          if [ "$AGENT" = "claude" ]; then
+            RESULT="$CLAUDE_RESULT"
+          else
+            RESULT="$CODEX_RESULT"
+          fi
+          # If the agent already posted via gh, RESULT may be empty or a
+          # success marker — skip the fallback in that case.
+          if [ -z "$RESULT" ] || [ "$RESULT" = "ok" ]; then
+            echo "Agent (${AGENT}) posted its review directly; no fallback needed"
+            exit 0
+          fi
+          # Marker so re-runs on the same head SHA don't double-post.
+          MARKER="<!-- agent-review:${AGENT}:${{ github.event.pull_request.head.sha }} -->"
+          BODY=$(printf '%s\n\n%s\n\n_Posted by %s agent-review workflow on commit %s._' \
+            "$MARKER" "$RESULT" "$AGENT" "${{ github.event.pull_request.head.sha }}")
+          gh pr comment "$PR_NUMBER" --body "$BODY"

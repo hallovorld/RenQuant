@@ -1,0 +1,113 @@
+name: agent-attribution-check-template
+# Reusable G1 (attribution check) workflow. Implementation of
+# `doc/ops/agent-automation.md` §4.1 Layer C.
+#
+# Per-repo wrapper invokes this via:
+#
+#   jobs:
+#     attribution:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-attribution-check-template.yml@main
+#
+# No `inputs:` — the check is identical for every agent (Claude, Codex,
+# future). What differs is the expected Agent-Origin + trailer pattern;
+# those are derived from the actual `agent:*` label on the PR.
+
+on:
+  workflow_call:
+    # No inputs required — everything is read from event context.
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    # Only enforce when the PR carries an `agent:*` label. Human-authored
+    # PRs bypass this gate entirely.
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'agent:claude') ||
+      contains(github.event.pull_request.labels.*.name, 'agent:codex')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # MUST: full history so `git rev-list base..HEAD` returns real
+          # SHAs (default fetch-depth=1 makes the range empty).
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Derive expected agent identity from labels
+        id: agent
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          # ENFORCE §2.1 contract: exactly ONE authorship label.
+          # First-match-wins branching would silently resolve double-
+          # labelled PRs and hide the misconfig — count explicitly.
+          AUTHORSHIP_COUNT=0
+          AGENT_LABEL=""
+          EXPECTED_ORIGIN=""
+          EXPECTED_TRAILER_PATTERN=""
+          if echo "$LABELS" | grep -q '"agent:claude"'; then
+            AUTHORSHIP_COUNT=$((AUTHORSHIP_COUNT + 1))
+            AGENT_LABEL="agent:claude"
+            EXPECTED_ORIGIN="Claude"
+            EXPECTED_TRAILER_PATTERN="Co-Authored-By: Claude .*<noreply@anthropic.com>"
+          fi
+          if echo "$LABELS" | grep -q '"agent:codex"'; then
+            AUTHORSHIP_COUNT=$((AUTHORSHIP_COUNT + 1))
+            AGENT_LABEL="agent:codex"
+            EXPECTED_ORIGIN="Codex"
+            EXPECTED_TRAILER_PATTERN="Co-Authored-By: Codex <noreply@openai.com>"
+          fi
+          if [ "$AUTHORSHIP_COUNT" -eq 0 ]; then
+            echo "::error::no agent:* authorship label present; this job should not have fired"
+            exit 2
+          elif [ "$AUTHORSHIP_COUNT" -gt 1 ]; then
+            echo "::error::multiple authorship labels present (count=${AUTHORSHIP_COUNT}); §2.1 mandates exactly one — to invite a second agent's G3 use agent:fix:<name>, not authorship labels"
+            exit 1
+          fi
+          {
+            echo "agent_label=${AGENT_LABEL}"
+            echo "expected_origin=${EXPECTED_ORIGIN}"
+            echo "expected_trailer_pattern=${EXPECTED_TRAILER_PATTERN}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate PR body footer matches label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ORIGIN: ${{ steps.agent.outputs.expected_origin }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh pr view ${{ github.event.pull_request.number }} \
+                    --repo "${{ github.repository }}" --json body -q .body)
+          # Cross-check: label is agent:X → body MUST contain
+          # "Agent-Origin: X". Mismatch = mislabeled PR.
+          if ! grep -qx "Agent-Origin: ${EXPECTED_ORIGIN}" <<< "$BODY"; then
+            echo "::error::PR labeled ${{ steps.agent.outputs.agent_label }} but body missing 'Agent-Origin: ${EXPECTED_ORIGIN}' footer (see RenQuant doc/ops/agent-automation.md §2.2)"
+            exit 1
+          fi
+
+      - name: Validate every commit in PR range has matching trailer
+        env:
+          EXPECTED_TRAILER_PATTERN: ${{ steps.agent.outputs.expected_trailer_pattern }}
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          # Fetch base ref explicitly — checkout@v4 fetched HEAD only.
+          git fetch --no-tags origin "${BASE}"
+          # Enumerate EACH commit in the PR range, not "at least one has
+          # some trailer" — that loose form let mixed-trailer PRs pass.
+          missing=()
+          for sha in $(git rev-list "${BASE}..${HEAD}"); do
+            if ! git show -s --format='%B' "$sha" | grep -Eq "$EXPECTED_TRAILER_PATTERN"; then
+              missing+=("$sha")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::commits missing expected trailer matching '$EXPECTED_TRAILER_PATTERN':"
+            printf '  %s\n' "${missing[@]}"
+            exit 1
+          fi
