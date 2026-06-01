@@ -6,12 +6,13 @@
 # Schedule via launchd at 13:10 PT (45 min ahead of daily_104.sh).
 #
 # Triggers:
-#   * SPY |daily Δ| > 2%   → train_104.py --force --trigger=anomaly_spy_2pct
-#   * VIX |daily Δ| > 5%   → train_104.py --force --trigger=anomaly_vix_5pct
+#   * SPY daily move > 2% -> weekly_wf_promote.sh trigger=anomaly_spy_2pct
+#   * VIX daily move > 5% -> weekly_wf_promote.sh trigger=anomaly_vix_5pct
 
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
+GITHUB_DIR="$(cd "$REPO_DIR/.." && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
 LOG_DIR="$REPO_DIR/logs/conditional_retrain_104"
@@ -42,9 +43,33 @@ fi
 
 cd "$REPO_DIR"
 
-# Detect triggers via check_retrain_triggers.py — exits 0 (no trigger)
-# or 1 (trigger(s) fired). Captured stdout holds the trigger tag(s).
-TRIGGER_OUT=$("$PYTHON" scripts/check_retrain_triggers.py 2>&1)
+run_trigger_check() {
+    if [ "${RQ_CONDITIONAL_TRIGGER_RUNNER:-multirepo}" = "legacy" ]; then
+        "$PYTHON" scripts/check_retrain_triggers.py
+        return $?
+    fi
+
+    local orch_src="$GITHUB_DIR/renquant-orchestrator/src"
+    if PYTHONPATH="$orch_src:${PYTHONPATH:-}" "$PYTHON" - <<'PY'
+import renquant_orchestrator.anomaly_triggers  # noqa: F401
+PY
+    then
+        PYTHONPATH="$orch_src:${PYTHONPATH:-}" "$PYTHON" -m renquant_orchestrator.anomaly_triggers
+        return $?
+    fi
+
+    if [ "${RQ_CONDITIONAL_TRIGGER_STRICT:-0}" = "1" ]; then
+        echo "ERROR: renquant_orchestrator.anomaly_triggers unavailable and RQ_CONDITIONAL_TRIGGER_STRICT=1"
+        return 2
+    fi
+
+    echo "WARN: renquant_orchestrator.anomaly_triggers unavailable; falling back to umbrella trigger check."
+    "$PYTHON" scripts/check_retrain_triggers.py
+}
+
+# Detect triggers via renquant-orchestrator by default. Exit code 0 means no
+# trigger; 1 means trigger(s) fired. Captured stdout holds trigger tag(s).
+TRIGGER_OUT=$(run_trigger_check 2>&1)
 TRIGGER_RC=$?
 
 echo "$TRIGGER_OUT"
@@ -52,6 +77,11 @@ echo "$TRIGGER_OUT"
 if [ "$TRIGGER_RC" -eq 0 ]; then
     echo "No triggers fired — exiting"
     exit 0
+fi
+if [ "$TRIGGER_RC" -ne 1 ]; then
+    echo "Trigger check FAILED with rc=$TRIGGER_RC — not firing retrain."
+    notify "RenQuant 104 trigger check ERROR" "Conditional retrain trigger check failed rc=$TRIGGER_RC. Check $LOG"
+    exit "$TRIGGER_RC"
 fi
 
 # Parse first trigger tag (the name printed to stdout by check_retrain_triggers)

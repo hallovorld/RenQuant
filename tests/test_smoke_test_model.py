@@ -304,8 +304,12 @@ class TestConditionalRetrainInvariants:
         assert "CONDA_PREFIX" not in non_comment
         assert "miniconda" not in non_comment
         assert 'VENV_DIR="$REPO_DIR/.venv"' in src
+        assert 'RQ_CONDITIONAL_TRIGGER_RUNNER:-multirepo' in src
+        assert "renquant_orchestrator.anomaly_triggers" in src
         assert "scripts/train_104.py" not in non_comment
         assert "scripts/weekly_wf_promote.sh" in non_comment
+        assert 'if [ "$TRIGGER_RC" -ne 1 ]; then' in src
+        assert "not firing retrain" in src
 
 
 class TestRetrainPanelWrapperInvariants:

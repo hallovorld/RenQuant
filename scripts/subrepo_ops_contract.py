@@ -70,6 +70,16 @@ CHECKS: tuple[Check, ...] = (
         forbidden=("RQ_ALLOW_NO_WF=1",),
     ),
     Check(
+        name="conditional_trigger_uses_orchestrator",
+        path="scripts/conditional_retrain_104.sh",
+        required=(
+            'RQ_CONDITIONAL_TRIGGER_RUNNER:-multirepo',
+            "renquant_orchestrator.anomaly_triggers",
+            "$GITHUB_DIR/renquant-orchestrator/src",
+            "RQ_CONDITIONAL_TRIGGER_STRICT",
+        ),
+    ),
+    Check(
         name="alpha158_fund_retrain_defaults_to_orchestrator",
         path="scripts/daily_retrain_alpha158_fund.sh",
         required=(
