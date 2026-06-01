@@ -98,6 +98,15 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="monthly_calibrator_refresh_uses_model_repo",
+        path="scripts/monthly_calibrator_refresh.sh",
+        required=(
+            "renquant_model_gbdt.fit_calibrator_alpha158_fund",
+            "$GITHUB_DIR/renquant-model/src",
+            "RQ_MONTHLY_CALIBRATOR_STRICT",
+        ),
+    ),
+    Check(
         name="patchtst_wf_uses_model_repo",
         path="scripts/train_walkforward_patchtst.py",
         required=(

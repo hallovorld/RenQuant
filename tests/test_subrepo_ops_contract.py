@@ -29,6 +29,7 @@ def test_subrepo_ops_contract_passes_current_entrypoints() -> None:
     assert "daily_live_defaults_to_multirepo" in result["passed"]
     assert "alpha158_linear_retrain_defaults_to_orchestrator" in result["passed"]
     assert "weekly_fundamental_refresh_uses_base_data_earnings" in result["passed"]
+    assert "monthly_calibrator_refresh_uses_model_repo" in result["passed"]
     assert result["known_gaps"] == []
 
 

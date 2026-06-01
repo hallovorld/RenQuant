@@ -71,6 +71,8 @@ export VECLIB_MAXIMUM_THREADS="$THREADS"
 export NUMEXPR_NUM_THREADS="$THREADS"
 
 cd "$REPO_DIR"
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+export PYTHONPATH="$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-common/src:$GITHUB_DIR/renquant-base-data/src:$GITHUB_DIR/renquant-artifacts/src:${PYTHONPATH:-}"
 
 # ── Step 1: Smoke test — abort if model broken ───────────────────────────
 echo "--- Step 1: Pre-flight smoke test ---"
@@ -116,8 +118,26 @@ else
     echo "No prior calibrator at $PROD_CAL — first-ever fit (no regression baseline)"
 fi
 
-if ! "$PYTHON" scripts/fit_panel_calibrator.py --strategy renquant_104 \
-        --out "$PROD_CAL"; then
+fit_calibrator() {
+    if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_model_gbdt.fit_calibrator_alpha158_fund  # noqa: F401
+PY
+    then
+        "$PYTHON" -m renquant_model_gbdt.fit_calibrator_alpha158_fund \
+            --data-dir "$REPO_DIR/data" \
+            --scorer-artifact "$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json" \
+            --out "$PROD_CAL"
+    elif [ "${RQ_MONTHLY_CALIBRATOR_STRICT:-0}" = "1" ]; then
+        echo "ERROR: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable and RQ_MONTHLY_CALIBRATOR_STRICT=1"
+        return 1
+    else
+        echo "WARN: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable; falling back to umbrella fit_panel_calibrator.py."
+        "$PYTHON" scripts/fit_panel_calibrator.py --strategy renquant_104 \
+            --out "$PROD_CAL"
+    fi
+}
+
+if ! fit_calibrator; then
     echo "Calibrator fit FAILED — prior calibrator preserved."
     notify "RenQuant 104 MONTHLY-FAIL" "Calibrator fit failed; prior calibrator unchanged. Check $LOG"
     exit 1
