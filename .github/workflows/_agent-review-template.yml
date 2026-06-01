@@ -1,0 +1,164 @@
+name: agent-review-template
+# Reusable G2 (auto-review) workflow. Implementation of
+# `doc/ops/agent-automation.md` §4.2.
+#
+# Per-repo wrapper invokes this PER AGENT:
+#
+#   jobs:
+#     claude-review:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+#       with: { agent: claude, model: claude-sonnet-4-6 }
+#       secrets:
+#         api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+#     codex-review:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+#       with: { agent: codex, model: gpt-5-codex }
+#       secrets:
+#         api_key: ${{ secrets.OPENAI_API_KEY }}
+#
+# The wrapper owns: events (pull_request types), top-level paths-ignore,
+# concurrency, changed_files gate. This template owns: per-agent skip
+# (don't review own PR / manual-hold / draft), checkout, prompt assembly,
+# LLM dispatch, comment posting.
+
+on:
+  workflow_call:
+    inputs:
+      agent:
+        type: string
+        required: true
+        description: "claude or codex (determines which action + API key to use)"
+      model:
+        type: string
+        required: true
+        description: "Specific model id (e.g. claude-sonnet-4-6, gpt-5-codex)"
+      prompt_path:
+        type: string
+        required: false
+        default: ".github/agent-review-prompt.md"
+        description: "Path (relative to repo root) of the review prompt template"
+    secrets:
+      api_key:
+        required: true
+        description: "Anthropic or OpenAI API key, depending on `agent` input"
+
+permissions:
+  contents: read
+  pull-requests: write   # for posting review comments
+
+jobs:
+  review:
+    # Per-agent skip conditions (universal skips like draft / changed_files
+    # gate live in the per-repo wrapper):
+    #
+    #   1. self-review loop guard: agent doesn't review its own PRs
+    #   2. universal manual-hold opt-out
+    #   3. needs-review override (forces review even if normally skipped)
+    if: |
+      !contains(github.event.pull_request.labels.*.name, 'agent:manual-hold') &&
+      (
+        !contains(github.event.pull_request.labels.*.name, format('agent:{0}', inputs.agent)) ||
+        contains(github.event.pull_request.labels.*.name, 'agent:needs-review')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build review prompt
+        id: prompt
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PROMPT_PATH: ${{ inputs.prompt_path }}
+        run: |
+          set -euo pipefail
+          # Pull the per-repo prompt template (sets the review's framing
+          # — CLAUDE.md §7 engineering principles, severity ladder, what
+          # to skip / focus on). Repos can customize by editing this file
+          # in their tree.
+          if [ ! -f "${PROMPT_PATH}" ]; then
+            echo "::error::review prompt template missing at ${PROMPT_PATH}"
+            exit 1
+          fi
+          PROMPT_HEADER=$(cat "${PROMPT_PATH}")
+          # Append the PR-specific context.
+          git fetch --no-tags origin "${BASE_SHA}"
+          DIFF=$(git diff --unified=3 "${BASE_SHA}..HEAD")
+          PR_BODY=$(gh pr view "${PR_NUMBER}" --json body -q .body)
+          # Multi-line output via heredoc-with-EOF (GH Actions standard).
+          {
+            echo "prompt<<PROMPT_EOF"
+            echo "${PROMPT_HEADER}"
+            echo ""
+            echo "## PR #${PR_NUMBER} body"
+            echo "${PR_BODY}"
+            echo ""
+            echo "## Diff (vs base ${BASE_SHA})"
+            echo '```diff'
+            echo "${DIFF}"
+            echo '```'
+            echo "PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Note: action input shapes already corrected at the use: sites
+      # below. See README's "Action API contract (verified)" section.
+
+      - name: Run agent (Claude)
+        if: inputs.agent == 'claude'
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.api_key }}
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          # claude_args restricts tool access: gh CLI for posting comments,
+          # git for context, no Bash(rm) etc. --max-turns bounds runtime.
+          claude_args: |
+            --allowed-tools "Bash(gh:*),Bash(git:*)"
+            --max-turns 10
+            --model ${{ inputs.model }}
+
+      - name: Run agent (Codex)
+        if: inputs.agent == 'codex'
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          # codex-action@v1 inputs use DASHES (verified against
+          # action.yml at v1 on 2026-06-01). The underscore form
+          # `openai_api_key` was silently ignored — the action would
+          # have run without the API key.
+          openai-api-key: ${{ secrets.api_key }}
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          model: ${{ inputs.model }}
+
+      # Fallback comment for Codex ONLY — claude-code-action self-posts
+      # PR comments via its built-in `use_sticky_comment` /
+      # `include_comments_by_actor` mechanism and does NOT expose a
+      # `result` output a wrapper could read. A Claude fallback step
+      # would be dead code (verified against the action.yml on 2026-06-01;
+      # no result output defined). Codex returns `final-message`; we
+      # surface it here for the reviewer to see what the agent
+      # concluded.
+      - name: Post Codex fallback comment
+        if: inputs.agent == 'codex' && always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CODEX_RESULT: ${{ steps.codex.outputs.final-message }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CODEX_RESULT:-}" ] || [ "${CODEX_RESULT}" = "ok" ]; then
+            echo "Codex posted its review directly OR returned no message; no fallback needed"
+            exit 0
+          fi
+          # Marker so re-runs on the same head SHA don't double-post.
+          MARKER="<!-- agent-review:codex:${HEAD_SHA} -->"
+          BODY=$(printf '%s\n\n%s\n\n_Posted by codex agent-review workflow on commit %s._' \
+            "$MARKER" "$CODEX_RESULT" "$HEAD_SHA")
+          gh pr comment "$PR_NUMBER" --body "$BODY"

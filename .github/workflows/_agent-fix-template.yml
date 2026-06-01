@@ -1,0 +1,303 @@
+name: agent-fix-template
+# Reusable G3 (auto-fix on review) workflow. Implementation of
+# `doc/ops/agent-automation.md` §4.3.
+#
+# Per-repo wrapper invokes this PER AGENT:
+#
+#   jobs:
+#     claude-fix:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-fix-template.yml@main
+#       with: { agent: claude, model: claude-opus-4-7 }
+#       secrets:
+#         api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+#         git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
+#     codex-fix:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-fix-template.yml@main
+#       with: { agent: codex, model: gpt-5-codex }
+#       secrets:
+#         api_key: ${{ secrets.OPENAI_API_KEY }}
+#         git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      agent: { type: string, required: true }
+      model: { type: string, required: true }
+      prompt_path:
+        type: string
+        required: false
+        default: ".github/agent-fix-prompt.md"
+    secrets:
+      api_key: { required: true }
+      git_push_token:
+        required: true
+        description: "PAT or GitHub App token with `contents:write` + `pull-requests:write` scoped to this repo. SEPARATE from github.token so the bot identity is distinguishable in commit/comment history."
+
+permissions:
+  contents: read    # workflow itself reads; git_push_token does the write
+  pull-requests: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # §4.3.1 — resolve PR context for BOTH event shapes
+      # (pull_request_review vs issue_comment) before doing any
+      # label / branch / checkout work.
+      - name: Resolve PR context
+        id: pr
+        # SHELL INJECTION SAFETY: all user-controlled event fields
+        # (review.body, comment.body, login) MUST be passed via env:,
+        # NOT direct ${{ ... }} interpolation in `run:`. A reviewer
+        # writing `"; rm -rf /; "` in their review body would otherwise
+        # execute against the runner. The shell only ever sees these
+        # as opaque environment-variable values, not source code.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER_FROM_PR: ${{ github.event.pull_request.number }}
+          PR_NUMBER_FROM_ISSUE: ${{ github.event.issue.number }}
+          ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+          REVIEW_BODY_FROM_REVIEW: ${{ github.event.review.body }}
+          REVIEW_BODY_FROM_COMMENT: ${{ github.event.comment.body }}
+          REVIEW_STATE_RAW: ${{ github.event.review.state }}
+          ACTOR_FROM_REVIEW: ${{ github.event.review.user.login }}
+          ACTOR_FROM_COMMENT: ${{ github.event.comment.user.login }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            PR_NUMBER="$PR_NUMBER_FROM_PR"
+            REVIEW_BODY="$REVIEW_BODY_FROM_REVIEW"
+            REVIEW_STATE="$REVIEW_STATE_RAW"
+            ACTOR="$ACTOR_FROM_REVIEW"
+          elif [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ -z "$ISSUE_PR_URL" ]; then
+              echo "issue_comment on non-PR issue — skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            PR_NUMBER="$PR_NUMBER_FROM_ISSUE"
+            REVIEW_BODY="$REVIEW_BODY_FROM_COMMENT"
+            REVIEW_STATE=""
+            ACTOR="$ACTOR_FROM_COMMENT"
+          else
+            echo "::error::unsupported event $EVENT_NAME"
+            exit 1
+          fi
+          gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json \
+            number,labels,headRefName,headRefOid,baseRefName,baseRefOid,isDraft,author \
+            > pr.json
+          {
+            echo "skip=false"
+            echo "pr_number=$PR_NUMBER"
+            echo "labels=$(jq -c '[.labels[].name]' pr.json)"
+            echo "head_ref=$(jq -r .headRefName pr.json)"
+            echo "head_sha=$(jq -r .headRefOid pr.json)"
+            echo "base_ref=$(jq -r .baseRefName pr.json)"
+            echo "review_body<<RB_EOF"
+            echo "$REVIEW_BODY"
+            echo "RB_EOF"
+            echo "review_state=$REVIEW_STATE"
+            echo "actor=$ACTOR"
+          } >> "$GITHUB_OUTPUT"
+
+      # §4.3.2 — trigger logic (after resolve so labels are in steps.pr)
+      - name: Gate on labels + trust + retry budget
+        id: gate
+        env:
+          AGENT: ${{ inputs.agent }}
+          LABELS: ${{ steps.pr.outputs.labels }}
+          REVIEW_STATE: ${{ steps.pr.outputs.review_state }}
+          REVIEW_BODY: ${{ steps.pr.outputs.review_body }}
+          ACTOR: ${{ steps.pr.outputs.actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.pr.outputs.skip }}" = "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Required label: agent:fix:<name> (executor permission, §2.1)
+          if ! echo "$LABELS" | grep -q "\"agent:fix:${AGENT}\""; then
+            echo "PR lacks agent:fix:${AGENT}; skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Universal stop
+          if echo "$LABELS" | grep -q '"agent:manual-hold"'; then
+            echo "agent:manual-hold present; skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Per-executor attempt 3 strike (§4.3.3)
+          if echo "$LABELS" | grep -q "\"agent:fix:${AGENT}:attempt-3\""; then
+            echo "agent:fix:${AGENT}:attempt-3 reached; human must reset"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Trust check (§4.3.4): actor must have write access to the repo.
+          # gh api returns 200 with permission level for collaborators,
+          # 404 for non-collaborators.
+          PERMISSION=$(gh api "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
+            -q .permission 2>/dev/null || echo "none")
+          if [[ ! "$PERMISSION" =~ ^(admin|maintain|write)$ ]]; then
+            echo "actor ${ACTOR} has permission=${PERMISSION}; not in {admin,maintain,write} — skipping per §4.3.2 trust gate"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Trigger conditions (§4.3.2):
+          #   review state == CHANGES_REQUESTED, OR
+          #   review/comment body starts with `@<agent> fix`
+          AT_MENTION="@${AGENT} fix"
+          if [ "$REVIEW_STATE" = "CHANGES_REQUESTED" ]; then
+            echo "trigger: CHANGES_REQUESTED review"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$REVIEW_BODY" == "$AT_MENTION"* ]]; then
+            echo "trigger: $AT_MENTION mention"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no matching trigger; skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine next attempt label
+        if: steps.gate.outputs.run == 'true'
+        id: attempt
+        env:
+          AGENT: ${{ inputs.agent }}
+          LABELS: ${{ steps.pr.outputs.labels }}
+        run: |
+          set -euo pipefail
+          # Find the highest existing attempt-N for this agent.
+          MAX_N=0
+          for n in 1 2 3; do
+            if echo "$LABELS" | grep -q "\"agent:fix:${AGENT}:attempt-${n}\""; then
+              MAX_N=$n
+            fi
+          done
+          NEXT_N=$((MAX_N + 1))
+          if [ "$NEXT_N" -gt 3 ]; then
+            echo "::error::next attempt would exceed limit (caught by gate, but defense)"
+            exit 1
+          fi
+          echo "next_label=agent:fix:${AGENT}:attempt-${NEXT_N}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head with push token
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.pr.outputs.head_ref }}
+          # CRITICAL: use the bot's PAT for pushing fix commits so they
+          # appear under the bot identity (not github-actions) and the
+          # branch-protection bypass works as the bot expects.
+          token: ${{ secrets.git_push_token }}
+
+      # Note: action input shapes already corrected at the use: sites
+      # below. See README's "Action API contract (verified)" section.
+
+      # Action input shapes verified 2026-06-01 against live action.yml:
+      #   - anthropics/claude-code-action@v1: underscores (prompt only —
+      #     no prompt_file variant), anthropic_api_key, claude_args.
+      #   - openai/codex-action@v1: dashes (prompt-file, openai-api-key).
+      #
+      # Claude has no prompt_file input, so we read the file content
+      # inline into a step output and pass it as `prompt`. Codex supports
+      # prompt-file directly.
+
+      - name: Load fix prompt (Claude needs inline content; Codex reads file)
+        if: steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
+        id: load_prompt
+        env:
+          PROMPT_PATH: ${{ inputs.prompt_path }}
+          REVIEW_BODY: ${{ steps.pr.outputs.review_body }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROMPT_PATH" ]; then
+            echo "::warning::fix prompt template missing at $PROMPT_PATH; using minimal default"
+            BODY="You are fixing review findings on PR #${PR_NUMBER}. Read the review below, identify each finding, make the minimal code change that addresses it, run tests, and push."
+          else
+            BODY=$(cat "$PROMPT_PATH")
+          fi
+          {
+            echo "prompt<<PROMPT_EOF"
+            echo "$BODY"
+            echo ""
+            echo "## Review feedback to address"
+            echo "$REVIEW_BODY"
+            echo "PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run agent (Claude)
+        if: steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.api_key }}
+          # Inline content — Claude's prompt input has no _file variant.
+          prompt: ${{ steps.load_prompt.outputs.prompt }}
+          # Fix-mode needs Edit + Write tools, not just Bash read access.
+          claude_args: |
+            --allowed-tools "Bash(gh:*),Bash(git:*),Edit,Write,Read,Bash(*)"
+            --max-turns 20
+            --model ${{ inputs.model }}
+
+      - name: Run agent (Codex)
+        if: steps.gate.outputs.run == 'true' && inputs.agent == 'codex'
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          # codex-action@v1 inputs use DASHES (openai-api-key, prompt-file).
+          # Underscored names are silently ignored by the action.
+          openai-api-key: ${{ secrets.api_key }}
+          prompt-file: ${{ inputs.prompt_path }}
+          model: ${{ inputs.model }}
+
+      - name: Commit + push fix
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.git_push_token }}
+          AGENT: ${{ inputs.agent }}
+        run: |
+          set -euo pipefail
+          # The agent should have made edits in-place. Detect + commit.
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "agent (${AGENT}) made no changes; not committing"
+            exit 0
+          fi
+          git config user.name "${AGENT}-code-bot"
+          if [ "$AGENT" = "claude" ]; then
+            git config user.email "noreply@anthropic.com"
+            COAUTHOR="Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
+          else
+            git config user.email "noreply@openai.com"
+            COAUTHOR="Co-Authored-By: Codex <noreply@openai.com>"
+          fi
+          git add -A
+          git commit -m "fix: agent ${AGENT} auto-fix in response to PR review
+
+          ${COAUTHOR}"
+          # --force-with-lease per §6 force-push-race gate.
+          git push --force-with-lease origin "HEAD:${{ steps.pr.outputs.head_ref }}"
+
+      - name: Increment attempt label
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.git_push_token }}
+        run: |
+          gh pr edit "${{ steps.pr.outputs.pr_number }}" \
+            --add-label "${{ steps.attempt.outputs.next_label }}"
+
+      - name: Post fix summary comment
+        if: steps.gate.outputs.run == 'true' && always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AGENT: ${{ inputs.agent }}
+        run: |
+          set -uo pipefail
+          BODY=$(printf 'Agent **%s** ran auto-fix in response to your review.\n\nAttempt label: \`%s\`\n\n_Force-pushed fix commit to \`%s\`._' \
+            "$AGENT" "${{ steps.attempt.outputs.next_label }}" \
+            "${{ steps.pr.outputs.head_ref }}")
+          gh pr comment "${{ steps.pr.outputs.pr_number }}" --body "$BODY"
