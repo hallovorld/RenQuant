@@ -42,6 +42,7 @@ def test_subrepo_ops_contract_passes_current_entrypoints() -> None:
     assert "launchd_plists_parseable" in result["passed"]
     assert "launchd_uses_project_venv" in result["passed"]
     assert "state_backup_uses_orchestrator" in result["passed"]
+    assert "weekly_apy_uses_orchestrator" in result["passed"]
     assert result["known_gaps"] == []
 
 

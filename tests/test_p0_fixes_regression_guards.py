@@ -319,6 +319,21 @@ class TestP0_17_BackupSizeGuard:
         assert "renquant-orchestrator/src" in sh
 
 
+class TestP0_18_WeeklyApyMonitor:
+    """Weekly APY monitor must be a subrepo-backed wrapper."""
+
+    def test_weekly_apy_defaults_to_orchestrator_pipeline(self):
+        src = (REPO / "scripts/weekly_apy_check.py").read_text()
+        assert 'os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo")' in src
+        assert "renquant_orchestrator.weekly_apy_monitor" in src
+        assert "RQ_WEEKLY_APY_STRICT" in src
+
+    def test_weekly_apy_plist_uses_project_venv(self):
+        plist = (REPO / "scripts/launchd/com.renquant.weekly-apy104.plist").read_text()
+        assert "/Users/renhao/git/github/RenQuant/.venv/bin/python" in plist
+        assert "/Users/renhao/miniconda3" not in plist
+
+
 class TestP0_19_QPProductionPath:
     """QP must use the same production gates/artifacts as rotation."""
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -207,5 +208,46 @@ def main() -> int:
     return exit_code
 
 
+def _run_multirepo_weekly_apy(argv: list[str]) -> int:
+    orchestrator_src = REPO_ROOT.parent / "renquant-orchestrator" / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{orchestrator_src}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    probe = subprocess.run(
+        [sys.executable, "-c", "import renquant_orchestrator.weekly_apy_monitor"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if probe.returncode != 0:
+        return 127
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "renquant_orchestrator.weekly_apy_monitor",
+            "--repo-root",
+            str(REPO_ROOT),
+            *argv,
+        ],
+        env=env,
+    ).returncode
+
+
 if __name__ == "__main__":
+    if os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo") != "legacy":
+        rc = _run_multirepo_weekly_apy(sys.argv[1:])
+        if rc != 127:
+            sys.exit(rc)
+        if os.environ.get("RQ_WEEKLY_APY_STRICT") == "1":
+            print(
+                "ERROR: renquant_orchestrator.weekly_apy_monitor unavailable "
+                "and RQ_WEEKLY_APY_STRICT=1",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        print(
+            "WARN: renquant_orchestrator.weekly_apy_monitor unavailable; "
+            "falling back to umbrella weekly APY check.",
+            file=sys.stderr,
+        )
     sys.exit(main())

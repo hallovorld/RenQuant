@@ -218,6 +218,16 @@ CHECKS: tuple[Check, ...] = (
             "RQ_STATE_BACKUP_STRICT",
         ),
     ),
+    Check(
+        name="weekly_apy_uses_orchestrator",
+        path="scripts/weekly_apy_check.py",
+        required=(
+            'os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo")',
+            "renquant_orchestrator.weekly_apy_monitor",
+            'REPO_ROOT.parent / "renquant-orchestrator" / "src"',
+            "RQ_WEEKLY_APY_STRICT",
+        ),
+    ),
 )
 
 
@@ -231,6 +241,7 @@ LAUNCHD_PLISTS: tuple[str, ...] = (
     "scripts/launchd/com.renquant.retrain-alpha158-linear.plist",
     "scripts/launchd/com.renquant.screen-watchlist.plist",
     "scripts/launchd/com.renquant.weekly-fundamental-refresh.plist",
+    "scripts/launchd/com.renquant.weekly-apy104.plist",
     "scripts/launchd/com.renquant.weekly-wf-promote.plist",
     "scripts/com.renquant.backup.plist",
 )
