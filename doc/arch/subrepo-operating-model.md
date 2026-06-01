@@ -276,9 +276,21 @@ make subrepo-smoke    # orchestrator train -> infer -> dry-run execute -> backte
 
 `make subrepo-assemble` writes `.subrepo_assembly/<timestamp>/` with symlinks
 to the pinned repos, `manifest.json`, `pythonpath.txt`, and `env.sh`. It is an
-assembly output, not source. It never deletes the umbrella repo. Use
-`scripts/subrepo_assemble.py --sync` only when deliberately cloning or checking
-out clean subrepo worktrees to the lockfile commits.
+assembly output, not source. It never deletes the umbrella repo.
+
+For production launchd, prefer the isolated runtime root:
+
+```bash
+make subrepo-runtime-root
+source .subrepo_assembly/current.env  # or source the timestamped env.sh
+```
+
+That command runs `scripts/subrepo_assemble.py --sync --runtime-root
+.subrepo_runtime/repos`, cloning/fetching pinned repos under
+`.subrepo_runtime/repos` instead of checking out developer worktrees. The
+generated env exports `RENQUANT_SUBREPO_ROOT` and
+`RENQUANT_STRICT_SUBREPO_PATHS=1`, so `daily_multirepo.py` and
+`live_multirepo.py` import exactly the lock-pinned code.
 
 ## Open Migration Work
 

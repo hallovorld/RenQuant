@@ -10,7 +10,7 @@ ifneq ($(strip $(EXECUTE)),)
 SUBREPO_DAILY_ARGS += --execute
 endif
 
-.PHONY: subrepo-doctor subrepo-test subrepo-assemble subrepo-smoke subrepo-daily-contract subrepo-ops-contract
+.PHONY: subrepo-doctor subrepo-test subrepo-assemble subrepo-runtime-root subrepo-smoke subrepo-daily-contract subrepo-ops-contract
 
 subrepo-doctor:
 	$(PYTHON) scripts/subrepo_doctor.py
@@ -20,6 +20,9 @@ subrepo-test:
 
 subrepo-assemble:
 	$(PYTHON) scripts/subrepo_assemble.py
+
+subrepo-runtime-root:
+	$(PYTHON) scripts/subrepo_assemble.py --sync --runtime-root .subrepo_runtime/repos
 
 subrepo-smoke:
 	$(PYTHON) scripts/subrepo_smoke.py
