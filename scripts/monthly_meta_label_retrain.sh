@@ -40,6 +40,19 @@ notify() {
 
 cd "$REPO_DIR"
 source "$VENV_DIR/bin/activate"
+GITHUB_DIR="$(dirname "$REPO_DIR")"
+export PYTHONPATH="$GITHUB_DIR/renquant-model/src:$GITHUB_DIR/renquant-common/src:${PYTHONPATH:-}"
+
+HAVE_MODEL_META_LABEL=0
+if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import renquant_model_common.meta_label_exit  # noqa: F401
+PY
+then
+    HAVE_MODEL_META_LABEL=1
+elif [ "${RQ_META_LABEL_STRICT:-0}" = "1" ]; then
+    notify "META-LABEL RETRAIN ✗" "renquant_model_common.meta_label_exit unavailable and RQ_META_LABEL_STRICT=1"
+    exit 1
+fi
 
 # ── Compute training window: [today − 60d − 365d, today − 60d] ──────
 # 60d = lookahead_days safety buffer (fwd_60d_excess label horizon).
@@ -77,18 +90,37 @@ fi
 
 # ── Step 3: triple-barrier labels ───────────────────────────────────
 echo "[$(date '+%H:%M:%S')] Step 3: label …" | tee -a "$LOG"
-$PYTHON scripts/_meta_label_generate.py \
-    --snapshots "$SNAP_OUT" \
-    --out       "$LABEL_OUT" \
-    --pt-mult 10 --sl-mult 10 --fwd-window 20 >> "$LOG" 2>&1
+if [ "$HAVE_MODEL_META_LABEL" = "1" ]; then
+    $PYTHON -m renquant_model_common.meta_label_exit generate-labels \
+        --snapshots "$REPO_DIR/$SNAP_OUT" \
+        --out       "$REPO_DIR/$LABEL_OUT" \
+        --data-dir  "$REPO_DIR/data" \
+        --pt-mult 10 --sl-mult 10 --fwd-window 20 \
+        --json >> "$LOG" 2>&1
+else
+    echo "WARN: renquant_model_common.meta_label_exit unavailable; falling back to umbrella labeler." \
+        >> "$LOG"
+    $PYTHON scripts/_meta_label_generate.py \
+        --snapshots "$SNAP_OUT" \
+        --out       "$LABEL_OUT" \
+        --pt-mult 10 --sl-mult 10 --fwd-window 20 >> "$LOG" 2>&1
+fi
 
 # ── Step 4: train classifier ────────────────────────────────────────
 echo "[$(date '+%H:%M:%S')] Step 4: train …" | tee -a "$LOG"
-$PYTHON scripts/_meta_label_train.py \
-    --labels "$LABEL_OUT" \
-    --out    "$NEW_ARTIFACT" \
-    --n-splits 5 --label-horizon-days 20 --pct-embargo 0.02 \
-    >> "$LOG" 2>&1
+if [ "$HAVE_MODEL_META_LABEL" = "1" ]; then
+    $PYTHON -m renquant_model_common.meta_label_exit train \
+        --labels "$REPO_DIR/$LABEL_OUT" \
+        --out    "$NEW_ARTIFACT" \
+        --n-splits 5 --label-horizon-days 20 --pct-embargo 0.02 \
+        --json >> "$LOG" 2>&1
+else
+    $PYTHON scripts/_meta_label_train.py \
+        --labels "$LABEL_OUT" \
+        --out    "$NEW_ARTIFACT" \
+        --n-splits 5 --label-horizon-days 20 --pct-embargo 0.02 \
+        >> "$LOG" 2>&1
+fi
 
 if [ ! -f "$NEW_ARTIFACT" ]; then
     notify "META-LABEL RETRAIN ✗" "training failed — check $LOG"

@@ -144,6 +144,15 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="monthly_meta_label_uses_model_repo",
+        path="scripts/monthly_meta_label_retrain.sh",
+        required=(
+            "renquant_model_common.meta_label_exit",
+            "$GITHUB_DIR/renquant-model/src",
+            "RQ_META_LABEL_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_calibrator_refresh_uses_model_repo",
         path="scripts/monthly_calibrator_refresh.sh",
         required=(
