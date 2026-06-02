@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONDA_PREFIX = "/Users/renhao/miniconda3"
 # Personal-workstation contract: active launchd plists are installed for this
 # operator account and must resolve the project venv at this absolute path.
+CANONICAL_ROOT = "/Users/renhao/git/github/RenQuant"
 VENV_BIN = "/Users/renhao/git/github/RenQuant/.venv/bin"
 
 
@@ -28,6 +29,16 @@ class Check:
     path: str
     required: tuple[str, ...]
     forbidden: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LaunchdProgram:
+    path: str
+    expected_args: tuple[str, ...]
+
+
+def _script(name: str) -> str:
+    return f"{CANONICAL_ROOT}/scripts/{name}"
 
 
 CHECKS: tuple[Check, ...] = (
@@ -121,6 +132,17 @@ CHECKS: tuple[Check, ...] = (
             "--strict",
         ),
         forbidden=("RQ_ALLOW_NO_WF=1",),
+    ),
+    Check(
+        name="legacy_retrain_panel_delegates_to_weekly_wf",
+        path="scripts/retrain_panel.sh",
+        required=(
+            "Compatibility wrapper for the old Sunday retrain agent",
+            "weekly_wf_promote already ran today",
+            "delegating to the strict trust boundary",
+            "bash scripts/weekly_wf_promote.sh",
+        ),
+        forbidden=("scripts/train_104.py", "RQ_ALLOW_NO_WF=1"),
     ),
     Check(
         name="conditional_trigger_uses_orchestrator",
@@ -375,6 +397,70 @@ LAUNCHD_PLISTS: tuple[str, ...] = (
 )
 
 
+LAUNCHD_PROGRAMS: tuple[LaunchdProgram, ...] = (
+    LaunchdProgram(
+        "scripts/com.renquant.backup.plist",
+        ("/bin/bash", _script("backup_to_github.sh")),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.conditional-retrain104.plist",
+        (_script("conditional_retrain_104.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.daily104.plist",
+        (_script("daily_104.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.daily-iv-snapshot.plist",
+        (_script("daily_iv_snapshot.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.daily-news-sentiment.plist",
+        (_script("daily_news_sentiment_refresh.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.intraday104.plist",
+        (_script("intraday_sell_104.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.monthly-calibrator-refresh.plist",
+        (_script("monthly_calibrator_refresh.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.monthly-meta-label-retrain.plist",
+        (_script("monthly_meta_label_retrain.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.preopen-cancel-gate.plist",
+        (_script("preopen_cancel_gate.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.retrain-alpha158-linear.plist",
+        (_script("retrain_alpha158_linear.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.retrain-panel104.plist",
+        (_script("retrain_panel.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.screen-watchlist.plist",
+        (f"{VENV_BIN}/python", _script("screen_watchlist.py")),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.weekly-apy104.plist",
+        (f"{VENV_BIN}/python", _script("weekly_apy_check.py")),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.weekly-fundamental-refresh.plist",
+        (_script("weekly_fundamental_refresh.sh"),),
+    ),
+    LaunchdProgram(
+        "scripts/launchd/com.renquant.weekly-wf-promote.plist",
+        (_script("weekly_wf_promote.sh"),),
+    ),
+)
+
+
 KNOWN_GAPS: tuple[dict[str, str], ...] = ()
 
 
@@ -395,6 +481,7 @@ def _non_comment_text(text: str) -> str:
 def run_contract() -> dict[str, object]:
     failures: list[dict[str, str]] = []
     passed: list[str] = []
+    launchd_programs = {program.path: program for program in LAUNCHD_PROGRAMS}
 
     for check in CHECKS:
         text = _read(check.path)
@@ -419,13 +506,40 @@ def run_contract() -> dict[str, object]:
     for rel in LAUNCHD_PLISTS:
         path = ROOT / rel
         try:
-            plistlib.loads(path.read_bytes())
+            payload = plistlib.loads(path.read_bytes())
         except Exception as exc:
             failures.append({
                 "check": "launchd_plist_parseable",
                 "path": rel,
                 "reason": f"plist XML is not parseable: {exc}",
             })
+            payload = {}
+
+        expected_program = launchd_programs.get(rel)
+        if expected_program is None:
+            failures.append({
+                "check": "launchd_program_arguments_multirepo",
+                "path": rel,
+                "reason": "active launchd plist has no ProgramArguments contract",
+            })
+        else:
+            actual_args = payload.get("ProgramArguments")
+            if not isinstance(actual_args, list):
+                failures.append({
+                    "check": "launchd_program_arguments_multirepo",
+                    "path": rel,
+                    "reason": "ProgramArguments must be a list",
+                })
+            elif tuple(actual_args) != expected_program.expected_args:
+                failures.append({
+                    "check": "launchd_program_arguments_multirepo",
+                    "path": rel,
+                    "reason": (
+                        "ProgramArguments drifted from pinned multirepo wrapper: "
+                        f"expected={list(expected_program.expected_args)!r} "
+                        f"actual={actual_args!r}"
+                    ),
+                })
 
         text = _read(rel)
         if CONDA_PREFIX in text:
@@ -449,6 +563,8 @@ def run_contract() -> dict[str, object]:
 
     if not any(f["check"] == "launchd_plist_parseable" for f in failures):
         passed.append("launchd_plists_parseable")
+    if not any(f["check"] == "launchd_program_arguments_multirepo" for f in failures):
+        passed.append("launchd_program_arguments_multirepo")
     if not any(f["check"] == "launchd_uses_project_venv" for f in failures):
         passed.append("launchd_uses_project_venv")
 
