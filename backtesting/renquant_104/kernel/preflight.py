@@ -20,16 +20,19 @@ Checks (each returns ok / soft-warn / hard-fail):
   3. P-CONFIG-FP        — config fingerprint matches artifact's stored fp
                           (BUG-CV-G7-mismatch class)
   4. P-WATCHLIST        — config watchlist size matches training watchlist
-	  5. P-WF-GATE          — active artifact must not carry failed WF gate
-	                          evidence
-	  6. P-CORR-METADATA    — correlation artifact must be stamped with
-	                          as_of_date before buy/full runs
-	  7. P-FEATURE-COVER    — NGBoost head's feature_cols all present in
-	                          current panel pipeline output (≥ 95%)
-	  8. P-STATE-FILE       — live_state.{broker}.json parses (or absent
-	                          which is fine — first run)
-	  9. P-BROKER-CONNECT   — broker.connect() / get_account_value() works
-	                          (only if broker is provided; skipped in dry-run)
+  5. P-WF-GATE          — active artifact must not carry failed WF gate
+                          evidence
+  6. P-CORR-METADATA    — correlation artifact must be stamped with
+                          as_of_date before buy/full runs
+  7. P-FEATURE-COVER    — NGBoost head's feature_cols all present in
+                          current panel pipeline output (≥ 95%)
+  8. P-NEWS-SENTIMENT-FRESHNESS
+                        — scored news sentiment parquets are recent when
+                          sentiment features are active
+  9. P-STATE-FILE       — live_state.{broker}.json parses (or absent
+                          which is fine — first run)
+ 10. P-BROKER-CONNECT   — broker.connect() / get_account_value() works
+                          (only if broker is provided; skipped in dry-run)
 
 Usage in live/runner.py:
     from kernel.preflight import run_preflight, PreflightFailed
@@ -1737,6 +1740,7 @@ _LEGACY_CHECK_ORDER: tuple[str, ...] = (
     "P-WATCHLIST",
     "P-SECTOR-MAP",
     "P-CORR-METADATA",
+    "P-NEWS-SENTIMENT-FRESHNESS",
     "P-FEATURE-COVER",
     "P-STATE-FILE",
     "P-BROKER-CONNECT",

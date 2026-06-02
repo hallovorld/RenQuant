@@ -9,8 +9,9 @@ Drop-in architecture for ``kernel.preflight.run_preflight`` migration:
   - PreflightPipeline: orchestrates Jobs in declaration order; ``run`` returns
     list[PreflightCheck] identical in shape to the legacy ``run_preflight``
 
-All 17 checks are represented as Tasks (P-BROKER-FILL-FRESHNESS added
-2026-06-02 per audit finding 9). ``run_preflight`` is wired as a thin
+All 18 checks are represented as Tasks (P-BROKER-FILL-FRESHNESS added
+2026-06-02 per audit finding 9; P-NEWS-SENTIMENT-FRESHNESS added per
+issue #73). ``run_preflight`` is wired as a thin
 wrapper in the follow-up PR so production callers keep the legacy API
 while the business logic moves behind Task/Job/Pipeline boundaries.
 """
@@ -19,6 +20,7 @@ from .base import PreflightTask, PreflightJob, PreflightPipeline
 from .tasks.state import StateFileTask
 from .tasks.broker import BrokerConnectTask
 from .tasks.broker_fill_freshness import BrokerFillFreshnessTask
+from .tasks.news_sentiment import NewsSentimentFreshnessTask
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.sector_map import SectorMapCoverageTask
@@ -39,6 +41,7 @@ __all__ = [
     "StateFileTask",
     "BrokerConnectTask",
     "BrokerFillFreshnessTask",
+    "NewsSentimentFreshnessTask",
     "ModelArtifactTask",
     "PanelContractTask",
     "BestIterTask",

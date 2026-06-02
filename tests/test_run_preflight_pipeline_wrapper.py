@@ -5,7 +5,7 @@ returned list compared to direct legacy ``_check_*`` iteration.
 The order test pins ``_LEGACY_CHECK_ORDER`` so any reorder is caught.
 
 Contract preserved:
-  1. Returned list has 16 entries in ``_LEGACY_CHECK_ORDER`` order
+  1. Returned list has 18 entries in ``_LEGACY_CHECK_ORDER`` order
   2. Each entry: (name, severity, ok, message, details) match legacy
   3. strict=True raises ``PreflightFailed`` on any HARD failure
   4. strict=False returns results without raising
@@ -39,14 +39,14 @@ def _empty_config() -> dict:
 
 class TestRunPreflightWrapperContract:
 
-    def test_returns_seventeen_results(self, tmp_path):
+    def test_returns_eighteen_results(self, tmp_path):
         results = run_preflight(
             config=_empty_config(),
             broker=None,
             strategy_dir=_minimal_strategy_dir(tmp_path),
             strict=False,
         )
-        assert len(results) == 17
+        assert len(results) == 18
 
     def test_results_in_legacy_order(self, tmp_path):
         results = run_preflight(
@@ -124,5 +124,6 @@ class TestRunPreflightOrderingInvariant:
 
     def test_legacy_order_size_matches_check_count(self):
         # When more checks are added (or any retired), update this assertion.
-        # Today's tally: 17 checks in the pipeline (P-BROKER-FILL-FRESHNESS added 2026-06-02).
-        assert len(_LEGACY_CHECK_ORDER) == 17
+        # Today's tally: 18 checks in the pipeline
+        # (P-NEWS-SENTIMENT-FRESHNESS added 2026-06-02).
+        assert len(_LEGACY_CHECK_ORDER) == 18
