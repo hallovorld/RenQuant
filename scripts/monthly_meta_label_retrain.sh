@@ -47,6 +47,13 @@ renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
+if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
+    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_META_LABEL_STRICT:-0}" = "1" ] || [ "${RQ_META_LABEL_SIM_STRICT:-0}" = "1" ]; then
+        notify "META-LABEL RETRAIN ✗" "pinned renquant-strategy-104 strategy_config.json unavailable"
+        exit 1
+    fi
+    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+fi
 
 HAVE_BACKTESTING_SIM=0
 if "$PYTHON" - <<'PY' >/dev/null 2>&1
@@ -85,8 +92,9 @@ PROD_ARTIFACT="$ART_DIR/meta-label-exit.json"
 
 $PYTHON <<PY 2>&1 | tee -a "$LOG"
 import json
-src = json.load(open("backtesting/renquant_104/strategy_config.json"))
+src = json.load(open("$PROD_STRATEGY_CONFIG"))
 src["_side_config_label"] = "sim_monthly_retrain_snapshot"
+src["_source_strategy_config"] = "$PROD_STRATEGY_CONFIG"
 src["meta_label_training"] = {"enabled": True, "output_path": "$SNAP_OUT"}
 src.setdefault("ranking", {})["meta_label"] = {"enabled": False}
 json.dump(src, open("backtesting/renquant_104/$SNAP_CFG", "w"), indent=2)
