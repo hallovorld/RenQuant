@@ -195,30 +195,22 @@ def solve_portfolio_qp(
             Sigma_mat += 1e-8 * np.eye(n)
 
     # ── Per-asset bound vectors ───────────────────────────────────────────
+    # NOTE: solver treats `w_upper` as a HARD risk cap (see solver
+    # contract docstring above). If `w_current > w_upper` (over-cap
+    # holding), the solver MUST keep this infeasible so
+    # `SolveMarkowitzQPTask._retry_for_per_asset_cap_compliance()` can
+    # remediate via the cap-compliance retry path. The hold-flat-
+    # feasibility clamp that addresses today's daily-104 bug lives in
+    # the SOFT-scaling tasks (ApplyExposureScalingTask +
+    # ApplyConvictionCapTask) — see CLAUDE.md daily-full memo. Hard caps
+    # (max_position_pct, sector cap, corr cap) stay as hard constraints
+    # here.
     w_upper_arr = (np.full(n, float(w_upper)) if np.isscalar(w_upper)
                     else np.asarray(w_upper, dtype=float))
     w_lower_arr = (np.full(n, float(w_lower)) if np.isscalar(w_lower)
                     else np.asarray(w_lower, dtype=float))
     dw_max_arr  = (np.full(n, float(dw_max))  if np.isscalar(dw_max)
                     else np.asarray(dw_max, dtype=float))
-
-    # ── Hold-flat-feasibility clamp (2026-06-02 daily-full bug fix) ──────
-    # ApplyExposureScalingTask + ApplyConvictionCapTask multiply w_upper by
-    # combined regime / vol-target / drawdown / conviction factors. In low-
-    # conviction or high-cap-pressure scenarios these can drive w_upper
-    # BELOW w_current for held positions, making "hold flat" (Δw=0)
-    # infeasible. The QP then falls back to zero-trade — including
-    # blocking exit/sell signals — and emits status=infeasible. Today's
-    # daily-104 hit this: per_asset_cap_max=-0.042 with 4 holdings and
-    # cash_slack=0.55 (trivially feasible by hold).
-    #
-    # Fix: clamp w_upper >= w_current per asset. The QP can still WANT to
-    # sell via mu-gradient or turnover trade-offs, but the BOX constraint
-    # never forces a sale. The "always-feasible hold" invariant is
-    # restored. w_lower remains untouched (shorts/disabled paths intact).
-    w_current_clamp = np.asarray(w_current, dtype=float).flatten()
-    if w_current_clamp.size == n:
-        w_upper_arr = np.maximum(w_upper_arr, w_current_clamp)
 
     # ── μ cleanup + Garleanu-Pedersen 2013 signal-decay scaling ──────────
     finite_mu = np.isfinite(mu_raw)

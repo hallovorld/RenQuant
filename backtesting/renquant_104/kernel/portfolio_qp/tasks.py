@@ -342,6 +342,24 @@ class ComputeFullSigmaTask(Task):
             return None
 
 
+def _clamp_w_upper_at_w_current(ctx) -> None:
+    """Hold-flat clamp: w_upper >= w_current per asset (2026-06-02 fix).
+
+    Used at the SOFT-scaling sites (ApplyExposureScalingTask,
+    ApplyConvictionCapTask). Preserves the hold-flat invariant
+    Δw=0 ALWAYS feasible. Hard caps live at the solver / sector /
+    correlation layers. Reads/writes ``ctx._qp_w_upper`` in place.
+    """
+    w_upper = _get_path(ctx, "_qp_w_upper")
+    w_curr  = _get_path(ctx, "_qp_w_current")
+    if w_upper is None or w_curr is None or len(w_upper) != len(w_curr):
+        return
+    ctx._qp_w_upper = np.maximum(  # noqa: SLF001
+        np.asarray(w_upper, dtype=float),
+        np.asarray(w_curr, dtype=float),
+    )
+
+
 def _lookup_corr_explicit_none(corr: dict, left: str, right: str, *, default: float = 0.0):
     """Symmetric corr lookup that treats 0.0 as real data, not missing."""
     row = corr.get(left)
@@ -1192,8 +1210,9 @@ class ApplyExposureScalingTask(Task):
         combined = vt_scale * dd_scale
         if combined != 1.0:
             ctx._qp_w_upper = np.asarray(w_upper) * float(combined)  # noqa: SLF001
+            _clamp_w_upper_at_w_current(ctx)
             log.info(
-                "ApplyExposureScalingTask: w_upper scaled by vt=%.3f × dd=%.3f = %.3f",
+                "ApplyExposureScalingTask: w_upper scaled by vt=%.3f × dd=%.3f = %.3f (hold-flat-clamped)",
                 vt_scale, dd_scale, combined,
             )
 
@@ -1285,6 +1304,9 @@ class ApplyConvictionCapTask(Task):
             m = max(0.0, min(1.0, m))
             w_upper[i] = float(w_upper[i]) * m
             caps.append(m)
+
+        # 2026-06-02 fix: never shrink below w_current — see helper docstring.
+        _clamp_w_upper_at_w_current(ctx)
 
         ctx._qp_conviction_caps = caps  # noqa: SLF001
         return None

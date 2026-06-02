@@ -129,89 +129,57 @@ class TestConstraints:
         assert sol.delta_w[0] < 0.0   # selling permitted
 
 
-class TestHoldFlatFeasibilityClamp:
-    """2026-06-02 daily-full bug regression guard.
+class TestSolverHardCapContract:
+    """2026-06-02 codex re-review regression guard for PR #123 v2.
 
-    ApplyExposureScalingTask + ApplyConvictionCapTask multiply
-    `_qp_w_upper` by combined regime / vol-target / drawdown / conviction
-    factors. In low-conviction or high-cap-pressure scenarios these can
-    drive `w_upper` BELOW `w_current` for held positions, making
-    "hold flat" (Δw=0) infeasible. The QP then falls back to zero-trade
-    AND emits status=infeasible — blocking exit/sell signals too.
+    The solver's `w_upper` is the HARD per-asset risk cap. When a held
+    position is already over the cap (w_current > w_upper), the solver
+    MUST keep the box-bound contract intact so that
+    `SolveMarkowitzQPTask._retry_for_per_asset_cap_compliance()` can
+    fire — that fallback only runs on `infeasible` solver statuses or
+    when target_w respects the box.
 
-    Today's daily-104 hit this: `per_asset_cap_max=-0.042` with 4
-    holdings and `cash_slack=0.55` — trivially feasible by hold-flat,
-    yet the solver said infeasible. Root cause: `w_upper < w_current`
-    on all 4 holdings.
+    PR #123 v1 attempt added a solver-level clamp
+    `w_upper = max(w_upper, w_current)`, which silently elevated the
+    box bound and let the solver report `optimal_no_signal` at the
+    over-cap weight — bypassing cap-compliance remediation. Codex
+    correctly flagged this.
 
-    Fix: clamp `w_upper >= w_current` per asset at solve entry. QP can
-    still WANT to sell via mu/risk gradient, but the BOX constraint
-    never forces a sale.
+    Fix moved to ApplyExposureScalingTask + ApplyConvictionCapTask
+    (the soft-scaling sites) where the hold-flat invariant lives. Hard
+    caps remain enforceable here. See:
+    `tests/test_qp_constraints_tasks.py::TestSoftScalingHoldFlatClamp`
+    for the hold-flat invariant tests (now at the proper layer).
     """
 
-    def test_hold_flat_feasible_when_w_upper_below_current(self):
-        """w_upper < w_current must NOT make the QP infeasible.
+    def test_over_cap_w_current_respects_box_bound(self):
+        """w_current > w_upper at solver entry: solver MUST honour the box.
 
-        Reconstructs today's pattern: 4 holdings ~5%/each, w_upper set
-        to a cap that's *below* the current weight (e.g., regime gate
-        + low-conviction scaling pushed it down). The QP must succeed
-        and produce a Δw vector — Δw=0 (hold flat) is always feasible
-        because the clamp lifts each w_upper to w_current.
+        Codex's reproduction (PR #123 re-review): w_current=0.22,
+        w_upper=0.15, high cost, tight turnover. Pre-v2 the clamp made
+        the solver return `optimal_no_signal` at target≈0.22 — over
+        cap. v2 must either bring target down to the cap OR mark
+        infeasible so the caller's cap-compliance fallback can handle
+        it.
         """
         sol = solve_portfolio_qp(
-            w_current=[0.10, 0.10, 0.10, 0.10],
-            mu=[0.0, 0.0, 0.0, 0.0],
-            sigma=[0.10, 0.10, 0.10, 0.10],
-            w_upper=0.05,                      # below w_current — pre-fix this caused infeasibility
-            w_lower=0.0,
-            cash_reserve=0.0,
-            cost_kappa=0.0001,
-            turnover_max=0.15,                  # tight turnover that would forbid 4× forced shrink
-        )
-        # Pre-fix: solver returned status="infeasible" + zero-trade fallback.
-        # Post-fix: clamp lifts w_upper to w_current and the QP is solvable.
-        # Status may be any "optimal-*" variant (clean, no_signal, inaccurate);
-        # what matters is we're NOT infeasible.
-        assert "infeasible" not in sol.status.lower(), (
-            f"hold-flat feasibility clamp broken; QP returned {sol.status}"
-        )
-        assert sol.status.startswith("optimal"), sol.status
-
-    def test_clamp_does_not_block_natural_sells_via_mu(self):
-        """The clamp lifts w_upper to w_current, but Δw<0 is still permitted
-        via the box's lower bound + the mu gradient. A negative-mu position
-        with no buy constraints should still sell normally."""
-        sol = solve_portfolio_qp(
-            w_current=[0.15],
-            mu=[-0.10],                         # strong sell signal
+            w_current=[0.22],
+            mu=[0.0],
             sigma=[0.10],
-            w_upper=0.05,                       # below current — the clamp lifts this to 0.15
+            w_upper=[0.15],                     # below current — hard risk cap
             w_lower=0.0,
             cash_reserve=0.0,
-            cost_kappa=0.0,
+            cost_kappa=10.0,
+            turnover_max=0.01,
         )
-        # Even though w_upper was nominally 0.05, the clamp made it 0.15.
-        # But w_lower=0.0 lets Δw be negative. Mu=-0.10 should still produce a sale.
-        assert sol.delta_w[0] < 0.0, (
-            f"clamp should not block legitimate mu-driven sells; got Δw={sol.delta_w[0]}"
+        if "infeasible" in sol.status.lower():
+            # Caller's _retry_for_per_asset_cap_compliance handles this
+            return
+        # Otherwise the solver must have honoured the box bound
+        assert sol.target_w[0] <= 0.15 + 1e-3, (
+            f"hard cap violated: target_w={sol.target_w[0]:.4f} > w_upper=0.15, "
+            f"status={sol.status} — v1 solver-level clamp regression"
         )
-        assert sol.target_w[0] < 0.15
-
-    def test_clamp_preserves_w_upper_when_already_above_current(self):
-        """When w_upper already exceeds w_current, the clamp must be a no-op
-        — buy headroom is preserved for the QP to use."""
-        sol = solve_portfolio_qp(
-            w_current=[0.05],
-            mu=[0.10],                          # buy signal
-            sigma=[0.10],
-            w_upper=0.20,                       # above current — should remain 0.20
-            w_lower=0.0,
-            cash_reserve=0.0,
-            cost_kappa=0.0,
-        )
-        # Buy headroom preserved: target should be > current, up to 0.20
-        assert sol.delta_w[0] > 0.0
-        assert sol.target_w[0] <= 0.20 + 1e-6
 
 
 class TestGarleanuPedersenIntuition:
