@@ -324,6 +324,42 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="dashboard_builder_uses_backtesting_repo",
+        path="scripts/build_dashboard.py",
+        required=(
+            "from subrepo_module_delegate import delegate_to_subrepo_module",
+            "delegate_to_subrepo_module(",
+            "renquant_backtesting.reporting.build_dashboard",
+            "renquant-backtesting",
+            "RQ_BACKTESTING_OPS_RUNNER",
+            "RQ_BACKTESTING_OPS_STRICT",
+        ),
+    ),
+    Check(
+        name="wf_fingerprint_stamping_uses_backtesting_repo",
+        path="scripts/stamp_walkforward_fingerprints.py",
+        required=(
+            "from subrepo_module_delegate import delegate_to_subrepo_module",
+            "delegate_to_subrepo_module(",
+            "renquant_backtesting.wf_gate.stamp_walkforward_fingerprints",
+            "renquant-backtesting",
+            "RQ_BACKTESTING_OPS_RUNNER",
+            "RQ_BACKTESTING_OPS_STRICT",
+        ),
+    ),
+    Check(
+        name="strategy_config_drift_uses_strategy_repo",
+        path="scripts/check_config_drift.py",
+        required=(
+            "from subrepo_module_delegate import delegate_to_subrepo_module",
+            "delegate_to_subrepo_module(",
+            "renquant_strategy_104.config_drift",
+            "renquant-strategy-104",
+            "RQ_STRATEGY_OPS_RUNNER",
+            "RQ_STRATEGY_OPS_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_meta_label_uses_model_repo",
         path="scripts/monthly_meta_label_retrain.sh",
         required=(
