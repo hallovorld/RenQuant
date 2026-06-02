@@ -6,6 +6,7 @@ here to surface a clean public symbol set.
 """
 from .state import StateFileTask
 from .broker import BrokerConnectTask
+from .broker_fill_freshness import BrokerFillFreshnessTask
 from .artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .gate import RegimeLayeredICTask, WfGateMetadataTask
 from .sector_map import SectorMapCoverageTask
@@ -20,6 +21,7 @@ from .meta_label import MetaLabelArtifactContractTask
 __all__ = [
     "StateFileTask",
     "BrokerConnectTask",
+    "BrokerFillFreshnessTask",
     "ModelArtifactTask",
     "PanelContractTask",
     "BestIterTask",

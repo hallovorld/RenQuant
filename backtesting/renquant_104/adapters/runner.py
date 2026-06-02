@@ -1526,10 +1526,20 @@ class RunnerAdapter:
         mon["no_trade_streak"] = broker_streak
         mon["no_trade_streak_source"] = "broker_filled_orders"
         mon["last_fill_date"] = most_recent.isoformat() if most_recent else None
-        if most_recent is not None:
-            mon["last_activity_date"] = most_recent.isoformat()
-            if mon.get("first_trade_date") is None:
-                mon["first_trade_date"] = mon["last_activity_date"]
+        # codex PR #84 review: this override used to clobber
+        # ``last_activity_date`` and ``first_trade_date`` with broker truth
+        # (any-source fills), wiping the runner-emission semantic that
+        # MonitorIdleStreakTask had just written from ctx.orders/ctx.exits.
+        # That made it impossible for a downstream consumer (e.g. the
+        # P-BROKER-FILL-FRESHNESS preflight) to distinguish a manual /
+        # Z9-only fill from a genuine runner-driven decision.
+        #
+        # Fix: the broker-truth fields stay on ``last_fill_date`` /
+        # ``no_trade_streak`` (their canonical homes); the runner-emission
+        # fields stay on ``last_activity_date`` / ``first_trade_date`` and
+        # are NOT touched here. Consumers wanting "runner alpha" semantic
+        # read the activity field; consumers wanting "any broker activity"
+        # read ``last_fill_date`` / ``no_trade_streak`` (broker source).
         self._state["monitor_state"] = mon
 
     def _z9_place_or_replace_stop(

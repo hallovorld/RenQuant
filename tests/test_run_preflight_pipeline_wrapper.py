@@ -39,14 +39,14 @@ def _empty_config() -> dict:
 
 class TestRunPreflightWrapperContract:
 
-    def test_returns_sixteen_results(self, tmp_path):
+    def test_returns_seventeen_results(self, tmp_path):
         results = run_preflight(
             config=_empty_config(),
             broker=None,
             strategy_dir=_minimal_strategy_dir(tmp_path),
             strict=False,
         )
-        assert len(results) == 16
+        assert len(results) == 17
 
     def test_results_in_legacy_order(self, tmp_path):
         results = run_preflight(
@@ -124,5 +124,5 @@ class TestRunPreflightOrderingInvariant:
 
     def test_legacy_order_size_matches_check_count(self):
         # When more checks are added (or any retired), update this assertion.
-        # Today's tally: 16 checks in the pipeline.
-        assert len(_LEGACY_CHECK_ORDER) == 16
+        # Today's tally: 17 checks in the pipeline (P-BROKER-FILL-FRESHNESS added 2026-06-02).
+        assert len(_LEGACY_CHECK_ORDER) == 17
