@@ -655,6 +655,30 @@ class SimAdapter:
         return uctx.loaded_models
 
     @staticmethod
+    def _corr_leakage_present(as_of_date, backtest_start) -> bool:
+        """True iff a parsed correlation ``as_of_date`` is strictly after start.
+
+        Mirrors ``assert_correlation_no_leakage`` semantics without raising,
+        used to decide whether to fall back to a historical sim correlation
+        artifact before invoking the guard. Returns False for any ``as_of_date``
+        that can't be parsed or for unstamped (legacy) artifacts — the guard
+        accepts those with a warning when ``allow_legacy_without_as_of=True``,
+        so substitution would only mask the operator's intent.
+        """
+        if as_of_date is None or backtest_start is None:
+            return False
+        try:
+            as_of_ts = pd.Timestamp(as_of_date)
+            if as_of_ts.tz is not None:
+                as_of_ts = as_of_ts.tz_convert("UTC").tz_localize(None)
+            start_ts = pd.Timestamp(backtest_start)
+            if start_ts.tz is not None:
+                start_ts = start_ts.tz_convert("UTC").tz_localize(None)
+        except (TypeError, ValueError):
+            return False
+        return as_of_ts > start_ts
+
+    @staticmethod
     def _gmm_leakage_present(artifact, backtest_start, as_of_extractor) -> bool:
         """True iff artifact has a stamped as_of_date strictly after start.
 
@@ -745,22 +769,59 @@ class SimAdapter:
             context="SimAdapter gmm",
         )
 
-        corr_path = artifacts_dir / regime_cfg.get(
+        configured_corr_rel = regime_cfg.get(
             "correlation_artifact", "prod/watchlist-correlation.json",
         )
+        corr_path = artifacts_dir / configured_corr_rel
         # AUDIT 2026-05-10 §5.13.5 — correlation as-of-date leakage guard.
         # Unwraps v2 schema (matrix + as_of_date) or treats raw as v1.
         # Routes through kernel.walk_forward.correlation_guard.
+        #
+        # 2026-06-02 (sibling-of-GMM fix): when the configured correlation
+        # artifact is point-in-time-invalid for this backtest (as_of_date >
+        # backtest_start), try a historical sim artifact at the canonical
+        # sim/ path BEFORE letting the leakage guard raise. Same pattern as
+        # the GMM substitution above; same fail-closed semantics.
         if corr_path.exists():
             raw = json.loads(corr_path.read_text())
             corr_dict, as_of_date = parse_correlation_artifact(raw)
+            backtest_start = self._config.get("backtest_start")
+            allow_legacy = bool(
+                regime_cfg.get("allow_legacy_correlation_without_as_of", False)
+            )
+            if backtest_start is not None and self._corr_leakage_present(
+                as_of_date, backtest_start,
+            ):
+                historical_corr_rel = "sim/watchlist-correlation.json"
+                historical_corr_path = artifacts_dir / historical_corr_rel
+                if (
+                    historical_corr_path.exists()
+                    and historical_corr_path != corr_path
+                ):
+                    hist_raw = json.loads(historical_corr_path.read_text())
+                    hist_dict, hist_as_of = parse_correlation_artifact(hist_raw)
+                    if not self._corr_leakage_present(hist_as_of, backtest_start):
+                        log.warning(
+                            "SimAdapter: configured correlation %s has "
+                            "as_of_date %s > backtest_start %s; substituting "
+                            "historical sim artifact %s (as_of_date=%s) to "
+                            "preserve point-in-time correlation structure. "
+                            "Update regime.correlation_artifact in the sim/WF "
+                            "config to silence this warning.",
+                            configured_corr_rel,
+                            as_of_date,
+                            backtest_start,
+                            historical_corr_rel,
+                            hist_as_of,
+                        )
+                        corr_dict = hist_dict
+                        as_of_date = hist_as_of
+                        corr_path = historical_corr_path
             assert_correlation_no_leakage(
                 as_of_date,
-                self._config.get("backtest_start"),
+                backtest_start,
                 is_live_mode=False,
-                allow_legacy_without_as_of=bool(
-                    regime_cfg.get("allow_legacy_correlation_without_as_of", False)
-                ),
+                allow_legacy_without_as_of=allow_legacy,
                 context=f"SimAdapter corr={corr_path.name}",
             )
         elif fallback_corr is not None:
