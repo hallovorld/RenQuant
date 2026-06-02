@@ -247,3 +247,48 @@ def test_feature_count_match_passes(tmp_path):
     assert r.returncode == 0, r.stderr
     body = json.loads(art.read_text())
     assert body["config_fingerprint"].startswith("sha256:")
+
+
+def test_already_stamped_with_wrong_feature_count_refuses(tmp_path):
+    """Codex review on #58 HIGH: the early-return path for already-stamped
+    sidecars used to bypass _check_compatibility. An artifact that was
+    over-stamped by the older (less-strict) version of the stamper must still
+    be rejected when re-run with a contract flag that the artifact violates."""
+    art = _make_artifact(tmp_path)
+    cfg = _make_config(tmp_path)
+    # First stamp without feature-count check (mimics #57-era over-stamping).
+    r0 = _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+    assert r0.returncode == 0, r0.stderr
+    # Re-run with a contradictory --expected-feature-count. Must fail closed.
+    r = _run("--artifact-meta", str(art), "--strategy-config", str(cfg),
+             "--write", "--expected-feature-count", "169")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "feature_count" in r.stdout
+    assert "169" in r.stdout and "172" in r.stdout
+    assert "nothing to do" not in r.stdout
+
+
+def test_already_stamped_with_wrong_label_col_refuses(tmp_path):
+    """Same defect class: already-stamped artifact whose label_col contradicts
+    --expected-label-col must be rejected, not short-circuit to 'nothing to do'."""
+    art = _make_artifact(tmp_path)
+    cfg = _make_config(tmp_path)
+    r0 = _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+    assert r0.returncode == 0, r0.stderr
+    r = _run("--artifact-meta", str(art), "--strategy-config", str(cfg),
+             "--write", "--expected-label-col", "fwd_60d_raw")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "label_col" in r.stdout
+    assert "nothing to do" not in r.stdout
+
+
+def test_already_stamped_force_overrides_post_stamp_check(tmp_path):
+    """--force still escapes the post-stamp compatibility refusal — same
+    semantics as fresh stamping."""
+    art = _make_artifact(tmp_path)
+    cfg = _make_config(tmp_path)
+    r0 = _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+    assert r0.returncode == 0, r0.stderr
+    r = _run("--artifact-meta", str(art), "--strategy-config", str(cfg),
+             "--write", "--force", "--expected-feature-count", "169")
+    assert r.returncode == 0, r.stderr

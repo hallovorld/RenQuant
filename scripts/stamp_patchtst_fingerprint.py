@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Stamp `config_fingerprint` (+ `config_fingerprint_fields`) into a PatchTST
 artifact's `.metadata.json` sidecar so the strict LoadScorerTask config-
 consistency gate accepts it.
@@ -203,6 +203,28 @@ def main() -> int:
     print(f"Artifact sidecar: {args.artifact_meta}")
     print(f"  → stored fingerprint: {meta.get('config_fingerprint')!r}")
 
+    # Compatibility check FIRST — runs before the already-stamped early-return
+    # so an artifact that was over-stamped by an earlier (less-strict) version
+    # of this tool cannot bypass the new fail-closed contract checks. "Already
+    # stamped" must mean "already stamped AND contract-compatible under the
+    # current flags."
+    reasons = _check_compatibility(
+        meta,
+        live_fields,
+        expected_label_col=args.expected_label_col,
+        expected_feature_count=args.expected_feature_count,
+    )
+    if reasons:
+        print("Compatibility check FAILED:")
+        for r in reasons:
+            print(f"  - {r}")
+        if not args.force:
+            print("Refusing to stamp. Pass --force to override (NOT recommended).", file=sys.stderr)
+            return 3
+        print("--force given; proceeding anyway.")
+    else:
+        print("Compatibility check OK.")
+
     existing_top = meta.get("config_fingerprint")
     existing_nested = (
         meta.get("training_contract", {})
@@ -220,23 +242,6 @@ def main() -> int:
             "Top-level fingerprint already stamped; "
             "nested training_contract.config_contract still missing — backfilling."
         )
-
-    reasons = _check_compatibility(
-        meta,
-        live_fields,
-        expected_label_col=args.expected_label_col,
-        expected_feature_count=args.expected_feature_count,
-    )
-    if reasons:
-        print("Compatibility check FAILED:")
-        for r in reasons:
-            print(f"  - {r}")
-        if not args.force:
-            print("Refusing to stamp. Pass --force to override (NOT recommended).", file=sys.stderr)
-            return 3
-        print("--force given; stamping anyway.")
-    else:
-        print("Compatibility check OK.")
 
     if not args.write:
         print("Dry-run: would set:")
