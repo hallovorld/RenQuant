@@ -60,6 +60,14 @@ renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export RENQUANT_REPO_ROOT="$REPO_DIR"
+if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
+    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_WF_GATE_STRICT:-0}" = "1" ]; then
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable"
+        exit 1
+    fi
+    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+fi
+export RENQUANT_STRATEGY_CONFIG="$PROD_STRATEGY_CONFIG"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
 
 run_wf_gate() {
@@ -190,7 +198,7 @@ WF_MANIFEST="artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.
 echo "--- Step 3.5: Stamp WF manifest fingerprints ($WF_MANIFEST) ---"
 if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     --manifest "$WF_MANIFEST" \
-    --fingerprint-config strategy_config.json \
+    --fingerprint-config "$PROD_STRATEGY_CONFIG" \
     --reference-artifact artifacts/prod/panel-ltr.alpha158_fund.json; then
     echo "WARN: WF manifest stamping reported an issue (recipe mismatch?); the gate's own contract check will handle it."
 fi

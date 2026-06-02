@@ -13,6 +13,11 @@ def _has_repo_root_arg(argv: list[str]) -> bool:
     return "--repo-root" in argv or any(arg.startswith("--repo-root=") for arg in argv)
 
 
+def _pinned_strategy_config(subrepo_root: Path) -> Path | None:
+    path = subrepo_root / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    return path if path.exists() else None
+
+
 def delegate_to_subrepo_module(
     module_name: str,
     argv: list[str],
@@ -28,6 +33,11 @@ def delegate_to_subrepo_module(
 
     try:
         subrepo_root = resolve_subrepo_root(repo_root)
+        strategy_config = _pinned_strategy_config(subrepo_root)
+        if strategy_config is None and os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1":
+            raise FileNotFoundError(
+                "pinned renquant-strategy-104 strategy_config.json unavailable"
+            )
         for package in reversed(packages):
             src = subrepo_root / package / "src"
             if not src.exists():
@@ -35,6 +45,9 @@ def delegate_to_subrepo_module(
             sys.path.insert(0, str(src))
 
         os.environ.setdefault("RENQUANT_REPO_ROOT", str(repo_root))
+        os.environ.setdefault("RENQUANT_SUBREPO_ROOT", str(subrepo_root))
+        if strategy_config is not None:
+            os.environ.setdefault("RENQUANT_STRATEGY_CONFIG", str(strategy_config))
         forwarded = list(argv)
         if not _has_repo_root_arg(forwarded):
             forwarded.extend(["--repo-root", str(repo_root)])
@@ -56,4 +69,3 @@ def delegate_to_subrepo_module(
             file=sys.stderr,
         )
         return None
-
