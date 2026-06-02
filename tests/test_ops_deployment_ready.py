@@ -64,7 +64,9 @@ def _write_pinned_runtime(tmp_path: Path, *, commit: str = "a" * 40) -> Path:
     env_dir = tmp_path / ".subrepo_assembly"
     env_dir.mkdir()
     (env_dir / "current.env").write_text(
-        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
+        f"export RENQUANT_SUBREPO_ROOT={runtime}\n"
+        "export RENQUANT_STRICT_SUBREPO_PATHS=1\n"
+        "export RENQUANT_OPS_FAIL_CLOSED=1\n",
         encoding="utf-8",
     )
     return runtime
@@ -124,8 +126,57 @@ def test_readiness_passes_with_runtime_root_and_green_checks(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert result["details"]["subrepo_root"] == str(runtime)
+    assert result["details"]["strict_subrepo_paths"] == "1"
+    assert result["details"]["ops_fail_closed"] == "1"
     assert result["details"]["runtime_pins_ok"] is True
     assert result["runtime_pins"]["entries"][0]["name"] == "renquant-common"
+
+
+def test_readiness_blocks_runtime_root_without_strict_env(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    _patch_green_dependencies(monkeypatch, module)
+    runtime = _write_pinned_runtime(tmp_path)
+    env_path = tmp_path / ".subrepo_assembly" / "current.env"
+    env_path.write_text(
+        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
+        encoding="utf-8",
+    )
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+    )
+
+    assert result["ok"] is False
+    assert any(issue["check"] == "runtime_strict_env" for issue in result["issues"])
+
+
+def test_readiness_warns_runtime_root_without_global_fail_closed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _patch_green_dependencies(monkeypatch, module)
+    runtime = _write_pinned_runtime(tmp_path)
+    env_path = tmp_path / ".subrepo_assembly" / "current.env"
+    env_path.write_text(
+        f"export RENQUANT_SUBREPO_ROOT={runtime}\n"
+        "export RENQUANT_STRICT_SUBREPO_PATHS=1\n",
+        encoding="utf-8",
+    )
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+    )
+
+    assert result["ok"] is True
+    assert any(
+        issue["severity"] == "warning" and issue["check"] == "runtime_fail_closed_env"
+        for issue in result["issues"]
+    )
 
 
 def test_readiness_can_skip_launchagents_for_preinstall(monkeypatch, tmp_path: Path) -> None:

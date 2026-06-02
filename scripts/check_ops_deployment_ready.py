@@ -210,6 +210,8 @@ def run_readiness(
     runtime_pins: dict[str, Any] = {"ok": None, "entries": [], "failures": []}
     details["subrepo_env"] = str(env_path)
     details["subrepo_root"] = exports.get("RENQUANT_SUBREPO_ROOT")
+    details["strict_subrepo_paths"] = exports.get("RENQUANT_STRICT_SUBREPO_PATHS")
+    details["ops_fail_closed"] = exports.get("RENQUANT_OPS_FAIL_CLOSED")
     if not exports.get("RENQUANT_SUBREPO_ROOT"):
         issues.append(
             Issue(
@@ -228,6 +230,22 @@ def run_readiness(
         details["runtime_pins_ok"] = bool(runtime_pins.get("ok"))
         if not runtime_pins.get("ok"):
             issues.append(Issue("error", "runtime_pins", json.dumps(runtime_pins.get("failures", []))))
+    if exports.get("RENQUANT_SUBREPO_ROOT") and exports.get("RENQUANT_STRICT_SUBREPO_PATHS") != "1":
+        issues.append(
+            Issue(
+                "error",
+                "runtime_strict_env",
+                "missing RENQUANT_STRICT_SUBREPO_PATHS=1 in .subrepo_assembly/current.env; rerun make subrepo-runtime-root",
+            )
+        )
+    if exports.get("RENQUANT_SUBREPO_ROOT") and exports.get("RENQUANT_OPS_FAIL_CLOSED") != "1":
+        issues.append(
+            Issue(
+                "warning",
+                "runtime_fail_closed_env",
+                "missing RENQUANT_OPS_FAIL_CLOSED=1 in .subrepo_assembly/current.env; rerun make subrepo-runtime-root after fail-closed rollout",
+            )
+        )
     if "runtime_pins_ok" not in details:
         details["runtime_pins_ok"] = None
 
