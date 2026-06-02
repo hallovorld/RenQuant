@@ -33,8 +33,17 @@ with the .pt checkpoint's). We also write the top-level keys for any
 downstream that uses `_load_contract_sidecar()` directly.
 
 Refuses to stamp when the artifact's training contract is incompatible with
-the live config (different lookahead_days, label_col, feature_count). This
-prevents silently masking a real config drift.
+the live config. The check is FAIL-CLOSED: any missing required field
+(`lookahead_days`, `label_col`, `feature_count` when expected is provided)
+is an error, not a silent pass. The label check requires an exact match —
+same-horizon-but-different-semantic labels (e.g. `fwd_60d_excess` vs
+`fwd_60d_raw`) are rejected. This prevents silently masking a real config
+drift.
+
+`--expected-label-col` defaults to `fwd_{live_lookahead_days}d_excess` (the
+canonical renquant_104 label). Override for non-standard targets.
+`--expected-feature-count` is operator-provided; if set, the artifact's
+`feature_count` must match exactly.
 
 Defaults to a dry-run; pass `--write` to actually mutate the sidecar.
 
@@ -45,8 +54,9 @@ Usage
       --artifact-meta artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json \\
       --strategy-config backtesting/renquant_104/strategy_config.shadow.json
 
-  # Apply the stamp
-  scripts/stamp_patchtst_fingerprint.py ... --write
+  # Stamp + assert exact feature surface (recommended for production)
+  scripts/stamp_patchtst_fingerprint.py ... --write \\
+      --expected-feature-count 172
 """
 from __future__ import annotations
 
@@ -75,31 +85,83 @@ def _save_json(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
-def _check_compatibility(artifact_meta: dict, live_fields: dict) -> list[str]:
+def _check_compatibility(
+    artifact_meta: dict,
+    live_fields: dict,
+    *,
+    expected_label_col: str | None = None,
+    expected_feature_count: int | None = None,
+) -> list[str]:
     """Return list of incompatibility reasons, empty if compatible.
 
     `live_fields` is the dict produced by `_model_relevant_fields(cfg)` —
     the exact same dict that gets hashed into `config_fingerprint`. Its
     key for forward-label horizon is `lookahead_days` (NOT
     `panel_ltr_lookahead_days`); see kernel/config_consistency.py.
+
+    Fail-closed: missing required fields (lookahead_days, label_col) on
+    the artifact when live has them is treated as an incompatibility,
+    NOT a silent pass. Label match is exact (not `startswith("fwd_")`)
+    so same-horizon-but-different-semantic targets are rejected.
     """
     reasons: list[str] = []
     training = artifact_meta.get("training_contract") or {}
-    # lookahead_days — must match live label horizon
+
+    # lookahead_days — must match live label horizon. If live declares one,
+    # the artifact MUST also declare one (no silent pass on missing).
     live_lookahead = live_fields.get("lookahead_days")
     art_lookahead = artifact_meta.get("lookahead_days") or training.get("lookahead_days")
-    if live_lookahead is not None and art_lookahead is not None:
-        if int(live_lookahead) != int(art_lookahead):
+    if live_lookahead is not None:
+        if art_lookahead is None:
+            reasons.append(
+                f"lookahead_days: live={live_lookahead} artifact=<missing>; "
+                "artifact must declare lookahead_days for the gate to verify horizon"
+            )
+        elif int(live_lookahead) != int(art_lookahead):
             reasons.append(
                 f"lookahead_days: live={live_lookahead} artifact={art_lookahead}"
             )
-    # label_col — drives sign + horizon semantics
+
+    # label_col — drives sign + horizon semantics. Same horizon but different
+    # target (raw / simple / excess) is a real semantic mismatch and must be
+    # rejected — startswith("fwd_") is not strong enough.
     art_label = training.get("label_col") or artifact_meta.get("label_col")
-    # Live label_col is not part of fingerprint, but document if present.
-    # (config_consistency does not assert this; only require it doesn't
-    # contradict prior stamping evidence.)
-    if art_label and not art_label.startswith("fwd_"):
+    expected_label = expected_label_col
+    if expected_label is None and live_lookahead is not None:
+        # Canonical renquant_104 label for a given lookahead.
+        expected_label = f"fwd_{int(live_lookahead)}d_excess"
+    if expected_label is not None:
+        if art_label is None:
+            reasons.append(
+                f"label_col: expected={expected_label!r} artifact=<missing>; "
+                "artifact must declare training_contract.label_col"
+            )
+        elif art_label != expected_label:
+            reasons.append(
+                f"label_col: expected={expected_label!r} artifact={art_label!r}"
+            )
+    elif art_label and not art_label.startswith("fwd_"):
+        # No live signal and no operator override — fall back to the legacy
+        # shape check (still flag obviously-wrong labels like "regression_y").
         reasons.append(f"unexpected label_col: {art_label!r}")
+
+    # feature_count — operator-provided expected count; artifact must declare it.
+    if expected_feature_count is not None:
+        art_feature_count = (
+            artifact_meta.get("feature_count")
+            or training.get("feature_count")
+            or training.get("n_features")
+            or artifact_meta.get("n_features")
+        )
+        if art_feature_count is None:
+            reasons.append(
+                f"feature_count: expected={expected_feature_count} artifact=<missing>; "
+                "artifact must declare feature_count for the gate to verify feature surface"
+            )
+        elif int(art_feature_count) != int(expected_feature_count):
+            reasons.append(
+                f"feature_count: expected={expected_feature_count} artifact={art_feature_count}"
+            )
     return reasons
 
 
@@ -113,6 +175,14 @@ def main() -> int:
                     help="Actually mutate the sidecar (default: dry-run).")
     ap.add_argument("--force", action="store_true",
                     help="Stamp even if compatibility check returns reasons.")
+    ap.add_argument("--expected-label-col", default=None,
+                    help="Exact label_col the artifact must carry. Defaults to "
+                         "fwd_{live_lookahead_days}d_excess.")
+    ap.add_argument("--expected-feature-count", type=int, default=None,
+                    help="If set, artifact feature_count must equal this. "
+                         "Recommended for production stamping to guard the "
+                         "feature surface (the in-script default does not "
+                         "compare against a live source).")
     args = ap.parse_args()
 
     if not args.artifact_meta.exists():
@@ -151,7 +221,12 @@ def main() -> int:
             "nested training_contract.config_contract still missing — backfilling."
         )
 
-    reasons = _check_compatibility(meta, live_fields)
+    reasons = _check_compatibility(
+        meta,
+        live_fields,
+        expected_label_col=args.expected_label_col,
+        expected_feature_count=args.expected_feature_count,
+    )
     if reasons:
         print("Compatibility check FAILED:")
         for r in reasons:
