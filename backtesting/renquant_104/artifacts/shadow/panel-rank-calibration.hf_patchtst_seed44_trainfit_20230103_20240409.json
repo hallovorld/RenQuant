@@ -1,7 +1,7 @@
 {
   "version": 1,
   "kind": "global_panel_calibration",
-  "trained_date": "2026-05-22",
+  "trained_date": "2026-06-01",
   "probability": {
     "x": [
       -0.35013440251350403,
@@ -434,7 +434,8 @@
     "n_unique_er_y": 100,
     "expected_return_flat_fraction": 0.0,
     "scorer_artifact": "/Users/renhao/git/github/RenQuant/artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
-    "scorer_artifact_fingerprint": "sha256:d873e13540547b72b6eedf8989105b483e2aa21440b8e5ca19d104f8657f7ee7",
+    "scorer_artifact_fingerprint": "sha256:07046963994dbb8da29bfc66f99d21399e39d6d2dbd842c180299bce67c07571",
+    "scorer_model_content_fingerprint": "sha256:07046963994dbb8da29bfc66f99d21399e39d6d2dbd842c180299bce67c07571",
     "scorer_val_ic": 0.030657318920158994,
     "scorer_oos_mean_ic": 0.12655561778371754,
     "scorer_oos_mean_ic_vs_er_label": 0.12655561778371754,
@@ -448,10 +449,6 @@
     "lookahead_days_used": 60,
     "data_window_start": "2023-01-03",
     "data_window_end": "2024-04-09",
-    "expected_return_longest_flat_span": 0.0,
-    "scorer_model_content_fingerprint": "sha256:d873e13540547b72b6eedf8989105b483e2aa21440b8e5ca19d104f8657f7ee7",
-    "_binding_fix_2026-05-30_shadow": "Shadow leg discovered same fingerprint mismatch class as prod (3rd occurrence today). Same workaround: rebind to current scorer bytes. Architectural followup: change binding to model bytes (booster_raw_json or .pt checkpoint hash) not artifact metadata bytes.",
-    "model_content_fingerprint": "sha256:d873e13540547b72b6eedf8989105b483e2aa21440b8e5ca19d104f8657f7ee7",
-    "_binding_fix_2026-05-30_model_content": "Bug D fix: stamped model_content_fingerprint (stable across metadata edits) so future stamps do NOT invalidate binding. Validator prefers this over artifact_fingerprint."
+    "expected_return_longest_flat_span": 0.0
   }
 }
