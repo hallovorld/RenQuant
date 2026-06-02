@@ -54,3 +54,5 @@ def test_weekly_still_calls_wrapper_with_explicit_staging_paths() -> None:
     assert "renquant_backtesting.forensics.model_acceptance" in weekly
     assert '--xgb-artifact-out "$STAGING_ART"' in weekly
     assert '--calibrator-out "$STAGING_CAL"' in weekly
+    assert "--no-drop-sentiment" in weekly
+    assert '--reference-artifact "$STAGING_ART"' in weekly

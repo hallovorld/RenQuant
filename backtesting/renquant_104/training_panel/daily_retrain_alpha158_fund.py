@@ -359,6 +359,12 @@ def main() -> None:
         help="Do not truncate alpha158 rows beyond SEC fundamentals coverage. "
              "Mostly useful for validating the guard itself.",
     )
+    parser.add_argument(
+        "--no-drop-sentiment",
+        action="store_true",
+        help="Compatibility with the multirepo orchestrator. The umbrella "
+             "trainer already keeps sentiment features by default.",
+    )
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,

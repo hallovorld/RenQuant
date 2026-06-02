@@ -1,6 +1,6 @@
 {
-  "_schema_note": "Minimal base config for run_wf_gate --derive-config-from-prod. Wrapper expects walkforward.manifest_path; all other semantics derived from strategy_config.json (prod). Points at walkforward_manifest.json (5/10) which references the 39 intact per-cut artifacts in walkforward_retrains/ (recipe-match verified: 169 features, panel_ltr_xgboost, both null recipe_fingerprint).",
+  "_schema_note": "Minimal base config for run_wf_gate --derive-config-from-prod. Wrapper expects walkforward.manifest_path; all other semantics derived from strategy_config.json (prod). Points at the 2026-06-02 v2 manifest whose 39 scorer/calibrator pairs exist and match the weekly no-drop-sentiment staging recipe.",
   "walkforward": {
-    "manifest_path": "artifacts/sim/walkforward_manifest.json"
+    "manifest_path": "artifacts/sim/walkforward_manifest_v2_20260602.json"
   }
 }
