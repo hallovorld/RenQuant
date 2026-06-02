@@ -1,15 +1,15 @@
-# RenQuant Multirepo Leakage Defense — Architecture (v10)
+# RenQuant Multirepo Leakage Defense — Architecture (v11)
 
 **Status**: Design under review (RenQuant PR #43; supersedes #38 which merged at v8)
 **Authors**: Claude
-**Reviewers**: Codex (8 review rounds). v9 found 3 HIGH + 2 MED + 1 LOW:
-  - inference-time label binding impossibility → v10 splits into `TargetSpec` (pre-outcome) vs `label_bytes_hash` (training-only)
-  - `ScorerArtifact.load()` TOCTOU → v10 returns `VerifiedArtifact` with the verified bytes
-  - G0 absent from MVP → v10 adds MVP PR ⑥ in `renquant-base-data` for the writer-time gate
-  - Policy versioning needs registry → v10 adds `TriadPolicyV1` / `TriadPolicyV2` + `parse_policy` dispatcher
-  - `feature_schema_hash` underspecified → v10 adds `FeatureSchemaManifest` Pydantic + golden vector
-  - Stale metadata refs → v10 updates PR # + falsifier count
-**Supersedes**: v1-v9 (commit history is the audit trail)
+**Reviewers**: Codex (9 review rounds). v10 found 2 HIGH + 3 MED + 1 LOW; v11 addresses all six in the canonical sections:
+  - **split-brain doc** — §2 / §4 invariants / §5 reader notice all rewritten to the v10 contract (binding split, VerifiedArtifact, registry-dispatched policies, versioned TargetSpec, FeatureSchemaManifest closed-keys, memory-safe handle). §10A is the implementation reference; §5 retains v9 code as redirect-marked history.
+  - **G0 validator bypasses** — `FeatureSchemaManifest.closed_keys_and_sorted` model_validator: closed-key equality across feature_cols ↔ feature_dtypes ↔ feature_lookahead_days; uniqueness + sorted enforced; `Field(ge=0, le=0)` rejects negative AND positive lookahead; `assert_disjoint_from_labels(label_cols)`. MVP G0 row corrected (`labels.label_cols`, not `labels.feature_cols`).
+  - **TOCTOU memory hazard** — `load_artifact()` spills above `in_memory_threshold_bytes` (256 MiB) into a content-addressed spooled tempfile (`0o600`); `VerifiedArtifact` carries either `_model_bytes` or `_spooled_path`. Consumer reads via `open_bytes()` / `spooled_path()`. New I17.
+  - **TargetSpec under-specified** — replaced with `TargetSpecManifestV1` (versioned + `target_transform_code_version` + `embargo_policy_id` + ID-based benchmark/calendar/universe); `parse_target_spec` dispatcher; golden vector test. New I15.
+  - **Falsifier coverage** — §9 grew 14 → **20** falsifiers (added: G3 callable without realized labels, TOCTOU reopen prevention, G0 missing-metadata, policy v1 dispatch, target-spec versioning, memory-safe spill RSS).
+  - **Stale MVP repo names** — `renquant-model-patchtst` / `renquant-model-gbdt` standalone repos replaced with the merged `renquant-model` (subdirs `src/renquant_model_patchtst/` and `src/renquant_model_gbdt/`).
+**Supersedes**: v1-v10 (commit history is the audit trail)
 **Companion**: `doc/research/2026-06-01-leakage-reflection.md`
 
 ---
@@ -34,9 +34,9 @@ Design ships when **every one is mechanically true**:
 10. Reducer policy used at validation time is the policy whose `sha256(canonical)` = `binding.triad_config_hash`. Mismatch ⇒ reject.
 11. Consumer with `minimum_acceptable_policy` stricter than artifact's policy rejects the artifact, regardless of `triad_status`. Direction-correct per-field: larger `p_threshold` ⇒ stricter, larger `min_n` ⇒ stricter, smaller `max_placebo_real_ratio` ⇒ stricter, smaller `aa_drift_max` ⇒ stricter, larger `bootstrap_n_iters` ⇒ stricter.
 12. E2E nightly runs 3 fixtures (good/leak/noise) × synthetic Tier-2 under 5 min wall clock.
-13. **Runtime binding** (v9 NEW): `assert_artifact_validated()` takes a `RuntimeDataBinding(feature_schema_hash, label_hash)` from the call site; rejects if not equal to artifact's `binding.feature_schema_hash` and `binding.label_hash`. A passed model inserted into a manifest using different features is rejected at the gate.
-14. **Bypass environment scope** (v9 NEW): `allowed_environments: list[Env]` is part of the signed payload; staging bypass cannot authorize prod.
-15. **Artifact store abstraction** (v9 NEW): `ScorerArtifact.load(sidecar_path, store=ArtifactStore)` resolves `model_uri` through a store (local FS, S3 with versionId, etc.) and uses the store's authoritative content hash. The model URI is NOT silently derived from sidecar filename.
+13. **Runtime binding (v10)**: `assert_artifact_validated()` takes a runtime binding from the call site, split by call context — `RuntimeBindingInference(feature_schema_hash, target_spec_hash)` for G3/G5 (pre-outcome — no realized labels), `RuntimeBindingTraining(feature_schema_hash, target_spec_hash, label_bytes_hash)` for G4. Gate dispatches on input type and rejects if any field ≠ artifact `binding.<field>`. A passed model inserted into a manifest using different features or different target definition is rejected.
+14. **Bypass environment scope** (v9): `allowed_environments: list[Env]` is part of the signed payload; staging bypass cannot authorize prod.
+15. **Artifact store + verified bytes (v10)**: `load_artifact(sidecar_path, store=ArtifactStore) -> VerifiedArtifact`. The verified bytes are hashed-while-streaming and returned ON the handle. Consumer (`PanelScorer.load()` / `torch.load`) MUST use `verified.open_bytes()` or `verified.spooled_path()` — never re-open `model_uri`. Eliminates the v9 TOCTOU between hash check and file load.
 
 **Any false ⇒ design failed ⇒ revert.**
 
@@ -50,8 +50,8 @@ E (this design): multi-gate + policy-bound derived status + Ed25519-signed scope
 - **I1 (Artifact contract)**: `ScorerArtifact` carries `TriadReport` with `triad_status` deterministically derived from `policy + scorer_sanity + trainer_placebo`.
 - **I2 (Terminal failure)**: passed/failed terminal at BOTH Pydantic (reducer) AND CAS layer (`_VALID_TRANSITIONS`).
 - **I3 (Gate symmetry)**: G3/G4/G5 share one helper.
-- **I4 (Artifact-byte integrity)**: `ScorerArtifact.load(path)` recomputes `sha256(model.pt bytes)`, rejects on mismatch with `binding.model_sha`. Sidecars cannot vouch for arbitrary bytes.
-- **I5 (Policy-hash binding)**: `binding.triad_config_hash = sha256(canonical(TriadPolicy))`. Reducer takes policy explicitly. Consumer rejects artifacts whose policy hash isn't in `consumer.acceptable_policy_hashes` OR whose policy is `weaker_than(minimum_acceptable_policy)`.
+- **I4 (Artifact-byte integrity, v10)**: `load_artifact(sidecar_path, store) -> VerifiedArtifact` hashes the bytes streamed from `model_uri` once and returns a handle holding either the verified bytes (small artifacts) or a verified spooled temp-file path / mmap (large artifacts >1 GB). Consumer constructs the scorer via `verified.open_bytes()` / `verified.spooled_path()` — **never** re-opens `model_uri` itself. Sidecar TOCTOU is eliminated.
+- **I5 (Policy-hash binding, v10)**: `binding.triad_config_hash = canonical_sha256(parse_policy(payload))`. The reducer takes a versioned policy explicitly via `parse_policy(payload) -> TriadPolicyV{N}`; consumers reject artifacts whose `policy_schema_version` isn't in their registry, AND whose policy is `weaker_than(minimum_acceptable_policy)`. Old artifacts continue to parse against the version they were stamped with; future schema bumps cannot silently rehash old payloads.
 - **I6 (Asymmetric signed bypass)**: `TriadBypassEntry.signature` is Ed25519 over the canonical bytes. Verify keys live in repo at `keys/architect_pubkeys.json`; signing key lives offline. Compromise of a verifier cannot mint bypasses. `key_id` field supports rotation.
 - **I7 (Per-gate bypass scope)**: bypass `allowed_gates` is part of signed payload; gate refuses if `caller` not in that set. A backfill bypass cannot authorize a live order.
 - **I8 (Canonical serialization)**: signing and verification both use `canonical_payload()` defined once. UTC datetimes serialized as `YYYY-MM-DDTHH:MM:SS.ffffffZ`. No `default=str`. Golden vector test pinned in repo.
@@ -61,8 +61,34 @@ E (this design): multi-gate + policy-bound derived status + Ed25519-signed scope
 - **I12 (Finite floats + non-empty regime maps)**: `FiniteFloat`, `PValue`, `regime_keys_consistent`.
 - **I13 (Disable detection)**: CI AST scan + regex on `leakage_guards/`.
 - **I14 (Migration breaking)**: declared MAJOR semver; 4-stage S0-S3.
+- **I15 (Versioned TargetSpec, v10)**: `target_spec_hash = canonical_sha256(TargetSpecManifest)` where `TargetSpecManifest` carries `target_spec_schema_version`, `label_col`, `lookahead_days`, `return_type`, `benchmark_id`, `calendar_id`, `universe_filter_id`, `target_transform_code_version`, `embargo_policy_id`, `manifest_id`. Golden vector test pinned. Same six surface-level fields under a different target-transform-code-version produce a different hash; consumers reject unknown `target_spec_schema_version`.
+- **I16 (FeatureSchemaManifest closed-keys, v10)**: `feature_schema_hash = canonical_sha256(FeatureSchemaManifest)`. Validator enforces (a) `set(feature_cols) == set(feature_dtypes.keys()) == set(feature_lookahead_days.keys())` — closed-key equality, (b) `feature_cols` has no duplicates AND is sorted (canonical form), (c) every `feature_lookahead_days[c]` is exactly `0` (positive AND negative both rejected), (d) no overlap with declared `LabelManifest.label_cols`. Same columns produced by a different `feature_transform_code_version` hash differently.
+- **I17 (Memory-safe verified handle, v10)**: `load_artifact()` materializes verified bytes via a strategy chosen by `max_in_memory_bytes` config: ≤ threshold uses in-memory `BytesIO`; > threshold uses a spooled tempfile (`tempfile.NamedTemporaryFile(delete=False)`) with `os.chmod(0o600)` and the SHA verified before rename into a content-addressed cache dir. Consumer reads via `verified.spooled_path()` instead of `open_bytes()`. No path that the scorer touches is ever the user-supplied `model_uri`.
 
 ## 5 · Contract code
+
+> **🛑 v10 reader notice — read §5 with §10A applied**
+>
+> The code blocks in §5.1 / §5.2 / §5.3 below are **v9 history snapshots
+> kept for diff continuity**. v10 supersedes them with the contract in
+> §10A:
+>
+> - §5.1 single-class `TriadPolicy` → §10A.3 `TriadPolicyV1 | TriadPolicyV2`
+>   + `parse_policy(payload)` dispatcher. Use the versioned form.
+> - §5.2 `RuntimeDataBinding(feature_schema_hash, label_hash)` →
+>   §10A.1 `RuntimeBindingInference` + `RuntimeBindingTraining`. G3/G5
+>   take the inference form; G4 takes the training form.
+> - §5.2 `ScorerArtifact.load()` returning metadata-only →
+>   §10A.2 `load_artifact() -> VerifiedArtifact` returning hashed bytes
+>   (or a spooled-tempfile path for large artifacts).
+> - §5.3 `FeatureManifest` / `feature_schema_hash` plain string →
+>   §10A.4 `FeatureSchemaManifest` with closed-key validation + golden
+>   vector test.
+>
+> Implementation owners: copy contracts from §10A, not the historical
+> blocks below. The next doc rev (v11+) will collapse §5 + §10A into a
+> single canonical §5 once the v10 contract has been independently
+> reviewed in code form.
 
 ### 5.1 `TriadPolicy` — frozen, hash-bound to artifact, version-stamped
 
@@ -862,6 +888,14 @@ Falsifiers from v7 carry forward (1-8). New v8 falsifiers:
 13. Signing or verification function reads `triad_bypass_entry` and produces different canonical bytes than the golden-vector test.
 14. Consumer with `minimum_acceptable_policy` stricter accepted artifact whose policy is weaker on any axis.
 
+v10 falsifiers (codex v10 #5 — was missing explicit regression coverage):
+15. **G3 callability** — `assert_artifact_validated(..., runtime_binding=RuntimeBindingInference(...))` is callable at PanelScorer.load time without ANY realized label hash; the gate accepts/rejects based ONLY on `feature_schema_hash` + `target_spec_hash`. (Pinned by `tests/test_runtime_binding_inference_callable.py`.)
+16. **TOCTOU reopen prevented** — any code path that opens `artifact.model_uri` after `load_artifact()` returns must be caught by a CI grep + AST scan; the only access patterns are `verified.open_bytes()` and `verified.spooled_path()`. (Pinned by `tests/test_no_artifact_uri_reopen.py` + `.github/workflows/gate-disable-detection.yml` extension.)
+17. **G0 missing-metadata rejected** — `FeatureSchemaManifest` rejects missing/extra entries in `feature_dtypes` or `feature_lookahead_days`; rejects duplicates in `feature_cols`; rejects negative lookahead. (Pinned by `tests/test_dataset_manifest_g0.py` — 7 cases.)
+18. **Policy v1 payloads parse v1 only** — a `policy_schema_version=1` payload deserialized via `parse_policy()` MUST instantiate `TriadPolicyV1`; trying to validate it as `TriadPolicyV2` raises. Old artifacts never silently rehash. (Pinned by `tests/test_policy_registry_dispatch.py`.)
+19. **TargetSpec versioning binds transform code** — `TargetSpecManifestV1` with the same six surface fields but different `target_transform_code_version` produces a different `target_spec_hash`; consumer rejects mismatch. (Pinned by `tests/test_target_spec_versioning.py`.)
+20. **Memory-safe spill** — a 1-GB synthetic artifact loaded via `load_artifact()` with default `in_memory_threshold_bytes=256 MiB` materializes via spooled tempfile path; the process peak RSS during load stays below `2× threshold`. (Pinned by `tests/test_load_artifact_memory_budget.py`.)
+
 ## 10 · Threat model
 
 12 leak classes (L1-L12) carried forward. v8 adds attack-surface table:
@@ -892,22 +926,67 @@ either un-callable or implementers stub the hash, defeating the binding.
 ```python
 # renquant-common/src/renquant_common/contracts/runtime_binding.py (v10)
 
-class TargetSpec(pydantic.BaseModel):
-    """The DEFINITION of the prediction target. Always knowable, even
-    pre-outcome. Hashing this gives a stable identity for G3/G5.
+class TargetSpecManifestV1(pydantic.BaseModel):
+    """V10-hardened (codex v10 #4): target spec is a versioned Pydantic
+    manifest, NOT a bare model_dump. Same-surface fields under a different
+    target_transform_code_version OR embargo_policy hash differently.
+
+    Includes everything that affects label semantics:
+      - target_spec_schema_version: opens room for V2 (e.g., when we add
+        macro-stratification or sector-relative excess returns)
+      - target_transform_code_version: bump when label-construction code
+        changes even if the field set stays the same
+      - embargo_policy_id: bump when the embargo days OR rule changes
+      - benchmark_id / calendar_id / universe_filter_id: opaque IDs
+        bound to specific data manifests (NOT raw strings)
+      - manifest_id: UUID for this concrete target build
     """
     model_config = pydantic.ConfigDict(frozen=True)
-    label_col: str                              # "fwd_60d_excess"
-    lookahead_days: Annotated[int, Field(gt=0)] # 60
+    target_spec_schema_version: Literal[1] = 1
+    label_col: str
+    lookahead_days: Annotated[int, Field(gt=0)]
     return_type: Literal["excess", "log", "simple", "rank", "raw"]
-    benchmark: str                              # "SPY" or "mkt_cap_weighted"
-    calendar_name: str                          # "NYSE"
-    universe_filter: str                        # "alpha158_5b_active"
+    benchmark_id: str                    # opaque ID resolved via target_manifest.json
+    calendar_id: str
+    universe_filter_id: str
+    target_transform_code_version: Annotated[int, Field(gt=0)]
+    embargo_policy_id: str
+    manifest_id: str
 
     def target_spec_hash(self) -> str:
-        import hashlib, json
-        payload = json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode()).hexdigest()
+        import hashlib
+        canonical = canonical_payload_target_manifest(self.model_dump())  # same canonical_payload pattern
+        return hashlib.sha256(canonical).hexdigest()
+
+
+class TargetSpecManifestV2(pydantic.BaseModel):
+    """Placeholder for next schema. Add fields explicitly; don't default-rehash V1."""
+    model_config = pydantic.ConfigDict(frozen=True)
+    target_spec_schema_version: Literal[2] = 2
+    # ... V1 fields + new fields ...
+    def target_spec_hash(self) -> str: ...
+
+
+TargetSpecManifest = TargetSpecManifestV1 | TargetSpecManifestV2
+
+
+def parse_target_spec(payload: dict) -> TargetSpecManifest:
+    """Dispatch by target_spec_schema_version. Unknown → UnknownTargetSpecVersion.
+
+    Same contract as parse_policy (§10A.3): old artifacts continue to
+    parse against their stamped version even after V2 ships. Golden vector
+    test in tests/test_target_spec_canonical.py pins the V1 canonical bytes.
+    """
+    version = payload.get("target_spec_schema_version", 1)
+    if version == 1:
+        return TargetSpecManifestV1.model_validate(payload)
+    if version == 2:
+        return TargetSpecManifestV2.model_validate(payload)
+    raise UnknownTargetSpecVersion(version)
+
+
+# Legacy export alias for back-compat (will be removed once §5 v9 blocks deleted):
+TargetSpec = TargetSpecManifestV1
 
 
 class RuntimeBindingInference(pydantic.BaseModel):
@@ -981,32 +1060,142 @@ class VerifiedArtifact:
 _VERIFICATION_TOKEN = object()    # module-private
 
 
-def load_artifact(sidecar_path, *, store=None, max_bytes=4*1024**3) -> VerifiedArtifact:
-    """SINGLE entry point. Streams URI once, hashes-while-streaming,
-    returns the bytes if the hash matches. No second open."""
+def load_artifact(
+    sidecar_path: Path,
+    *,
+    store: ArtifactStore | None = None,
+    max_bytes: int = 16 * 1024**3,                  # 16 GiB hard cap
+    in_memory_threshold_bytes: int = 256 * 1024**2, # ≤ 256 MiB → in-memory bytes; > → spooled tempfile
+    cache_dir: Path | None = None,                  # content-addressed cache (default: ~/.renquant/artifact_cache)
+) -> VerifiedArtifact:
+    """SINGLE entry point. v10 (codex v10 #3): streams URI once, hashes-while-
+    streaming, but ALSO chooses a memory-safe materialization strategy:
+
+      - ≤ in_memory_threshold_bytes (default 256 MiB): bytes kept in-memory;
+        `verified.open_bytes() -> BytesIO`. No file I/O after first stream.
+      - > in_memory_threshold_bytes: streamed into a content-addressed
+        spooled tempfile in `cache_dir`. The temp file's sha256 is verified
+        BEFORE `os.rename` into final cache path. Consumer reads via
+        `verified.spooled_path()` — a fresh path NOT equal to model_uri,
+        so a subsequent `torch.load(path)` only reads the verified bytes.
+
+    Both strategies guarantee the consumer never re-opens `model_uri` after
+    verification. Eliminates TOCTOU (codex v9 #2) without doubling RAM on
+    multi-GB artifacts (codex v10 #3).
+    """
     store = store or make_default_store()
+    cache_dir = cache_dir or (Path.home() / ".renquant" / "artifact_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
     artifact = ScorerArtifact.model_validate_json(sidecar_path.read_text())
     if not store.supports(artifact.model_uri):
-        raise UnsupportedArtifactScheme(...)
-    h = hashlib.sha256(); chunks = []; total = 0
-    for chunk in store.stream_bytes(artifact.model_uri):
-        total += len(chunk)
-        if total > max_bytes:
-            raise ArtifactTooLarge(...)
-        h.update(chunk); chunks.append(chunk)
-    if h.hexdigest() != artifact.triad_report.binding.model_sha:
-        raise ArtifactBytesMismatch(...)
-    return VerifiedArtifact(_artifact=artifact,
-                            _model_bytes=b"".join(chunks),
-                            _token=_VERIFICATION_TOKEN)
+        raise UnsupportedArtifactScheme(artifact.model_uri)
+
+    expected_sha = artifact.triad_report.binding.model_sha
+    h = hashlib.sha256()
+    in_mem_buf: list[bytes] = []
+    tmp_fp = None
+    spilled = False
+    total = 0
+    try:
+        for chunk in store.stream_bytes(artifact.model_uri):
+            total += len(chunk)
+            if total > max_bytes:
+                raise ArtifactTooLarge(f"{artifact.model_uri} > {max_bytes:,} bytes")
+            h.update(chunk)
+            if not spilled and total <= in_memory_threshold_bytes:
+                in_mem_buf.append(chunk)
+            else:
+                if not spilled:
+                    # Spill what we have so far
+                    tmp_fp = tempfile.NamedTemporaryFile(
+                        dir=cache_dir, prefix=".verify-", suffix=".tmp",
+                        delete=False, mode="wb",
+                    )
+                    os.chmod(tmp_fp.name, 0o600)
+                    for prior in in_mem_buf:
+                        tmp_fp.write(prior)
+                    in_mem_buf.clear()
+                    spilled = True
+                tmp_fp.write(chunk)
+        actual_sha = h.hexdigest()
+        if actual_sha != expected_sha:
+            raise ArtifactBytesMismatch(
+                f"expected {expected_sha}, got {actual_sha} for {artifact.model_uri}"
+            )
+        if spilled:
+            tmp_fp.flush()
+            os.fsync(tmp_fp.fileno())
+            tmp_fp.close()
+            final_path = cache_dir / f"sha256-{actual_sha}.bin"
+            if not final_path.exists():
+                os.rename(tmp_fp.name, final_path)
+            else:
+                Path(tmp_fp.name).unlink()        # already cached
+            return VerifiedArtifact(
+                _artifact=artifact,
+                _model_bytes=None,
+                _spooled_path=final_path,
+                _token=_VERIFICATION_TOKEN,
+            )
+        return VerifiedArtifact(
+            _artifact=artifact,
+            _model_bytes=b"".join(in_mem_buf),
+            _spooled_path=None,
+            _token=_VERIFICATION_TOKEN,
+        )
+    except Exception:
+        if tmp_fp is not None:
+            tmp_fp.close()
+            try:
+                Path(tmp_fp.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+        raise
+
+
+class VerifiedArtifact:
+    """Holds EITHER the verified bytes (small artifacts) OR a path to a
+    content-addressed verified spooled file (large artifacts). Consumers
+    MUST use one of the accessors — never re-open `artifact.model_uri`.
+
+    `_token` enforces no synthesis from outside (codex v9 #2 carried).
+    """
+    __slots__ = ("_artifact", "_model_bytes", "_spooled_path")
+
+    def __init__(self, *, _artifact, _model_bytes, _spooled_path, _token):
+        if _token is not _VERIFICATION_TOKEN:
+            raise RuntimeError("Use load_artifact() — private token required.")
+        if (_model_bytes is None) == (_spooled_path is None):
+            raise RuntimeError("exactly one of _model_bytes / _spooled_path required")
+        self._artifact = _artifact
+        self._model_bytes = _model_bytes
+        self._spooled_path = _spooled_path
+
+    @property
+    def artifact(self): return self._artifact
+
+    def open_bytes(self) -> io.BufferedReader | io.BytesIO:
+        """Return a fresh file-like over the verified content. Small
+        artifacts get an io.BytesIO; large artifacts get an open file
+        descriptor on the spooled cache path (read-only)."""
+        if self._model_bytes is not None:
+            return io.BytesIO(self._model_bytes)
+        return open(self._spooled_path, "rb")
+
+    def spooled_path(self) -> Path | None:
+        """For consumers that need a real path (e.g. mmap, torch.load with
+        explicit path arg). None for small artifacts kept in-memory."""
+        return self._spooled_path
 ```
 
 Consumer usage (PanelScorer):
 ```python
 verified = load_artifact(sidecar_path, store=...)
 assert_artifact_validated(verified.artifact, cfg=..., caller=..., runtime_binding=..., environment=...)
-# CRITICAL: use verified.open_bytes(), NOT torch.load(uri)
+# CRITICAL: use verified.open_bytes() or verified.spooled_path(), NOT torch.load(uri)
 state_dict = torch.load(verified.open_bytes(), map_location="cpu")
+# Large artifact alternative:
+#   state_dict = torch.load(verified.spooled_path(), map_location="cpu")
 ```
 
 ### 10A.3 — Versioned policy registry (codex v9 #4)
@@ -1084,24 +1273,63 @@ class FeatureSchemaManifest(pydantic.BaseModel):
     Hashing this gives feature_schema_hash. Same columns produced by
     different transform_code_version OR calendar OR universe will have
     different hashes — even if dtypes match.
+
+    v10 (codex v10 #2): validator hardened to reject ALL bypass routes:
+      - missing key in feature_dtypes OR feature_lookahead_days
+      - duplicate entries in feature_cols
+      - feature_cols not sorted (canonical form is sorted ascending)
+      - negative lookahead values (only exact 0 allowed)
+      - overlap with declared LabelManifest.label_cols (passed in at construction)
     """
     model_config = pydantic.ConfigDict(frozen=True)
 
-    feature_cols: list[str]                       # closed list, sorted
-    feature_dtypes: dict[str, str]                # name → dtype canonical str
-    feature_lookahead_days: dict[str, int]        # MUST be 0 for all (G0 invariant)
-    feature_transform_code_version: int           # bump on transformation pipeline change
+    feature_cols: list[str]                       # sorted ASCENDING + no duplicates (validator-enforced)
+    feature_dtypes: dict[str, str]                # MUST cover every feature_cols entry
+    feature_lookahead_days: dict[str, Annotated[int, Field(ge=0, le=0)]]  # exactly 0; ge=0 le=0 = {0}
+    feature_transform_code_version: Annotated[int, Field(gt=0)]
     universe_filter: str                          # "alpha158_5b_active" / "renquant_104_watchlist"
     calendar_name: str                            # "NYSE" / "trading" / "calendar"
     data_vintage_date: AwareDatetime              # when source data was snapshot
     manifest_id: str                              # opaque UUID for this build
 
     @pydantic.model_validator(mode="after")
-    def lookahead_zero_invariant(self):
-        violators = {k: v for k, v in self.feature_lookahead_days.items() if v > 0}
-        if violators:
-            raise ValueError(f"features with positive lookahead = leakage: {violators}")
+    def closed_keys_and_sorted(self) -> "FeatureSchemaManifest":
+        # 1. No duplicates in feature_cols
+        if len(self.feature_cols) != len(set(self.feature_cols)):
+            duplicates = sorted({c for c in self.feature_cols
+                                 if self.feature_cols.count(c) > 1})
+            raise ValueError(f"feature_cols contains duplicates: {duplicates}")
+        # 2. feature_cols must be sorted (canonical form for stable hashing)
+        if list(self.feature_cols) != sorted(self.feature_cols):
+            raise ValueError(f"feature_cols must be sorted ascending; got {self.feature_cols[:5]}...")
+        # 3. Closed-key equality across the three dicts
+        cols = set(self.feature_cols)
+        dtypes_keys = set(self.feature_dtypes.keys())
+        lookahead_keys = set(self.feature_lookahead_days.keys())
+        if dtypes_keys != cols:
+            extra = dtypes_keys - cols; missing = cols - dtypes_keys
+            raise ValueError(f"feature_dtypes mismatch — extra={extra}, missing={missing}")
+        if lookahead_keys != cols:
+            extra = lookahead_keys - cols; missing = cols - lookahead_keys
+            raise ValueError(f"feature_lookahead_days mismatch — extra={extra}, missing={missing}")
+        # (4. ge=0 le=0 on values already enforced by Annotated; both negative
+        #     and positive lookahead rejected at field validation time.)
         return self
+
+    def assert_disjoint_from_labels(self, label_cols: list[str]) -> None:
+        """Called at base-data write time AND at G3/G4 gate time. Refuses
+        when a feature column name matches a declared label column.
+
+        Codex v10 #2: G0 MVP row previously compared against
+        `labels.feature_cols` which was a typo — it must compare against
+        `labels.label_cols` (the declared label surface).
+        """
+        overlap = set(self.feature_cols) & set(label_cols)
+        if overlap:
+            raise ValueError(
+                f"FeatureSchemaManifest contains label columns: {sorted(overlap)}. "
+                "Labels MUST live in a separate parquet (G0 invariant)."
+            )
 
     def schema_hash(self) -> str:
         """Canonical sha256. Single function, used by sign + verify + golden vector."""
@@ -1140,21 +1368,21 @@ written" — without G0 in MVP, criterion #4 cannot be true at MVP-done.
 
 | #  | Repo | Files | Tests |
 |----|---|---|---|
-| ⑥ NEW | `renquant-base-data` | `src/renquant_base_data/builders/alpha158.py` — wire `DatasetManifest.model_validate(...)` at end of `_write_dataset()`. Refuses to write features.parquet if `set(features.columns) ∩ set(labels.feature_cols) ≠ ∅` OR if `features.feature_lookahead_days[c] > 0 for any c` OR if `embargo_days < max(labels.label_lookahead_days)`. | `tests/test_dataset_manifest_g0.py` — 4 cases: valid manifest writes; label-name overlap rejects; positive lookahead rejects; insufficient embargo rejects. |
+| ⑥ NEW | `renquant-base-data` | `src/renquant_base_data/builders/alpha158.py` — wire `DatasetManifest.model_validate(...)` at end of `_write_dataset()`. Refuses to write features.parquet if `set(features.columns) ∩ set(labels.label_cols) ≠ ∅` (v10 fix to codex v10 #2: was incorrectly `labels.feature_cols`) OR if any `features.feature_lookahead_days[c] != 0` OR if `embargo_days < max(labels.label_lookahead_days)` OR if `FeatureSchemaManifest.closed_keys_and_sorted` invariant fails. | `tests/test_dataset_manifest_g0.py` — 7 cases: valid manifest writes; label-name overlap rejects; positive lookahead rejects; negative lookahead rejects (v10 NEW); insufficient embargo rejects; duplicate feature_cols rejects (v10 NEW); missing dtypes/lookahead key rejects (v10 NEW). |
 
 This makes criterion #4 mechanically true at MVP-done.
 
 
-## 11 · Codex v9 → v10 — addressed
+## 11 · Codex v10 → v11 — addressed
 
-| # | Sev | v9 finding | v10 resolution |
+| # | Sev | v10 finding | v11 resolution |
 |---|---|---|---|
-| 1 | HIGH | G3 requires `label_hash` at inference time — labels are FUTURE returns | §10A.1 split `RuntimeDataBinding` into `RuntimeBindingInference` (pre-outcome: feature_schema + target_spec) and `RuntimeBindingTraining` (also label_bytes_hash). New `TargetSpec` Pydantic captures label DEFINITION. |
-| 2 | HIGH | `ScorerArtifact.load()` TOCTOU between hash check and `torch.load` re-opening URI | §10A.2 `load_artifact()` returns `VerifiedArtifact` containing bytes hashed-while-streaming. Consumer uses `verified.open_bytes()`, never re-opens URI. Module-private token enforces no external synthesis. |
-| 3 | HIGH | G0 absent from MVP — completion criterion #4 cannot be true at MVP-done | §10A.5 MVP grows to **6 PRs**; new ⑥ `renquant-base-data` wires `DatasetManifest.model_validate()` at writer-time. Refuses parquet on label-name overlap / positive lookahead / insufficient embargo. |
-| 4 | MED | `TriadPolicy` single class with version field — future fields silently rehash old artifacts | §10A.3 explicit `TriadPolicyV1` + `TriadPolicyV2` classes; `parse_policy(payload)` dispatcher by `policy_schema_version: Literal[N]`. Union[V1, V2] discriminated. Unknown version → `UnknownPolicyVersion`. |
-| 5 | MED | `feature_schema_hash` underspecified | §10A.4 `FeatureSchemaManifest` Pydantic with `feature_transform_code_version`, `universe_filter`, `calendar_name`, `data_vintage_date`, `manifest_id`. `lookahead_zero_invariant` model_validator. Golden vector test pinned. |
-| 6 | LOW | Stale metadata refs (PR #38, 14 falsifiers) | v10 header refs PR #43; falsifier count = 17 (already in §9); §13 MVP test column updated. |
+| 1 | HIGH | Doc split-brain: §10A added v10 contract but §2/§4/§5 still defined v9 contract; impl owners would copy v9 first | §2 criteria 13 + 15 rewritten to v10 (split binding + VerifiedArtifact); §4 I4 + I5 rewritten; §4 adds I15-I17 (versioned TargetSpec, FeatureSchemaManifest closed-keys, memory-safe handle); §5 prepended with v10-canonical reader notice pointing to §10A — old §5.1-5.3 code kept as v9 history snapshots with redirect at top. |
+| 2 | HIGH | G0 `FeatureSchemaManifest` had bypasses: missing/extra dict entries, duplicates, negative lookahead, MVP row checked wrong dict (`labels.feature_cols`) | §10A.4 `closed_keys_and_sorted` model_validator: closed-key equality across feature_cols ↔ feature_dtypes ↔ feature_lookahead_days; uniqueness + sorted enforced; field `Field(ge=0, le=0)` rejects both negative AND positive lookahead; explicit `assert_disjoint_from_labels(label_cols)` method. §10A.5 MVP row corrected to `labels.label_cols`. |
+| 3 | MED | `load_artifact()` joined all chunks → multi-GB models hold ~2× RAM | §10A.2 rewritten: `in_memory_threshold_bytes=256 MiB` default; over threshold → spooled tempfile (`mode 0o600`) rename-to-content-addressed-cache after sha verified. `VerifiedArtifact` carries EITHER `_model_bytes` OR `_spooled_path`. Consumer reads via `open_bytes()` / `spooled_path()`. New I17. |
+| 4 | MED | `TargetSpec` bare Pydantic — same 6 fields → same hash → vulnerable to transform-code drift | §10A.1 replaced with `TargetSpecManifestV1` (versioned + `target_transform_code_version` + `embargo_policy_id` + ID-based benchmark/calendar/universe). `parse_target_spec` dispatcher. Golden vector test. New I15. |
+| 5 | MED | §9 falsifier count stale + missing v9/v10 regression coverage | §9 grew 14 → **20 falsifiers**. Added: G3 callable without realized labels, TOCTOU reopen prevention, G0 missing-metadata, policy v1 payloads parse v1 only, target-spec versioning binds transform code, memory-safe spill RSS budget. Each pinned to a named pytest. |
+| 6 | LOW | MVP named deprecated `renquant-model-patchtst` / `renquant-model-gbdt` | §13 PRs ③/④ updated to `renquant-model` merged repo (`src/renquant_model_patchtst/` + `src/renquant_model_gbdt/` subdirs); deprecation note referenced. |
 
 ## 12 · Open questions
 
@@ -1169,10 +1397,10 @@ This makes criterion #4 mechanically true at MVP-done.
 |---|---|---|---|
 | ① | `renquant-common` | `contracts/triad.py` (incl. `TriadPolicy`), `contracts/scorer.py` (incl. `load()` byte-verify), `contracts/leakage_config.py` (Ed25519 + scope), `leakage_guards/*`, `keys/architect_pubkeys.json` (committed), `tools/sign_bypass.py` (offline architect-only), `tests/test_canonical_vector.py` (golden vector), `tests/test_falsification.py` (all 17 falsifiers — see §9), `tests/fixtures/triad_models.py` (3 fixtures), `.github/workflows/gate-disable-detection.yml`, `.github/CODEOWNERS` for architect-only files | unit + race + state-machine + 3-fixture + HMAC→Ed25519 round-trip + golden vector + tz-aware compare + `python -O` regression + scope-rejection + byte-mismatch reject + policy-hash mismatch reject |
 | ② | `renquant-pipeline` | `kernel/panel_pipeline/panel_scorer.py::load` route through `ScorerArtifact.load()` | gate-behavior matrix incl. scope-bypass / byte-mismatch / policy-weaker |
-| ③ | `renquant-model-patchtst` | `hf_trainer.py::_save_artifact` (Tier 1 + policy), new `post_save_hook.py` (Tier 2 enqueue) | synth Tier-1 + Tier-2 enqueue + synthetic runner E2E |
-| ④ | `renquant-model-gbdt` | mirror of ③ | mirror |
+| ③ | `renquant-model` (PatchTST surface) — codex v10 #6: target the merged repo (the old `renquant-model-patchtst` standalone is deprecated `MIGRATED_TO_renquant-model.md`) | `src/renquant_model_patchtst/hf_trainer.py::_save_artifact` (Tier 1 + policy), new `src/renquant_model_patchtst/post_save_hook.py` (Tier 2 enqueue) | synth Tier-1 + Tier-2 enqueue + synthetic runner E2E |
+| ④ | `renquant-model` (GBDT surface) | mirror of ③ via `src/renquant_model_gbdt/` | mirror |
 | ⑤ | `renquant-orchestrator` + `renquant-backtesting` (paired) | `manifest_row` + `wf_gate/runner.py` + `sim_driver.py` + `scripts/fit_walkforward_calibrators.py` | manifest gate behavior matrix incl. scope binding |
-| ⑥ v10 NEW | `renquant-base-data` | `src/renquant_base_data/builders/alpha158.py` — wire `DatasetManifest.model_validate(...)` at end of `_write_dataset()`. Refuses parquet write on label-name overlap / positive feature_lookahead_days / insufficient embargo (codex v9 #3 — G0 in MVP). | `tests/test_dataset_manifest_g0.py` — 4 cases: valid manifest writes; label-name overlap rejects; positive lookahead rejects; embargo < max(label_lookahead_days) rejects. |
+| ⑥ v10 NEW | `renquant-base-data` | `src/renquant_base_data/builders/alpha158.py` — wire `DatasetManifest.model_validate(...)` at end of `_write_dataset()`. Refuses parquet write on label-name overlap (against `labels.label_cols`, codex v10 #2 fix), positive OR negative `feature_lookahead_days`, missing/extra dtypes-or-lookahead keys, duplicate `feature_cols`, insufficient embargo (codex v9 #3 — G0 in MVP). | `tests/test_dataset_manifest_g0.py` — **7 cases** (v11): valid manifest writes; label-name overlap rejects; positive lookahead rejects; negative lookahead rejects; insufficient embargo rejects; duplicate feature_cols rejects; missing dtypes/lookahead key rejects. |
 
 Full architecture wave (split parquet, typed train sig, ban `pd.read_parquet`) deferred to weeks 2-3.
 
@@ -1197,6 +1425,18 @@ Full architecture wave (split parquet, typed train sig, ban `pd.read_parquet`) d
 | Policy registry | single class `TriadPolicy` + version field | `TriadPolicyV1` + `TriadPolicyV2` per-version classes; `parse_policy(payload)` dispatcher |
 | `feature_schema_hash` spec | 64-hex string with no scope | `FeatureSchemaManifest` Pydantic incl. `feature_transform_code_version`, `universe_filter`, `calendar_name`, `data_vintage_date`, `manifest_id`; golden vector test |
 | Doc metadata | `PR #38`, `14 falsifiers` | `PR #43`, 17 falsifiers (§9 carryover) |
+
+## 16 · v10 → v11 changelog (codex v10 resolution)
+
+| Element | v10 | v11 |
+|---|---|---|
+| §2 / §4 / §5 vs §10A | §10A added v10 contract; canonical sections still defined v9 — split-brain | §2 criteria 13 + 15 rewritten to v10 contract; §4 invariants I4 + I5 rewritten; §4 adds I15-I17 (versioned `TargetSpec`, `FeatureSchemaManifest` closed-keys, memory-safe verified handle); §5 prepended with v10 reader notice redirecting to §10A; §5.1-§5.3 retained as v9 history snapshots. |
+| `FeatureSchemaManifest` G0 validation | only checked provided `feature_lookahead_days > 0`; missing entries, duplicates, negative lookahead all passed | `closed_keys_and_sorted` model_validator enforces (a) closed-key equality across `feature_cols`/`feature_dtypes`/`feature_lookahead_days`, (b) `feature_cols` unique + sorted, (c) `Field(ge=0, le=0)` rejects positive AND negative lookahead, (d) `assert_disjoint_from_labels(label_cols)` rejects overlap. MVP G0 row corrected to `labels.label_cols`. |
+| `load_artifact()` memory profile | joined all chunks into one `bytes` + wrapped in `BytesIO` — multi-GB models hold ~2× RAM | `in_memory_threshold_bytes=256 MiB`; over threshold → spooled tempfile (`0o600`) renamed to content-addressed cache dir after SHA verified. `VerifiedArtifact` carries EITHER `_model_bytes` OR `_spooled_path`; consumer reads via `open_bytes()` (small) or `spooled_path()` (large). |
+| `TargetSpec` | bare 6 fields (label / lookahead / return type / benchmark / calendar / universe) — transform-code drift gave the same hash | `TargetSpecManifestV1` versioned + `target_transform_code_version` + `embargo_policy_id` + ID-based benchmark/calendar/universe; `parse_target_spec` dispatcher; golden vector test. |
+| §9 falsifiers | 14 (v7's 1-8 + v8's 9-14); v9/v10 regressions not pinned | **20** — added 15: G3 callable without realized labels; 16: TOCTOU reopen prevention; 17: G0 missing-metadata reject; 18: policy v1 payloads parse v1 only; 19: target-spec versioning binds transform code; 20: memory-safe spill RSS budget. Each pinned to a named pytest. |
+| MVP repo names | ③/④ named `renquant-model-patchtst` / `renquant-model-gbdt` standalone (deprecated) | ③ targets `renquant-model` via `src/renquant_model_patchtst/`; ④ via `src/renquant_model_gbdt/`. Standalone repos marked `MIGRATED_TO_renquant-model.md`. |
+| Doc metadata | `v10`, 17 falsifiers | `v11`, 20 falsifiers, header reviewer summary captures v10 → v11 deltas. |
 
 ### Previous changelogs (compressed)
 
