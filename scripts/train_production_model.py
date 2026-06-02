@@ -58,6 +58,13 @@ PARAMS = {"objective":"rank:pairwise","eta":0.05,"max_depth":5,"min_child_weight
 N_ROUNDS = 100
 LABEL = "fwd_60d_excess"
 DEFAULT_OUTPUT = REPO / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"
+# Track B BULL_CALM-regime features. When the upstream panel build runs with
+# ``--include-track-b`` the panel parquet contains these columns; this trainer
+# DROPS them by default (preserving the baseline 172-feature recipe) and opts
+# them back in via the ``--include-features`` flag (comma-list).
+TRACK_B_FEATURES: tuple[str, ...] = (
+    "mom_carry_12_1", "beta_dm", "rvar_total", "idio_vol_market",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,6 +115,18 @@ def parse_args() -> argparse.Namespace:
         help="Emergency only: skip OOS contract evaluation. Production strict "
              "contract will fail when this is used.",
     )
+    p.add_argument(
+        "--include-features", type=str, default=None,
+        help=(
+            "Comma-separated opt-in list of addendum feature names (e.g. "
+            "'mom_carry_12_1,beta_dm,rvar_total,idio_vol_market' for Track B). "
+            "Default: empty — drops every Track B column from feat_cols if "
+            "present in the panel, preserving the 172-feature baseline recipe. "
+            "Names that do NOT appear in the panel are an error (no silent "
+            "rename translation; pin the upstream renquant-base-data version "
+            "explicitly — see doc/research/2026-06-02-track-b-feature-audit.md)."
+        ),
+    )
     return p.parse_args()
 
 
@@ -153,14 +172,52 @@ def infer_label_lookahead_days(label: str) -> int:
 def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                          watchlist_file: Optional[str] = None,
                          label_override: Optional[str] = None,
-                         cutoff_embargo_days: Optional[int] = None) -> tuple[pd.DataFrame, list[str], str]:
-    """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used)."""
+                         cutoff_embargo_days: Optional[int] = None,
+                         include_features: Optional[list[str]] = None) -> tuple[pd.DataFrame, list[str], str]:
+    """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used).
+
+    ``include_features``: opt-in list for Track B addendum columns. When None
+    (default) any Track B column present in the panel is dropped, preserving
+    the 172-feature baseline recipe. When supplied, only the listed Track B
+    columns are kept (others are dropped). Has no effect on baseline alpha158
+    + fund + PEAD + SUE + sentiment columns.
+    """
     label_used = label_override or LABEL
     log.info("Loading R1K + 5-fund panel (already normalized: alpha158=zscore, fund=robust-zscore)...")
     panel = pd.read_parquet("data/alpha158_291_fundamental_dataset.parquet")
     panel["date"] = pd.to_datetime(panel["date"])
     excl = {"ticker","date","split_label","fwd_5d_excess","fwd_20d_excess","fwd_60d_excess"}
     feat_cols = [c for c in panel.columns if c not in excl]
+    # Track B opt-in filter: drop any Track B column the user did not opt in to.
+    opted_in = set(include_features or [])
+    # Fail loudly when ``--include-features`` names a column not in the panel.
+    # Catches stale names (e.g. the old ``idio_vol_3f`` after the upstream
+    # renquant-base-data #16 rename to ``idio_vol_market``) instead of
+    # silently producing a baseline-equivalent run that drops every Track B
+    # column. No silent rename translation by design — pin the upstream
+    # version explicitly. See doc/research/2026-06-02-track-b-feature-audit.md.
+    missing = sorted(opted_in - set(feat_cols))
+    if missing:
+        # Honest hint when the caller used the pre-#16 name.
+        hint = ""
+        if "idio_vol_3f" in missing and "idio_vol_market" in feat_cols:
+            hint = (" Hint: renquant-base-data #16 renamed 'idio_vol_3f' to "
+                    "'idio_vol_market' (SPY+size 2-factor residual; the prior "
+                    "'_3f' suffix was a misnomer).")
+        raise SystemExit(
+            f"--include-features names not present in panel: {missing}. "
+            f"Panel columns Track-B-relevant: "
+            f"{sorted(set(feat_cols) & set(TRACK_B_FEATURES))}.{hint}"
+        )
+    drop_track_b = [c for c in TRACK_B_FEATURES if c in feat_cols and c not in opted_in]
+    if drop_track_b:
+        feat_cols = [c for c in feat_cols if c not in drop_track_b]
+        log.info("Track B opt-in: dropped %d addendum columns (%s); kept %d features",
+                 len(drop_track_b), drop_track_b, len(feat_cols))
+    kept_track_b = [c for c in TRACK_B_FEATURES if c in feat_cols]
+    if kept_track_b:
+        log.info("Track B opt-in: training with %d addendum features active: %s",
+                 len(kept_track_b), kept_track_b)
 
     # Watchlist filter (Track 1 wl retrain)
     if watchlist_file:
@@ -716,6 +773,16 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["side_label"] = side_label
     if sentiment_contract_metadata:
         artifact.update(sentiment_contract_metadata)
+    # Track B recipe stamp: any active Track B feature in feat_cols pins the
+    # artifact so the WF gate recipe-match check distinguishes the variant
+    # from baseline. See doc/research/2026-06-02-track-b-feature-audit.md.
+    track_b_active = [c for c in TRACK_B_FEATURES if c in feat_cols]
+    if track_b_active:
+        artifact["feature_addendum_v1"] = {
+            "track_b_features_active": track_b_active,
+            "source": "renquant-base-data:track_b_features",
+            "memo": "doc/research/2026-06-02-track-b-feature-audit.md",
+        }
     return artifact
 
 
@@ -747,9 +814,14 @@ def main():
     args = parse_args()
     cutoff_date, out_path, is_walkforward = resolve_paths(args)
 
+    include_features: Optional[list[str]] = None
+    if args.include_features:
+        include_features = [
+            c.strip() for c in args.include_features.split(",") if c.strip()
+        ]
     train, feat_cols, label_used = load_and_slice_panel(
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
-        cutoff_embargo_days=args.cutoff_embargo_days,
+        cutoff_embargo_days=args.cutoff_embargo_days, include_features=include_features,
     )
     fingerprint_cfg = build_fingerprint_config(
         fingerprint_config_path=args.fingerprint_config,

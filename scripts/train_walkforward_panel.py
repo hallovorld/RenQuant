@@ -161,13 +161,20 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
                      artifact_root: str | None = None,
                      fingerprint_config: str | None = None,
                      fit_calibrator: bool = True,
-                     calibrator_method: str = "platt") -> tuple[bool, Path, Path | None, str]:
+                     calibrator_method: str = "platt",
+                     include_features: str | None = None) -> tuple[bool, Path, Path | None, str]:
     """Subprocess train_production_model.py for one cutoff.
 
-    Optional args (2026-05-13 Track 6 / Track 1):
+    Optional args (2026-05-13 Track 6 / Track 1, 2026-06-02 Track B):
         label: --label passthrough (e.g. fwd_5d_excess for horizon retest)
         watchlist_file: --watchlist-file passthrough (wl174 retrained variant)
         artifact_root: override WF_V2_SUBDIR (e.g. 'walkforward_horizon_5d')
+        include_features: comma-list of opt-in addendum feature names
+            (Track B: 'mom_carry_12_1,beta_dm,rvar_total,idio_vol_market').
+            When None, baseline 172-feature recipe is preserved even if the
+            panel parquet contains Track B columns. Names not present in the
+            panel raise loudly in the per-cutoff trainer (no silent rename
+            translation; pin upstream renquant-base-data version explicitly).
 
     Returns (success, artifact_path, calibrator_path, error_msg). On non-zero exit, success=False
     and the caller logs + continues (does not abort the whole batch).
@@ -182,6 +189,8 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
         side_label = f"walkforward_{label.replace('_excess','')}_{cutoff_iso}"
     if watchlist_file:
         side_label = f"walkforward_wl_{cutoff_iso}"
+    if include_features:
+        side_label = f"walkforward_addendum_{cutoff_iso}"
     cmd = [
         sys.executable, str(TRAIN_PROD_SCRIPT),
         "--train-cutoff", cutoff_iso,
@@ -194,6 +203,8 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
         cmd.extend(["--watchlist-file", watchlist_file])
     if fingerprint_config:
         cmd.extend(["--fingerprint-config", fingerprint_config])
+    if include_features:
+        cmd.extend(["--include-features", include_features])
     log.info("train_one_cutoff: cutoff=%s start  cmd=%s",
              cutoff_iso, " ".join(cmd))
     t0 = time.monotonic()
@@ -316,6 +327,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--calibrator-method", default="platt",
                    choices=["platt", "isotonic"],
                    help="Method passed to fit_calibrator_alpha158_fund.py.")
+    p.add_argument(
+        "--include-features", default=None,
+        help=(
+            "Comma-separated opt-in list of addendum features (Track B BULL_CALM "
+            "recovery: 'mom_carry_12_1,beta_dm,rvar_total,idio_vol_market'). "
+            "Forwarded to train_production_model.py per cutoff. When unset, the "
+            "baseline 172-feature recipe is preserved even if the panel parquet "
+            "carries Track B columns. Names not present in the panel fail loudly "
+            "in the per-cutoff trainer (no silent rename translation). Pinned by "
+            "tests/test_walkforward_panel_train_include_features.py + "
+            "tests/test_track_b_feature_drop_default.py."
+        ),
+    )
     p.add_argument("--dry-run", action="store_true",
                    help="Print retrain dates and exit (no training).")
     p.add_argument(
@@ -343,6 +367,7 @@ def train_cutoffs(retrain_dates: list[pd.Timestamp],
             fingerprint_config=args.fingerprint_config,
             fit_calibrator=not args.skip_calibrators,
             calibrator_method=args.calibrator_method,
+            include_features=args.include_features,
         )
         if not ok:
             return cutoff, None, err
