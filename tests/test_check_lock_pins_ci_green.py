@@ -196,3 +196,55 @@ def test_check_lock_reads_all_subrepos(tmp_path: Path):
 
     assert result["ok"] is True
     assert result["pins"][0]["name"] == "renquant-backtesting"
+
+
+def test_changed_only_validates_only_changed_subrepo(tmp_path: Path):
+    mod = _load_module()
+    base_entry = _entry()
+    current_entry = {**base_entry, "commit": "9a676e8"}
+    unchanged_private = {
+        "name": "renquant-model",
+        "remote": "https://github.com/hallovorld/renquant-model",
+        "branch": "main",
+        "commit": "f9c598f",
+    }
+    base = tmp_path / "base.lock.json"
+    current = tmp_path / "current.lock.json"
+    base.write_text(json.dumps({"subrepos": [base_entry, unchanged_private]}), encoding="utf-8")
+    current.write_text(json.dumps({"subrepos": [current_entry, unchanged_private]}), encoding="utf-8")
+
+    def fake(path: str):
+        assert "renquant-model" not in path
+        if path == "repos/hallovorld/renquant-backtesting/commits/9a676e8":
+            return {"sha": FULL_SHA}
+        if path == f"repos/hallovorld/renquant-backtesting/compare/{FULL_SHA}...main":
+            return {"status": "ahead", "ahead_by": 1, "behind_by": 0}
+        if path.startswith(f"repos/hallovorld/renquant-backtesting/actions/runs?head_sha={FULL_SHA}"):
+            return {"workflow_runs": [{"name": "CI", "status": "completed", "conclusion": "success"}]}
+        raise AssertionError(path)
+
+    result = mod.check_lock(current, fake, base_lock_file=base, changed_only=True)
+
+    assert result["ok"] is True
+    assert result["validated_subrepos"] == ["renquant-backtesting"]
+    assert result["pins"][0]["commit"] == "9a676e8"
+
+
+def test_changed_only_with_no_pin_changes_validates_nothing(tmp_path: Path):
+    mod = _load_module()
+    base = tmp_path / "base.lock.json"
+    current = tmp_path / "current.lock.json"
+    payload = json.dumps({"subrepos": [_entry()]})
+    base.write_text(payload, encoding="utf-8")
+    current.write_text(payload, encoding="utf-8")
+
+    result = mod.check_lock(
+        current,
+        lambda path: (_ for _ in ()).throw(AssertionError(path)),
+        base_lock_file=base,
+        changed_only=True,
+    )
+
+    assert result["ok"] is True
+    assert result["validated_subrepos"] == []
+    assert result["pins"] == []
