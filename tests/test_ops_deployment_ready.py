@@ -91,6 +91,62 @@ def test_readiness_passes_with_runtime_root_and_green_checks(monkeypatch, tmp_pa
     assert result["details"]["subrepo_root"] == str(runtime)
 
 
+def test_readiness_can_skip_launchagents_for_preinstall(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    _patch_green_dependencies(monkeypatch, module)
+    runtime = tmp_path / ".subrepo_runtime" / "repos"
+    runtime.mkdir(parents=True)
+    env_dir = tmp_path / ".subrepo_assembly"
+    env_dir.mkdir()
+    (env_dir / "current.env").write_text(
+        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
+        encoding="utf-8",
+    )
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("launchagent inspection must be skipped in pre-install mode")
+
+    monkeypatch.setattr(module, "inspect_launchagents", fail_if_called)
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+        skip_launchagents=True,
+    )
+
+    assert result["ok"] is True
+    assert result["details"]["launchagents_ok"] is None
+    assert result["launchagents"]["skipped"] is True
+
+
+def test_readiness_still_blocks_launchagent_drift_by_default(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    _patch_green_dependencies(monkeypatch, module)
+    runtime = tmp_path / ".subrepo_runtime" / "repos"
+    runtime.mkdir(parents=True)
+    env_dir = tmp_path / ".subrepo_assembly"
+    env_dir.mkdir()
+    (env_dir / "current.env").write_text(
+        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module,
+        "inspect_launchagents",
+        lambda **kwargs: {"ok": False, "issues": [{"reason": "drift"}], "entries": []},
+    )
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+    )
+
+    assert result["ok"] is False
+    assert any(issue["check"] == "launchagents" for issue in result["issues"])
+
+
 def test_readiness_blocks_non_main_branch(monkeypatch, tmp_path: Path) -> None:
     module = _load_module()
     _patch_green_dependencies(monkeypatch, module, branch="feature")

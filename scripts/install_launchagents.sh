@@ -16,6 +16,10 @@ set -euo pipefail
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 SRC_DIR="$REPO_DIR/scripts/launchd"
 DEST_DIR="$HOME/Library/LaunchAgents"
+PYTHON="${PYTHON:-$REPO_DIR/.venv/bin/python}"
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="python3"
+fi
 
 DRY_RUN=0
 CHECK_ONLY=0
@@ -36,12 +40,18 @@ plists=("$SRC_DIR"/*.plist "$REPO_DIR/scripts/com.renquant.backup.plist")
 if [ "$CHECK_ONLY" = "1" ]; then
     launchagents_rc=0
     subrepo_contract_rc=0
-    python3 "$REPO_DIR/scripts/check_launchagents.py" --launchagents-dir "$DEST_DIR" || launchagents_rc=$?
-    python3 "$REPO_DIR/scripts/subrepo_ops_contract.py" || subrepo_contract_rc=$?
+    "$PYTHON" "$REPO_DIR/scripts/check_launchagents.py" --launchagents-dir "$DEST_DIR" || launchagents_rc=$?
+    "$PYTHON" "$REPO_DIR/scripts/subrepo_ops_contract.py" || subrepo_contract_rc=$?
     if [ "$launchagents_rc" -ne 0 ] || [ "$subrepo_contract_rc" -ne 0 ]; then
         exit 1
     fi
     exit 0
+fi
+
+if [ "$DRY_RUN" = "0" ] && [ "${RENQUANT_SKIP_OPS_PRECHECK:-0}" != "1" ]; then
+    "$PYTHON" "$REPO_DIR/scripts/check_ops_deployment_ready.py" --skip-launchagents
+elif [ "$DRY_RUN" = "0" ]; then
+    echo "WARNING: RENQUANT_SKIP_OPS_PRECHECK=1; skipping ops deployment readiness precheck" >&2
 fi
 
 for plist_src in "${plists[@]}"; do
