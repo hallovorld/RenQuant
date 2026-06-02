@@ -260,7 +260,7 @@ class PanelScorer:
             metadata=meta,
         )
 
-    def score(self, feature_matrix: pd.DataFrame) -> pd.Series:
+    def score(self, feature_matrix: pd.DataFrame, ctx: Any = None) -> pd.Series:
         """Predict panel scores for rows of `feature_matrix`.
 
         Returns a Series indexed like `feature_matrix.index` (typically
@@ -268,11 +268,21 @@ class PanelScorer:
         caller is responsible for aligning the matrix to the artifact's
         `feature_cols`.
 
+        ``ctx`` is accepted-but-ignored at this layer so the public
+        scoring contract is uniform across PanelScorer + ensemble
+        variants (e.g. ``RegimeEnsemblePanelScorer`` reads regime fields
+        from ctx). Callers that have an ``InferenceContext`` should pass
+        it through; callers without one (back-compat: shadow scoring,
+        smoke tests, ``compute_panel_scores``) keep the single-arg form
+        working. Pinned by Track C wiring fix (2026-06-02) — see
+        ``RegimeEnsemblePanelScorer.score`` for the routing logic.
+
         Per CLAUDE.md §5.3 BUG #6 invariant: soft_check_input runs before
         predict, soft_check_score_series runs after. Both LOG warnings on
         degeneracy (constant features, collapsed scores) so silent
         feature-corruption bugs surface immediately.
         """
+        del ctx  # accepted for signature uniformity; PanelScorer is regime-blind
         missing = [c for c in self.feature_cols if c not in feature_matrix.columns]
         if missing:
             raise KeyError(

@@ -606,12 +606,65 @@ class LoadScorerTask(Task):
             log.error("LoadScorerTask: panel_scoring.enabled but no artifact_path")
             _fail_closed_panel_scoring(ctx, "panel_scorer_missing_artifact_path")
             return False
+        # 2026-06-02 Track C wire-in: when `ranking.panel_scoring.specialists`
+        # is configured, route through the regime-specialist ensemble loader.
+        # The ensemble wraps the global PanelScorer (loaded from `artifact_path`)
+        # with up to 4 per-regime PanelScorer artifacts; `ApplyScoresTask` then
+        # calls `scorer.score(X, ctx=ctx)` so the ensemble can dispatch by
+        # `ctx.final_regime` + `ctx.regime_confidence` + `ctx.regime_posterior`.
+        # Back-compat: when `specialists` is absent/empty the model_registry
+        # path below runs unchanged. Only applies to the xgb kind (panel-LTR)
+        # because the ensemble loader builds PanelScorer specialists; routing
+        # PatchTST sequence specialists is a future extension.
+        kind = panel_cfg.get("kind", "xgb")
+        specialists_cfg = panel_cfg.get("specialists") or {}
+        if specialists_cfg and kind == "xgb":
+            from kernel.panel_pipeline.regime_ensemble_scorer import (  # noqa: PLC0415
+                load_panel_scorer_with_ensemble,
+                RegimeEnsemblePanelScorer,
+                StaleSpecialistArtifact,
+            )
+            try:
+                ctx._panel_scorer = load_panel_scorer_with_ensemble(  # noqa: SLF001
+                    panel_cfg,
+                    strategy_dir=ctx.config.get("_strategy_dir"),
+                )
+            except StaleSpecialistArtifact as exc:
+                log.error("LoadScorerTask: stale specialist artifact — %s", exc)
+                _fail_closed_panel_scoring(ctx, "panel_specialist_recipe_mismatch")
+                return False
+            except Exception as exc:
+                log.error("LoadScorerTask: failed to load specialist ensemble — %s", exc)
+                _fail_closed_panel_scoring(ctx, "panel_specialist_load_failed")
+                return False
+            if isinstance(ctx._panel_scorer, RegimeEnsemblePanelScorer):
+                log.info(
+                    "LoadScorerTask: loaded regime-specialist ensemble "
+                    "(global features=%d, specialists=%s, confidence_threshold=%.2f)",
+                    len(ctx._panel_scorer.global_scorer.feature_cols),
+                    sorted(ctx._panel_scorer.specialists.keys()),
+                    ctx._panel_scorer.confidence_threshold,
+                )
+            else:
+                # No specialists actually loaded (all paths missing) — loader
+                # returned the legacy global PanelScorer. Same observability as
+                # the legacy load path below.
+                log.warning(
+                    "LoadScorerTask: specialists configured but none loadable; "
+                    "fell back to global panel scorer (features=%d)",
+                    len(ctx._panel_scorer.feature_cols),
+                )
+            if not self._assert_config_consistency(
+                ctx, panel_cfg, ctx._panel_scorer, p,
+            ):
+                return False
+            return
+
         # 2026-05-18 Model registry dispatch — supports XGB/PatchTST/future kinds
         # via single config knob `ranking.panel_scoring.kind`. Default xgb
         # for back-compat. Each kind's handler in kernel/panel_pipeline/
         # model_registry.py decides how to load its scorer.
         from kernel.panel_pipeline.model_registry import registry  # noqa: PLC0415
-        kind = panel_cfg.get("kind", "xgb")
         try:
             handler = registry.get(kind)
         except ValueError as exc:
@@ -1095,7 +1148,12 @@ class ApplyScoresTask(Task):
                              len(scores), scorer.seq_len)
                 else:
                     try:
-                        scores: pd.Series = scorer.score(X_aligned)
+                        # 2026-06-02 Track C: pass ctx so a configured
+                        # RegimeEnsemblePanelScorer can dispatch by
+                        # ctx.final_regime / ctx.regime_confidence /
+                        # ctx.regime_posterior. PanelScorer ignores ctx
+                        # (regime-blind) — signature is uniform per §7.5.
+                        scores: pd.Series = scorer.score(X_aligned, ctx=ctx)
                     except Exception as exc:  # noqa: BLE001
                         log.error(
                             "ApplyScoresTask[panel_ltr_xgboost]: scorer.score failed: %s",
@@ -1107,7 +1165,8 @@ class ApplyScoresTask(Task):
                              len(rows), "+fund" if needs_fund else "")
         else:
             try:
-                scores: pd.Series = scorer.score(X)
+                # 2026-06-02 Track C: ctx forwarded for ensemble dispatch.
+                scores: pd.Series = scorer.score(X, ctx=ctx)
             except Exception as exc:  # noqa: BLE001
                 log.error(
                     "ApplyScoresTask: scorer.score failed: %s",
