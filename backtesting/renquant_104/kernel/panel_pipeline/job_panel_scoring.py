@@ -1758,6 +1758,72 @@ class LoadGlobalCalibrationTask(Task):
                     ctx._global_calibrator = None  # noqa: SLF001
                     ctx._global_calibrator_missing_reason = "calibrator_load_failed"  # noqa: SLF001
 
+        # Track A (2026-06-02): explicit per-regime calibrator dict at
+        # ranking.panel_scoring.calibrator_per_regime: {regime: path}. Unlike
+        # the regime_conditional pattern (which discovers files via a glob
+        # template and silently falls back to pooled on miss), this is an
+        # opt-in explicit map — every regime listed MUST resolve to a loadable
+        # artifact or LoadScorerTask fails closed. Regimes NOT listed fall
+        # back to the pooled calibrator at apply time via the existing
+        # ApplyGlobalCalibrationTask `regime_map.get(ctx.regime) or pooled`
+        # path. Back-compat: when the key is absent, behavior is unchanged.
+        # See doc/research/2026-06-02-bull-calm-signal-recovery-plan.md.
+        panel_cfg = (ctx.config.get("ranking", {})
+                              .get("panel_scoring", {}))
+        per_regime_cfg = panel_cfg.get("calibrator_per_regime")
+        if per_regime_cfg:
+            if not isinstance(per_regime_cfg, dict):
+                raise ValueError(
+                    "LoadGlobalCalibrationTask: calibrator_per_regime must be "
+                    f"a dict[regime, path], got {type(per_regime_cfg).__name__}"
+                )
+            valid_regimes = {"BULL_CALM", "BULL_VOLATILE", "BEAR", "CHOPPY"}
+            bad = set(per_regime_cfg) - valid_regimes
+            if bad:
+                raise ValueError(
+                    "LoadGlobalCalibrationTask: calibrator_per_regime has "
+                    f"invalid regime keys {sorted(bad)}; valid keys are "
+                    f"{sorted(valid_regimes)}"
+                )
+            loaded_pr: dict[str, GlobalPanelCalibration] = dict(
+                getattr(ctx, "_regime_calibrators", None) or {}
+            )
+            for regime, raw_path in per_regime_cfg.items():
+                if not raw_path:
+                    raise ValueError(
+                        f"LoadGlobalCalibrationTask: calibrator_per_regime[{regime}] "
+                        "is empty; either remove the key or set a path."
+                    )
+                # Per-regime path cache: avoid reloading identical artifact
+                # on every bar in long-running adapters (SimAdapter, RunnerAdapter).
+                # ctx._regime_calibrator_paths records the resolved path that
+                # produced each entry; we reload only when path changes.
+                p = _resolve(Path(raw_path))
+                path_cache = getattr(ctx, "_regime_calibrator_paths", None)
+                if path_cache is None:
+                    path_cache = {}
+                    ctx._regime_calibrator_paths = path_cache  # noqa: SLF001
+                if path_cache.get(regime) == str(p) and regime in loaded_pr:
+                    continue
+                if not p.exists():
+                    raise FileNotFoundError(
+                        f"LoadGlobalCalibrationTask: calibrator_per_regime[{regime}] "
+                        f"artifact not found: {p}. Per-regime calibrators are "
+                        "opt-in and must exist when configured (no silent fallback)."
+                    )
+                cal = GlobalPanelCalibration.load(p)
+                _assert_calibrator_matches_scorer(
+                    ctx, cal, p, strict=strict_match,
+                )
+                loaded_pr[regime] = cal
+                path_cache[regime] = str(p)
+                log.info(
+                    "LoadGlobalCalibrationTask: regime=%s loaded explicit "
+                    "calibrator from %s (pool_ic=%s)",
+                    regime, p, cal.metadata.get("pool_ic"),
+                )
+            ctx._regime_calibrators = loaded_pr  # noqa: SLF001
+
         # Regime-conditional (Plan F) — opt-in.
         rc_cfg = gc_cfg.get("regime_conditional", {})
         if not rc_cfg.get("enabled", False):
