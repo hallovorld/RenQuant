@@ -85,6 +85,18 @@ def test_read_exports_parses_current_env(tmp_path: Path) -> None:
     }
 
 
+def test_git_preserves_porcelain_status_prefix(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "check_output",
+        lambda *args, **kwargs: " M backtesting/renquant_104/artifacts/shadow/result.json\n",
+    )
+
+    assert module._git(tmp_path, "status", "--porcelain").startswith(" M backtesting/")
+
+
 def test_readiness_requires_runtime_root(monkeypatch, tmp_path: Path) -> None:
     module = _load_module()
     _patch_green_dependencies(monkeypatch, module)
