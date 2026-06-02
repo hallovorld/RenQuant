@@ -228,6 +228,25 @@ echo "--- Step 2b: Backfill forward returns + portfolio metrics ---"
 "$PYTHON" scripts/backfill_forward_returns.py --source live --broker alpaca 2>&1 | tail -5 || echo "forward_returns backfill failed (non-fatal)"
 "$PYTHON" scripts/compute_portfolio_metrics.py --source live --strategy renquant-104 2>&1 | tail -15 || echo "portfolio metrics compute failed (non-fatal)"
 
+# Step 2c: Refresh news sentiment (2026-06-01 audit fix #4).
+# The standalone com.renquant.daily-news-sentiment launchd cron silently
+# stopped firing — sentiment data was 12+ trading days stale, causing
+# ApplyScoresTask to log hit=0/142 every run (sentiment features all-null).
+# Inlining the refresh here makes the daily wrapper self-sufficient: if the
+# cron is broken or hasn't loaded, daily still gets fresh sentiment before
+# the live trader's panel scoring step. Fast skip (<10s) when the data is
+# already fresh; full refresh ~30min when behind.
+echo "--- Step 2c: Refresh news sentiment ---"
+if [ -x "$REPO_DIR/scripts/daily_news_sentiment_refresh.sh" ]; then
+    if "$REPO_DIR/scripts/daily_news_sentiment_refresh.sh" 2>&1 | tail -3; then
+        echo "sentiment refresh finished at $(date)"
+    else
+        echo "sentiment refresh failed (non-fatal — daily continues with stale sentiment)"
+    fi
+else
+    echo "sentiment refresh script missing — skip (non-fatal)"
+fi
+
 # Step 3: Run live trading (Alpaca, single pass)
 echo "--- Step 3: Running live trader (alpaca) ---"
 TRADE_LOG="$REPO_DIR/live/logs/renquant-104/$DATE.json"
