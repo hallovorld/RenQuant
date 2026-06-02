@@ -1,15 +1,15 @@
-# RenQuant Multirepo Leakage Defense — Architecture (v11)
+# RenQuant Multirepo Leakage Defense — Architecture (v12)
 
 **Status**: Design under review (RenQuant PR #43; supersedes #38 which merged at v8)
 **Authors**: Claude
-**Reviewers**: Codex (9 review rounds). v10 found 2 HIGH + 3 MED + 1 LOW; v11 addresses all six in the canonical sections:
-  - **split-brain doc** — §2 / §4 invariants / §5 reader notice all rewritten to the v10 contract (binding split, VerifiedArtifact, registry-dispatched policies, versioned TargetSpec, FeatureSchemaManifest closed-keys, memory-safe handle). §10A is the implementation reference; §5 retains v9 code as redirect-marked history.
-  - **G0 validator bypasses** — `FeatureSchemaManifest.closed_keys_and_sorted` model_validator: closed-key equality across feature_cols ↔ feature_dtypes ↔ feature_lookahead_days; uniqueness + sorted enforced; `Field(ge=0, le=0)` rejects negative AND positive lookahead; `assert_disjoint_from_labels(label_cols)`. MVP G0 row corrected (`labels.label_cols`, not `labels.feature_cols`).
-  - **TOCTOU memory hazard** — `load_artifact()` spills above `in_memory_threshold_bytes` (256 MiB) into a content-addressed spooled tempfile (`0o600`); `VerifiedArtifact` carries either `_model_bytes` or `_spooled_path`. Consumer reads via `open_bytes()` / `spooled_path()`. New I17.
-  - **TargetSpec under-specified** — replaced with `TargetSpecManifestV1` (versioned + `target_transform_code_version` + `embargo_policy_id` + ID-based benchmark/calendar/universe); `parse_target_spec` dispatcher; golden vector test. New I15.
-  - **Falsifier coverage** — §9 grew 14 → **20** falsifiers (added: G3 callable without realized labels, TOCTOU reopen prevention, G0 missing-metadata, policy v1 dispatch, target-spec versioning, memory-safe spill RSS).
-  - **Stale MVP repo names** — `renquant-model-patchtst` / `renquant-model-gbdt` standalone repos replaced with the merged `renquant-model` (subdirs `src/renquant_model_patchtst/` and `src/renquant_model_gbdt/`).
-**Supersedes**: v1-v10 (commit history is the audit trail)
+**Reviewers**: Codex (10 review rounds). v11 found 1 HIGH + 3 MED + 1 LOW; v12 addresses all five in the canonical sections:
+  - **cache-poisoning** (codex v11 #1) — `load_artifact()` always wins via atomic `os.replace()`; pre-existing `sha256-<x>.bin` is overwritten by the freshly verified temp file. `_enforce_cache_dir()` refuses symlink / non-owner / mode > 0o700 cache dirs; settled entries get `chmod 0o400`. New falsifier #21.
+  - **duplicate `VerifiedArtifact` class** (codex v11 #2) — §10A.2 collapsed to a single definition placed before `load_artifact()`. CI grep + AST scan reject duplicates. New falsifier #22.
+  - **`extra="forbid"` on versioned-hash models** (codex v11 #3) — `TargetSpecManifestV1`, `TriadPolicyV1/V2`, `FeatureSchemaManifest`, `TargetSpecManifestV2` all set `ConfigDict(frozen=True, extra="forbid")`. Unknown fields raise — semantic adds force a schema-version bump. New falsifier #23.
+  - **MVP rows pointing at deprecated API** (codex v11 #4) — §13 row ① now lists `load_artifact() -> VerifiedArtifact` + `parse_policy` + `parse_target_spec` + `FeatureSchemaManifest` and "all 20 falsifiers"; row ② routes panel_scorer through `load_artifact()`, AST scan rejects `artifact.model_uri` reopens.
+  - **v8-era threat-model wording** (codex v11 #5) — §10 rewritten to v11 attack-surface table; rows for cache poisoning + target-code drift + feature-schema bypass added.
+**Falsifier count**: **23** (v7: 1-8, v8: 9-14, v10: 15-20, v12: 21-23).
+**Supersedes**: v1-v11 (commit history is the audit trail)
 **Companion**: `doc/research/2026-06-01-leakage-reflection.md`
 
 ---
@@ -896,21 +896,32 @@ v10 falsifiers (codex v10 #5 — was missing explicit regression coverage):
 19. **TargetSpec versioning binds transform code** — `TargetSpecManifestV1` with the same six surface fields but different `target_transform_code_version` produces a different `target_spec_hash`; consumer rejects mismatch. (Pinned by `tests/test_target_spec_versioning.py`.)
 20. **Memory-safe spill** — a 1-GB synthetic artifact loaded via `load_artifact()` with default `in_memory_threshold_bytes=256 MiB` materializes via spooled tempfile path; the process peak RSS during load stays below `2× threshold`. (Pinned by `tests/test_load_artifact_memory_budget.py`.)
 
+v11 falsifiers (codex v11 #1+#2+#3 — cache poisoning, single-class, extra="forbid"):
+
+21. **Pre-existing cache entry cannot bypass freshly verified bytes** — write a `~/.renquant/artifact_cache/sha256-<expected>.bin` containing *wrong* bytes, then call `load_artifact()` with a sidecar whose `binding.model_sha == <expected>` and `model_uri` pointing at the legitimate bytes. The freshly verified temp file must atomically overwrite the cache entry via `os.replace()`; `verified.spooled_path()` must read the legitimate bytes. (Pinned by `tests/test_load_artifact_cache_poison_reject.py`.) Companion: cache_dir as a symlink, as world-readable (mode 0o755), or owned by another UID all raise `UnsafeCacheDir`.
+22. **VerifiedArtifact single-class invariant** — only ONE `class VerifiedArtifact` definition exists in `renquant_common.contracts.scorer`; CI grep + AST scan rejects any duplicate. (Pinned by `tests/test_verified_artifact_single_class.py` + workflow assertion.)
+23. **`extra="forbid"` on versioned-hash models rejects unknown fields** — `TriadPolicyV1.model_validate({**v1_fields, "rogue_field": 1})` raises; same for `TargetSpecManifestV1` and `FeatureSchemaManifest`. Unknown semantics MUST force a schema-version bump, not be silently dropped before hashing. (Pinned by `tests/test_versioned_models_extra_forbid.py` — 3 cases.)
+
 ## 10 · Threat model
 
-12 leak classes (L1-L12) carried forward. v8 adds attack-surface table:
+12 leak classes (L1-L12) carried forward. **v11 attack-surface table**
+(codex v11 #5 — old v8 table referenced deprecated `ScorerArtifact.load()`):
 
-| Attack | Mitigation in v8 |
+| Attack | Mitigation in v11 |
 |---|---|
-| Copy sidecar+artifact pair to point at different model.pt | §5.2 `ScorerArtifact.load()` recomputes sha256(model.pt), raises `ArtifactBytesMismatch` |
-| Tamper with `triad_config_hash` to claim stricter policy | Pydantic validator: `policy.policy_hash() == binding.triad_config_hash` |
-| Run reducer with weakened policy (lower threshold, fewer seeds) | `policy_hash` derived from policy; mismatch detected |
+| Copy sidecar+artifact pair to point at different model.pt | §10A.2 `load_artifact()` streams `model_uri` once, hashes-while-streaming, raises `ArtifactBytesMismatch` if `sha256 ≠ binding.model_sha` |
+| Swap `model.pt` between hash check and `torch.load` | §10A.2 `VerifiedArtifact` carries the verified bytes (small) OR a content-addressed spooled cache path (large). Consumer reads via `verified.open_bytes()` / `verified.spooled_path()`; AST scan rejects any code path that reopens `artifact.model_uri`. Falsifier #16. |
+| Pre-seed `~/.renquant/artifact_cache/sha256-<x>.bin` with malicious bytes | §10A.2 cache writes always go through `os.replace()` — freshly verified temp file wins atomically. `_enforce_cache_dir` refuses symlink / world-readable / non-owner cache dirs. Falsifier #21. |
+| Run reducer with weakened policy (lower threshold, fewer seeds) | `policy_hash` derived from policy; binding mismatch raises |
+| Submit a future schema as a v1 payload to skip new gates | §10A.3 `parse_policy()` rejects unknown `policy_schema_version` with `UnknownPolicyVersion`. `extra="forbid"` on V1 rejects unknown payload keys (codex v11 #3). Falsifier #18. |
 | Mint a fake bypass on a compromised verifier | Asymmetric Ed25519 — verifier has only public key |
 | Reuse a backfill bypass for live trading | `allowed_gates` in signed payload; gate checks `caller in allowed_gates` |
 | Pre-validation signing / mid-spec drift | Single `canonical_payload()` function + golden vector test |
 | Replay bypass after expiry | `expires_at` in signed payload; gate compares to `utc_now()` |
 | Race two Tier-2 runners | CAS on `(binding, current_status)`; second runner gets `StaleBindingError` |
 | Force `failed → passed` by sidecar rewrite | `_VALID_TRANSITIONS` table at CAS layer rejects |
+| Ship a target-code change without bumping target_spec_hash | §10A.1 `target_transform_code_version` in canonical hash payload; same surface fields under a new transform produce a new hash. Falsifier #19. |
+| Submit a feature parquet with extra columns / negative lookahead / label-name overlap | §10A.4 `FeatureSchemaManifest.closed_keys_and_sorted` + `assert_disjoint_from_labels`; G0 writer-time block. Falsifier #17. |
 
 ## 10A · v10 contract supplements (codex v9 review)
 
@@ -941,7 +952,10 @@ class TargetSpecManifestV1(pydantic.BaseModel):
         bound to specific data manifests (NOT raw strings)
       - manifest_id: UUID for this concrete target build
     """
-    model_config = pydantic.ConfigDict(frozen=True)
+    # v11 (codex v11 #3): extra="forbid" — versioned/canonical-hash models
+    # must REJECT unknown fields, not silently drop them before hashing.
+    # New semantics force a schema-version bump, not a stealth payload.
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
     target_spec_schema_version: Literal[1] = 1
     label_col: str
     lookahead_days: Annotated[int, Field(gt=0)]
@@ -961,7 +975,7 @@ class TargetSpecManifestV1(pydantic.BaseModel):
 
 class TargetSpecManifestV2(pydantic.BaseModel):
     """Placeholder for next schema. Add fields explicitly; don't default-rehash V1."""
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
     target_spec_schema_version: Literal[2] = 2
     # ... V1 fields + new fields ...
     def target_spec_hash(self) -> str: ...
@@ -1023,41 +1037,98 @@ def assert_artifact_validated(artifact, *, cfg, caller, runtime_binding, environ
     ...
 ```
 
-### 10A.2 — VerifiedArtifact eliminates TOCTOU (codex v9 #2)
+### 10A.2 — VerifiedArtifact eliminates TOCTOU (codex v9 #2, v10 #3, v11 #1+#2)
 
-**Problem**: v9's `ScorerArtifact.load()` hashed `model_uri` then returned
-only metadata. Consumer's `torch.load(uri)` re-opens the path → file can
-be swapped between hash check and model construction.
+**Problem (v9)**: v9's `ScorerArtifact.load()` hashed `model_uri` then
+returned only metadata. Consumer's `torch.load(uri)` re-opens the path
+→ file can be swapped between hash check and model construction.
 
-**v10 fix**: `load()` returns `VerifiedArtifact` holding the bytes that
-WERE hashed. Consumers MUST use `verified.open_bytes()`, never re-open.
+**v10 problem (codex v10 #3)**: joining all chunks into one bytes + wrapping
+in `BytesIO` held ~2× RAM for multi-GB models.
+
+**v11 problem (codex v11 #1)**: when a freshly verified spooled tempfile
+collided with a pre-existing `sha256-<x>.bin` in the cache dir, the v10
+implementation deleted the fresh temp file and returned the EXISTING cache
+path WITHOUT rehashing it. That reopens the verified-vs-loaded split the
+design is supposed to close: corruption, tampering, or a symlinked entry in
+the cache dir would all bypass the freshly verified hash.
+
+**v11 fix**: single source of truth for the returned bytes — the freshly
+verified temp file ALWAYS wins via `os.replace()` (atomic, replaces existing).
+The cache dir is permissions-locked at `0o700` and pre-validated against
+symlink traversal on every call. There is exactly ONE `VerifiedArtifact`
+class definition (codex v11 #2 — v10 left a stale dataclass before the
+final one).
 
 ```python
-class VerifiedArtifact:
-    """Holds the EXACT bytes whose sha256 was verified against
-    binding.model_sha. Constructed only via load_artifact() — private
-    token enforces no synthesis from outside."""
-    __slots__ = ("_artifact", "_model_bytes")
+import errno, hashlib, io, os, stat, tempfile
+from pathlib import Path
 
-    def __init__(self, *, _artifact, _model_bytes, _token):
+_VERIFICATION_TOKEN = object()    # module-private; cannot be imported
+
+
+def _enforce_cache_dir(cache_dir: Path) -> None:
+    """Refuse to use a cache dir that is a symlink, world-writable, or
+    permissive (mode > 0o700). Created with mode 0o700 if absent.
+    Falsifier #21 pins this."""
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except FileExistsError:
+        pass
+    st = cache_dir.lstat()
+    if stat.S_ISLNK(st.st_mode):
+        raise UnsafeCacheDir(f"{cache_dir} is a symlink")
+    if not stat.S_ISDIR(st.st_mode):
+        raise UnsafeCacheDir(f"{cache_dir} is not a directory")
+    if (st.st_mode & 0o077) != 0:
+        # Group/other bits set → not owner-private
+        raise UnsafeCacheDir(
+            f"{cache_dir} mode {oct(st.st_mode & 0o777)} > 0o700; refuse"
+        )
+    if st.st_uid != os.geteuid():
+        raise UnsafeCacheDir(f"{cache_dir} not owned by euid")
+
+
+class VerifiedArtifact:
+    """SINGLE definition (v11 — codex v11 #2 collapsed v10 duplicates).
+
+    Holds EITHER the verified bytes (small artifacts) OR a path to a
+    content-addressed verified spooled file (large artifacts). Consumers
+    MUST use one of the accessors — never re-open `artifact.model_uri`.
+
+    Constructed only via `load_artifact()`; the module-private token
+    prevents external synthesis. Pinned by falsifier #16 (TOCTOU reopen
+    prevention).
+    """
+    __slots__ = ("_artifact", "_model_bytes", "_spooled_path")
+
+    def __init__(self, *, _artifact, _model_bytes, _spooled_path, _token):
         if _token is not _VERIFICATION_TOKEN:
-            raise RuntimeError("Use load_artifact() — VerifiedArtifact "
-                              "cannot be constructed without the private token.")
+            raise RuntimeError("Use load_artifact() — private token required.")
+        if (_model_bytes is None) == (_spooled_path is None):
+            raise RuntimeError(
+                "exactly one of _model_bytes / _spooled_path required"
+            )
         self._artifact = _artifact
         self._model_bytes = _model_bytes
+        self._spooled_path = _spooled_path
 
     @property
     def artifact(self): return self._artifact
-    @property
-    def model_bytes(self): return self._model_bytes
 
-    def open_bytes(self) -> io.BytesIO:
-        """Fresh BytesIO each call. Consumer scorer.load() MUST use this,
-        NOT re-open self.artifact.model_uri."""
-        return io.BytesIO(self._model_bytes)
+    def open_bytes(self) -> io.BufferedReader | io.BytesIO:
+        """Fresh file-like over the verified content. Small artifacts
+        get io.BytesIO; large artifacts get an open read-only file
+        descriptor on the spooled cache path."""
+        if self._model_bytes is not None:
+            return io.BytesIO(self._model_bytes)
+        # Reopen via the cached path, NOT model_uri.
+        return open(self._spooled_path, "rb")
 
-
-_VERIFICATION_TOKEN = object()    # module-private
+    def spooled_path(self) -> Path | None:
+        """For consumers that need a real path (e.g. mmap, torch.load with
+        explicit path arg). None for small artifacts kept in-memory."""
+        return self._spooled_path
 
 
 def load_artifact(
@@ -1068,24 +1139,27 @@ def load_artifact(
     in_memory_threshold_bytes: int = 256 * 1024**2, # ≤ 256 MiB → in-memory bytes; > → spooled tempfile
     cache_dir: Path | None = None,                  # content-addressed cache (default: ~/.renquant/artifact_cache)
 ) -> VerifiedArtifact:
-    """SINGLE entry point. v10 (codex v10 #3): streams URI once, hashes-while-
-    streaming, but ALSO chooses a memory-safe materialization strategy:
+    """SINGLE entry point. Streams URI once, hashes-while-streaming, and
+    chooses a memory-safe materialization strategy:
 
       - ≤ in_memory_threshold_bytes (default 256 MiB): bytes kept in-memory;
         `verified.open_bytes() -> BytesIO`. No file I/O after first stream.
       - > in_memory_threshold_bytes: streamed into a content-addressed
         spooled tempfile in `cache_dir`. The temp file's sha256 is verified
-        BEFORE `os.rename` into final cache path. Consumer reads via
+        BEFORE the temp file is atomically `os.replace()`d into the final
+        cache path. The freshly verified bytes ALWAYS win; any pre-existing
+        `sha256-<x>.bin` is overwritten. (codex v11 #1 — pre-existing cache
+        entry must NEVER be trusted blind.) Consumer reads via
         `verified.spooled_path()` — a fresh path NOT equal to model_uri,
         so a subsequent `torch.load(path)` only reads the verified bytes.
 
-    Both strategies guarantee the consumer never re-opens `model_uri` after
-    verification. Eliminates TOCTOU (codex v9 #2) without doubling RAM on
-    multi-GB artifacts (codex v10 #3).
+    Both strategies guarantee the consumer never reads bytes that were not
+    just hashed: eliminates v9 TOCTOU (codex v9 #2), v10 RAM doubling
+    (codex v10 #3), and v11 cache-poisoning (codex v11 #1).
     """
     store = store or make_default_store()
     cache_dir = cache_dir or (Path.home() / ".renquant" / "artifact_cache")
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    _enforce_cache_dir(cache_dir)
     artifact = ScorerArtifact.model_validate_json(sidecar_path.read_text())
     if not store.supports(artifact.model_uri):
         raise UnsupportedArtifactScheme(artifact.model_uri)
@@ -1100,13 +1174,15 @@ def load_artifact(
         for chunk in store.stream_bytes(artifact.model_uri):
             total += len(chunk)
             if total > max_bytes:
-                raise ArtifactTooLarge(f"{artifact.model_uri} > {max_bytes:,} bytes")
+                raise ArtifactTooLarge(
+                    f"{artifact.model_uri} > {max_bytes:,} bytes"
+                )
             h.update(chunk)
             if not spilled and total <= in_memory_threshold_bytes:
                 in_mem_buf.append(chunk)
             else:
                 if not spilled:
-                    # Spill what we have so far
+                    # Spill what we have so far into the verified tempfile.
                     tmp_fp = tempfile.NamedTemporaryFile(
                         dir=cache_dir, prefix=".verify-", suffix=".tmp",
                         delete=False, mode="wb",
@@ -1120,17 +1196,29 @@ def load_artifact(
         actual_sha = h.hexdigest()
         if actual_sha != expected_sha:
             raise ArtifactBytesMismatch(
-                f"expected {expected_sha}, got {actual_sha} for {artifact.model_uri}"
+                f"expected {expected_sha}, got {actual_sha} "
+                f"for {artifact.model_uri}"
             )
         if spilled:
             tmp_fp.flush()
             os.fsync(tmp_fp.fileno())
             tmp_fp.close()
             final_path = cache_dir / f"sha256-{actual_sha}.bin"
-            if not final_path.exists():
-                os.rename(tmp_fp.name, final_path)
-            else:
-                Path(tmp_fp.name).unlink()        # already cached
+            # codex v11 #1 fix — refuse pre-existing entry if it is a
+            # symlink, then ATOMICALLY replace it with the freshly verified
+            # temp file. os.replace() is atomic on POSIX + Windows and
+            # overwrites any existing regular file. The freshly verified
+            # bytes are the ONLY source of truth that leaves this function.
+            if final_path.exists() and final_path.is_symlink():
+                raise UnsafeCacheDir(
+                    f"{final_path} is a symlink; refuse cache reuse"
+                )
+            os.replace(tmp_fp.name, final_path)
+            try:
+                os.chmod(final_path, 0o400)   # read-only after settle
+            except OSError as e:
+                if e.errno != errno.EPERM:
+                    raise
             return VerifiedArtifact(
                 _artifact=artifact,
                 _model_bytes=None,
@@ -1151,41 +1239,6 @@ def load_artifact(
             except Exception:
                 pass
         raise
-
-
-class VerifiedArtifact:
-    """Holds EITHER the verified bytes (small artifacts) OR a path to a
-    content-addressed verified spooled file (large artifacts). Consumers
-    MUST use one of the accessors — never re-open `artifact.model_uri`.
-
-    `_token` enforces no synthesis from outside (codex v9 #2 carried).
-    """
-    __slots__ = ("_artifact", "_model_bytes", "_spooled_path")
-
-    def __init__(self, *, _artifact, _model_bytes, _spooled_path, _token):
-        if _token is not _VERIFICATION_TOKEN:
-            raise RuntimeError("Use load_artifact() — private token required.")
-        if (_model_bytes is None) == (_spooled_path is None):
-            raise RuntimeError("exactly one of _model_bytes / _spooled_path required")
-        self._artifact = _artifact
-        self._model_bytes = _model_bytes
-        self._spooled_path = _spooled_path
-
-    @property
-    def artifact(self): return self._artifact
-
-    def open_bytes(self) -> io.BufferedReader | io.BytesIO:
-        """Return a fresh file-like over the verified content. Small
-        artifacts get an io.BytesIO; large artifacts get an open file
-        descriptor on the spooled cache path (read-only)."""
-        if self._model_bytes is not None:
-            return io.BytesIO(self._model_bytes)
-        return open(self._spooled_path, "rb")
-
-    def spooled_path(self) -> Path | None:
-        """For consumers that need a real path (e.g. mmap, torch.load with
-        explicit path arg). None for small artifacts kept in-memory."""
-        return self._spooled_path
 ```
 
 Consumer usage (PanelScorer):
@@ -1210,8 +1263,13 @@ artifacts before the version check fires.
 # renquant-common/src/renquant_common/contracts/triad_policy.py
 
 class TriadPolicyV1(pydantic.BaseModel):
-    """v1 fields frozen. Future changes go in TriadPolicyV2."""
-    model_config = pydantic.ConfigDict(frozen=True)
+    """v1 fields frozen. Future changes go in TriadPolicyV2.
+
+    v11 (codex v11 #3): extra="forbid" — unknown fields raise, forcing the
+    callsite to bump policy_schema_version instead of silently dropping
+    payload entries before hashing.
+    """
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
     policy_schema_version: Literal[1] = 1
     stats_algorithm_version: Annotated[int, Field(gt=0)] = 1
     tier1_p_threshold: PValue = 0.05
@@ -1229,7 +1287,7 @@ class TriadPolicyV1(pydantic.BaseModel):
 
 class TriadPolicyV2(pydantic.BaseModel):
     """Placeholder for the next schema version. Add fields explicitly."""
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
     policy_schema_version: Literal[2] = 2
     # ... v1 fields + new fields here ...
     def policy_hash(self) -> str: ...
@@ -1280,8 +1338,11 @@ class FeatureSchemaManifest(pydantic.BaseModel):
       - feature_cols not sorted (canonical form is sorted ascending)
       - negative lookahead values (only exact 0 allowed)
       - overlap with declared LabelManifest.label_cols (passed in at construction)
+
+    v11 (codex v11 #3): extra="forbid" — unknown payload keys raise.
+    Forces every new feature-surface field to be an explicit schema bump.
     """
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     feature_cols: list[str]                       # sorted ASCENDING + no duplicates (validator-enforced)
     feature_dtypes: dict[str, str]                # MUST cover every feature_cols entry
@@ -1373,16 +1434,15 @@ written" — without G0 in MVP, criterion #4 cannot be true at MVP-done.
 This makes criterion #4 mechanically true at MVP-done.
 
 
-## 11 · Codex v10 → v11 — addressed
+## 11 · Codex v11 → v12 — addressed
 
-| # | Sev | v10 finding | v11 resolution |
+| # | Sev | v11 finding | v12 resolution |
 |---|---|---|---|
-| 1 | HIGH | Doc split-brain: §10A added v10 contract but §2/§4/§5 still defined v9 contract; impl owners would copy v9 first | §2 criteria 13 + 15 rewritten to v10 (split binding + VerifiedArtifact); §4 I4 + I5 rewritten; §4 adds I15-I17 (versioned TargetSpec, FeatureSchemaManifest closed-keys, memory-safe handle); §5 prepended with v10-canonical reader notice pointing to §10A — old §5.1-5.3 code kept as v9 history snapshots with redirect at top. |
-| 2 | HIGH | G0 `FeatureSchemaManifest` had bypasses: missing/extra dict entries, duplicates, negative lookahead, MVP row checked wrong dict (`labels.feature_cols`) | §10A.4 `closed_keys_and_sorted` model_validator: closed-key equality across feature_cols ↔ feature_dtypes ↔ feature_lookahead_days; uniqueness + sorted enforced; field `Field(ge=0, le=0)` rejects both negative AND positive lookahead; explicit `assert_disjoint_from_labels(label_cols)` method. §10A.5 MVP row corrected to `labels.label_cols`. |
-| 3 | MED | `load_artifact()` joined all chunks → multi-GB models hold ~2× RAM | §10A.2 rewritten: `in_memory_threshold_bytes=256 MiB` default; over threshold → spooled tempfile (`mode 0o600`) rename-to-content-addressed-cache after sha verified. `VerifiedArtifact` carries EITHER `_model_bytes` OR `_spooled_path`. Consumer reads via `open_bytes()` / `spooled_path()`. New I17. |
-| 4 | MED | `TargetSpec` bare Pydantic — same 6 fields → same hash → vulnerable to transform-code drift | §10A.1 replaced with `TargetSpecManifestV1` (versioned + `target_transform_code_version` + `embargo_policy_id` + ID-based benchmark/calendar/universe). `parse_target_spec` dispatcher. Golden vector test. New I15. |
-| 5 | MED | §9 falsifier count stale + missing v9/v10 regression coverage | §9 grew 14 → **20 falsifiers**. Added: G3 callable without realized labels, TOCTOU reopen prevention, G0 missing-metadata, policy v1 payloads parse v1 only, target-spec versioning binds transform code, memory-safe spill RSS budget. Each pinned to a named pytest. |
-| 6 | LOW | MVP named deprecated `renquant-model-patchtst` / `renquant-model-gbdt` | §13 PRs ③/④ updated to `renquant-model` merged repo (`src/renquant_model_patchtst/` + `src/renquant_model_gbdt/` subdirs); deprecation note referenced. |
+| 1 | HIGH | Pre-existing `~/.renquant/artifact_cache/sha256-<x>.bin` could bypass freshly verified bytes — v11 deleted the temp file and returned the existing cache path without rehashing it | §10A.2 rewritten: freshly verified temp file ALWAYS wins via atomic `os.replace()`. Cache dir is pre-validated by `_enforce_cache_dir()` — refuses symlink / world-readable / non-owner-private (mode > 0o700). Pre-existing entries that happen to be symlinks raise `UnsafeCacheDir`. After settle, cache entries are `chmod 0o400`. New falsifier #21. |
+| 2 | MED | §10A.2 contained TWO `VerifiedArtifact` class definitions — stale in-memory-only one at line 1036, replacement at line 1156. Copy-paste trap. | §10A.2 collapsed to **one** definition placed BEFORE `load_artifact()`. CI grep + AST scan reject duplicates. New falsifier #22. |
+| 3 | MED | `TargetSpecManifestV1`, `TriadPolicyV1`, `FeatureSchemaManifest` used `ConfigDict(frozen=True)` — Pydantic default is to IGNORE extra fields, so a payload could carry semantically meaningful fields that silently dropped before hashing | All three now use `ConfigDict(frozen=True, extra="forbid")`. `TriadPolicyV2`/`TargetSpecManifestV2` placeholders also forbid extras. Unknown fields raise — new semantics MUST force a schema-version bump. New falsifier #23 (3 cases). |
+| 4 | MED | §13 row ① said "all 17 falsifiers" and row ② routed through deprecated `ScorerArtifact.load()` (v9 API) | Row ① now lists `load_artifact() -> VerifiedArtifact` + `parse_policy` + `parse_target_spec` + `FeatureSchemaManifest` and "**all 23 falsifiers**". Row ② routes through `load_artifact()` per v11 contract, with AST scan rejecting `artifact.model_uri` reopens. |
+| 5 | LOW | §10 threat model still said "Mitigation in v8" and referenced deprecated `ScorerArtifact.load()` | §10 rewritten to **v11 attack-surface table**. Each row now references §10A code paths + the named falsifier that pins the mitigation. Added rows for cache poisoning, target-code drift, feature-schema bypass. |
 
 ## 12 · Open questions
 
@@ -1395,8 +1455,8 @@ This makes criterion #4 mechanically true at MVP-done.
 
 | # | Repo | Files | Tests |
 |---|---|---|---|
-| ① | `renquant-common` | `contracts/triad.py` (incl. `TriadPolicy`), `contracts/scorer.py` (incl. `load()` byte-verify), `contracts/leakage_config.py` (Ed25519 + scope), `leakage_guards/*`, `keys/architect_pubkeys.json` (committed), `tools/sign_bypass.py` (offline architect-only), `tests/test_canonical_vector.py` (golden vector), `tests/test_falsification.py` (all 17 falsifiers — see §9), `tests/fixtures/triad_models.py` (3 fixtures), `.github/workflows/gate-disable-detection.yml`, `.github/CODEOWNERS` for architect-only files | unit + race + state-machine + 3-fixture + HMAC→Ed25519 round-trip + golden vector + tz-aware compare + `python -O` regression + scope-rejection + byte-mismatch reject + policy-hash mismatch reject |
-| ② | `renquant-pipeline` | `kernel/panel_pipeline/panel_scorer.py::load` route through `ScorerArtifact.load()` | gate-behavior matrix incl. scope-bypass / byte-mismatch / policy-weaker |
+| ① | `renquant-common` | `contracts/triad.py` (incl. `parse_policy` → `TriadPolicyV1 \| TriadPolicyV2` per §10A.3), `contracts/scorer.py` (incl. `load_artifact() -> VerifiedArtifact` per §10A.2 — v11 single class, `os.replace()` cache-write, `_enforce_cache_dir`), `contracts/target_manifest.py` (`TargetSpecManifestV1` per §10A.1, `parse_target_spec`), `contracts/feature_manifest.py` (`FeatureSchemaManifest` per §10A.4, `closed_keys_and_sorted` validator), `contracts/leakage_config.py` (Ed25519 + scope), `leakage_guards/*`, `keys/architect_pubkeys.json` (committed), `tools/sign_bypass.py` (offline architect-only), `tests/test_canonical_vector.py` (golden vector incl. v11 unknown-field rejection per codex v11 #3), `tests/test_falsification.py` (**all 23 falsifiers** — see §9), `tests/fixtures/triad_models.py` (3 fixtures), `.github/workflows/gate-disable-detection.yml`, `.github/CODEOWNERS` for architect-only files | unit + race + state-machine + 3-fixture + HMAC→Ed25519 round-trip + golden vector + tz-aware compare + `python -O` regression + scope-rejection + byte-mismatch reject + policy-hash mismatch reject + **cache-poisoning reject** (codex v11 #1) + **VerifiedArtifact single-class invariant** (codex v11 #2) + **extra="forbid" reject** (codex v11 #3) |
+| ② | `renquant-pipeline` | `kernel/panel_pipeline/panel_scorer.py::load` route through `load_artifact() -> VerifiedArtifact` (codex v11 #4 — `ScorerArtifact.load()` is v9 and deprecated). Consumer MUST call `verified.open_bytes()` or `verified.spooled_path()`; the AST scan in (gate-disable-detection.yml extension) rejects any re-open of `artifact.model_uri`. | gate-behavior matrix incl. scope-bypass / byte-mismatch / policy-weaker / TOCTOU-reopen-reject / cache-poisoning-reject |
 | ③ | `renquant-model` (PatchTST surface) — codex v10 #6: target the merged repo (the old `renquant-model-patchtst` standalone is deprecated `MIGRATED_TO_renquant-model.md`) | `src/renquant_model_patchtst/hf_trainer.py::_save_artifact` (Tier 1 + policy), new `src/renquant_model_patchtst/post_save_hook.py` (Tier 2 enqueue) | synth Tier-1 + Tier-2 enqueue + synthetic runner E2E |
 | ④ | `renquant-model` (GBDT surface) | mirror of ③ via `src/renquant_model_gbdt/` | mirror |
 | ⑤ | `renquant-orchestrator` + `renquant-backtesting` (paired) | `manifest_row` + `wf_gate/runner.py` + `sim_driver.py` + `scripts/fit_walkforward_calibrators.py` | manifest gate behavior matrix incl. scope binding |
@@ -1437,6 +1497,19 @@ Full architecture wave (split parquet, typed train sig, ban `pd.read_parquet`) d
 | §9 falsifiers | 14 (v7's 1-8 + v8's 9-14); v9/v10 regressions not pinned | **20** — added 15: G3 callable without realized labels; 16: TOCTOU reopen prevention; 17: G0 missing-metadata reject; 18: policy v1 payloads parse v1 only; 19: target-spec versioning binds transform code; 20: memory-safe spill RSS budget. Each pinned to a named pytest. |
 | MVP repo names | ③/④ named `renquant-model-patchtst` / `renquant-model-gbdt` standalone (deprecated) | ③ targets `renquant-model` via `src/renquant_model_patchtst/`; ④ via `src/renquant_model_gbdt/`. Standalone repos marked `MIGRATED_TO_renquant-model.md`. |
 | Doc metadata | `v10`, 17 falsifiers | `v11`, 20 falsifiers, header reviewer summary captures v10 → v11 deltas. |
+
+## 17 · v11 → v12 changelog (codex v11 resolution)
+
+| Element | v11 | v12 |
+|---|---|---|
+| Cache write (large artifacts) | `os.rename(tmp, final)` IF `final` absent, else `tmp.unlink()` and return pre-existing path | `os.replace(tmp, final)` ALWAYS — atomic, freshly-verified bytes overwrite any prior entry. Settled cache entries get `chmod 0o400`. |
+| Cache-dir security | not validated | `_enforce_cache_dir()` refuses symlink / non-owner / mode > 0o700; creates with mode 0o700 if absent. Raises `UnsafeCacheDir` on violation. |
+| `VerifiedArtifact` class | two definitions side-by-side at lines 1036 + 1156 | one definition placed BEFORE `load_artifact()`. CI grep + AST scan reject duplicates. |
+| Versioned-hash Pydantic models | `ConfigDict(frozen=True)` — unknown payload fields silently dropped before hashing | `ConfigDict(frozen=True, extra="forbid")` — unknown fields raise. Applies to `TargetSpecManifestV1/V2`, `TriadPolicyV1/V2`, `FeatureSchemaManifest`. |
+| §13 MVP rows | row ① "all 17 falsifiers", row ② "route through `ScorerArtifact.load()`" | row ① "all 20 falsifiers" + lists `load_artifact()` / `parse_policy` / `parse_target_spec` / `FeatureSchemaManifest`; row ② routes through `load_artifact() -> VerifiedArtifact`; AST scan rejects `artifact.model_uri` reopens. |
+| §10 threat-model header | "Mitigation in v8" + `ScorerArtifact.load()` rows | "Mitigation in v11" + §10A code-path references + falsifier IDs. New attack rows: cache poisoning (#21), target-code drift (#19), feature-schema bypass (#17). |
+| Falsifiers | 20 | **23** — added 21: cache-poisoning reject + symlink/perm reject; 22: VerifiedArtifact single-class invariant; 23: extra="forbid" reject. |
+| Doc metadata | `v11`, 20 falsifiers | `v12`, 23 falsifiers, header reviewer summary captures v11 → v12 deltas. |
 
 ### Previous changelogs (compressed)
 
