@@ -143,6 +143,7 @@ def build_assembly(
         env.extend([
             f"export RENQUANT_SUBREPO_ROOT={runtime_root}",
             "export RENQUANT_STRICT_SUBREPO_PATHS=1",
+            "export RENQUANT_OPS_FAIL_CLOSED=1",
         ])
     env.extend([
         f"export PYTHONPATH={':'.join(python_paths)}:${{PYTHONPATH:-}}",

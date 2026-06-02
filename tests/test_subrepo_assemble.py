@@ -96,6 +96,7 @@ def test_runtime_root_clones_pins_without_touching_dev_worktree(tmp_path):
     env = (assembly / "env.sh").read_text()
     assert f"export RENQUANT_SUBREPO_ROOT={runtime_root}" in env
     assert "export RENQUANT_STRICT_SUBREPO_PATHS=1" in env
+    assert "export RENQUANT_OPS_FAIL_CLOSED=1" in env
     assert (assembly_root / "current.env").read_text() == env
     assert json.loads((assembly_root / "current.json").read_text()) == {
         "current": str(assembly),
