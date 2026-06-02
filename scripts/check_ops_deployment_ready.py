@@ -45,7 +45,7 @@ class Issue:
 
 
 def _git(repo_root: Path, *args: str) -> str:
-    return subprocess.check_output(("git", "-C", str(repo_root), *args), text=True).strip()
+    return subprocess.check_output(("git", "-C", str(repo_root), *args), text=True).rstrip("\n")
 
 
 def _dirty_paths(status: str) -> tuple[list[str], list[str]]:
