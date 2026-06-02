@@ -74,6 +74,15 @@ def parse_args() -> argparse.Namespace:
         help="ISO date (e.g. 2024-01-01); only rows where panel.date < cutoff are used.",
     )
     p.add_argument(
+        "--train-start-date", type=str, default=None,
+        help=(
+            "ISO date (e.g. 2022-01-01); only rows where panel.date >= start are "
+            "used. Defaults to None (use full panel history). Useful for Track D "
+            "regime-drift retraining where only recent data is gradient-relevant. "
+            "Combined with --train-cutoff: rows with start <= date < cutoff."
+        ),
+    )
+    p.add_argument(
         "--output-path", type=str, default=None,
         help="Artifact output path. Defaults to data/panel-ltr-prod-alpha158-fund-fwd60d.json.",
     )
@@ -173,7 +182,8 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                          watchlist_file: Optional[str] = None,
                          label_override: Optional[str] = None,
                          cutoff_embargo_days: Optional[int] = None,
-                         include_features: Optional[list[str]] = None) -> tuple[pd.DataFrame, list[str], str]:
+                         include_features: Optional[list[str]] = None,
+                         train_start_date: Optional[str] = None) -> tuple[pd.DataFrame, list[str], str]:
     """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used).
 
     ``include_features``: opt-in list for Track B addendum columns. When None
@@ -181,6 +191,12 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     the 172-feature baseline recipe. When supplied, only the listed Track B
     columns are kept (others are dropped). Has no effect on baseline alpha158
     + fund + PEAD + SUE + sentiment columns.
+
+    ``train_start_date``: ISO date lower bound. Rows with ``panel.date <
+    train_start_date`` are excluded. Used by Track D regime-drift retraining
+    (post-2022 only) where older data is no longer gradient-relevant for
+    recent BULL_CALM dynamics. ``None`` (default) preserves full-history
+    behaviour.
     """
     label_used = label_override or LABEL
     log.info("Loading R1K + 5-fund panel (already normalized: alpha158=zscore, fund=robust-zscore)...")
@@ -231,6 +247,16 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                      len(set(wl) & set(panel["ticker"].unique())))
 
     train = panel.dropna(subset=[label_used])
+    if train_start_date is not None:
+        before = len(train)
+        train = train[train["date"] >= pd.Timestamp(train_start_date)]
+        log.info("Train-start filter: date>=%s — %d → %d rows (min date %s)",
+                 pd.Timestamp(train_start_date).date().isoformat(), before, len(train),
+                 train["date"].min().date() if len(train) else "EMPTY")
+        if len(train) == 0:
+            raise SystemExit(
+                f"No training rows with date >= {pd.Timestamp(train_start_date).date()}"
+            )
     if cutoff_date is not None:
         before = len(train)
         embargo_days = (
@@ -700,8 +726,33 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    cv_result: dict | None = None,
                    cutoff_embargo_days: int | None = None,
                    train_run_id: str | None = None,
-                   sentiment_contract_metadata: dict | None = None) -> dict:
-    """Build artifact dict, stamping cutoff_date + side_label when set."""
+                   sentiment_contract_metadata: dict | None = None,
+                   train_start_date: Optional[str] = None) -> dict:
+    """Build artifact dict, stamping cutoff_date + side_label when set.
+
+    When ``train_start_date`` is provided (Track D regime-drift retrains),
+    the artifact additionally stamps a machine-readable lower-bound
+    provenance triplet so audits + gates can distinguish full-history vs
+    recent-history retrains that share the same label / feature / config
+    fingerprint:
+
+    - ``train_start_date``: user-supplied ISO string (lower bound).
+    - ``effective_train_start_date``: equal to ``train_start_date`` today
+      (no lower-bound embargo applies; kept distinct for symmetry with
+      ``effective_train_cutoff_date`` and future-proofing if a lower-bound
+      embargo is ever needed).
+    - ``train_window``: ``{"start": ..., "end": ...}`` mirror — ``start`` is
+      the effective lower bound, ``end`` is ``effective_train_cutoff_date``
+      when a cutoff is set, otherwise the observed max train date.
+
+    When ``train_start_date`` is ``None`` these fields are OMITTED (not
+    stamped as ``null``) so default full-history artifacts remain
+    byte-equivalent to pre-extension output. The model-relevant
+    ``config_fingerprint`` is intentionally unchanged — recipe identity
+    (labels / features / config) still maps to one fingerprint; window
+    provenance is metadata-level and read by gates that care about row
+    coverage (§7.6 data-flow safety).
+    """
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
     lookahead_days = infer_label_lookahead_days(label_used)
     base_notes = (
@@ -769,6 +820,26 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["effective_train_cutoff_date"] = (
             cutoff_date - pd.offsets.BDay(artifact["cutoff_embargo_days"])
         ).isoformat()
+    if train_start_date is not None:
+        start_ts = pd.Timestamp(train_start_date)
+        effective_start_iso = start_ts.isoformat()
+        artifact["train_start_date"] = effective_start_iso
+        # No lower-bound embargo applies today; effective == requested.
+        # Kept as a distinct field for symmetry with
+        # ``effective_train_cutoff_date`` and future-proofing.
+        artifact["effective_train_start_date"] = effective_start_iso
+        # train_window mirrors {effective_start, effective_end} so audits
+        # can read both bounds from one field. ``end`` echoes
+        # ``effective_train_cutoff_date`` when a cutoff is set, else the
+        # observed max train date.
+        if cutoff_date is not None:
+            end_iso = artifact["effective_train_cutoff_date"]
+        else:
+            end_iso = pd.Timestamp(train["date"].max()).isoformat()
+        artifact["train_window"] = {
+            "start": effective_start_iso,
+            "end":   end_iso,
+        }
     if side_label is not None:
         artifact["side_label"] = side_label
     if sentiment_contract_metadata:
@@ -821,7 +892,9 @@ def main():
         ]
     train, feat_cols, label_used = load_and_slice_panel(
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
-        cutoff_embargo_days=args.cutoff_embargo_days, include_features=include_features,
+        cutoff_embargo_days=args.cutoff_embargo_days,
+        include_features=include_features,
+        train_start_date=args.train_start_date,
     )
     fingerprint_cfg = build_fingerprint_config(
         fingerprint_config_path=args.fingerprint_config,
@@ -882,7 +955,8 @@ def main():
                               cv_result=cv_result,
                               cutoff_embargo_days=args.cutoff_embargo_days,
                               train_run_id=str(uuid.uuid4())[:8],
-                              sentiment_contract_metadata=sentiment_contract)
+                              sentiment_contract_metadata=sentiment_contract,
+                              train_start_date=args.train_start_date)
 
     fp = stamp_fingerprint(
         artifact,
