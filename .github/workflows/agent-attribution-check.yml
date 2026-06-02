@@ -1,0 +1,12 @@
+name: agent-attribution-check
+# Server-side enforcement of doc/ops/agent-automation.md §4.1 Layer C.
+# Wraps RenQuant umbrella's reusable G1 template — pure bash + git + gh,
+# no LLM dispatch.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, labeled, unlabeled]
+
+jobs:
+  check:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-attribution-check-template.yml@main

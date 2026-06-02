@@ -1,0 +1,41 @@
+name: agent-review
+# Auto-review every non-self PR via Claude AND Codex.
+# Wraps RenQuant umbrella's reusable G2 template per
+# doc/ops/agent-automation.md §3.1 + §4.2.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    # MANDATORY cost gate per §6: skip project docs only.
+    # NB: do NOT add '.github/**' OR '**/*.md' — both are control
+    # planes. `.github/**` houses workflows + CODEOWNERS;
+    # `.github/agent-*.md` is the automation's own prompt template
+    # (PR review of changes to that file is exactly what we want).
+    paths-ignore:
+      - 'doc/**'
+
+concurrency:
+  # MANDATORY: only review the latest commit when a PR is pushed
+  # in quick succession — older runs cancel.
+  group: agent-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # MANDATORY size gate: skip mega-PRs (human-only review territory).
+    if: github.event.pull_request.changed_files < 100
+    uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+    with:
+      agent: claude
+      model: claude-sonnet-4-6
+    secrets:
+      api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  codex-review:
+    if: github.event.pull_request.changed_files < 100
+    uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+    with:
+      agent: codex
+      model: gpt-5-codex
+    secrets:
+      api_key: ${{ secrets.OPENAI_API_KEY }}
