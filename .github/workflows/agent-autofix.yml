@@ -1,0 +1,35 @@
+name: agent-autofix
+# Auto-fix when a reviewer requests changes OR types `@<agent> fix`.
+# Wraps RenQuant umbrella's reusable G3 template per
+# doc/ops/agent-automation.md §3.1 + §4.3.
+
+on:
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
+
+# Per-executor attempt counter via labels (§4.3.3) — concurrency
+# doesn't cancel in-progress fixes (would corrupt push state).
+concurrency:
+  group: agent-autofix-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude-fix:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-fix-template.yml@main
+    with:
+      agent: claude
+      model: claude-opus-4-7   # fix uses the more capable model
+    secrets:
+      api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
+
+  codex-fix:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-fix-template.yml@main
+    with:
+      agent: codex
+      model: gpt-5-codex
+    secrets:
+      api_key: ${{ secrets.OPENAI_API_KEY }}
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
