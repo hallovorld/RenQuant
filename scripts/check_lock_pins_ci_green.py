@@ -23,6 +23,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOCK_FILE = ROOT / "subrepos.lock.json"
 PASSING_CONCLUSIONS = {"success", "neutral"}
+CODE_VALIDATION_EVENTS = {"push"}
 
 
 GithubGet = Callable[[str], dict[str, Any]]
@@ -146,7 +147,11 @@ def _workflow_runs_green(owner_repo: str, full_sha: str, github_get: GithubGet) 
         f"repos/{owner_repo}/actions/runs?"
         + urllib.parse.urlencode({"head_sha": full_sha, "per_page": "50"})
     )
-    runs = _latest_by_name(list(data.get("workflow_runs", [])))
+    raw_runs = list(data.get("workflow_runs", []))
+    runs = _latest_by_name([
+        run for run in raw_runs
+        if str(run.get("event", "")) in CODE_VALIDATION_EVENTS
+    ])
     evidence = {
         "source": "actions/runs",
         "runs": [
@@ -159,6 +164,11 @@ def _workflow_runs_green(owner_repo: str, full_sha: str, github_get: GithubGet) 
             }
             for run in runs
         ],
+        "ignored_events": sorted({
+            str(run.get("event", ""))
+            for run in raw_runs
+            if str(run.get("event", "")) not in CODE_VALIDATION_EVENTS
+        }),
     }
     if not runs:
         return None, evidence

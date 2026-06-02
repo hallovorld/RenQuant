@@ -32,6 +32,7 @@ def _fake_github(*, workflow_runs=None, check_runs=None, status_state="pending",
     workflow_runs = [] if workflow_runs is None else workflow_runs
     check_runs = [] if check_runs is None else check_runs
     statuses = [] if statuses is None else statuses
+    workflow_runs = [{**{"event": "push"}, **run} for run in workflow_runs]
 
     def fake(path: str):
         if path == "repos/hallovorld/renquant-backtesting/commits/9a676e7":
@@ -102,6 +103,34 @@ def test_failed_latest_workflow_run_fails():
     )
 
     assert result.ok is False
+
+
+def test_issue_comment_workflow_failure_does_not_mask_push_ci_success():
+    mod = _load_module()
+    result = mod.check_pin(
+        _entry(),
+        _fake_github(
+            workflow_runs=[
+                {
+                    "name": "agent-autofix",
+                    "event": "issue_comment",
+                    "status": "completed",
+                    "conclusion": "startup_failure",
+                    "updated_at": "2026-06-02T01:20:00Z",
+                },
+                {
+                    "name": "CI",
+                    "event": "push",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "updated_at": "2026-06-02T01:10:00Z",
+                },
+            ],
+        ),
+    )
+
+    assert result.ok is True
+    assert result.evidence["checks"][0]["ignored_events"] == ["issue_comment"]
 
 
 def test_skipped_workflow_run_fails_because_no_ci_executed():
@@ -234,7 +263,7 @@ def test_changed_only_validates_only_changed_subrepo(tmp_path: Path):
         if path == f"repos/hallovorld/renquant-backtesting/compare/{FULL_SHA}...main":
             return {"status": "ahead", "ahead_by": 1, "behind_by": 0}
         if path.startswith(f"repos/hallovorld/renquant-backtesting/actions/runs?head_sha={FULL_SHA}"):
-            return {"workflow_runs": [{"name": "CI", "status": "completed", "conclusion": "success"}]}
+            return {"workflow_runs": [{"name": "CI", "event": "push", "status": "completed", "conclusion": "success"}]}
         raise AssertionError(path)
 
     result = mod.check_lock(current, fake, base_lock_file=base, changed_only=True)
