@@ -62,6 +62,22 @@ def _stamp_all_qp_blocks(ctx, reason: str) -> None:
         _stamp_qp_ticker_block(ctx, str(ticker), reason)
 
 
+# Module-level single source of truth for "the QP solution can drive orders".
+# Both ``SolveMarkowitzQPTask`` (failure-stamping branch) and
+# ``EmitOrdersFromQPSolutionTask`` (emit branch) consult this set; keeping
+# them in sync prevents the codex #75/#10 blocker class where a synthetic
+# success status is treated as a failure upstream while the emit task
+# happily emits orders from it.
+#
+# Add a new status here when a new synthetic-but-successful solver path
+# lands (e.g., ``cap_compliance_fallback`` for the audit #2 / issue #70
+# force-sell escape).
+QP_EMITTABLE_STATUSES: frozenset[str] = frozenset({
+    "optimal",
+    "cap_compliance_fallback",
+})
+
+
 def _stamp_qp_failure_counter(ctx, status: str) -> None:
     """Single source for the no-trade observability counters (codex PR #48
     review #1). Every QP failure path that sets ``ctx._qp_status`` /
@@ -1603,7 +1619,14 @@ class SolveMarkowitzQPTask(Task):
         ctx._qp_solution = sol  # noqa: SLF001
         ctx._qp_status = str(getattr(sol, "status", "missing_solution"))  # noqa: SLF001
         ctx._qp_diagnostics = dict(getattr(sol, "diagnostics", {}) or {})  # noqa: SLF001
-        if sol.status != "optimal":
+        # codex #75/#10: treat any QP_EMITTABLE_STATUSES outcome as a
+        # successful solve, NOT a failure. Pre-fix, ``cap_compliance_fallback``
+        # was both stamped here as ``qp_global:cap_compliance_fallback`` +
+        # all-symbol-blocked + failure-counter-incremented AND simultaneously
+        # emitted by ``EmitOrdersFromQPSolutionTask`` — contradictory state
+        # that broke observability/no-trade-attribution for the exact path
+        # the fallback is supposed to rescue.
+        if sol.status not in QP_EMITTABLE_STATUSES:
             reason = "qp_no_signal" if sol.status == "optimal_no_signal" else f"qp_global:{sol.status}"
             ctx._qp_failure_reason = reason  # noqa: SLF001
             _stamp_qp_failure_counter(ctx, ctx._qp_status)  # noqa: SLF001 (codex PR #48 #1)
@@ -2558,15 +2581,15 @@ class EmitOrdersFromQPSolutionTask(Task):
     """
     name = "EmitOrdersFromQPSolutionTask"
 
-    # Synthetic statuses that EmitOrders treats as successful sources of
-    # Δw. ``cap_compliance_fallback`` is the audit #2 / issue #70 escape
-    # — deterministic force-sell-to-cap for over-cap holdings when the
-    # primary QP is infeasible.
-    _EMITTABLE_STATUSES = frozenset({"optimal", "cap_compliance_fallback"})
+    # Module-level ``QP_EMITTABLE_STATUSES`` is the single source of truth
+    # for "the QP solution can drive orders". Re-exported here as a class
+    # attribute for backward compatibility with tests that import via the
+    # class.
+    _EMITTABLE_STATUSES = QP_EMITTABLE_STATUSES
 
     def run(self, ctx) -> bool | None:
         sol = _get_path(ctx, "_qp_solution")
-        if sol is None or sol.status not in self._EMITTABLE_STATUSES:
+        if sol is None or sol.status not in QP_EMITTABLE_STATUSES:
             status = str(sol.status if sol else "missing_solution")
             reason = (
                 "qp_missing_solution" if sol is None
