@@ -2,7 +2,8 @@
 
 **Date**: 2026-06-02
 **Status**: Plan (codex review pending)
-**Parent diagnostic**: [`2026-06-02-bull-calm-no-signal-diagnostic.md`](./2026-06-02-bull-calm-no-signal-diagnostic.md)
+**Parent diagnostic**: [`2026-06-02-bull-calm-no-signal-diagnostic.md`](./2026-06-02-bull-calm-no-signal-diagnostic.md) (committed)
+**Reviewable evidence**: [`evidence/2026-06-02-bull-calm-no-signal.json`](./evidence/2026-06-02-bull-calm-no-signal.json) (committed)
 **Owner**: Claude (mainline) + Codex (PR review)
 **Strategy**: renquant_104
 
@@ -309,8 +310,12 @@ proves insufficient.
 
 ## Cross-refs
 
+**Committed (reviewable from this branch)**:
 - Parent diagnostic: [`2026-06-02-bull-calm-no-signal-diagnostic.md`](./2026-06-02-bull-calm-no-signal-diagnostic.md)
-- Memory: [`project_bull_calm_no_signal_2026-06-02`](../../memory/project_bull_calm_no_signal_2026-06-02.md)
-- Memory: [`feedback_regime_conditional_strategy`](../../memory/feedback_regime_conditional_strategy.md) — PRIME DIRECTIVE
-- Memory: [`project_perf_wall_realized_ic_2026-05-27`](../../memory/project_perf_wall_realized_ic_2026-05-27.md) — 5/27 wall (this plan's predecessor diagnostic)
-- Memory: [`feedback_research_pipeline_must_gate_with_sanity_triad`](../../memory/feedback_research_pipeline_must_gate_with_sanity_triad.md) — sanity contract
+- Evidence snapshot: [`evidence/2026-06-02-bull-calm-no-signal.json`](./evidence/2026-06-02-bull-calm-no-signal.json)
+
+**Local-only operator memory (NOT in repo, lives at `~/.claude/projects/-Users-renhao-git-github-RenQuant/memory/`)**:
+- `project_bull_calm_no_signal_2026-06-02.md`
+- `feedback_regime_conditional_strategy.md` — PRIME DIRECTIVE
+- `project_perf_wall_realized_ic_2026-05-27.md` — 5/27 wall (this plan's predecessor diagnostic)
+- `feedback_research_pipeline_must_gate_with_sanity_triad.md` — sanity contract

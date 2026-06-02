@@ -1,0 +1,67 @@
+{
+  "_schema_note": "Committed evidence snapshot for doc/research/2026-06-02-bull-calm-no-signal-diagnostic.md. The source staging artifact (panel-ltr.alpha158_fund.weekly_20260602T072600Z.staging.json) is large + per-machine and not tracked in git. This file captures the numeric claims made in the diagnostic memo + plan so they are reproducible from a clean checkout. Values extracted from the wf_gate_metadata block stamped onto that artifact by renquant_backtesting.wf_gate at run 2026-06-02T17:44Z UTC. Re-running the gate against the same candidate against artifacts/sim/walkforward_manifest_v2_20260602.json (39 cuts, current alpha158_fund recipe with config_fingerprint=sha256:14586756d4f67691) will regenerate the same numbers.",
+  "source_artifact": {
+    "path_local_strategy_dir": "artifacts/prod/panel-ltr.alpha158_fund.weekly_20260602T072600Z.staging.json",
+    "config_fingerprint": "sha256:14586756d4f67691",
+    "n_features": 172,
+    "kind": "panel_ltr_xgboost",
+    "label_col": "fwd_60d_excess",
+    "trained_date": "2026-06-02"
+  },
+  "wf_gate_metadata_excerpt": {
+    "passed": false,
+    "wf_3cut_sharpe_mean": 0.6191,
+    "wf_3cut_apy_mean": 0.0617,
+    "spy_sharpe_mean": 1.0808,
+    "strategy_minus_spy_sharpe_mean": -0.462,
+    "n_positive_cuts": 3,
+    "n_cuts_beat_spy_sharpe": 0,
+    "n_cuts_beat_spy_apy": 0,
+    "real_ic": 0.0390,
+    "sanity_shuffled_ic": 0.0045,
+    "sanity_placebo_ic": 0.0198,
+    "sanity_placebo_aligned_real_ic": 0.0761,
+    "sanity_placebo_gate_shift_days": 120,
+    "sanity_label_horizon_days": 60,
+    "regime_benchmark_failures": ["HIGH_CALM", "LOW_SPIKED"]
+  },
+  "sanity_regime_ic": {
+    "passed": false,
+    "reason": "regime sanity IC failed: BEAR,BULL_CALM,CHOPPY",
+    "min_n_dates": 30,
+    "min_mean_ic": 0.02,
+    "max_placebo_ratio": 0.5,
+    "regimes": {
+      "BEAR":          {"mean_ic": 0.3072, "median_ic": 0.3163, "std_ic": 0.1263, "hit_rate": 0.96, "n_dates": 50,  "n_rows": 7100,  "eligible": true,  "passed": false, "placebo_60_ic": 0.1719, "placebo_60_aligned_real_ic": 0.3281},
+      "BULL_CALM":     {"mean_ic": 0.0106, "median_ic": -0.0116,"std_ic": 0.1892, "hit_rate": 0.48, "n_dates": 400, "n_rows": 56635, "eligible": true,  "passed": false, "placebo_60_ic": 0.0222, "placebo_60_aligned_real_ic": 0.0361},
+      "BULL_VOLATILE": {"mean_ic": -0.0241,"median_ic": -0.1274,"std_ic": 0.1495, "hit_rate": 0.42, "n_dates": 19,  "n_rows": 2698,  "eligible": false, "passed": true,  "placebo_60_ic": 0.0469, "placebo_60_aligned_real_ic": -0.0133},
+      "CHOPPY":        {"mean_ic": 0.0172, "median_ic": 0.0282, "std_ic": 0.1312, "hit_rate": 0.59, "n_dates": 39,  "n_rows": 5407,  "eligible": true,  "passed": false, "placebo_60_ic": -0.0121,"placebo_60_aligned_real_ic": 0.0143}
+    }
+  },
+  "benchmark_by_dominant_regime": {
+    "HIGH_CALM":  {"n_cuts": 2, "mean_sharpe":  0.6915, "mean_spy_sharpe": 1.2637, "mean_sharpe_vs_spy": -0.5722, "mean_apy": 0.0726, "mean_spy_apy": 0.1868, "mean_apy_vs_spy": -0.1142, "n_beat_spy_sharpe": 0, "n_beat_spy_apy": 0},
+    "LOW_SPIKED": {"n_cuts": 1, "mean_sharpe":  0.4742, "mean_spy_sharpe": 0.7151, "mean_sharpe_vs_spy": -0.2409, "mean_apy": 0.0398, "mean_spy_apy": 0.1347, "mean_apy_vs_spy": -0.0948, "n_beat_spy_sharpe": 0, "n_beat_spy_apy": 0}
+  },
+  "per_cut_summary": [
+    {"start": "2024-01-02", "end": "2024-12-31", "sharpe": 0.8960, "apy": 0.1059, "spy_sharpe": 1.7783, "spy_apy": 0.2411, "n_trading_days": 251, "hmm_regime_counts": {"BULL_CALM": 195, "BULL_VOLATILE": 36, "CHOPPY": 14, "BEAR": 7}},
+    {"start": "2024-07-01", "end": "2025-06-30", "sharpe": 0.4874, "apy": 0.0393, "spy_sharpe": 0.7493, "spy_apy": 0.1347, "n_trading_days": 250, "hmm_regime_counts": {"BULL_CALM": 139, "BULL_VOLATILE": 59, "BEAR": 39, "CHOPPY": 13}},
+    {"start": "2025-04-01", "end": "2026-03-28", "sharpe": 0.4742, "apy": 0.0398, "spy_sharpe": 0.7151, "spy_apy": 0.1347, "n_trading_days": 249, "hmm_regime_counts": {"BULL_CALM": 155, "BULL_VOLATILE": 52, "BEAR": 27, "CHOPPY": 15}}
+  ],
+  "sim_trade_regime_distribution": {
+    "buys_by_regime":  {"BULL_CALM": 85},
+    "sells_by_regime": {"BULL_CALM": 27, "CHOPPY": 22, "BEAR": 9, "BULL_VOLATILE": 9}
+  },
+  "placebo_shift_diagnostics_summary": [
+    {"shift_days": 5,   "placebo_ic":  0.0369, "aligned_real_ic": 0.0373, "abs_ratio_to_aligned_real": 0.990},
+    {"shift_days": 10,  "placebo_ic":  0.0348, "aligned_real_ic": 0.0378, "abs_ratio_to_aligned_real": 0.919},
+    {"shift_days": 20,  "placebo_ic":  0.0359, "aligned_real_ic": 0.0403, "abs_ratio_to_aligned_real": 0.892},
+    {"shift_days": 40,  "placebo_ic":  0.0376, "aligned_real_ic": 0.0484, "abs_ratio_to_aligned_real": 0.777},
+    {"shift_days": 60,  "placebo_ic":  0.0375, "aligned_real_ic": 0.0580, "abs_ratio_to_aligned_real": 0.647},
+    {"shift_days": 80,  "placebo_ic":  0.0359, "aligned_real_ic": 0.0661, "abs_ratio_to_aligned_real": 0.544},
+    {"shift_days": 120, "placebo_ic":  0.0198, "aligned_real_ic": 0.0761, "abs_ratio_to_aligned_real": 0.260, "_note": "gate metric per PR #31 (2x label_horizon=120d for fwd_60d_excess); PASSES the 0.5 threshold"},
+    {"shift_days": 180, "placebo_ic":  0.0163, "aligned_real_ic": 0.0445, "abs_ratio_to_aligned_real": 0.367},
+    {"shift_days": 252, "placebo_ic":  0.0393, "aligned_real_ic": -0.0117, "abs_ratio_to_aligned_real": 3.350, "_note": "n=256 dates, aligned_real_ic went negative — noise"}
+  ],
+  "gate_version": 2,
+  "run_at_utc": "2026-06-02T17:32:44Z"
+}

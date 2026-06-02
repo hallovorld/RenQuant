@@ -2,7 +2,9 @@
 
 **Date**: 2026-06-02
 **Status**: Mainline finding — closes the "model doesn't react to today's market" thread
-**Verdict producing artifact**: `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.weekly_20260602T072600Z.staging.json`
+**Verdict producing artifact** (local-only, large + per-machine; NOT in git): `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.weekly_20260602T072600Z.staging.json`
+
+**Reviewable evidence snapshot** (committed): [`doc/research/evidence/2026-06-02-bull-calm-no-signal.json`](./evidence/2026-06-02-bull-calm-no-signal.json) — captures every numeric claim in this memo so reviewers can verify the per-regime IC table, sim trade distribution, and per-cut market mix from a clean checkout.
 
 ## TL;DR
 
@@ -78,7 +80,12 @@ The mainline question changes from "fix the silence" to "find a signal that work
 
 ## Files of record
 
-- Today's stamped verdict: `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.weekly_20260602T072600Z.staging.json`
-- Gate log: `/tmp/rerun_gate_post_b1.log`
-- Memory: [`project_perf_wall_realized_ic_2026-05-27`](../../memory/project_perf_wall_realized_ic_2026-05-27.md) — 5/27 saw the same wall, attributed to "realized IC ≈ 0"; today's diagnostic localizes that to BULL_CALM specifically
-- Memory: [`feedback_regime_conditional_strategy`](../../memory/feedback_regime_conditional_strategy.md) — PRIME DIRECTIVE that this finding validates
+**Committed (reviewable from this branch)**:
+- [`doc/research/evidence/2026-06-02-bull-calm-no-signal.json`](./evidence/2026-06-02-bull-calm-no-signal.json) — numeric evidence snapshot for every claim in this memo (per-regime IC, sim trade distribution, per-cut market mix, placebo decay)
+
+**Local-only (NOT in git, recorded here for provenance)**:
+- Source artifact: `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.weekly_20260602T072600Z.staging.json` (large staging file; re-runnable via the weekly WF gate against `walkforward_manifest_v2_20260602.json`)
+- Gate run log: `/tmp/rerun_gate_post_b1.log` (per-machine, not portable)
+- Operator memory (lives outside the repo at `~/.claude/projects/-Users-renhao-git-github-RenQuant/memory/`):
+  - `project_perf_wall_realized_ic_2026-05-27.md` — 5/27 saw the same wall, attributed to "realized IC ≈ 0"; today's diagnostic localizes that to BULL_CALM
+  - `feedback_regime_conditional_strategy.md` — PRIME DIRECTIVE that this finding validates
