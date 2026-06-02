@@ -114,6 +114,15 @@ def _subrepo_src_roots() -> tuple[list[Path], list[str]]:
     return roots, missing
 
 
+def _force_alias(alias: str, target: str, aliased: list[str]) -> None:
+    try:
+        mod = importlib.import_module(target)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"critical multirepo module unavailable: {target}") from exc
+    sys.modules[alias] = mod
+    aliased.append(f"{alias}<-{target}")
+
+
 def _bootstrap_multirepo() -> list[str]:
     """Put sibling subrepos on sys.path and alias lifted kernel modules."""
     for path in (str(REPO), str(STRATEGY_DIR)):
@@ -149,29 +158,24 @@ def _bootstrap_multirepo() -> list[str]:
         sys.modules[modname] = mod
         aliased.append(modname)
 
-    try:
-        bm = importlib.import_module("renquant_backtesting.meta_label")
-        sys.modules["renquant_pipeline.kernel.meta_label"] = bm
-        aliased.append("renquant_pipeline.kernel.meta_label<-renquant_backtesting")
-    except Exception:
-        try:
-            um = importlib.import_module("kernel.meta_label")
-            sys.modules["renquant_pipeline.kernel.meta_label"] = um
-            aliased.append("renquant_pipeline.kernel.meta_label<-umbrella")
-        except Exception:
-            pass
-
+    # Critical production modules must not silently fall back to umbrella. If
+    # one of these imports fails, the multirepo runner is not actually running
+    # the pinned production path and should fail closed.
+    _force_alias("kernel.preflight", "renquant_pipeline.kernel.preflight", aliased)
+    _force_alias("kernel.panel_pipeline", "renquant_pipeline.kernel.panel_pipeline", aliased)
+    _force_alias(
+        "renquant_pipeline.kernel.meta_label",
+        "renquant_backtesting.meta_label",
+        aliased,
+    )
     # Keep the proven fail-closed panel scoring path from the lifted
     # renquant-pipeline kernel package until the load_scorer rewrite passes
     # production parity.
-    try:
-        sys.modules["renquant_pipeline.panel_scoring"] = importlib.import_module(
-            "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring"
-        )
-        aliased.append(
-            "renquant_pipeline.panel_scoring<-renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")
-    except Exception:
-        pass
+    _force_alias(
+        "renquant_pipeline.panel_scoring",
+        "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring",
+        aliased,
+    )
     return aliased
 
 

@@ -7,12 +7,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 
 
 def _load_bridge_module():
     path = REPO / "scripts" / "live_multirepo.py"
     spec = importlib.util.spec_from_file_location("live_multirepo_for_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_daily_module():
+    path = REPO / "scripts" / "daily_multirepo.py"
+    spec = importlib.util.spec_from_file_location("daily_multirepo_for_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -27,7 +38,8 @@ def test_daily_multirepo_keeps_standalone_umbrella_bridge() -> None:
     assert "resolve_subrepo_root(REPO)" in src
     assert "from live_multirepo import main" not in src
     assert "umbrella.job_panel_scoring" not in src
-    assert 'importlib.import_module(\n            "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")' in src
+    assert '"renquant_pipeline.kernel.panel_pipeline.job_panel_scoring"' in src
+    assert "critical multirepo module unavailable" in src
 
 
 def test_live_multirepo_resolves_subrepos_from_lock() -> None:
@@ -178,3 +190,27 @@ def test_live_multirepo_aliases_critical_lifted_modules() -> None:
     assert panel_scoring.__name__ == (
         "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring"
     )
+
+
+@pytest.mark.parametrize("loader", [_load_bridge_module, _load_daily_module])
+def test_multirepo_force_alias_fails_closed_on_critical_import(monkeypatch, loader) -> None:
+    mod = loader()
+
+    def fake_import(name: str):
+        raise ImportError(f"blocked {name}")
+
+    monkeypatch.setattr(mod.importlib, "import_module", fake_import)
+    with pytest.raises(RuntimeError, match="critical multirepo module unavailable"):
+        mod._force_alias(
+            "kernel.preflight",
+            "renquant_pipeline.kernel.preflight",
+            [],
+        )
+
+
+def test_multirepo_bridges_removed_critical_umbrella_fallbacks() -> None:
+    for script in ("daily_multirepo.py", "live_multirepo.py"):
+        src = (REPO / "scripts" / script).read_text()
+        assert "renquant_pipeline.kernel.meta_label<-umbrella" not in src
+        assert "renquant_pipeline.kernel.meta_label←umbrella" not in src
+        assert "Critical production modules must not silently fall back" in src
