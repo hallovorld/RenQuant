@@ -521,6 +521,17 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="subrepo_lock_refresh_prewrite_ci_gate_available",
+        path="scripts/refresh_subrepo_lock.py",
+        required=(
+            "check_lock_func(candidate_path, only_subrepos=changed_names)",
+            "candidate subrepo pin failed CI-green gate",
+            "subrepo_lock_ci_green_force_override",
+            "os.replace(tmp_path, path)",
+            "--force",
+        ),
+    ),
+    Check(
         name="subrepo_pin_ci_green_workflow_wired",
         path=".github/workflows/subrepo-pin-ci-green.yml",
         required=(
