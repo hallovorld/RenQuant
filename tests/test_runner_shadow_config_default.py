@@ -31,3 +31,11 @@ def test_non_shadow_paths_default_to_production_config():
         "readonly-alpaca",
         None,
     ) == "strategy_config.json"
+
+
+def test_runner_accepts_external_strategy_config_path():
+    src = (runner.REPO_ROOT / "live" / "runner.py").read_text()
+    assert "--strategy-config-path" in src
+    assert "config[\"_strategy_config_path\"]" in src
+    assert "state, data, and artifact paths still resolve" in src
+    assert "only the config" in src
