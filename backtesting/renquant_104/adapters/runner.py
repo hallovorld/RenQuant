@@ -1505,9 +1505,22 @@ class RunnerAdapter:
             len(fill_dates),
         )
         if broker_streak != counter_streak:
-            log.warning(
-                "no_trade_streak DIVERGENCE: counter=%d vs broker=%d — "
-                "overriding with broker truth. Counter bug or state corruption.",
+            # 2026-06-01: divergence is the EXPECTED outcome of this
+            # architecture, not a bug. The stateful counter is
+            # per-bar-incremented by MonitorIdleStreakTask using
+            # `bool(ctx.orders) or bool(ctx.exits)` as the activity signal,
+            # which misses externally-driven activity (broker-side stop
+            # fills, manual closes, corporate actions surfaced via
+            # STATE-EXT-SELL). Broker fill history is the §7.5 single
+            # source of truth, and this method is the override that
+            # enforces it. The log used to be WARNING with "Counter bug
+            # or state corruption" wording — that mislabelled normal
+            # operation as an incident. Downgraded to INFO with neutral
+            # wording so the actual signal (broker truth = N) is visible
+            # without ntfy alert noise.
+            log.info(
+                "no_trade_streak override: stateful-counter=%d  broker-truth=%d  "
+                "(stateful counter misses ext-fills; broker history is canonical).",
                 counter_streak, broker_streak,
             )
         mon["no_trade_streak"] = broker_streak
