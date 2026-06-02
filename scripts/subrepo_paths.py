@@ -23,6 +23,33 @@ def _abs_path(repo_root: Path, raw: str) -> Path:
     return path if path.is_absolute() else repo_root / path
 
 
+def _lock_local_path_root(repo_root: Path) -> Path | None:
+    lock_path = repo_root / "subrepos.lock.json"
+    if not lock_path.exists():
+        return None
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    parents: set[Path] = set()
+    n_local_paths = 0
+    n_existing = 0
+    for entry in lock.get("subrepos", []):
+        raw = entry.get("local_path")
+        if not raw:
+            continue
+        n_local_paths += 1
+        path = _abs_path(repo_root, str(raw))
+        if not (path / "src").is_dir():
+            continue
+        n_existing += 1
+        parents.add(path.parent)
+    if n_local_paths > 0 and n_existing == n_local_paths and len(parents) == 1:
+        return next(iter(parents))
+    return None
+
+
 def resolve_subrepo_root(repo_root: Path) -> Path:
     """Return runtime root, current assembly repos dir, or sibling checkout root."""
     if root := os.environ.get("RENQUANT_SUBREPO_ROOT"):
@@ -55,5 +82,8 @@ def resolve_subrepo_root(repo_root: Path) -> Path:
             current = None
         if current is not None and (current / "repos").exists():
             return current / "repos"
+
+    if root := _lock_local_path_root(repo_root):
+        return root
 
     return repo_root.parent
