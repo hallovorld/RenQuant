@@ -18,17 +18,26 @@ def _load_module():
     return module
 
 
-def _patch_green_dependencies(monkeypatch, module, *, branch: str = "main") -> None:
+def _patch_green_dependencies(
+    monkeypatch,
+    module,
+    *,
+    branch: str = "main",
+    runtime_head: str | None = None,
+    dirty: bool = False,
+) -> None:
     def fake_git(repo_root: Path, *args: str) -> str:
         joined = " ".join(args)
         if "--abbrev-ref" in joined:
             return branch
+        if args == ("log", "-1", "--format=%H"):
+            return runtime_head or ("a" * 40)
         if "--verify origin/main" in joined:
             return "a" * 40
         if args == ("rev-parse", "HEAD"):
             return "a" * 40
         if args == ("status", "--porcelain"):
-            return ""
+            return " M scripts/daily_104.sh" if dirty else ""
         raise AssertionError(args)
 
     monkeypatch.setattr(module, "_git", fake_git)
@@ -38,6 +47,22 @@ def _patch_green_dependencies(monkeypatch, module, *, branch: str = "main") -> N
         "inspect_launchagents",
         lambda **kwargs: {"ok": True, "issues": [], "entries": []},
     )
+
+
+def _write_pinned_runtime(tmp_path: Path, *, commit: str = "a" * 40) -> Path:
+    runtime = tmp_path / ".subrepo_runtime" / "repos"
+    (runtime / "renquant-common").mkdir(parents=True)
+    (tmp_path / "subrepos.lock.json").write_text(
+        '{"subrepos":[{"name":"renquant-common","commit":"' + commit + '"}]}',
+        encoding="utf-8",
+    )
+    env_dir = tmp_path / ".subrepo_assembly"
+    env_dir.mkdir()
+    (env_dir / "current.env").write_text(
+        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
+        encoding="utf-8",
+    )
+    return runtime
 
 
 def test_read_exports_parses_current_env(tmp_path: Path) -> None:
@@ -72,14 +97,7 @@ def test_readiness_requires_runtime_root(monkeypatch, tmp_path: Path) -> None:
 def test_readiness_passes_with_runtime_root_and_green_checks(monkeypatch, tmp_path: Path) -> None:
     module = _load_module()
     _patch_green_dependencies(monkeypatch, module)
-    runtime = tmp_path / ".subrepo_runtime" / "repos"
-    runtime.mkdir(parents=True)
-    env_dir = tmp_path / ".subrepo_assembly"
-    env_dir.mkdir()
-    (env_dir / "current.env").write_text(
-        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
-        encoding="utf-8",
-    )
+    runtime = _write_pinned_runtime(tmp_path)
 
     result = module.run_readiness(
         repo_root=tmp_path,
@@ -89,19 +107,14 @@ def test_readiness_passes_with_runtime_root_and_green_checks(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert result["details"]["subrepo_root"] == str(runtime)
+    assert result["details"]["runtime_pins_ok"] is True
+    assert result["runtime_pins"]["entries"][0]["name"] == "renquant-common"
 
 
 def test_readiness_can_skip_launchagents_for_preinstall(monkeypatch, tmp_path: Path) -> None:
     module = _load_module()
     _patch_green_dependencies(monkeypatch, module)
-    runtime = tmp_path / ".subrepo_runtime" / "repos"
-    runtime.mkdir(parents=True)
-    env_dir = tmp_path / ".subrepo_assembly"
-    env_dir.mkdir()
-    (env_dir / "current.env").write_text(
-        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
-        encoding="utf-8",
-    )
+    _write_pinned_runtime(tmp_path)
 
     def fail_if_called(**kwargs):
         raise AssertionError("launchagent inspection must be skipped in pre-install mode")
@@ -123,14 +136,7 @@ def test_readiness_can_skip_launchagents_for_preinstall(monkeypatch, tmp_path: P
 def test_readiness_still_blocks_launchagent_drift_by_default(monkeypatch, tmp_path: Path) -> None:
     module = _load_module()
     _patch_green_dependencies(monkeypatch, module)
-    runtime = tmp_path / ".subrepo_runtime" / "repos"
-    runtime.mkdir(parents=True)
-    env_dir = tmp_path / ".subrepo_assembly"
-    env_dir.mkdir()
-    (env_dir / "current.env").write_text(
-        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
-        encoding="utf-8",
-    )
+    _write_pinned_runtime(tmp_path)
     monkeypatch.setattr(
         module,
         "inspect_launchagents",
@@ -147,17 +153,43 @@ def test_readiness_still_blocks_launchagent_drift_by_default(monkeypatch, tmp_pa
     assert any(issue["check"] == "launchagents" for issue in result["issues"])
 
 
+def test_readiness_blocks_stale_runtime_pin(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    _patch_green_dependencies(monkeypatch, module, runtime_head="b" * 40)
+    _write_pinned_runtime(tmp_path, commit="a" * 40)
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+    )
+
+    assert result["ok"] is False
+    assert result["details"]["runtime_pins_ok"] is False
+    assert any(issue["check"] == "runtime_pins" for issue in result["issues"])
+    assert result["runtime_pins"]["failures"][0]["name"] == "renquant-common"
+
+
+def test_readiness_blocks_dirty_worktree(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    _patch_green_dependencies(monkeypatch, module, dirty=True)
+    _write_pinned_runtime(tmp_path)
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+    )
+
+    assert result["ok"] is False
+    assert result["details"]["dirty"] is True
+    assert any(issue["check"] == "git_dirty" for issue in result["issues"])
+
+
 def test_readiness_blocks_non_main_branch(monkeypatch, tmp_path: Path) -> None:
     module = _load_module()
     _patch_green_dependencies(monkeypatch, module, branch="feature")
-    runtime = tmp_path / ".subrepo_runtime" / "repos"
-    runtime.mkdir(parents=True)
-    env_dir = tmp_path / ".subrepo_assembly"
-    env_dir.mkdir()
-    (env_dir / "current.env").write_text(
-        f"export RENQUANT_SUBREPO_ROOT={runtime}\n",
-        encoding="utf-8",
-    )
+    _write_pinned_runtime(tmp_path)
 
     result = module.run_readiness(repo_root=tmp_path, canonical_repo=tmp_path)
 

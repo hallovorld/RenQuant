@@ -53,6 +53,72 @@ def _read_exports(path: Path) -> dict[str, str]:
     return exports
 
 
+def _validate_runtime_pins(repo_root: Path, runtime_root: Path) -> dict[str, Any]:
+    """Verify runtime-root clones match subrepos.lock.json exactly enough for ops."""
+    failures: list[dict[str, str]] = []
+    entries: list[dict[str, Any]] = []
+    lock_path = repo_root / "subrepos.lock.json"
+
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "lock_path": str(lock_path),
+            "entries": entries,
+            "failures": [{"name": "subrepos.lock.json", "reason": f"cannot read lock: {exc}"}],
+        }
+
+    for entry in lock.get("subrepos", []):
+        name = str(entry.get("name", ""))
+        expected = str(entry.get("commit", ""))
+        path = runtime_root / name
+        row: dict[str, Any] = {
+            "name": name,
+            "path": str(path),
+            "expected": expected,
+        }
+        if not name or not expected:
+            row["ok"] = False
+            row["reason"] = "missing name or commit in lock"
+            failures.append({"name": name or "<missing>", "reason": row["reason"]})
+            entries.append(row)
+            continue
+        if not path.exists():
+            row["ok"] = False
+            row["reason"] = "runtime repo missing"
+            failures.append({"name": name, "reason": f"missing at {path}"})
+            entries.append(row)
+            continue
+
+        try:
+            actual = _git(path, "log", "-1", "--format=%H")
+            dirty = bool(_git(path, "status", "--porcelain"))
+        except subprocess.CalledProcessError as exc:
+            row["ok"] = False
+            row["reason"] = f"git metadata failed: {exc}"
+            failures.append({"name": name, "reason": row["reason"]})
+            entries.append(row)
+            continue
+
+        row.update({"actual": actual, "dirty": dirty, "ok": actual.startswith(expected) and not dirty})
+        if not actual.startswith(expected):
+            row["reason"] = "HEAD does not match pinned commit"
+            failures.append({"name": name, "reason": f"expected {expected}, got {actual}"})
+        elif dirty:
+            row["reason"] = "runtime repo dirty"
+            failures.append({"name": name, "reason": "runtime repo dirty"})
+        entries.append(row)
+
+    return {
+        "ok": not failures,
+        "lock_path": str(lock_path),
+        "runtime_root": str(runtime_root),
+        "entries": entries,
+        "failures": failures,
+    }
+
+
 def run_readiness(
     *,
     repo_root: Path = ROOT,
@@ -94,9 +160,12 @@ def run_readiness(
         issues.append(Issue("error", "git_branch", f"expected main, got {branch!r}"))
     if head and origin_main and head != origin_main:
         issues.append(Issue("error", "git_head", "HEAD does not match origin/main"))
+    if dirty:
+        issues.append(Issue("error", "git_dirty", "working tree has uncommitted changes"))
 
     env_path = repo_root / ".subrepo_assembly" / "current.env"
     exports = _read_exports(env_path)
+    runtime_pins: dict[str, Any] = {"ok": None, "entries": [], "failures": []}
     details["subrepo_env"] = str(env_path)
     details["subrepo_root"] = exports.get("RENQUANT_SUBREPO_ROOT")
     if not exports.get("RENQUANT_SUBREPO_ROOT"):
@@ -111,6 +180,14 @@ def run_readiness(
         issues.append(
             Issue("error", "runtime_root", f"runtime root does not exist: {exports['RENQUANT_SUBREPO_ROOT']}")
         )
+    else:
+        runtime_root = Path(exports["RENQUANT_SUBREPO_ROOT"]).expanduser()
+        runtime_pins = _validate_runtime_pins(repo_root, runtime_root)
+        details["runtime_pins_ok"] = bool(runtime_pins.get("ok"))
+        if not runtime_pins.get("ok"):
+            issues.append(Issue("error", "runtime_pins", json.dumps(runtime_pins.get("failures", []))))
+    if "runtime_pins_ok" not in details:
+        details["runtime_pins_ok"] = None
 
     contract = run_contract()
     details["subrepo_ops_contract_ok"] = bool(contract.get("ok"))
@@ -140,6 +217,7 @@ def run_readiness(
         "ok": not errors,
         "details": details,
         "issues": [issue.as_dict() for issue in issues],
+        "runtime_pins": runtime_pins,
         "launchagents": launchagents,
     }
 
