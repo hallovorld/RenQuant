@@ -194,6 +194,113 @@ class TestSimAdapterGmmHistoricalFallback:
         assert not any("substituting historical sim artifact" in r.message for r in caplog.records)
 
 
+class TestSimAdapterCorrHistoricalFallback:
+    """SimAdapter substitutes historical sim correlation when prod artifact would leak.
+
+    Sibling-of-GMM regression guard for 2026-06-02 WF gate sim failure: prod-
+    semantic WF configs inherit ``prod/watchlist-correlation.json`` (as_of
+    today) but run historical 2024 backtests. SimAdapter must swap to
+    ``sim/watchlist-correlation.json`` BEFORE ``assert_correlation_no_leakage``
+    fires. If the historical artifact is missing the guard MUST still raise.
+    """
+
+    @staticmethod
+    def _write_corr_v2(path: Path, as_of_date: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "as_of_date": as_of_date,
+            "trained_date": as_of_date,
+            "matrix": {"AAPL": {"AAPL": 1.0, "MSFT": 0.5},
+                       "MSFT": {"AAPL": 0.5, "MSFT": 1.0}},
+        }, indent=2))
+
+    def _write_gmm_safe(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "as_of_date": "2023-12-29",
+            "trained_date": "2023-12-29",
+            "feature_order": ["10d_return", "20d_realized_vol", "spy_adx", "return_autocorr"],
+            "means": [[0.0] * 4] * 3,
+            "covariances": [[[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]] * 3,
+            "weights": [1 / 3, 1 / 3, 1 / 3],
+            "cluster_labels": ["BULL_CALM", "BULL_VOLATILE", "BEAR"],
+            "scaler_mean": [0.0] * 4,
+            "scaler_scale": [1.0] * 4,
+        }, indent=2))
+
+    def test_substitutes_historical_when_configured_correlation_leaks(
+        self, tmp_path: Path, caplog,
+    ) -> None:
+        # Need a safe GMM to get past the GMM guard so the corr path runs.
+        self._write_gmm_safe(tmp_path / "artifacts" / "sim" / "spy-gmm-regime.json")
+        self._write_corr_v2(tmp_path / "artifacts" / "prod" / "watchlist-correlation.json", "2026-05-22")
+        self._write_corr_v2(tmp_path / "artifacts" / "sim" / "watchlist-correlation.json", "2023-12-31")
+
+        adp = SimAdapter.__new__(SimAdapter)
+        adp._strategy_dir = tmp_path
+        adp._config = {
+            "backtest_start": "2024-01-02",
+            "regime": {
+                "gmm_artifact": "sim/spy-gmm-regime.json",
+                "correlation_artifact": "prod/watchlist-correlation.json",
+            },
+        }
+
+        with caplog.at_level(logging.WARNING, logger="adapters.sim"):
+            _gmm, _earnings, corr = adp._load_artifacts(fallback_corr=None)
+
+        assert corr  # parsed successfully
+        assert any(
+            "substituting historical sim artifact" in r.message
+            and "watchlist-correlation" in r.message
+            for r in caplog.records
+        )
+
+    def test_raises_when_no_historical_correlation_available(self, tmp_path: Path) -> None:
+        self._write_gmm_safe(tmp_path / "artifacts" / "sim" / "spy-gmm-regime.json")
+        self._write_corr_v2(tmp_path / "artifacts" / "prod" / "watchlist-correlation.json", "2026-05-22")
+        # No sim/watchlist-correlation.json — fail-closed path.
+
+        adp = SimAdapter.__new__(SimAdapter)
+        adp._strategy_dir = tmp_path
+        adp._config = {
+            "backtest_start": "2024-01-02",
+            "regime": {
+                "gmm_artifact": "sim/spy-gmm-regime.json",
+                "correlation_artifact": "prod/watchlist-correlation.json",
+            },
+        }
+
+        with pytest.raises(ValueError, match="correlation artifact"):
+            adp._load_artifacts(fallback_corr=None)
+
+    def test_does_not_substitute_when_correlation_is_already_safe(
+        self, tmp_path: Path, caplog,
+    ) -> None:
+        self._write_gmm_safe(tmp_path / "artifacts" / "sim" / "spy-gmm-regime.json")
+        self._write_corr_v2(tmp_path / "artifacts" / "sim" / "watchlist-correlation.json", "2023-12-31")
+
+        adp = SimAdapter.__new__(SimAdapter)
+        adp._strategy_dir = tmp_path
+        adp._config = {
+            "backtest_start": "2024-01-02",
+            "regime": {
+                "gmm_artifact": "sim/spy-gmm-regime.json",
+                "correlation_artifact": "sim/watchlist-correlation.json",
+            },
+        }
+
+        with caplog.at_level(logging.WARNING, logger="adapters.sim"):
+            _gmm, _earnings, corr = adp._load_artifacts(fallback_corr=None)
+
+        assert corr
+        assert not any(
+            "substituting historical sim artifact" in r.message
+            and "watchlist-correlation" in r.message
+            for r in caplog.records
+        )
+
+
 def test_regime_gmm_fit_rejects_nonfinite_features() -> None:
     dates = pd.date_range("2023-01-01", periods=10, freq="B")
     features = pd.DataFrame(
