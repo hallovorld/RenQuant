@@ -76,6 +76,7 @@ def test_lookup_swallows_broker_exception():
 
 
 def test_lookup_picks_latest_sell_per_ticker():
+    """Original generic ``side`` schema (kept for back-compat)."""
     ra = _adapter_skeleton()
 
     fills = [
@@ -104,10 +105,111 @@ def test_lookup_picks_latest_sell_per_ticker():
     result = ra._lookup_ext_sell_fills(_fake_ctx(), ["GE", "DUK"])
     assert "GE" in result
     assert result["GE"]["order_id"] == "ge-new"
-    assert result["GE"]["fill_price"] == 110.0
-    assert result["GE"]["fill_qty"] == 7
+    # Codex #76: normalized keys are ``price`` + ``qty`` (not the broker-
+    # specific ``fill_price`` / ``filled_qty``).
+    assert result["GE"]["price"] == 110.0
+    assert result["GE"]["qty"] == 7
+    assert result["GE"]["side"] == "sell"
     # DUK had no fills in the window
     assert "DUK" not in result
+
+
+# ── Codex #76: live-broker schema (action + avg_price) ─────────────────────
+
+def test_lookup_handles_live_alpaca_broker_schema():
+    """Umbrella ``live/alpaca_broker.py::get_filled_orders`` returns:
+        {order_id, symbol, action ("BUY"/"SELL"), qty, filled_at, avg_price, partial}
+
+    Codex #76 found the original code looked for ``side`` only, accepting
+    a BUY fill silently. This test pins the live-schema path."""
+    ra = _adapter_skeleton()
+
+    fills = [
+        # GE SELL via action key + avg_price + filled_qty path
+        {"order_id": "stop-abc", "symbol": "GE", "action": "SELL",
+         "qty": 10, "filled_at": "2026-06-01T19:30:00Z",
+         "avg_price": 95.0, "partial": False},
+        # GE BUY via action — must be excluded
+        {"order_id": "buy-xyz", "symbol": "GE", "action": "BUY",
+         "qty": 5, "filled_at": "2026-06-01T20:00:00Z",
+         "avg_price": 96.0, "partial": False},
+    ]
+
+    class _LiveAlpacaBroker:
+        def get_filled_orders(self, after=None):
+            return fills
+
+    ra._broker = _LiveAlpacaBroker()
+    ra._stop_orders = {"GE": {"order_id": "stop-abc"}}
+
+    result = ra._lookup_ext_sell_fills(_fake_ctx(), ["GE"])
+    assert "GE" in result, "live-broker SELL must be captured"
+    assert result["GE"]["order_id"] == "stop-abc"
+    assert result["GE"]["price"] == 95.0
+    assert result["GE"]["qty"] == 10
+    assert result["GE"]["side"] == "sell"
+
+    # And attribution correctly classifies as z9_stop now.
+    attribution = ra._attribute_ext_sell("GE", result)
+    assert "source=z9_stop" in attribution
+    assert "order_id=stop-abc" in attribution
+    assert "price=95.0" in attribution
+    assert "qty=10" in attribution
+
+
+def test_lookup_handles_execution_subrepo_schema():
+    """``renquant-execution/alpaca_broker.py::get_filled_orders`` returns:
+        {order_id, status, symbol, filled_qty, filled_avg_price, filled_at, ...}
+    No ``side`` / ``action`` field. The lookup must accept the row (absence
+    of a side field is not "this is a buy") and read ``filled_avg_price`` /
+    ``filled_qty``."""
+    ra = _adapter_skeleton()
+
+    fills = [
+        {"order_id": "stop-def", "symbol": "DUK",
+         "filled_qty": 20, "filled_avg_price": 75.0,
+         "filled_at": "2026-06-01T18:00:00Z",
+         "status": "filled"},
+    ]
+
+    class _ExecutionSubrepoBroker:
+        def get_filled_orders(self, after=None):
+            return fills
+
+    ra._broker = _ExecutionSubrepoBroker()
+    ra._stop_orders = {"DUK": {"order_id": "stop-def"}}
+
+    result = ra._lookup_ext_sell_fills(_fake_ctx(), ["DUK"])
+    assert "DUK" in result
+    assert result["DUK"]["order_id"] == "stop-def"
+    assert result["DUK"]["price"] == 75.0
+    assert result["DUK"]["qty"] == 20
+    # No side field on the input → normalized side = ""
+    assert result["DUK"]["side"] == ""
+
+    attribution = ra._attribute_ext_sell("DUK", result)
+    assert "source=z9_stop" in attribution
+
+
+def test_lookup_rejects_buy_action_under_live_schema():
+    """Regression: previously, an ``action=BUY`` fill was accepted because
+    the code only checked ``side``. Now it must be filtered out."""
+    ra = _adapter_skeleton()
+
+    fills = [
+        # Only BUY — should produce no result
+        {"order_id": "buy-only", "symbol": "GE", "action": "BUY",
+         "qty": 5, "filled_at": "2026-06-01T20:00:00Z",
+         "avg_price": 96.0, "partial": False},
+    ]
+
+    class _LiveAlpacaBroker:
+        def get_filled_orders(self, after=None):
+            return fills
+
+    ra._broker = _LiveAlpacaBroker()
+    result = ra._lookup_ext_sell_fills(_fake_ctx(), ["GE"])
+    assert result == {}, f"BUY-only fills must not be captured; got {result}"
 
 
 # ── _attribute_ext_sell ─────────────────────────────────────────────────────
@@ -120,8 +222,8 @@ def test_attribution_no_fill_record():
 def test_attribution_z9_stop_when_order_ids_match():
     ra = _adapter_skeleton()
     ra._stop_orders = {"GE": {"order_id": "stop-abc"}}
-    fills = {"GE": {"order_id": "stop-abc", "fill_price": 95.0,
-                    "fill_qty": 10, "filled_at": "2026-06-01T19:30:00Z"}}
+    fills = {"GE": {"order_id": "stop-abc", "price": 95.0,
+                    "qty": 10, "filled_at": "2026-06-01T19:30:00Z"}}
     text = ra._attribute_ext_sell("GE", fills)
     assert "source=z9_stop" in text
     assert "order_id=stop-abc" in text
@@ -133,8 +235,8 @@ def test_attribution_external_when_order_ids_differ():
     """Z9 stop tracked but fill came from a different order_id → manual."""
     ra = _adapter_skeleton()
     ra._stop_orders = {"GE": {"order_id": "stop-abc"}}
-    fills = {"GE": {"order_id": "manual-xyz", "fill_price": 100.0,
-                    "fill_qty": 10, "filled_at": "2026-06-01T15:00:00Z"}}
+    fills = {"GE": {"order_id": "manual-xyz", "price": 100.0,
+                    "qty": 10, "filled_at": "2026-06-01T15:00:00Z"}}
     text = ra._attribute_ext_sell("GE", fills)
     assert "source=external_or_manual" in text
     assert "order_id=manual-xyz" in text
@@ -144,8 +246,8 @@ def test_attribution_external_when_no_z9_stop_tracked():
     """No Z9 stop for this ticker → external by definition."""
     ra = _adapter_skeleton()
     ra._stop_orders = {}
-    fills = {"GE": {"order_id": "any-id", "fill_price": 100.0,
-                    "fill_qty": 5, "filled_at": "2026-06-01T15:00:00Z"}}
+    fills = {"GE": {"order_id": "any-id", "price": 100.0,
+                    "qty": 5, "filled_at": "2026-06-01T15:00:00Z"}}
     text = ra._attribute_ext_sell("GE", fills)
     assert "source=external_or_manual" in text
 
@@ -154,8 +256,8 @@ def test_attribution_handles_missing_fields_gracefully():
     """A broker that omits fields shouldn't crash the log emission."""
     ra = _adapter_skeleton()
     ra._stop_orders = {}
-    fills = {"GE": {"order_id": None, "fill_price": None,
-                    "fill_qty": None, "filled_at": None}}
+    fills = {"GE": {"order_id": None, "price": None,
+                    "qty": None, "filled_at": None}}
     text = ra._attribute_ext_sell("GE", fills)
     assert "source=external_or_manual" in text
     # Each missing field renders as "?" — single-line, no exceptions

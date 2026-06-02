@@ -1601,6 +1601,75 @@ class RunnerAdapter:
 
     # ── STATE-EXT-SELL fill attribution (issue #71 / audit #5) ────────────────
 
+    # Codex #76: the two in-repo broker implementations of get_filled_orders
+    # return DIFFERENT keys. Normalize through this schema map so the lookup
+    # works on both AND any future broker that mostly follows one convention.
+    #
+    # umbrella live/alpaca_broker.py returns:
+    #   symbol, action ("BUY"/"SELL"), qty, filled_at, avg_price, partial
+    #   + order_id (added in this PR)
+    #
+    # renquant-execution/alpaca_broker.py returns:
+    #   order_id, status, symbol, filled_qty, filled_avg_price,
+    #   created_at, submitted_at, filled_at
+    #   (no side/action — but status=="filled" means we don't know direction)
+    _FILL_SIDE_KEYS  = ("side", "action")
+    _FILL_PRICE_KEYS = ("avg_price", "fill_price", "filled_avg_price")
+    _FILL_QTY_KEYS   = ("qty", "filled_qty", "fill_qty")
+    _FILL_ID_KEYS    = ("order_id", "id")
+
+    @staticmethod
+    def _normalize_fill_record(f: dict) -> dict:
+        """Project a broker-specific fill dict onto a uniform schema:
+
+            {order_id, side ("sell"/"buy"/""), price, qty, filled_at}
+
+        Returns ``side=""`` only when NO direction field is present at all
+        — caller must then fail-closed and skip the row to avoid mistaking
+        a buy for a sell."""
+        side_raw = ""
+        for key in RunnerAdapter._FILL_SIDE_KEYS:
+            v = f.get(key)
+            if v:
+                side_raw = str(v).lower()
+                break
+        side = "sell" if "sell" in side_raw else ("buy" if "buy" in side_raw else "")
+        price = None
+        for key in RunnerAdapter._FILL_PRICE_KEYS:
+            v = f.get(key)
+            if v is not None:
+                try:
+                    pf = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if pf > 0:
+                    price = pf
+                    break
+        qty = None
+        for key in RunnerAdapter._FILL_QTY_KEYS:
+            v = f.get(key)
+            if v is not None:
+                try:
+                    qf = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if qf > 0:
+                    qty = qf
+                    break
+        order_id = None
+        for key in RunnerAdapter._FILL_ID_KEYS:
+            v = f.get(key)
+            if v:
+                order_id = str(v)
+                break
+        return {
+            "order_id":  order_id,
+            "side":      side,
+            "price":     price,
+            "qty":       qty,
+            "filled_at": str(f.get("filled_at") or ""),
+        }
+
     def _lookup_ext_sell_fills(
         self,
         ctx,  # noqa: ANN001
@@ -1610,17 +1679,21 @@ class RunnerAdapter:
 
         Issue #71: STATE-EXT-SELL used to log only the ticker name. Now we
         correlate against ``broker.get_filled_orders`` so the operator sees
-        WHICH sell fill emptied the position — was it a Z9 broker-side stop
-        firing, a manual close at Alpaca's UI, or a corporate action?
+        WHICH sell fill emptied the position — Z9 stop, manual close, or
+        corporate action?
 
-        Returns ``{ticker: {order_id, fill_price, fill_qty, filled_at}}``.
+        Codex #76: both in-repo brokers return DIFFERENT keys (umbrella uses
+        ``action``+``avg_price``, execution subrepo uses no side field +
+        ``filled_avg_price``). Normalize through ``_normalize_fill_record``
+        so attribution works against either schema.
+
+        Returns ``{ticker: {order_id, price, qty, filled_at, side}}``.
         Empty dict if the broker can't surface fills (e.g., sim path).
         """
         if not disappeared:
             return {}
         if not hasattr(self._broker, "get_filled_orders"):
             return {}
-        # Look back 5 calendar days — generous cushion for weekend gaps.
         import datetime as _dt  # noqa: PLC0415
         today = ctx.today if isinstance(ctx.today, _dt.date) else _dt.date.today()
         after = (today - _dt.timedelta(days=5)).isoformat()
@@ -1639,18 +1712,20 @@ class RunnerAdapter:
             sym = str(f.get("symbol") or f.get("ticker") or "")
             if sym not in wanted:
                 continue
-            side = str(f.get("side") or "").lower()
-            if side and side != "sell":
+            normalized = self._normalize_fill_record(f)
+            # Fail-closed on direction: if the broker DID surface a side
+            # field and it isn't "sell", skip. If NO side field exists
+            # (execution subrepo schema) we accept the row — caller wants
+            # the most-recent fill regardless because absence of side is
+            # not the same as "this is a buy".
+            side = normalized["side"]
+            side_present = any(f.get(k) for k in self._FILL_SIDE_KEYS)
+            if side_present and side != "sell":
                 continue
-            filled_at = f.get("filled_at") or ""
+            filled_at = normalized["filled_at"]
             existing = latest.get(sym)
-            if existing is None or str(existing.get("filled_at") or "") < str(filled_at):
-                latest[sym] = {
-                    "order_id":   f.get("order_id") or f.get("id"),
-                    "fill_price": f.get("fill_price") or f.get("filled_avg_price"),
-                    "fill_qty":   f.get("filled_qty") or f.get("qty"),
-                    "filled_at":  filled_at,
-                }
+            if existing is None or str(existing.get("filled_at") or "") < filled_at:
+                latest[sym] = normalized
         return latest
 
     def _attribute_ext_sell(
@@ -1680,12 +1755,14 @@ class RunnerAdapter:
             if z9_order_id and z9_order_id == fill.get("order_id")
             else "external_or_manual"
         )
-        # Compact rendering so the WARNING stays single-line.
+        # Codex #76: fill dict now carries the normalized keys produced by
+        # ``_normalize_fill_record`` — ``price`` (not ``fill_price``),
+        # ``qty`` (not ``fill_qty``). Compact single-line rendering.
         return (
             f"source={source} "
             f"order_id={fill.get('order_id') or '?'} "
-            f"price={fill.get('fill_price') or '?'} "
-            f"qty={fill.get('fill_qty') or '?'} "
+            f"price={fill.get('price') if fill.get('price') is not None else '?'} "
+            f"qty={fill.get('qty') if fill.get('qty') is not None else '?'} "
             f"filled_at={fill.get('filled_at') or '?'}"
         )
 

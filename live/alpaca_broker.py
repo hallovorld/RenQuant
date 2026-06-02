@@ -407,7 +407,12 @@ class AlpacaBroker(BaseBroker):
             if not _is_filled(o.status):
                 continue
             filled_at = o.filled_at.isoformat() if o.filled_at else None
+            # Codex #76: surface ``order_id`` so STATE-EXT-SELL attribution
+            # can correlate a fill against tracked Z9 stop order_ids. Without
+            # this field, every Z9 stop fill mis-classifies as
+            # "external_or_manual" in the daily warning log.
             result.append({
+                "order_id":  str(getattr(o, "id", "") or ""),
                 "symbol":    o.symbol,
                 "action":    "BUY" if _is_buy(o.side) else "SELL",
                 "qty":       float(o.filled_qty or o.qty or 0),
