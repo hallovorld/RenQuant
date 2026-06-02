@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,6 +36,8 @@ def test_live_multirepo_resolves_subrepos_from_lock() -> None:
     assert "from subrepo_paths import resolve_subrepo_root" in src
     assert "resolve_subrepo_root(REPO)" in src
     assert "RENQUANT_STRICT_SUBREPO_PATHS" in src
+    assert "--strategy-config-path" in src
+    assert "renquant-strategy-104" in src
     assert "renquant-orchestrator" not in src
 
 
@@ -71,6 +74,73 @@ def test_daily_full_run_keeps_existing_daily_multirepo_bridge() -> None:
     assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
     assert 'RUNNER_ARGS=("$REPO_DIR/scripts/daily_multirepo.py")' in src
     assert "RUNNER_ARGS=(-m live.runner)" in src
+
+
+def test_live_multirepo_injects_pinned_prod_strategy_config(monkeypatch, tmp_path) -> None:
+    mod = _load_bridge_module()
+    monkeypatch.setenv("RENQUANT_SUBREPO_ROOT", str(tmp_path))
+
+    argv = mod._with_pinned_strategy_config([
+        "--strategy", "renquant_104",
+        "--broker", "alpaca",
+        "--once",
+    ])
+
+    assert "--strategy-config-path" in argv
+    cfg = argv[argv.index("--strategy-config-path") + 1]
+    assert cfg == str(tmp_path / "renquant-strategy-104" / "configs" / "strategy_config.json")
+
+
+def test_live_multirepo_injects_pinned_shadow_strategy_config(monkeypatch, tmp_path) -> None:
+    mod = _load_bridge_module()
+    monkeypatch.setenv("RENQUANT_SUBREPO_ROOT", str(tmp_path))
+
+    argv = mod._with_pinned_strategy_config([
+        "--strategy", "renquant_104",
+        "--broker", "readonly-alpaca",
+        "--once",
+    ])
+
+    cfg = argv[argv.index("--strategy-config-path") + 1]
+    assert cfg == str(tmp_path / "renquant-strategy-104" / "configs" / "strategy_config.shadow.json")
+
+
+def test_live_multirepo_converts_explicit_config_name_to_pinned_path(monkeypatch, tmp_path) -> None:
+    mod = _load_bridge_module()
+    monkeypatch.setenv("RENQUANT_SUBREPO_ROOT", str(tmp_path))
+
+    argv = mod._with_pinned_strategy_config([
+        "--strategy", "renquant_104",
+        "--strategy-config-name", "strategy_config.golden.json",
+    ])
+
+    assert "--strategy-config-name" not in argv
+    cfg = argv[argv.index("--strategy-config-path") + 1]
+    assert cfg == str(tmp_path / "renquant-strategy-104" / "configs" / "strategy_config.golden.json")
+
+
+def test_strategy_subrepo_configs_match_umbrella_rollback_copies() -> None:
+    lock = json.loads((REPO / "subrepos.lock.json").read_text())
+    strategy_entry = next(
+        entry for entry in lock["subrepos"]
+        if entry["name"] == "renquant-strategy-104"
+    )
+    repo = Path(strategy_entry["local_path"])
+    commit = strategy_entry["commit"]
+
+    for name in (
+        "strategy_config.json",
+        "strategy_config.golden.json",
+        "strategy_config.shadow.json",
+    ):
+        umbrella = json.loads(
+            (REPO / "backtesting" / "renquant_104" / name).read_text()
+        )
+        pinned_raw = subprocess.check_output(
+            ["git", "-C", str(repo), "show", f"{commit}:configs/{name}"],
+            text=True,
+        )
+        assert json.loads(pinned_raw) == umbrella
 
 
 def test_daily_shadow_run_uses_same_multirepo_bridge() -> None:

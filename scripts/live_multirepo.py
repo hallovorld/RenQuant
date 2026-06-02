@@ -41,6 +41,67 @@ _PIN_SRCS = [
 ]
 
 
+def _arg_value(argv: list[str], flag: str, default: str | None = None) -> str | None:
+    prefix = flag + "="
+    for idx, arg in enumerate(argv):
+        if arg == flag and idx + 1 < len(argv):
+            return argv[idx + 1]
+        if arg.startswith(prefix):
+            return arg[len(prefix):]
+    return default
+
+
+def _without_arg(argv: list[str], flag: str) -> list[str]:
+    out: list[str] = []
+    skip = False
+    prefix = flag + "="
+    for arg in argv:
+        if skip:
+            skip = False
+            continue
+        if arg == flag:
+            skip = True
+            continue
+        if arg.startswith(prefix):
+            continue
+        out.append(arg)
+    return out
+
+
+def _strategy_config_name(argv: list[str]) -> str:
+    explicit = _arg_value(argv, "--strategy-config-name")
+    if explicit:
+        return explicit
+    strategy = _arg_value(argv, "--strategy", "renquant_104")
+    broker = _arg_value(argv, "--broker", "paper")
+    if strategy == "renquant_104" and broker == "readonly-alpaca":
+        return "strategy_config.shadow.json"
+    return "strategy_config.json"
+
+
+def _with_pinned_strategy_config(argv: list[str]) -> list[str]:
+    """Route renquant_104 config reads to the pinned strategy subrepo.
+
+    The runtime strategy_dir remains the umbrella checkout so live_state,
+    artifacts, and data stay in the existing production location.
+    """
+    if _arg_value(argv, "--strategy-config-path"):
+        return argv
+    if _arg_value(argv, "--strategy", "renquant_104") != "renquant_104":
+        return argv
+    config_name = _strategy_config_name(argv)
+    cfg_path = (
+        resolve_subrepo_root(REPO)
+        / "renquant-strategy-104"
+        / "configs"
+        / config_name
+    )
+    return _without_arg(argv, "--strategy-config-name") + [
+        "--strategy-config-path",
+        str(cfg_path),
+    ]
+
+
 def _subrepo_src_roots() -> tuple[list[Path], list[str]]:
     roots, issues = resolve_subrepo_src_roots(
         lock_file=LOCK_FILE,
@@ -120,8 +181,9 @@ def main() -> int:
         f"[multirepo] routed {len(aliased)} lifted modules through sibling subrepos; "
         "live.runner remains the execution handoff.\n"
     )
-    if "--strategy" not in sys.argv:
+    if _arg_value(sys.argv[1:], "--strategy") is None:
         sys.argv = [sys.argv[0], "--strategy", "renquant_104"] + sys.argv[1:]
+    sys.argv = [sys.argv[0]] + _with_pinned_strategy_config(sys.argv[1:])
     runner = importlib.import_module("live.runner")
     return int(runner.main() or 0)
 

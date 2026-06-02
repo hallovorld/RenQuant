@@ -90,6 +90,35 @@ CHECKS: tuple[Check, ...] = (
         forbidden=(),
     ),
     Check(
+        name="live_multirepo_uses_strategy_config_subrepo",
+        path="scripts/live_multirepo.py",
+        required=(
+            "--strategy-config-path",
+            "renquant-strategy-104",
+            "configs",
+            "_with_pinned_strategy_config",
+        ),
+    ),
+    Check(
+        name="daily_multirepo_uses_strategy_config_subrepo",
+        path="scripts/daily_multirepo.py",
+        required=(
+            "--strategy-config-path",
+            "renquant-strategy-104",
+            "configs",
+            "_with_pinned_strategy_config",
+        ),
+    ),
+    Check(
+        name="strategy_config_subrepo_sync_test_present",
+        path="tests/test_live_multirepo_entrypoints.py",
+        required=(
+            "test_strategy_subrepo_configs_match_umbrella_rollback_copies",
+            'git", "-C", str(repo), "show"',
+            "strategy_config.shadow.json",
+        ),
+    ),
+    Check(
         name="intraday_sell_defaults_to_multirepo",
         path="scripts/intraday_sell_104.sh",
         required=(

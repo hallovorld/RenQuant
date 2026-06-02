@@ -300,15 +300,19 @@ def _load_strategy_multi(
     strategy_name: str, broker_name: str | None = None,
     config_name: str = "strategy_config.json",
     broker: BaseBroker | None = None,
+    config_path: Path | str | None = None,
 ) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock kernel model artifacts."""
     strategy_dir = REPO_ROOT / "backtesting" / strategy_name
-    config_path = strategy_dir / config_name
-    if not config_path.exists():
-        log.error("Strategy config not found: %s", config_path)
+    config_file = Path(config_path).expanduser() if config_path else strategy_dir / config_name
+    if not config_file.is_absolute():
+        config_file = (Path.cwd() / config_file).resolve()
+    if not config_file.exists():
+        log.error("Strategy config not found: %s", config_file)
         sys.exit(1)
 
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_file.read_text())
+    config_name = config_file.name
 
     use_kernel = _load_kernel(strategy_dir)
     if not use_kernel:
@@ -392,6 +396,7 @@ def _load_strategy_multi(
     config["_use_kernel"] = True
     config["_strategy_dir"] = str(strategy_dir)
     config["_strategy_config_name"] = config_name
+    config["_strategy_config_path"] = str(config_file)
     config.setdefault("_universe_rejections", {})
     return config, models, strategy_dir
 
@@ -959,12 +964,22 @@ def main():
                              "renquant_104 readonly-alpaca shadow, otherwise "
                              "strategy_config.json). Use this to test alternate "
                              "configs without touching the live one.")
+    parser.add_argument("--strategy-config-path", default=None,
+                        help="Explicit strategy config JSON path. Runtime "
+                             "state, data, and artifact paths still resolve "
+                             "under backtesting/<strategy>; only the config "
+                             "document is loaded from this path.")
     args = parser.parse_args()
+    if args.strategy_config_path and args.strategy_config_name:
+        parser.error("--strategy-config-path cannot be combined with --strategy-config-name")
     config_name = _resolve_strategy_config_name(
         args.strategy,
         args.broker,
         args.strategy_config_name,
     )
+    config_path = Path(args.strategy_config_path).expanduser() if args.strategy_config_path else None
+    if config_path is not None:
+        config_name = config_path.name
     if args.strategy_config_name is None and config_name != "strategy_config.json":
         log.info(
             "Auto-selected %s for %s %s run",
@@ -987,6 +1002,7 @@ def main():
     config, models, strategy_dir = _load_strategy_multi(
         args.strategy, broker_name=broker.broker_name,
         config_name=config_name,
+        config_path=config_path,
         broker=broker,
     )
     # Reconstruct broker with real initial_cash from config (PaperBroker
