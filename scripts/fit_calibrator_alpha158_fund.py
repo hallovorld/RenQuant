@@ -19,7 +19,15 @@ from pathlib import Path
 import numpy as np, pandas as pd, xgboost as xgb
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
+# sys.path order matches scripts/analyze_manifest_sanity_placebo.py: REPO first so
+# `from scripts.<sibling>` resolves when this script is invoked via its file path
+# (sys.path[0] = scripts/, not REPO). Without REPO on sys.path, --regime-filter
+# crashes with `ModuleNotFoundError: No module named 'scripts'` at line ~354
+# unless the caller exported PYTHONPATH=$REPO.
+for _p in (REPO, REPO / "backtesting" / "renquant_104"):
+    _s = str(_p)
+    if _s not in sys.path:
+        sys.path.insert(0, _s)
 from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: E402
 from kernel.panel_pipeline.panel_scorer import model_content_sha256  # noqa: E402
 
