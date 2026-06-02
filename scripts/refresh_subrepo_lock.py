@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import datetime as dt
+import fcntl
 import json
 import os
 import subprocess
@@ -121,6 +123,19 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             tmp_path.unlink()
 
 
+@contextlib.contextmanager
+def _refresh_write_lock(lock_file: Path):
+    """Serialize refreshes so concurrent agents cannot lose pin updates."""
+    lock_path = lock_file.with_name(f"{lock_file.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def _check_candidate_lock(
     candidate: dict[str, Any],
     *,
@@ -154,6 +169,41 @@ def _write_force_audit(
 
 
 def refresh_lock(
+    *,
+    lock_file: Path = DEFAULT_LOCK_FILE,
+    only_subrepos: set[str] | None = None,
+    dry_run: bool = False,
+    force_reason: str | None = None,
+    audit_log: Path = DEFAULT_FORCE_AUDIT_LOG,
+    full_sha: bool = False,
+    resolve_branch_head: ResolveBranchHead = _run_git_ls_remote,
+    check_lock_func: CheckLockFunc = check_lock,
+) -> dict[str, Any]:
+    if dry_run:
+        return _refresh_lock_unlocked(
+            lock_file=lock_file,
+            only_subrepos=only_subrepos,
+            dry_run=dry_run,
+            force_reason=force_reason,
+            audit_log=audit_log,
+            full_sha=full_sha,
+            resolve_branch_head=resolve_branch_head,
+            check_lock_func=check_lock_func,
+        )
+    with _refresh_write_lock(lock_file):
+        return _refresh_lock_unlocked(
+            lock_file=lock_file,
+            only_subrepos=only_subrepos,
+            dry_run=dry_run,
+            force_reason=force_reason,
+            audit_log=audit_log,
+            full_sha=full_sha,
+            resolve_branch_head=resolve_branch_head,
+            check_lock_func=check_lock_func,
+        )
+
+
+def _refresh_lock_unlocked(
     *,
     lock_file: Path = DEFAULT_LOCK_FILE,
     only_subrepos: set[str] | None = None,
