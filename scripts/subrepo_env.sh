@@ -62,6 +62,24 @@ renquant_strategy_config() {
     return 1
 }
 
+renquant_strict_enabled() {
+    local strict_env="${1:-}"
+    local strict_value="0"
+    if [ "${RENQUANT_OPS_FAIL_CLOSED:-0}" = "1" ]; then
+        return 0
+    fi
+    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ]; then
+        return 0
+    fi
+    if [ -n "$strict_env" ]; then
+        strict_value="${!strict_env:-0}"
+        if [ "$strict_value" = "1" ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 renquant_subrepo_pythonpath() {
     local root="${1:?root required}"
     shift

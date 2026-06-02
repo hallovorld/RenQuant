@@ -52,6 +52,8 @@ CHECKS: tuple[Check, ...] = (
             "renquant_subrepo_src()",
             "renquant_strategy_config()",
             "renquant_subrepo_pythonpath()",
+            "renquant_strict_enabled()",
+            "RENQUANT_OPS_FAIL_CLOSED",
         ),
     ),
     Check(
@@ -511,6 +513,8 @@ CHECKS: tuple[Check, ...] = (
             "resolve_subrepo_root(REPO_ROOT)",
             'subrepo_root / "renquant-orchestrator" / "src"',
             "RQ_WEEKLY_APY_STRICT",
+            "_strict_multirepo_enabled",
+            "RENQUANT_OPS_FAIL_CLOSED",
         ),
     ),
     Check(

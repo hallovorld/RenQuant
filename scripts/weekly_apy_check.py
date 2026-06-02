@@ -236,15 +236,23 @@ def _run_multirepo_weekly_apy(argv: list[str]) -> int:
     ).returncode
 
 
+def _strict_multirepo_enabled() -> bool:
+    return (
+        os.environ.get("RENQUANT_OPS_FAIL_CLOSED") == "1"
+        or os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1"
+        or os.environ.get("RQ_WEEKLY_APY_STRICT") == "1"
+    )
+
+
 if __name__ == "__main__":
     if os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo") != "legacy":
         rc = _run_multirepo_weekly_apy(sys.argv[1:])
         if rc != 127:
             sys.exit(rc)
-        if os.environ.get("RQ_WEEKLY_APY_STRICT") == "1":
+        if _strict_multirepo_enabled():
             print(
                 "ERROR: renquant_orchestrator.weekly_apy_monitor unavailable "
-                "and RQ_WEEKLY_APY_STRICT=1",
+                "and strict multirepo mode is enabled",
                 file=sys.stderr,
             )
             sys.exit(2)

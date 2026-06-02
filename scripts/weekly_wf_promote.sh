@@ -61,7 +61,7 @@ SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export RENQUANT_REPO_ROOT="$REPO_DIR"
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_WF_GATE_STRICT:-0}" = "1" ]; then
+    if renquant_strict_enabled RQ_WF_GATE_STRICT; then
         echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable"
         exit 1
     fi
@@ -86,8 +86,8 @@ PY
         "$PYTHON" -m renquant_backtesting.wf_gate "$@"
         return $?
     fi
-    if [ "${RQ_WF_GATE_STRICT:-0}" = "1" ]; then
-        echo "ERROR: renquant_backtesting.wf_gate unavailable and RQ_WF_GATE_STRICT=1"
+    if renquant_strict_enabled RQ_WF_GATE_STRICT; then
+        echo "ERROR: renquant_backtesting.wf_gate unavailable and strict multirepo mode is enabled"
         return 1
     fi
     echo "WARN: renquant_backtesting.wf_gate unavailable; falling back to umbrella run_wf_gate.py."

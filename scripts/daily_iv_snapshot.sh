@@ -38,7 +38,7 @@ source .env
 set +a
 
 if ! STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_DAILY_IV_STRICT:-0}" = "1" ]; then
+    if renquant_strict_enabled RQ_DAILY_IV_STRICT; then
         echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" \
             | tee -a "$LOG"
         exit 1
@@ -55,8 +55,8 @@ then
         --strategy-config "$STRATEGY_CONFIG" \
         --data-dir "$REPO_DIR/data" \
         --json 2>&1 | tee -a "$LOG"
-elif [ "${RQ_DAILY_IV_STRICT:-0}" = "1" ]; then
-    echo "ERROR: renquant_base_data.options_iv_refresh unavailable and RQ_DAILY_IV_STRICT=1" \
+elif renquant_strict_enabled RQ_DAILY_IV_STRICT; then
+    echo "ERROR: renquant_base_data.options_iv_refresh unavailable and strict multirepo mode is enabled" \
         | tee -a "$LOG"
     exit 1
 else

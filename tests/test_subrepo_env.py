@@ -79,6 +79,32 @@ def test_strategy_config_fails_when_missing(tmp_path: Path) -> None:
     assert result.stdout == ""
 
 
+def test_strict_helper_honors_wrapper_env() -> None:
+    out = _bash(
+        'source scripts/subrepo_env.sh; '
+        'RQ_FAKE_STRICT=1; '
+        'if renquant_strict_enabled RQ_FAKE_STRICT; then echo strict; else echo loose; fi'
+    )
+    assert out == "strict"
+
+
+def test_strict_helper_honors_global_ops_fail_closed() -> None:
+    out = _bash(
+        'source scripts/subrepo_env.sh; '
+        'RENQUANT_OPS_FAIL_CLOSED=1; '
+        'if renquant_strict_enabled RQ_FAKE_STRICT; then echo strict; else echo loose; fi'
+    )
+    assert out == "strict"
+
+
+def test_strict_helper_defaults_loose() -> None:
+    out = _bash(
+        'source scripts/subrepo_env.sh; '
+        'if renquant_strict_enabled RQ_FAKE_STRICT; then echo strict; else echo loose; fi'
+    )
+    assert out == "loose"
+
+
 def test_subrepo_root_loads_current_env_runtime_root(tmp_path: Path) -> None:
     repo = tmp_path / "RenQuant"
     runtime = tmp_path / "runtime" / "repos"

@@ -83,9 +83,9 @@ if [ "${RQ_STATE_BACKUP_RUNNER:-multirepo}" != "legacy" ]; then
         notify_failure "Multirepo backup pipeline failed rc=$BACKUP_RC at $TS_ISO"
         exit "$BACKUP_RC"
     fi
-    if [ "${RQ_STATE_BACKUP_STRICT:-0}" = "1" ]; then
-        notify_failure "renquant_orchestrator.state_backup unavailable and RQ_STATE_BACKUP_STRICT=1"
-        echo "ERROR: renquant_orchestrator.state_backup unavailable and RQ_STATE_BACKUP_STRICT=1"
+    if renquant_strict_enabled RQ_STATE_BACKUP_STRICT; then
+        notify_failure "renquant_orchestrator.state_backup unavailable and strict multirepo mode is enabled"
+        echo "ERROR: renquant_orchestrator.state_backup unavailable and strict multirepo mode is enabled"
         exit 2
     fi
     echo "WARN: renquant_orchestrator.state_backup unavailable; falling back to legacy shell backup."

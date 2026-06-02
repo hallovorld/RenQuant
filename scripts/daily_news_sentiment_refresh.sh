@@ -41,7 +41,7 @@ source .env
 set +a
 
 if ! STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_DAILY_NEWS_STRICT:-0}" = "1" ]; then
+    if renquant_strict_enabled RQ_DAILY_NEWS_STRICT; then
         echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" \
             | tee -a "$LOG"
         exit 1
@@ -60,8 +60,8 @@ then
         --strategy-config "$STRATEGY_CONFIG" \
         --data-dir "$REPO_DIR/data" \
         --json 2>&1 | tee -a "$LOG"
-elif [ "${RQ_DAILY_NEWS_STRICT:-0}" = "1" ]; then
-    echo "ERROR: renquant_base_data.alpaca_news_refresh unavailable and RQ_DAILY_NEWS_STRICT=1" \
+elif renquant_strict_enabled RQ_DAILY_NEWS_STRICT; then
+    echo "ERROR: renquant_base_data.alpaca_news_refresh unavailable and strict multirepo mode is enabled" \
         | tee -a "$LOG"
     exit 1
 else
@@ -79,8 +79,8 @@ then
     "$PYTHON" -u -m renquant_model_common.news_sentiment_finbert \
         --data-dir "$REPO_DIR/data" \
         --json 2>&1 | tee -a "$LOG"
-elif [ "${RQ_DAILY_NEWS_SENTIMENT_STRICT:-0}" = "1" ]; then
-    echo "ERROR: renquant_model_common.news_sentiment_finbert unavailable and RQ_DAILY_NEWS_SENTIMENT_STRICT=1" \
+elif renquant_strict_enabled RQ_DAILY_NEWS_SENTIMENT_STRICT; then
+    echo "ERROR: renquant_model_common.news_sentiment_finbert unavailable and strict multirepo mode is enabled" \
         | tee -a "$LOG"
     exit 1
 else
