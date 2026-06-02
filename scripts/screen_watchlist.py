@@ -38,6 +38,10 @@ import os
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from subrepo_paths import resolve_subrepo_root
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -77,6 +81,17 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
         return False
 
     subrepo_root = resolve_subrepo_root(REPO_ROOT)
+    strategy_config = subrepo_root / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    if not strategy_config.exists():
+        strict = (
+            os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1"
+            or os.environ.get("RQ_SCREEN_WATCHLIST_STRICT") == "1"
+        )
+        if strict:
+            raise RuntimeError(
+                "pinned renquant-strategy-104 strategy_config.json unavailable"
+            )
+        strategy_config = root / "backtesting" / args.strategy / "strategy_config.json"
     for rel in ("renquant-base-data/src", "renquant-common/src"):
         path = str(subrepo_root / rel)
         if path not in sys.path:
@@ -93,7 +108,7 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
         return False
 
     subrepo_main([
-        "--strategy-config", str(root / "backtesting" / args.strategy / "strategy_config.json"),
+        "--strategy-config", str(strategy_config),
         "--data-dir", str(root / "data"),
         "--output-dir", str(root / "logs" / "watchlist_screen"),
         "--lookback-days", str(args.lookback_days),
