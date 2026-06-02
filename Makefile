@@ -10,7 +10,7 @@ ifneq ($(strip $(EXECUTE)),)
 SUBREPO_DAILY_ARGS += --execute
 endif
 
-.PHONY: subrepo-doctor subrepo-test subrepo-assemble subrepo-runtime-root subrepo-smoke subrepo-daily-contract subrepo-ops-contract ops-deployment-ready
+.PHONY: subrepo-doctor subrepo-test subrepo-assemble subrepo-runtime-root subrepo-smoke subrepo-daily-contract subrepo-ops-contract ops-preinstall-ready ops-install-launchagents ops-deployment-ready
 
 subrepo-doctor:
 	$(PYTHON) scripts/subrepo_doctor.py
@@ -32,6 +32,12 @@ subrepo-daily-contract:
 
 subrepo-ops-contract:
 	$(PYTHON) scripts/subrepo_ops_contract.py
+
+ops-preinstall-ready:
+	$(PYTHON) scripts/check_ops_deployment_ready.py --skip-launchagents
+
+ops-install-launchagents: subrepo-runtime-root
+	PYTHON=$(PYTHON) bash scripts/install_launchagents.sh
 
 ops-deployment-ready:
 	$(PYTHON) scripts/check_ops_deployment_ready.py
