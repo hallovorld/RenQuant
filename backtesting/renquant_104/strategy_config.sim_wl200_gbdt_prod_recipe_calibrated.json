@@ -1,6 +1,6 @@
 {
-  "_schema_note": "Minimal base config for run_wf_gate --derive-config-from-prod. Wrapper expects walkforward.manifest_path; all other semantics derived from strategy_config.json (prod). Created 2026-06-01 to replace the stale sim_wl200_172_sentiment.calibrated_causal.json that the wrapper referenced.",
+  "_schema_note": "Minimal base config for run_wf_gate --derive-config-from-prod. Wrapper expects walkforward.manifest_path; all other semantics derived from strategy_config.json (prod). Points at walkforward_manifest.json (5/10) which references the 39 intact per-cut artifacts in walkforward_retrains/ (recipe-match verified: 169 features, panel_ltr_xgboost, both null recipe_fingerprint).",
   "walkforward": {
-    "manifest_path": "artifacts/sim/walkforward_manifest_gbdt_prod_recipe_calibrated.json"
+    "manifest_path": "artifacts/sim/walkforward_manifest.json"
   }
 }

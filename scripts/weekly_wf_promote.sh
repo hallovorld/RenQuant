@@ -196,9 +196,9 @@ echo "Training pipeline finished at $(date)"
 # this never blocks the weekly run.
 # 2026-06-01: the 172_sentiment.calibrated_causal recipe was retired on
 # 2026-05-27 (.bak_pre_rebuild_20260527 the only on-disk remainder). The
-# current GBDT prod recipe manifest is walkforward_manifest_gbdt_prod_recipe_calibrated.json
+# current GBDT prod recipe manifest is walkforward_manifest.json
 # (rebuilt 2026-05-30). Wrapper now points at it + the matching base config.
-WF_MANIFEST="artifacts/sim/walkforward_manifest_gbdt_prod_recipe_calibrated.json"
+WF_MANIFEST="artifacts/sim/walkforward_manifest.json"
 echo "--- Step 3.5: Stamp WF manifest fingerprints ($WF_MANIFEST) ---"
 if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     --manifest "$WF_MANIFEST" \
