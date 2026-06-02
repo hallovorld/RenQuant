@@ -49,6 +49,7 @@ jobs:
           AGENT_LABEL=""
           EXPECTED_ORIGIN=""
           EXPECTED_TRAILER_PATTERN=""
+          ALLOWED_TRAILER_PATTERN=""
           if echo "$LABELS" | grep -q '"agent:claude"'; then
             AUTHORSHIP_COUNT=$((AUTHORSHIP_COUNT + 1))
             AGENT_LABEL="agent:claude"
@@ -68,10 +69,21 @@ jobs:
             echo "::error::multiple authorship labels present (count=${AUTHORSHIP_COUNT}); §2.1 mandates exactly one — to invite a second agent's G3 use agent:fix:<name>, not authorship labels"
             exit 1
           fi
+
+          # Authorship labels validate PR body/origin. Commit trailers may
+          # also come from explicitly authorized fix executors so cross-agent
+          # G3 fixes do not fail attribution.
+          ALLOWED_TRAILER_PATTERN="$EXPECTED_TRAILER_PATTERN"
+          if echo "$LABELS" | grep -q '"agent:fix:claude"'; then
+            ALLOWED_TRAILER_PATTERN="${ALLOWED_TRAILER_PATTERN}|Co-Authored-By: Claude .*<noreply@anthropic.com>"
+          fi
+          if echo "$LABELS" | grep -q '"agent:fix:codex"'; then
+            ALLOWED_TRAILER_PATTERN="${ALLOWED_TRAILER_PATTERN}|Co-Authored-By: Codex <noreply@openai.com>"
+          fi
           {
             echo "agent_label=${AGENT_LABEL}"
             echo "expected_origin=${EXPECTED_ORIGIN}"
-            echo "expected_trailer_pattern=${EXPECTED_TRAILER_PATTERN}"
+            echo "allowed_trailer_pattern=${ALLOWED_TRAILER_PATTERN}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate PR body footer matches label
@@ -91,7 +103,7 @@ jobs:
 
       - name: Validate every commit in PR range has matching trailer
         env:
-          EXPECTED_TRAILER_PATTERN: ${{ steps.agent.outputs.expected_trailer_pattern }}
+          ALLOWED_TRAILER_PATTERN: ${{ steps.agent.outputs.allowed_trailer_pattern }}
         run: |
           set -euo pipefail
           BASE="${{ github.event.pull_request.base.sha }}"
@@ -99,15 +111,17 @@ jobs:
           # Fetch base ref explicitly — checkout@v4 fetched HEAD only.
           git fetch --no-tags origin "${BASE}"
           # Enumerate EACH commit in the PR range, not "at least one has
-          # some trailer" — that loose form let mixed-trailer PRs pass.
+          # some trailer" — that loose form let unattributed commits pass.
+          # A trailer is valid if it matches the authorship agent OR an
+          # explicitly authorized agent:fix:<name> executor.
           missing=()
           for sha in $(git rev-list "${BASE}..${HEAD}"); do
-            if ! git show -s --format='%B' "$sha" | grep -Eq "$EXPECTED_TRAILER_PATTERN"; then
+            if ! git show -s --format='%B' "$sha" | grep -Eq "$ALLOWED_TRAILER_PATTERN"; then
               missing+=("$sha")
             fi
           done
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::commits missing expected trailer matching '$EXPECTED_TRAILER_PATTERN':"
+            echo "::error::commits missing allowed agent trailer matching '$ALLOWED_TRAILER_PATTERN':"
             printf '  %s\n' "${missing[@]}"
             exit 1
           fi
