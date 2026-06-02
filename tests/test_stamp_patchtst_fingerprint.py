@@ -282,6 +282,26 @@ def test_already_stamped_with_wrong_label_col_refuses(tmp_path):
     assert "nothing to do" not in r.stdout
 
 
+def test_already_stamped_with_missing_label_col_refuses(tmp_path):
+    """Already-stamped artifacts must still fail closed when label_col is
+    removed after stamping; the early-return cannot bypass missing contracts."""
+    art = _make_artifact(tmp_path)
+    cfg = _make_config(tmp_path)
+    r0 = _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+    assert r0.returncode == 0, r0.stderr
+    body = json.loads(art.read_text())
+    body["training_contract"].pop("label_col", None)
+    body.pop("label_col", None)
+    art.write_text(json.dumps(body, indent=2))
+
+    r = _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "label_col" in r.stdout
+    assert "artifact=<missing>" in r.stdout
+    assert "nothing to do" not in r.stdout
+
+
 def test_already_stamped_force_overrides_post_stamp_check(tmp_path):
     """--force still escapes the post-stamp compatibility refusal — same
     semantics as fresh stamping."""
