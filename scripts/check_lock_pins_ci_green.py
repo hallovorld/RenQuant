@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOCK_FILE = ROOT / "subrepos.lock.json"
-PASSING_CONCLUSIONS = {"success", "skipped", "neutral"}
+PASSING_CONCLUSIONS = {"success", "neutral"}
 
 
 GithubGet = Callable[[str], dict[str, Any]]

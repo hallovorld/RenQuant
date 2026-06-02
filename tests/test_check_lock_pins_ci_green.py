@@ -104,6 +104,20 @@ def test_failed_latest_workflow_run_fails():
     assert result.ok is False
 
 
+def test_skipped_workflow_run_fails_because_no_ci_executed():
+    mod = _load_module()
+    result = mod.check_pin(
+        _entry(),
+        _fake_github(
+            workflow_runs=[
+                {"name": "CI", "event": "push", "status": "completed", "conclusion": "skipped"},
+            ],
+        ),
+    )
+
+    assert result.ok is False
+
+
 def test_latest_rerun_by_workflow_name_wins():
     mod = _load_module()
     result = mod.check_pin(

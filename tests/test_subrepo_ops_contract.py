@@ -53,6 +53,7 @@ def test_subrepo_ops_contract_passes_current_entrypoints() -> None:
     assert "state_backup_uses_orchestrator" in result["passed"]
     assert "weekly_apy_uses_orchestrator" in result["passed"]
     assert "subrepo_pin_ci_green_gate_available" in result["passed"]
+    assert "subrepo_lock_refresh_prewrite_ci_gate_available" in result["passed"]
     assert "subrepo_pin_ci_green_workflow_wired" in result["passed"]
     assert result["known_gaps"] == []
 
