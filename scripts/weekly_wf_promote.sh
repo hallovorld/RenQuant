@@ -194,7 +194,11 @@ echo "Training pipeline finished at $(date)"
 # manifest before the gate runs. Idempotent: already-stamped artifacts are a
 # no-op. Best-effort (recipe-mismatch is surfaced by the gate's own check), so
 # this never blocks the weekly run.
-WF_MANIFEST="artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.json"
+# 2026-06-01: the 172_sentiment.calibrated_causal recipe was retired on
+# 2026-05-27 (.bak_pre_rebuild_20260527 the only on-disk remainder). The
+# current GBDT prod recipe manifest is walkforward_manifest_gbdt_prod_recipe_calibrated.json
+# (rebuilt 2026-05-30). Wrapper now points at it + the matching base config.
+WF_MANIFEST="artifacts/sim/walkforward_manifest_gbdt_prod_recipe_calibrated.json"
 echo "--- Step 3.5: Stamp WF manifest fingerprints ($WF_MANIFEST) ---"
 if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     --manifest "$WF_MANIFEST" \
@@ -207,7 +211,7 @@ fi
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
 if ! run_wf_gate \
     --artifact "$STAGING_ART" \
-    --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json \
+    --strategy-config strategy_config.sim_wl200_gbdt_prod_recipe_calibrated.json \
     --derive-config-from-prod \
     --strict \
     --jobs 3; then
