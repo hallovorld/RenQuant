@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 
@@ -168,3 +170,41 @@ def test_dry_run_checks_gate_but_does_not_write(tmp_path: Path) -> None:
     assert result["dry_run"] is True
     assert result["changes"][0]["new_commit"] == "bbbbbbb"
     assert json.loads(lock.read_text())["subrepos"][0]["commit"] == "aaaaaaa"
+
+
+def test_refresh_write_lock_blocks_concurrent_writer(tmp_path: Path) -> None:
+    mod = _load_module()
+    lock = _write_lock(tmp_path)
+    lock_guard = lock.with_name(f"{lock.name}.lock")
+    started = threading.Event()
+    finished = threading.Event()
+    result_box: dict[str, dict] = {}
+
+    def refresh_in_thread() -> None:
+        started.set()
+        result_box["result"] = mod.refresh_lock(
+            lock_file=lock,
+            only_subrepos={"renquant-backtesting"},
+            resolve_branch_head=lambda remote, branch: NEW_SHA,
+            check_lock_func=lambda path, *, only_subrepos: {
+                "ok": True,
+                "pins": [{"ok": True}],
+                "validated_subrepos": sorted(only_subrepos),
+            },
+        )
+        finished.set()
+
+    with lock_guard.open("w", encoding="utf-8") as fh:
+        mod.fcntl.flock(fh.fileno(), mod.fcntl.LOCK_EX)
+        worker = threading.Thread(target=refresh_in_thread)
+        worker.start()
+        assert started.wait(timeout=1.0)
+        time.sleep(0.1)
+        assert not finished.is_set()
+        assert json.loads(lock.read_text())["subrepos"][0]["commit"] == "aaaaaaa"
+        mod.fcntl.flock(fh.fileno(), mod.fcntl.LOCK_UN)
+
+    worker.join(timeout=2.0)
+    assert finished.is_set()
+    assert result_box["result"]["ok"] is True
+    assert json.loads(lock.read_text())["subrepos"][0]["commit"] == "bbbbbbb"
