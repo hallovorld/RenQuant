@@ -43,7 +43,7 @@ Every job below documents: **what it does, what files it touches, what alerts on
 7. Refresh `doc/dashboard.md`
 8. Run PatchTST shadow read-only e2e with a wall-clock timeout (`RENQUANT_SHADOW_TIMEOUT_SEC`, default 1800s); timeout/failure is non-fatal after the primary path has completed
 
-**Subrepo strictness:** daily/intraday bridges warn if local sibling repos drift from `subrepos.lock.json`. Set `RENQUANT_STRICT_SUBREPO_PATHS=1` to make commit/remote/path drift fatal. Set `RENQUANT_STRICT_SUBREPO_CLEAN=1` only when production should also reject dirty local worktrees. Preferred production setup is `make subrepo-runtime-root`, then source `.subrepo_assembly/current.env` so the bridges use isolated pinned clones via `RENQUANT_SUBREPO_ROOT`.
+**Subrepo strictness:** daily/intraday bridges warn if local sibling repos drift from `subrepos.lock.json`. Set `RENQUANT_STRICT_SUBREPO_PATHS=1` to make commit/remote/path drift fatal, or set `RENQUANT_OPS_FAIL_CLOSED=1` to make production ops wrappers fail closed globally when a multirepo delegate is unavailable. Set `RENQUANT_STRICT_SUBREPO_CLEAN=1` only when production should also reject dirty local worktrees. Preferred production setup is `make subrepo-runtime-root`, then source `.subrepo_assembly/current.env` so the bridges use isolated pinned clones via `RENQUANT_SUBREPO_ROOT` with strict multirepo mode already enabled.
 
 ---
 
