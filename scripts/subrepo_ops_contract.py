@@ -349,6 +349,7 @@ CHECKS: tuple[Check, ...] = (
             "subrepos.lock.json",
             "scripts/check_lock_pins_ci_green.py",
             "tests/test_check_lock_pins_ci_green.py",
+            "Detect subrepos.lock.json changes",
             "Verify pinned subrepo commits have green CI",
         ),
     ),
