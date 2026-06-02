@@ -193,8 +193,9 @@ echo "Training pipeline finished at $(date)"
 # fail-closed EVERY bar (panel_scorer_config_mismatch → "Cleared N buy
 # candidate(s)") → zero trades → the gate could never pass ANY model. Stamp the
 # manifest before the gate runs. Idempotent: already-stamped artifacts are a
-# no-op. Best-effort (recipe-mismatch is surfaced by the gate's own check), so
-# this never blocks the weekly run.
+# no-op. This is also the fail-fast recipe validation point: if the manifest
+# cuts do not match the freshly trained staging artifact, abort before spending
+# time in the WF gate that would fail closed anyway.
 # 2026-06-02: the only committed 172-feature manifest with existing scorer +
 # calibrator artifacts is the v2 rebuild. Keep weekly retrain on the same
 # no-drop-sentiment recipe, and validate stamping against the just-trained
@@ -205,7 +206,10 @@ if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     --manifest "$WF_MANIFEST" \
     --fingerprint-config "$PROD_STRATEGY_CONFIG" \
     --reference-artifact "$STAGING_ART"; then
-    echo "WARN: WF manifest stamping reported an issue (recipe mismatch?); the gate's own contract check will handle it."
+    echo "WF manifest stamping/recipe validation FAILED — production unchanged."
+    notify "RenQuant 104 WEEKLY-FAIL" \
+        "WF manifest recipe validation failed against staged model. Production unchanged. Check $LOG."
+    exit 1
 fi
 
 # ── Step 4: Run WF gate (3-cut WF + §5.2 sanity battery) ──────────────────
