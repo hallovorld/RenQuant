@@ -206,27 +206,57 @@ jobs:
       # inline into a step output and pass it as `prompt`. Codex supports
       # prompt-file directly.
 
+      - name: Resolve fix prompt file
+        if: steps.gate.outputs.run == 'true'
+        id: fix_prompt
+        env:
+          PROMPT_PATH: ${{ inputs.prompt_path }}
+          REVIEW_BODY: ${{ steps.pr.outputs.review_body }}
+        run: |
+          set -euo pipefail
+          EFFECTIVE_PATH="${RUNNER_TEMP}/agent-fix-prompt.md"
+          if [ -f "$PROMPT_PATH" ]; then
+            cat "$PROMPT_PATH" > "$EFFECTIVE_PATH"
+          else
+            echo "::warning::fix prompt template missing at $PROMPT_PATH; using RenQuant default"
+            cat > "$EFFECTIVE_PATH" <<'DEFAULT_FIX_PROMPT'
+          # Agent fix prompt - RenQuant default
+          
+          You are addressing review findings on an open RenQuant PR.
+          
+          ## Required workflow
+          
+          1. Read every finding and map it to the smallest concrete code change.
+          2. Change only the reviewed behavior; do not perform adjacent cleanup.
+          3. Run focused tests for the changed path, or explain why no local test exists.
+          4. Leave edits in the working tree. Do not commit or push; the wrapper
+             workflow owns commit creation, attribution trailers, labels, and push.
+          
+          ## Do not do
+          
+          - Do not add unrelated dependencies or broad refactors.
+          - Do not silently skip findings.
+          - Do not bypass failing tests or safety gates.
+          DEFAULT_FIX_PROMPT
+          fi
+          {
+            echo ""
+            echo "## Review feedback to address"
+            echo "$REVIEW_BODY"
+          } >> "$EFFECTIVE_PATH"
+          echo "path=$EFFECTIVE_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Load fix prompt (Claude needs inline content; Codex reads file)
         if: steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
         id: load_prompt
         env:
-          PROMPT_PATH: ${{ inputs.prompt_path }}
-          REVIEW_BODY: ${{ steps.pr.outputs.review_body }}
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          PROMPT_PATH: ${{ steps.fix_prompt.outputs.path }}
         run: |
           set -euo pipefail
-          if [ ! -f "$PROMPT_PATH" ]; then
-            echo "::warning::fix prompt template missing at $PROMPT_PATH; using minimal default"
-            BODY="You are fixing review findings on PR #${PR_NUMBER}. Read the review below, identify each finding, make the minimal code change that addresses it, run tests, and push."
-          else
-            BODY=$(cat "$PROMPT_PATH")
-          fi
+          BODY=$(cat "$PROMPT_PATH")
           {
             echo "prompt<<PROMPT_EOF"
             echo "$BODY"
-            echo ""
-            echo "## Review feedback to address"
-            echo "$REVIEW_BODY"
             echo "PROMPT_EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -252,7 +282,7 @@ jobs:
           # codex-action@v1 inputs use DASHES (openai-api-key, prompt-file).
           # Underscored names are silently ignored by the action.
           openai-api-key: ${{ secrets.api_key }}
-          prompt-file: ${{ inputs.prompt_path }}
+          prompt-file: ${{ steps.fix_prompt.outputs.path }}
           model: ${{ inputs.model }}
 
       - name: Commit + push fix

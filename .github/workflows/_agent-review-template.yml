@@ -78,15 +78,44 @@ jobs:
           PROMPT_PATH: ${{ inputs.prompt_path }}
         run: |
           set -euo pipefail
-          # Pull the per-repo prompt template (sets the review's framing
-          # — CLAUDE.md §7 engineering principles, severity ladder, what
-          # to skip / focus on). Repos can customize by editing this file
-          # in their tree.
-          if [ ! -f "${PROMPT_PATH}" ]; then
-            echo "::error::review prompt template missing at ${PROMPT_PATH}"
-            exit 1
+          # Pull the per-repo prompt template when present. Subrepos may
+          # start with only the lightweight workflow wrapper; keep review
+          # automation functional by falling back to the RenQuant default.
+          if [ -f "${PROMPT_PATH}" ]; then
+            PROMPT_HEADER=$(cat "${PROMPT_PATH}")
+          else
+            echo "::warning::review prompt template missing at ${PROMPT_PATH}; using RenQuant default"
+            PROMPT_HEADER=$(cat <<'DEFAULT_REVIEW_PROMPT'
+          # Agent review prompt - RenQuant default
+          
+          You are reviewing a pull request against a RenQuant repository. Prioritize
+          actual correctness, data-flow safety, tests, and operational regressions.
+          
+          ## What to look for
+          
+          1. Bugs: concrete logic, state, control-flow, or contract defects reachable
+             from the changed code.
+          2. Missing tests: changed behavior should be pinned by focused tests.
+          3. Data-flow safety: stale artifact paths, recipe/config drift, NaN handling,
+             leakage, hardcoded runtime paths, and broken cross-repo contracts.
+          4. Operational risk: workflows, permissions, secrets, scheduled jobs, and
+             automation should fail closed and be reproducible.
+          
+          ## What to skip
+          
+          - Style nits handled by linters.
+          - Subjective preferences.
+          - Existing pre-PR code not touched by the diff unless the PR depends on it.
+          
+          ## Output format
+          
+          Post one consolidated PR review. Lead with findings ordered BLOCKER, HIGH,
+          MED, LOW. For each finding include location, evidence, and the smallest
+          concrete fix. If there are no findings, say what CI and invariants you
+          checked.
+          DEFAULT_REVIEW_PROMPT
+            )
           fi
-          PROMPT_HEADER=$(cat "${PROMPT_PATH}")
           # Append the PR-specific context.
           git fetch --no-tags origin "${BASE_SHA}"
           DIFF=$(git diff --unified=3 "${BASE_SHA}..HEAD")
