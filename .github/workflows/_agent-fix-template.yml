@@ -28,24 +28,44 @@ on:
         required: false
         default: ".github/agent-fix-prompt.md"
     secrets:
-      api_key: { required: true }
+      api_key: { required: false }
       git_push_token:
-        required: true
-        description: "PAT or GitHub App token with `contents:write` + `pull-requests:write` scoped to this repo. SEPARATE from github.token so the bot identity is distinguishable in commit/comment history."
+        required: false
+        description: "Optional PAT or GitHub App token with `contents:write` + `pull-requests:write` scoped to this repo. When absent, same-repo fix pushes fall back to github.token."
 
 permissions:
-  contents: read    # workflow itself reads; git_push_token does the write
+  contents: write   # needed when fix-mode falls back to github.token
   pull-requests: write
+  issues: write     # labels + PR comments are issue operations
 
 jobs:
   fix:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Check agent secrets availability
+        id: secret_gate
+        env:
+          AGENT: ${{ inputs.agent }}
+          API_KEY: ${{ secrets.api_key }}
+          GIT_PUSH_TOKEN: ${{ secrets.git_push_token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_KEY:-}" ]; then
+            echo "::notice::${AGENT} API key secret is not configured; skipping ${AGENT} auto-fix without failing workflow startup"
+            echo "has_api_key=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${GIT_PUSH_TOKEN:-}" ]; then
+            echo "::notice::AGENT_GIT_PUSH_TOKEN is not configured; using github.token fallback for same-repo fix push"
+          fi
+          echo "has_api_key=true" >> "$GITHUB_OUTPUT"
+
       # §4.3.1 — resolve PR context for BOTH event shapes
       # (pull_request_review vs issue_comment) before doing any
       # label / branch / checkout work.
       - name: Resolve PR context
+        if: steps.secret_gate.outputs.has_api_key == 'true'
         id: pr
         # SHELL INJECTION SAFETY: all user-controlled event fields
         # (review.body, comment.body, login) MUST be passed via env:,
@@ -104,6 +124,7 @@ jobs:
 
       # §4.3.2 — trigger logic (after resolve so labels are in steps.pr)
       - name: Gate on labels + trust + retry budget
+        if: steps.secret_gate.outputs.has_api_key == 'true'
         id: gate
         env:
           AGENT: ${{ inputs.agent }}
@@ -162,7 +183,7 @@ jobs:
           fi
 
       - name: Determine next attempt label
-        if: steps.gate.outputs.run == 'true'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true'
         id: attempt
         env:
           AGENT: ${{ inputs.agent }}
@@ -184,7 +205,7 @@ jobs:
           echo "next_label=agent:fix:${AGENT}:attempt-${NEXT_N}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR head with push token
-        if: steps.gate.outputs.run == 'true'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -192,7 +213,7 @@ jobs:
           # CRITICAL: use the bot's PAT for pushing fix commits so they
           # appear under the bot identity (not github-actions) and the
           # branch-protection bypass works as the bot expects.
-          token: ${{ secrets.git_push_token }}
+          token: ${{ secrets.git_push_token || github.token }}
 
       # Note: action input shapes already corrected at the use: sites
       # below. See README's "Action API contract (verified)" section.
@@ -207,7 +228,7 @@ jobs:
       # prompt-file directly.
 
       - name: Resolve fix prompt file
-        if: steps.gate.outputs.run == 'true'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true'
         id: fix_prompt
         env:
           PROMPT_PATH: ${{ inputs.prompt_path }}
@@ -247,7 +268,7 @@ jobs:
           echo "path=$EFFECTIVE_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Load fix prompt (Claude needs inline content; Codex reads file)
-        if: steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
         id: load_prompt
         env:
           PROMPT_PATH: ${{ steps.fix_prompt.outputs.path }}
@@ -261,7 +282,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Run agent (Claude)
-        if: steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true' && inputs.agent == 'claude'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
@@ -275,7 +296,7 @@ jobs:
             --model ${{ inputs.model }}
 
       - name: Run agent (Codex)
-        if: steps.gate.outputs.run == 'true' && inputs.agent == 'codex'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true' && inputs.agent == 'codex'
         id: codex
         uses: openai/codex-action@v1
         with:
@@ -286,9 +307,9 @@ jobs:
           model: ${{ inputs.model }}
 
       - name: Commit + push fix
-        if: steps.gate.outputs.run == 'true'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true'
         env:
-          GH_TOKEN: ${{ secrets.git_push_token }}
+          GH_TOKEN: ${{ secrets.git_push_token || github.token }}
           AGENT: ${{ inputs.agent }}
         run: |
           set -euo pipefail
@@ -313,21 +334,27 @@ jobs:
           git push --force-with-lease origin "HEAD:${{ steps.pr.outputs.head_ref }}"
 
       - name: Increment attempt label
-        if: steps.gate.outputs.run == 'true'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true'
         env:
-          GH_TOKEN: ${{ secrets.git_push_token }}
+          GH_TOKEN: ${{ secrets.git_push_token || github.token }}
         run: |
           gh pr edit "${{ steps.pr.outputs.pr_number }}" \
             --add-label "${{ steps.attempt.outputs.next_label }}"
 
       - name: Post fix summary comment
-        if: steps.gate.outputs.run == 'true' && always()
+        if: always() && steps.secret_gate.outputs.has_api_key == 'true' && steps.gate.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           AGENT: ${{ inputs.agent }}
+          ATTEMPT_LABEL: ${{ steps.attempt.outputs.next_label }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
         run: |
           set -uo pipefail
-          BODY=$(printf 'Agent **%s** ran auto-fix in response to your review.\n\nAttempt label: \`%s\`\n\n_Force-pushed fix commit to \`%s\`._' \
-            "$AGENT" "${{ steps.attempt.outputs.next_label }}" \
-            "${{ steps.pr.outputs.head_ref }}")
-          gh pr comment "${{ steps.pr.outputs.pr_number }}" --body "$BODY"
+          gh pr comment "$PR_NUMBER" --body-file - <<EOF
+          Agent **${AGENT}** ran auto-fix in response to your review.
+
+          Attempt label: \`${ATTEMPT_LABEL}\`
+
+          _Force-pushed fix commit to \`${HEAD_REF}\`._
+          EOF

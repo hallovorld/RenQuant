@@ -9,4 +9,7 @@ on:
 
 jobs:
   check:
-    uses: hallovorld/RenQuant/.github/workflows/_agent-attribution-check-template.yml@main
+    uses: ./.github/workflows/_agent-attribution-check-template.yml
+    permissions:
+      contents: read
+      pull-requests: read

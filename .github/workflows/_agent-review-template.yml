@@ -39,12 +39,13 @@ on:
         description: "Path (relative to repo root) of the review prompt template"
     secrets:
       api_key:
-        required: true
+        required: false
         description: "Anthropic or OpenAI API key, depending on `agent` input"
 
 permissions:
   contents: read
   pull-requests: write   # for posting review comments
+  issues: write          # fallback/sticky PR comments are issue comments
 
 jobs:
   review:
@@ -63,13 +64,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Check agent API key availability
+        id: secret_gate
+        env:
+          AGENT: ${{ inputs.agent }}
+          API_KEY: ${{ secrets.api_key }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_KEY:-}" ]; then
+            echo "::notice::${AGENT} API key secret is not configured; skipping ${AGENT} review without failing workflow startup"
+            echo "has_api_key=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_api_key=true" >> "$GITHUB_OUTPUT"
+
       - name: Checkout PR head
+        if: steps.secret_gate.outputs.has_api_key == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Build review prompt
+        if: steps.secret_gate.outputs.has_api_key == 'true'
         id: prompt
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -139,7 +156,7 @@ jobs:
       # below. See README's "Action API contract (verified)" section.
 
       - name: Run agent (Claude)
-        if: inputs.agent == 'claude'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'claude'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
@@ -153,7 +170,7 @@ jobs:
             --model ${{ inputs.model }}
 
       - name: Run agent (Codex)
-        if: inputs.agent == 'codex'
+        if: steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'codex'
         id: codex
         uses: openai/codex-action@v1
         with:
@@ -174,7 +191,7 @@ jobs:
       # surface it here for the reviewer to see what the agent
       # concluded.
       - name: Post Codex fallback comment
-        if: inputs.agent == 'codex' && always()
+        if: always() && steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'codex'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

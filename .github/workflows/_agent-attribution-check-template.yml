@@ -22,14 +22,23 @@ permissions:
 
 jobs:
   check:
-    # Only enforce when the PR carries an `agent:*` label. Human-authored
-    # PRs bypass this gate entirely.
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'agent:claude') ||
-      contains(github.event.pull_request.labels.*.name, 'agent:codex')
     runs-on: ubuntu-latest
     steps:
+      - name: Decide whether attribution enforcement applies
+        id: enforce
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if echo "$LABELS" | grep -Eq '"agent:(claude|codex)"'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no agent authorship label present; attribution check not applicable"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.enforce.outputs.run == 'true'
         with:
           # MUST: full history so `git rev-list base..HEAD` returns real
           # SHAs (default fetch-depth=1 makes the range empty).
@@ -37,6 +46,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Derive expected agent identity from labels
+        if: steps.enforce.outputs.run == 'true'
         id: agent
         env:
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
@@ -87,6 +97,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate PR body footer matches label
+        if: steps.enforce.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_ORIGIN: ${{ steps.agent.outputs.expected_origin }}
@@ -102,6 +113,7 @@ jobs:
           fi
 
       - name: Validate every commit in PR range has matching trailer
+        if: steps.enforce.outputs.run == 'true'
         env:
           ALLOWED_TRAILER_PATTERN: ${{ steps.agent.outputs.allowed_trailer_pattern }}
         run: |
