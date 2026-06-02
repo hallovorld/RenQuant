@@ -7,6 +7,7 @@ here to surface a clean public symbol set.
 from .state import StateFileTask
 from .broker import BrokerConnectTask
 from .broker_fill_freshness import BrokerFillFreshnessTask
+from .news_sentiment import NewsSentimentFreshnessTask
 from .artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .gate import RegimeLayeredICTask, WfGateMetadataTask
 from .sector_map import SectorMapCoverageTask
@@ -22,6 +23,7 @@ __all__ = [
     "StateFileTask",
     "BrokerConnectTask",
     "BrokerFillFreshnessTask",
+    "NewsSentimentFreshnessTask",
     "ModelArtifactTask",
     "PanelContractTask",
     "BestIterTask",

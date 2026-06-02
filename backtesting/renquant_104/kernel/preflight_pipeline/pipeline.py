@@ -11,6 +11,7 @@ from .tasks.correlation import CorrelationMetadataTask
 from .tasks.feature_coverage import FeatureCoverageTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.meta_label import MetaLabelArtifactContractTask
+from .tasks.news_sentiment import NewsSentimentFreshnessTask
 from .tasks.run_id import ArtifactRunIdAlignmentTask
 from .tasks.sector_map import SectorMapCoverageTask
 from .tasks.state import StateFileTask
@@ -44,6 +45,7 @@ class _IdentityJob(PreflightJob):
         WatchlistSizeTask(),
         SectorMapCoverageTask(),
         CorrelationMetadataTask(),
+        NewsSentimentFreshnessTask(),
     ]
 
 
@@ -82,9 +84,10 @@ class _StateAndBrokerJob(PreflightJob):
 
 
 def build_preflight_pipeline() -> PreflightPipeline:
-    """Return the FULL PreflightPipeline holding ALL 17 migrated checks.
+    """Return the FULL PreflightPipeline holding ALL 18 migrated checks.
 
     P-BROKER-FILL-FRESHNESS added 2026-06-02 per audit finding 9.
+    P-NEWS-SENTIMENT-FRESHNESS added 2026-06-02 per issue #73.
 
     Jobs run in semantic dependency order. ``kernel.preflight.run_preflight``
     preserves the legacy returned-list order by sorting the results after the
