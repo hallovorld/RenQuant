@@ -79,7 +79,7 @@ SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_MONTHLY_CALIBRATOR_STRICT:-0}" = "1" ]; then
+    if renquant_strict_enabled RQ_MONTHLY_CALIBRATOR_STRICT; then
         echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable"
         notify "RenQuant 104 MONTHLY-ABORT" "Pinned strategy config unavailable; calibrator NOT refreshed. Check $LOG"
         exit 1
@@ -164,8 +164,8 @@ PY
             --data-dir "$REPO_DIR/data" \
             --scorer-artifact "$PROD_SCORER" \
             --out "$PROD_CAL"
-    elif [ "${RQ_MONTHLY_CALIBRATOR_STRICT:-0}" = "1" ]; then
-        echo "ERROR: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable and RQ_MONTHLY_CALIBRATOR_STRICT=1"
+    elif renquant_strict_enabled RQ_MONTHLY_CALIBRATOR_STRICT; then
+        echo "ERROR: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable and strict multirepo mode is enabled"
         return 1
     else
         echo "WARN: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable; falling back to umbrella fit_panel_calibrator.py."

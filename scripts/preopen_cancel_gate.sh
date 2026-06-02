@@ -69,8 +69,8 @@ PY
     exec python -m renquant_execution.preopen_cancel_gate "$@"
 fi
 
-if [ "${RQ_PREOPEN_GATE_STRICT:-0}" = "1" ]; then
-    echo "ERROR: renquant_execution.preopen_cancel_gate unavailable and RQ_PREOPEN_GATE_STRICT=1" >&2
+if renquant_strict_enabled RQ_PREOPEN_GATE_STRICT; then
+    echo "ERROR: renquant_execution.preopen_cancel_gate unavailable and strict multirepo mode is enabled" >&2
     exit 1
 fi
 

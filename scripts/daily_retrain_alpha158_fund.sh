@@ -119,8 +119,8 @@ import renquant_orchestrator.retrain_alpha158_fund as m
 print(f"renquant_orchestrator.retrain_alpha158_fund={m.__file__}")
 PY
     CMD=run_multirepo
-elif [ "${RQ_RETRAIN_STRICT:-0}" = "1" ]; then
-    echo "ERROR: renquant_orchestrator.retrain_alpha158_fund unavailable and RQ_RETRAIN_STRICT=1"
+elif renquant_strict_enabled RQ_RETRAIN_STRICT; then
+    echo "ERROR: renquant_orchestrator.retrain_alpha158_fund unavailable and strict multirepo mode is enabled"
     exit 1
 else
     echo "WARN: renquant_orchestrator.retrain_alpha158_fund unavailable; falling back to umbrella retrain."

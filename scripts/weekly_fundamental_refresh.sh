@@ -59,7 +59,7 @@ export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-d
 echo "[$(date '+%H:%M:%S')] Weekly fundamental refresh — $DATE" | tee -a "$LOG"
 
 if ! STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_DATA_REFRESH_STRICT:-0}" = "1" ]; then
+    if renquant_strict_enabled RQ_DATA_REFRESH_STRICT; then
         echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" \
             | tee -a "$LOG"
         exit 1
@@ -81,8 +81,8 @@ then
         --json >> "$LOG" 2>&1
     STEP1_RC=$?
     STEP2_RC=$STEP1_RC
-elif [ "${RQ_DATA_REFRESH_STRICT:-0}" = "1" ]; then
-    echo "ERROR: renquant_base_data.sec_fundamentals unavailable and RQ_DATA_REFRESH_STRICT=1" \
+elif renquant_strict_enabled RQ_DATA_REFRESH_STRICT; then
+    echo "ERROR: renquant_base_data.sec_fundamentals unavailable and strict multirepo mode is enabled" \
         >> "$LOG"
     STEP1_RC=1
     STEP2_RC=1
@@ -107,8 +107,8 @@ then
         --data-dir "$REPO_DIR/data" \
         --json >> "$LOG" 2>&1
     STEP3_RC=$?
-elif [ "${RQ_DATA_REFRESH_STRICT:-0}" = "1" ]; then
-    echo "ERROR: renquant_base_data.earnings_surprise_refresh unavailable and RQ_DATA_REFRESH_STRICT=1" \
+elif renquant_strict_enabled RQ_DATA_REFRESH_STRICT; then
+    echo "ERROR: renquant_base_data.earnings_surprise_refresh unavailable and strict multirepo mode is enabled" \
         >> "$LOG"
     STEP3_RC=1
 else

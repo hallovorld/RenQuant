@@ -48,7 +48,7 @@ SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_META_LABEL_STRICT:-0}" = "1" ] || [ "${RQ_META_LABEL_SIM_STRICT:-0}" = "1" ]; then
+    if renquant_strict_enabled RQ_META_LABEL_STRICT || renquant_strict_enabled RQ_META_LABEL_SIM_STRICT; then
         notify "META-LABEL RETRAIN ✗" "pinned renquant-strategy-104 strategy_config.json unavailable"
         exit 1
     fi
@@ -61,8 +61,8 @@ import renquant_backtesting.wf_gate.sim_driver  # noqa: F401
 PY
 then
     HAVE_BACKTESTING_SIM=1
-elif [ "${RQ_META_LABEL_SIM_STRICT:-0}" = "1" ]; then
-    notify "META-LABEL RETRAIN ✗" "renquant_backtesting.wf_gate.sim_driver unavailable and RQ_META_LABEL_SIM_STRICT=1"
+elif renquant_strict_enabled RQ_META_LABEL_SIM_STRICT; then
+    notify "META-LABEL RETRAIN ✗" "renquant_backtesting.wf_gate.sim_driver unavailable and strict multirepo mode is enabled"
     exit 1
 fi
 
@@ -72,8 +72,8 @@ import renquant_model_common.meta_label_exit  # noqa: F401
 PY
 then
     HAVE_MODEL_META_LABEL=1
-elif [ "${RQ_META_LABEL_STRICT:-0}" = "1" ]; then
-    notify "META-LABEL RETRAIN ✗" "renquant_model_common.meta_label_exit unavailable and RQ_META_LABEL_STRICT=1"
+elif renquant_strict_enabled RQ_META_LABEL_STRICT; then
+    notify "META-LABEL RETRAIN ✗" "renquant_model_common.meta_label_exit unavailable and strict multirepo mode is enabled"
     exit 1
 fi
 

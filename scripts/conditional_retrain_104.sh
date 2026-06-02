@@ -64,8 +64,8 @@ PY
         return $?
     fi
 
-    if [ "${RQ_CONDITIONAL_TRIGGER_STRICT:-0}" = "1" ]; then
-        echo "ERROR: renquant_orchestrator.anomaly_triggers unavailable and RQ_CONDITIONAL_TRIGGER_STRICT=1"
+    if renquant_strict_enabled RQ_CONDITIONAL_TRIGGER_STRICT; then
+        echo "ERROR: renquant_orchestrator.anomaly_triggers unavailable and strict multirepo mode is enabled"
         return 2
     fi
 

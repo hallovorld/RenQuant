@@ -115,8 +115,8 @@ PY
         curl -s -H "Title: RENQUANT-104 retrain FAIL" -d "alpha158_linear multirepo retrain failed (rc=$RUN_RC)" \
              "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
         exit "$RUN_RC"
-    elif [ "${RQ_ALPHA158_LINEAR_STRICT:-0}" = "1" ]; then
-        echo "ERROR: renquant_orchestrator.retrain_alpha158_linear unavailable and RQ_ALPHA158_LINEAR_STRICT=1"
+    elif renquant_strict_enabled RQ_ALPHA158_LINEAR_STRICT; then
+        echo "ERROR: renquant_orchestrator.retrain_alpha158_linear unavailable and strict multirepo mode is enabled"
         exit 1
     else
         echo "WARN: renquant_orchestrator.retrain_alpha158_linear unavailable; falling back to umbrella retrain."

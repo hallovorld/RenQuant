@@ -31,3 +31,31 @@ def test_manual_promote_uses_project_venv() -> None:
     assert "miniconda" not in non_comment
     assert "CONDA_PREFIX" not in non_comment
     assert 'PYTHON="$REPO_DIR/.venv/bin/python"' in src
+
+
+def test_multirepo_shell_wrappers_use_shared_strict_helper() -> None:
+    env_src = (REPO / "scripts" / "subrepo_env.sh").read_text(encoding="utf-8")
+    assert "renquant_strict_enabled()" in env_src
+    assert "RENQUANT_OPS_FAIL_CLOSED" in env_src
+
+    wrappers = (
+        "backup_to_github.sh",
+        "conditional_retrain_104.sh",
+        "daily_iv_snapshot.sh",
+        "daily_news_sentiment_refresh.sh",
+        "daily_retrain_alpha158_fund.sh",
+        "event_sec_schema_change.sh",
+        "monthly_calibrator_refresh.sh",
+        "monthly_meta_label_retrain.sh",
+        "preopen_cancel_gate.sh",
+        "retrain_alpha158_linear.sh",
+        "weekly_fundamental_refresh.sh",
+        "weekly_wf_promote.sh",
+    )
+    for script in wrappers:
+        src = (REPO / "scripts" / script).read_text(encoding="utf-8")
+        assert "renquant_strict_enabled" in src, script
+
+    weekly_apy = (REPO / "scripts" / "weekly_apy_check.py").read_text(encoding="utf-8")
+    assert "_strict_multirepo_enabled" in weekly_apy
+    assert "RENQUANT_OPS_FAIL_CLOSED" in weekly_apy
