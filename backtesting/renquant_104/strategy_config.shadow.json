@@ -612,8 +612,8 @@
       "qp_risk_aversion": 3.0,
       "qp_cost_kappa": 0.0001,
       "qp_dw_max": 0.5,
-      "qp_min_dw_pct": 0.02,
-      "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
+      "qp_min_dw_pct": 0.005,
+      "_qp_min_dw_pct_reason": "2026-06-02 (Bug F follow-up): shadow lowered 0.02->0.005 (0.5pct) so model buy candidates aren't truncated below the prod cost-floor. Today's daily-104 shadow dropped 13 candidate buys all at ~1.15pct (Sigma ~15pct / 13 candidates) under the 2pct floor; shadow is a signal-reporting surface, NOT a real-money cost-conservative surface, so the prod 2pct floor was the wrong tool. Prod's strategy_config.json keeps 0.02 untouched.",
       "qp_tax_aware": false,
       "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect \u2014 strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
       "qp_tax_lot_method": "hifo",
@@ -636,7 +636,8 @@
       "qp_mu_contract": "strict",
       "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu.",
       "qp_band_method": "davis_norman",
-      "_qp_band_method_note_2026-05-30": "Shadow also opts in to Davis-Norman band (Bug F fix). Today's shadow ORCL Delta_w=0.88pct hit 2pct qp_min_dw_pct floor; DN floor=0.5pct should let it through."
+      "_qp_band_method_note_2026-05-30": "Shadow also opts in to Davis-Norman band (Bug F fix). Today's shadow ORCL Delta_w=0.88pct hit 2pct qp_min_dw_pct floor; DN floor=0.5pct should let it through.",
+      "_qp_min_dw_pct_reason_2026-05-04_history": "Original raise 0.005->0.02 was to stop QP micro-trim killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13pct gross but net -3.6pct. That rationale still holds for PROD; shadow is decoupled from that cost calculus per the 2026-06-02 note above."
     },
     "enabled_regimes": [
       "BULL_CALM"
@@ -711,7 +712,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "_artifact_path_fix_2026-06-01": "Previously '../../artifacts/patchtst_deployable/hf_patchtst_all_seed42_model.pt' — file never existed on disk (deployable build never landed), so shadow preflight P-CONFIG-FP + P-WATCHLIST hard-failed and LoadScorerTask aborted at panel_scoring fail-closed every run. Repointed to the seed_44 pt07-strict artifact that strategy_config.golden.json::shadow_models[0] already loads successfully in main runs.",
+      "_artifact_path_fix_2026-06-01": "Previously '../../artifacts/patchtst_deployable/hf_patchtst_all_seed42_model.pt' \u2014 file never existed on disk (deployable build never landed), so shadow preflight P-CONFIG-FP + P-WATCHLIST hard-failed and LoadScorerTask aborted at panel_scoring fail-closed every run. Repointed to the seed_44 pt07-strict artifact that strategy_config.golden.json::shadow_models[0] already loads successfully in main runs.",
       "artifact_path": "../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std",
