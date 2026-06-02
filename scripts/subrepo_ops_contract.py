@@ -312,6 +312,18 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="forward_returns_backfill_uses_backtesting_repo",
+        path="scripts/backfill_forward_returns.py",
+        required=(
+            "from subrepo_module_delegate import delegate_to_subrepo_module",
+            "delegate_to_subrepo_module(",
+            "renquant_backtesting.analysis.backfill_forward_returns",
+            "renquant-backtesting",
+            "RQ_BACKTESTING_OPS_RUNNER",
+            "RQ_BACKTESTING_OPS_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_meta_label_uses_model_repo",
         path="scripts/monthly_meta_label_retrain.sh",
         required=(
