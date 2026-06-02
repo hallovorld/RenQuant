@@ -102,6 +102,36 @@ def test_re_run_on_stamped_is_noop(tmp_path):
     assert art.read_text() == snapshot
 
 
+def test_re_run_on_stamped_still_validates_feature_count(tmp_path):
+    """Codex post-merge review: already-stamped sidecars must not bypass
+    current compatibility flags. A wrong expected feature count still rejects."""
+    art = _make_artifact(tmp_path)
+    cfg = _make_config(tmp_path)
+    _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+    r = _run("--artifact-meta", str(art), "--strategy-config", str(cfg),
+             "--write", "--expected-feature-count", "169")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "feature_count" in r.stdout
+    assert "169" in r.stdout and "172" in r.stdout
+    assert "nothing to do" not in r.stdout
+
+
+def test_re_run_on_stamped_still_validates_label(tmp_path):
+    """Already-stamped sidecars with incomplete labels must still fail closed."""
+    art = _make_artifact(tmp_path)
+    cfg = _make_config(tmp_path)
+    _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+    body = json.loads(art.read_text())
+    body["training_contract"].pop("label_col", None)
+    body.pop("label_col", None)
+    art.write_text(json.dumps(body, indent=2))
+    r = _run("--artifact-meta", str(art), "--strategy-config", str(cfg), "--write")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "label_col" in r.stdout
+    assert "artifact=<missing>" in r.stdout
+    assert "nothing to do" not in r.stdout
+
+
 def test_backfill_nested_when_top_already_stamped(tmp_path):
     """Models stamped by an older version of the stamper had only the
     top-level field. Re-running with --write must backfill the nested

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Stamp `config_fingerprint` (+ `config_fingerprint_fields`) into a PatchTST
 artifact's `.metadata.json` sidecar so the strict LoadScorerTask config-
 consistency gate accepts it.
@@ -209,18 +209,6 @@ def main() -> int:
             .get("config_contract", {})
             .get("config_fingerprint")
     )
-    if existing_top == live_fp and existing_nested == live_fp:
-        print(
-            "Already stamped with matching fingerprint in BOTH top-level "
-            "and training_contract.config_contract — nothing to do."
-        )
-        return 0
-    if existing_top == live_fp and existing_nested != live_fp:
-        print(
-            "Top-level fingerprint already stamped; "
-            "nested training_contract.config_contract still missing — backfilling."
-        )
-
     reasons = _check_compatibility(
         meta,
         live_fields,
@@ -237,6 +225,19 @@ def main() -> int:
         print("--force given; stamping anyway.")
     else:
         print("Compatibility check OK.")
+
+    if existing_top == live_fp and existing_nested == live_fp:
+        print(
+            "Already stamped with matching fingerprint in BOTH top-level "
+            "and training_contract.config_contract, and compatibility check "
+            "passed — nothing to do."
+        )
+        return 0
+    if existing_top == live_fp and existing_nested != live_fp:
+        print(
+            "Top-level fingerprint already stamped; "
+            "nested training_contract.config_contract still missing — backfilling."
+        )
 
     if not args.write:
         print("Dry-run: would set:")
