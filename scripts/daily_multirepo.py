@@ -110,6 +110,15 @@ def _with_pinned_strategy_config(argv: list[str]) -> list[str]:
     ]
 
 
+def _force_alias(alias: str, target: str, aliased: list[str]) -> None:
+    try:
+        mod = importlib.import_module(target)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"critical multirepo module unavailable: {target}") from exc
+    sys.modules[alias] = mod
+    aliased.append(f"{alias}<-{target}")
+
+
 def _bootstrap_multirepo() -> list[str]:
     """Put pinned subrepos on path and alias every lifted kernel.* module to the
     pin. Returns the list of aliased module names (for the run report)."""
@@ -149,34 +158,27 @@ def _bootstrap_multirepo() -> list[str]:
         sys.modules[modname] = mod
         aliased.append(modname)
 
-    # 2026-05-30: panel_pipeline + preflight are now homed in the pin (C2.9 + C2.11).
-    # The pin loop above already aliases them. meta_label was lifted to
-    # renquant-backtesting (C2.4) — alias that here so the pin's pp_inference path
-    # `from renquant_pipeline.kernel.meta_label import …` still resolves.
-    try:
-        bm = importlib.import_module("renquant_backtesting.meta_label")
-        sys.modules["renquant_pipeline.kernel.meta_label"] = bm
-        aliased.append("renquant_pipeline.kernel.meta_label←renquant_backtesting")
-    except Exception:
-        # Fallback to umbrella if backtesting subrepo not on path
-        try:
-            um = importlib.import_module("kernel.meta_label")
-            sys.modules["renquant_pipeline.kernel.meta_label"] = um
-            aliased.append("renquant_pipeline.kernel.meta_label←umbrella")
-        except Exception:
-            pass
-
+    # Critical production modules must not silently fall back to umbrella. If
+    # one of these imports fails, the multirepo runner is not actually running
+    # the pinned production path and should fail closed.
+    _force_alias("kernel.preflight", "renquant_pipeline.kernel.preflight", aliased)
+    _force_alias("kernel.panel_pipeline", "renquant_pipeline.kernel.panel_pipeline", aliased)
+    # 2026-05-30: meta_label was lifted to renquant-backtesting (C2.4). Alias
+    # it here so the pin's pp_inference path still resolves through subrepos.
+    _force_alias(
+        "renquant_pipeline.kernel.meta_label",
+        "renquant_backtesting.meta_label",
+        aliased,
+    )
     # pp_inference imports `renquant_pipeline.panel_scoring.PanelScoringJob`.
     # Production daily needs the byte-equivalent fail-closed scorer job lifted
     # under renquant-pipeline.kernel.panel_pipeline, not the experimental
     # load_scorer rewrite exposed at renquant_pipeline.panel_scoring.
-    try:
-        sys.modules["renquant_pipeline.panel_scoring"] = importlib.import_module(
-            "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")
-        aliased.append(
-            "renquant_pipeline.panel_scoring←renquant_pipeline.kernel.panel_pipeline.job_panel_scoring")
-    except Exception:
-        pass
+    _force_alias(
+        "renquant_pipeline.panel_scoring",
+        "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring",
+        aliased,
+    )
     return aliased
 
 
