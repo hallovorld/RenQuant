@@ -17,6 +17,7 @@ from .ctx import PreflightContext
 from .base import PreflightTask, PreflightJob, PreflightPipeline
 from .tasks.state import StateFileTask
 from .tasks.broker import BrokerConnectTask
+from .tasks.broker_fill_freshness import BrokerFillFreshnessTask
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.gate import RegimeLayeredICTask, WfGateMetadataTask
 from .tasks.sector_map import SectorMapCoverageTask
@@ -36,6 +37,7 @@ __all__ = [
     "PreflightPipeline",
     "StateFileTask",
     "BrokerConnectTask",
+    "BrokerFillFreshnessTask",
     "ModelArtifactTask",
     "PanelContractTask",
     "BestIterTask",

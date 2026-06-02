@@ -4,6 +4,7 @@ from __future__ import annotations
 from .base import PreflightJob, PreflightPipeline
 from .tasks.artifact import BestIterTask, ModelArtifactTask, PanelContractTask
 from .tasks.broker import BrokerConnectTask
+from .tasks.broker_fill_freshness import BrokerFillFreshnessTask
 from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 from .tasks.config_fingerprint import ConfigFingerprintTask
 from .tasks.correlation import CorrelationMetadataTask
@@ -71,9 +72,13 @@ class _MetaLabelJob(PreflightJob):
 
 
 class _StateAndBrokerJob(PreflightJob):
-    """State + broker connectivity — final checks before live decisions."""
+    """State + broker connectivity — final checks before live decisions.
 
-    tasks = [StateFileTask(), BrokerConnectTask()]
+    BrokerFillFreshnessTask (2026-06-02 audit Finding 9) runs after
+    BrokerConnectTask so the connection is up before we query fills.
+    """
+
+    tasks = [StateFileTask(), BrokerConnectTask(), BrokerFillFreshnessTask()]
 
 
 def build_preflight_pipeline() -> PreflightPipeline:
