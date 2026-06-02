@@ -17,3 +17,7 @@ def test_makefile_has_safe_launchagent_install_target() -> None:
     assert "$(PYTHON) scripts/check_ops_deployment_ready.py --skip-launchagents" in text
     assert "ops-install-launchagents: subrepo-runtime-root" in text
     assert "PYTHON=$(PYTHON) bash scripts/install_launchagents.sh" in text
+    assert (
+        "PYTHON=$(PYTHON) bash scripts/install_launchagents.sh\n"
+        "\t$(PYTHON) scripts/check_ops_deployment_ready.py"
+    ) in text

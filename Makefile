@@ -38,6 +38,7 @@ ops-preinstall-ready:
 
 ops-install-launchagents: subrepo-runtime-root
 	PYTHON=$(PYTHON) bash scripts/install_launchagents.sh
+	$(PYTHON) scripts/check_ops_deployment_ready.py
 
 ops-deployment-ready:
 	$(PYTHON) scripts/check_ops_deployment_ready.py
