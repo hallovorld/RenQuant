@@ -336,6 +336,8 @@ CHECKS: tuple[Check, ...] = (
             "renquant-strategy-104",
             "strategy_config.json",
             "RENQUANT_STRICT_SUBREPO_PATHS",
+            "RENQUANT_OPS_FAIL_CLOSED",
+            "_strict_multirepo_enabled",
             "RQ_SCREEN_WATCHLIST_STRICT",
         ),
     ),
