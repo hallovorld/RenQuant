@@ -726,8 +726,33 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    cv_result: dict | None = None,
                    cutoff_embargo_days: int | None = None,
                    train_run_id: str | None = None,
-                   sentiment_contract_metadata: dict | None = None) -> dict:
-    """Build artifact dict, stamping cutoff_date + side_label when set."""
+                   sentiment_contract_metadata: dict | None = None,
+                   train_start_date: Optional[str] = None) -> dict:
+    """Build artifact dict, stamping cutoff_date + side_label when set.
+
+    When ``train_start_date`` is provided (Track D regime-drift retrains),
+    the artifact additionally stamps a machine-readable lower-bound
+    provenance triplet so audits + gates can distinguish full-history vs
+    recent-history retrains that share the same label / feature / config
+    fingerprint:
+
+    - ``train_start_date``: user-supplied ISO string (lower bound).
+    - ``effective_train_start_date``: equal to ``train_start_date`` today
+      (no lower-bound embargo applies; kept distinct for symmetry with
+      ``effective_train_cutoff_date`` and future-proofing if a lower-bound
+      embargo is ever needed).
+    - ``train_window``: ``{"start": ..., "end": ...}`` mirror — ``start`` is
+      the effective lower bound, ``end`` is ``effective_train_cutoff_date``
+      when a cutoff is set, otherwise the observed max train date.
+
+    When ``train_start_date`` is ``None`` these fields are OMITTED (not
+    stamped as ``null``) so default full-history artifacts remain
+    byte-equivalent to pre-extension output. The model-relevant
+    ``config_fingerprint`` is intentionally unchanged — recipe identity
+    (labels / features / config) still maps to one fingerprint; window
+    provenance is metadata-level and read by gates that care about row
+    coverage (§7.6 data-flow safety).
+    """
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
     lookahead_days = infer_label_lookahead_days(label_used)
     base_notes = (
@@ -795,6 +820,26 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["effective_train_cutoff_date"] = (
             cutoff_date - pd.offsets.BDay(artifact["cutoff_embargo_days"])
         ).isoformat()
+    if train_start_date is not None:
+        start_ts = pd.Timestamp(train_start_date)
+        effective_start_iso = start_ts.isoformat()
+        artifact["train_start_date"] = effective_start_iso
+        # No lower-bound embargo applies today; effective == requested.
+        # Kept as a distinct field for symmetry with
+        # ``effective_train_cutoff_date`` and future-proofing.
+        artifact["effective_train_start_date"] = effective_start_iso
+        # train_window mirrors {effective_start, effective_end} so audits
+        # can read both bounds from one field. ``end`` echoes
+        # ``effective_train_cutoff_date`` when a cutoff is set, else the
+        # observed max train date.
+        if cutoff_date is not None:
+            end_iso = artifact["effective_train_cutoff_date"]
+        else:
+            end_iso = pd.Timestamp(train["date"].max()).isoformat()
+        artifact["train_window"] = {
+            "start": effective_start_iso,
+            "end":   end_iso,
+        }
     if side_label is not None:
         artifact["side_label"] = side_label
     if sentiment_contract_metadata:
@@ -910,7 +955,8 @@ def main():
                               cv_result=cv_result,
                               cutoff_embargo_days=args.cutoff_embargo_days,
                               train_run_id=str(uuid.uuid4())[:8],
-                              sentiment_contract_metadata=sentiment_contract)
+                              sentiment_contract_metadata=sentiment_contract,
+                              train_start_date=args.train_start_date)
 
     fp = stamp_fingerprint(
         artifact,
