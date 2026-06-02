@@ -131,6 +131,51 @@ def test_subrepo_delegate_uses_pinned_strategy_config(tmp_path, monkeypatch):
     assert str(umbrella_config) not in argv_text
 
 
+def test_subrepo_delegate_global_strict_blocks_missing_strategy_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "_screen", REPO_ROOT / "scripts" / "screen_watchlist.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    runtime = tmp_path / "runtime" / "repos"
+    runtime.mkdir(parents=True)
+    monkeypatch.setattr(mod, "resolve_subrepo_root", lambda _repo: runtime)
+    monkeypatch.setenv("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo")
+    monkeypatch.setenv("RENQUANT_OPS_FAIL_CLOSED", "1")
+
+    with pytest.raises(RuntimeError, match="strategy_config.json unavailable"):
+        mod._try_subrepo_screen(["--strategy-dir-root", str(tmp_path / "RenQuant")])
+
+
+def test_subrepo_delegate_global_strict_blocks_missing_module(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "_screen", REPO_ROOT / "scripts" / "screen_watchlist.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    runtime = tmp_path / "runtime" / "repos"
+    cfg = runtime / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(mod, "resolve_subrepo_root", lambda _repo: runtime)
+    monkeypatch.setenv("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo")
+    monkeypatch.setenv("RENQUANT_OPS_FAIL_CLOSED", "1")
+    monkeypatch.setitem(sys.modules, "renquant_base_data.watchlist_screen", None)
+
+    with pytest.raises(RuntimeError, match="strict multirepo mode"):
+        mod._try_subrepo_screen(["--strategy-dir-root", str(tmp_path / "RenQuant")])
+
+
 class TestPerfStats:
     def test_sharpe_positive_on_uptrend(self, tmp_path):
         """Inject the script as a module to hit _perf_stats directly."""

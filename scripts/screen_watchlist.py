@@ -56,6 +56,14 @@ TRADING_DAYS_PER_YEAR = 252
 NTFY_TOPIC = "renquant"
 
 
+def _strict_multirepo_enabled(strict_env: str) -> bool:
+    return (
+        os.environ.get(strict_env) == "1"
+        or os.environ.get("RENQUANT_OPS_FAIL_CLOSED") == "1"
+        or os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1"
+    )
+
+
 def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     """Delegate to renquant-base-data when the subrepo runtime is available."""
     if os.environ.get("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo") != "multirepo":
@@ -83,11 +91,7 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     subrepo_root = resolve_subrepo_root(REPO_ROOT)
     strategy_config = subrepo_root / "renquant-strategy-104" / "configs" / "strategy_config.json"
     if not strategy_config.exists():
-        strict = (
-            os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1"
-            or os.environ.get("RQ_SCREEN_WATCHLIST_STRICT") == "1"
-        )
-        if strict:
+        if _strict_multirepo_enabled("RQ_SCREEN_WATCHLIST_STRICT"):
             raise RuntimeError(
                 "pinned renquant-strategy-104 strategy_config.json unavailable"
             )
@@ -99,10 +103,10 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     try:
         from renquant_base_data.watchlist_screen import main as subrepo_main
     except Exception as exc:  # noqa: BLE001
-        if os.environ.get("RQ_SCREEN_WATCHLIST_STRICT") == "1":
+        if _strict_multirepo_enabled("RQ_SCREEN_WATCHLIST_STRICT"):
             raise RuntimeError(
                 "renquant_base_data.watchlist_screen unavailable and "
-                "RQ_SCREEN_WATCHLIST_STRICT=1"
+                "strict multirepo mode is enabled"
             ) from exc
         log.warning("base-data watchlist screen unavailable; using umbrella implementation: %s", exc)
         return False
