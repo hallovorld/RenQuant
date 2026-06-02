@@ -42,6 +42,11 @@ class _StubCtx:
         # paths the tasks read via _get_path
         self._qp_w_upper = None
         self._qp_w_current = None
+        # v3 (codex #123 review): hold-flat clamp is hard-cap-aware. Tests
+        # must stamp ``_qp_w_upper_hard`` the way ComputeQPConstraintsTask
+        # does in production, otherwise the clamp skips entirely and
+        # post-scaling w_upper stays below w_current.
+        self._qp_w_upper_hard = None
         self._qp_tickers = None
         self._qp_mu_source_map = None
         # exposure-scaling reads spy_returns, portfolio_value, hwm
@@ -59,6 +64,7 @@ class TestSoftScalingHoldFlatClamp:
         """
         ctx = _StubCtx()
         ctx._qp_w_upper = np.array([0.10, 0.10, 0.10, 0.10])
+        ctx._qp_w_upper_hard = np.array([0.10, 0.10, 0.10, 0.10])
         ctx._qp_w_current = np.array([0.10, 0.10, 0.10, 0.10])
         # Engineer a scaling < 1 by enabling vt with a very low spy_returns vol
         ctx.config = {
@@ -88,6 +94,7 @@ class TestSoftScalingHoldFlatClamp:
         (clamp is a no-op floor at w_current, NOT a ceiling)."""
         ctx = _StubCtx()
         ctx._qp_w_upper = np.array([0.20, 0.20, 0.20, 0.20])
+        ctx._qp_w_upper_hard = np.array([0.20, 0.20, 0.20, 0.20])
         ctx._qp_w_current = np.array([0.05, 0.05, 0.05, 0.05])
         ctx.config = {
             "exposure_scaling": {
@@ -110,21 +117,105 @@ class TestSoftScalingHoldFlatClamp:
         # And the cap is below the original 0.20 (scaling did fire)
         assert (scaled <= 0.20 + 1e-9).all()
 
-    def test_conviction_cap_clamps_at_w_current(self):
-        """ApplyConvictionCapTask multiplies by conviction multiplier ∈ [0, 1].
-        For held positions whose conviction multiplier shrinks below
-        w_current, the result must be clamped at w_current — same
-        invariant as exposure scaling."""
-        # Skip — ApplyConvictionCapTask requires panel_score-bearing
-        # candidates to compute conviction_multiplier; that's an
-        # integration-level dependency the unit-test ctx can't easily
-        # mock without recreating the whole inference path. The
-        # behaviour is verified by the existing
-        # `tests/test_qp_conviction_cap_*` integration tests which
-        # already run the task end-to-end. This file pins the more
-        # easily-isolated ApplyExposureScalingTask invariant.
-        pytest.skip(
-            "ApplyConvictionCapTask hold-flat clamp verified by existing "
-            "tests/test_qp_conviction_cap_*.py integration tests; "
-            "this stub kept for visibility of the parallel invariant."
+    def test_conviction_cap_within_hard_cap_holding_clamps_to_w_current(self):
+        """Within-hard-cap held position: conviction multiplier shrinks
+        ``_qp_w_upper`` below ``w_current``. Clamp must raise it back to
+        ``w_current`` (hold-flat invariant preserved).
+        """
+        from types import SimpleNamespace as NS
+        from kernel.portfolio_qp.tasks import ApplyConvictionCapTask
+
+        ctx = _StubCtx()
+        ctx._qp_tickers = ["ORCL"]
+        ctx._qp_w_upper = np.array([0.15])        # post-Compute hard cap
+        ctx._qp_w_upper_hard = np.array([0.15])   # immutable hard cap snapshot
+        ctx._qp_w_current = np.array([0.10])      # within hard cap (0.10 ≤ 0.15)
+        # Tiny score → low conviction multiplier → soft cap shrinks below 0.10
+        ctx._qp_mu_source_map = {"ORCL": NS(panel_score=0.005)}
+        ctx.config = {
+            "rotation": {"joint_actions": {"qp_conviction_cap_enabled": True}},
+            "ranking": {"panel_scoring": {"sizing": {"enabled": True}}},
+        }
+
+        ApplyConvictionCapTask().run(ctx)
+
+        # Hold-flat invariant: w_upper >= w_current for a within-cap holding
+        w_upper = float(ctx._qp_w_upper[0])
+        w_curr  = float(ctx._qp_w_current[0])
+        assert w_upper >= w_curr - 1e-9, (
+            f"hold-flat invariant broken: w_upper={w_upper} < w_current={w_curr}"
+        )
+        # And w_upper is NOT raised above the hard cap
+        assert w_upper <= float(ctx._qp_w_upper_hard[0]) + 1e-9, (
+            f"clamp raised w_upper above hard cap: w_upper={w_upper} > hard=0.15"
+        )
+
+    def test_conviction_cap_over_cap_holding_keeps_hard_cap(self):
+        """**Codex #123 review regression guard.** Over-hard-cap held position
+        (w_current > w_upper_hard) — the clamp MUST NOT raise ``_qp_w_upper``
+        above the hard cap. Doing so would silently authorise the over-cap
+        weight at the solver and bypass ``_retry_for_per_asset_cap_compliance``.
+
+        Repro values match codex's exact #123 v2 repro: hard=15%, current=22%.
+        """
+        from types import SimpleNamespace as NS
+        from kernel.portfolio_qp.tasks import ApplyConvictionCapTask
+
+        ctx = _StubCtx()
+        ctx._qp_tickers = ["ORCL"]
+        ctx._qp_w_upper = np.array([0.15])        # post-Compute hard cap
+        ctx._qp_w_upper_hard = np.array([0.15])   # immutable hard cap snapshot
+        ctx._qp_w_current = np.array([0.22])      # 22% holding — OVER hard cap
+        ctx._qp_mu_source_map = {"ORCL": NS(panel_score=0.0)}
+        ctx.config = {
+            "rotation": {"joint_actions": {"qp_conviction_cap_enabled": True}},
+            "ranking": {"panel_scoring": {"sizing": {"enabled": True}}},
+        }
+
+        ApplyConvictionCapTask().run(ctx)
+
+        # Critical assertion: w_upper must NOT have been raised to w_current.
+        # The hard-cap-aware clamp leaves w_upper at the hard 15%.
+        assert float(ctx._qp_w_upper[0]) <= float(ctx._qp_w_upper_hard[0]) + 1e-9, (
+            f"REGRESSION: conviction-cap clamp raised w_upper above hard cap "
+            f"(w_upper={ctx._qp_w_upper[0]} > hard={ctx._qp_w_upper_hard[0]}). "
+            f"This bypasses cap-compliance fallback — codex #123 v2 bug."
+        )
+
+    def test_conviction_cap_over_cap_solver_returns_infeasible(self):
+        """End-to-end: over-cap holding through ApplyConvictionCapTask must
+        reach the solver with w_upper still at the hard cap, so the solver
+        returns infeasible and ``_retry_for_per_asset_cap_compliance`` can
+        fire its deterministic sell-down."""
+        from types import SimpleNamespace as NS
+        from kernel.portfolio_qp.tasks import ApplyConvictionCapTask
+        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
+
+        ctx = _StubCtx()
+        ctx._qp_tickers = ["ORCL"]
+        ctx._qp_w_upper = np.array([0.15])
+        ctx._qp_w_upper_hard = np.array([0.15])
+        ctx._qp_w_current = np.array([0.22])
+        ctx._qp_mu_source_map = {"ORCL": NS(panel_score=0.0)}
+        ctx.config = {
+            "rotation": {"joint_actions": {"qp_conviction_cap_enabled": True}},
+            "ranking": {"panel_scoring": {"sizing": {"enabled": True}}},
+        }
+        ApplyConvictionCapTask().run(ctx)
+
+        sol = solve_portfolio_qp(
+            w_current=ctx._qp_w_current,
+            mu=[0.0],
+            sigma=[0.10],
+            w_upper=ctx._qp_w_upper,
+            w_lower=0.0,
+            cash_reserve=0.0,
+            cost_kappa=10.0,
+            turnover_max=0.01,
+        )
+        assert sol.status.startswith("infeasible"), (
+            f"REGRESSION: solver did not return infeasible for over-cap "
+            f"holding (status={sol.status!r}). cap_compliance_fallback path "
+            f"is only triggered on infeasible status — see "
+            f"_retry_for_per_asset_cap_compliance docstring."
         )
