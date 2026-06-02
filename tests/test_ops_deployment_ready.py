@@ -25,6 +25,7 @@ def _patch_green_dependencies(
     branch: str = "main",
     runtime_head: str | None = None,
     dirty: bool = False,
+    dirty_status: str | None = None,
 ) -> None:
     def fake_git(repo_root: Path, *args: str) -> str:
         joined = " ".join(args)
@@ -37,6 +38,10 @@ def _patch_green_dependencies(
         if args == ("rev-parse", "HEAD"):
             return "a" * 40
         if args == ("status", "--porcelain"):
+            if repo_root.name == "renquant-common":
+                return ""
+            if dirty_status is not None:
+                return dirty_status
             return " M scripts/daily_104.sh" if dirty else ""
         raise AssertionError(args)
 
@@ -184,6 +189,33 @@ def test_readiness_blocks_dirty_worktree(monkeypatch, tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["details"]["dirty"] is True
     assert any(issue["check"] == "git_dirty" for issue in result["issues"])
+
+
+def test_readiness_allows_runtime_dirty_outputs(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    _patch_green_dependencies(
+        monkeypatch,
+        module,
+        dirty_status=(
+            " M backtesting/renquant_104/live_state.alpaca.json\n"
+            " M backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.json\n"
+            "?? backtesting/renquant_104/artifacts/cache/tmp.json\n"
+            " M doc/dashboard.md"
+        ),
+    )
+    _write_pinned_runtime(tmp_path)
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+    )
+
+    assert result["ok"] is True
+    assert result["details"]["dirty"] is True
+    assert result["details"]["blocking_dirty_paths"] == []
+    assert "backtesting/renquant_104/live_state.alpaca.json" in result["details"]["runtime_dirty_paths"]
+    assert not any(issue["check"] == "git_dirty" for issue in result["issues"])
 
 
 def test_readiness_blocks_non_main_branch(monkeypatch, tmp_path: Path) -> None:

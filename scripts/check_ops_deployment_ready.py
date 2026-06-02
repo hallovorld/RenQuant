@@ -8,6 +8,7 @@ runtime env exists, and that installed LaunchAgents match the repo sources.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import subprocess
 import sys
@@ -19,6 +20,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 CANONICAL_REPO = Path("/Users/renhao/git/github/RenQuant")
+RUNTIME_DIRTY_PATTERNS = (
+    "backtesting/data/**",
+    "backtesting/renquant_104/live_state*.json",
+    "backtesting/renquant_104/artifacts/cache/**",
+    "backtesting/renquant_104/artifacts/shadow/**",
+    "doc/dashboard.md",
+)
 
 sys.path.insert(0, str(SCRIPTS))
 
@@ -38,6 +46,20 @@ class Issue:
 
 def _git(repo_root: Path, *args: str) -> str:
     return subprocess.check_output(("git", "-C", str(repo_root), *args), text=True).strip()
+
+
+def _dirty_paths(status: str) -> tuple[list[str], list[str]]:
+    runtime: list[str] = []
+    blocking: list[str] = []
+    for raw in status.splitlines():
+        if not raw:
+            continue
+        path = raw[3:] if len(raw) > 3 else raw.strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        target = runtime if any(fnmatch.fnmatch(path, pattern) for pattern in RUNTIME_DIRTY_PATTERNS) else blocking
+        target.append(path)
+    return runtime, blocking
 
 
 def _read_exports(path: Path) -> dict[str, str]:
@@ -149,19 +171,39 @@ def run_readiness(
         branch = _git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
         head = _git(repo_root, "rev-parse", "HEAD")
         origin_main = _git(repo_root, "rev-parse", "--verify", "origin/main")
-        dirty = bool(_git(repo_root, "status", "--porcelain"))
+        status = _git(repo_root, "status", "--porcelain")
+        runtime_dirty_paths, blocking_dirty_paths = _dirty_paths(status)
+        dirty = bool(status)
     except subprocess.CalledProcessError as exc:
         issues.append(Issue("error", "git_state", f"git metadata failed: {exc}"))
         branch = head = origin_main = ""
         dirty = False
+        runtime_dirty_paths = []
+        blocking_dirty_paths = []
 
-    details.update({"branch": branch, "head": head, "origin_main": origin_main, "dirty": dirty})
+    details.update(
+        {
+            "branch": branch,
+            "head": head,
+            "origin_main": origin_main,
+            "dirty": dirty,
+            "runtime_dirty_paths": runtime_dirty_paths,
+            "blocking_dirty_paths": blocking_dirty_paths,
+        }
+    )
     if branch != "main" and not allow_non_main:
         issues.append(Issue("error", "git_branch", f"expected main, got {branch!r}"))
     if head and origin_main and head != origin_main:
         issues.append(Issue("error", "git_head", "HEAD does not match origin/main"))
-    if dirty:
-        issues.append(Issue("error", "git_dirty", "working tree has uncommitted changes"))
+    if blocking_dirty_paths:
+        issues.append(
+            Issue(
+                "error",
+                "git_dirty",
+                "working tree has uncommitted code/config changes: "
+                + ", ".join(blocking_dirty_paths[:8]),
+            )
+        )
 
     env_path = repo_root / ".subrepo_assembly" / "current.env"
     exports = _read_exports(env_path)
