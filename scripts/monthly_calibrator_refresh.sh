@@ -78,6 +78,15 @@ renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
+if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
+    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_MONTHLY_CALIBRATOR_STRICT:-0}" = "1" ]; then
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable"
+        notify "RenQuant 104 MONTHLY-ABORT" "Pinned strategy config unavailable; calibrator NOT refreshed. Check $LOG"
+        exit 1
+    fi
+    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+fi
+echo "Strategy config: $PROD_STRATEGY_CONFIG"
 
 # ── Step 1: Smoke test — abort if model broken ───────────────────────────
 echo "--- Step 1: Pre-flight smoke test ---"
@@ -97,7 +106,30 @@ fi
 # val_IC=-0.0165 → prod silently). Pre-fix this script had no rollback
 # target if the new calibrator regressed.
 echo "--- Step 2: Re-fit global calibrator ---"
-PROD_CAL="$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json"
+PROD_SCORER=$("$PYTHON" - "$PROD_STRATEGY_CONFIG" "$REPO_DIR/backtesting/renquant_104" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+cfg = json.loads(Path(sys.argv[1]).read_text())
+strategy_dir = Path(sys.argv[2])
+rel = cfg["ranking"]["panel_scoring"]["artifact_path"]
+path = Path(rel)
+print(path if path.is_absolute() else strategy_dir / path)
+PY
+)
+PROD_CAL=$("$PYTHON" - "$PROD_STRATEGY_CONFIG" "$REPO_DIR/backtesting/renquant_104" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+cfg = json.loads(Path(sys.argv[1]).read_text())
+strategy_dir = Path(sys.argv[2])
+rel = cfg["ranking"]["panel_scoring"]["global_calibration"]["artifact_path"]
+path = Path(rel)
+print(path if path.is_absolute() else strategy_dir / path)
+PY
+)
 ROLLBACK_CAL="$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-rank-calibration.monthly_rollback_$DATE.json"
 
 # Snapshot prior calibrator for rollback BEFORE any destructive write.
@@ -130,7 +162,7 @@ PY
     then
         "$PYTHON" -m renquant_model_gbdt.fit_calibrator_alpha158_fund \
             --data-dir "$REPO_DIR/data" \
-            --scorer-artifact "$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json" \
+            --scorer-artifact "$PROD_SCORER" \
             --out "$PROD_CAL"
     elif [ "${RQ_MONTHLY_CALIBRATOR_STRICT:-0}" = "1" ]; then
         echo "ERROR: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable and RQ_MONTHLY_CALIBRATOR_STRICT=1"
@@ -236,7 +268,7 @@ CAL_INFO=$("$PYTHON" -c "
 import json
 from pathlib import Path
 sd = Path('$REPO_DIR/backtesting/renquant_104')
-cfg = json.loads((sd / 'strategy_config.json').read_text())
+cfg = json.loads(Path('$PROD_STRATEGY_CONFIG').read_text())
 cal_rel = cfg['ranking']['panel_scoring']['global_calibration']['artifact_path']
 m = json.loads((sd / cal_rel).read_text())
 n_knots_p = len(m.get('probability', {}).get('x', []))
