@@ -6,6 +6,7 @@ pytest tmp_path instead.
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -88,10 +89,51 @@ class TestEndToEnd:
         assert "Add candidates" in text
 
 
+def test_subrepo_delegate_uses_pinned_strategy_config(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "_screen", REPO_ROOT / "scripts" / "screen_watchlist.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    runtime = tmp_path / "runtime" / "repos"
+    cfg = runtime / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{}", encoding="utf-8")
+
+    package = runtime / "renquant-base-data" / "src" / "renquant_base_data"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "watchlist_screen.py").write_text(
+        "from pathlib import Path\n"
+        "def main(argv):\n"
+        "    out = Path(argv[argv.index('--output-dir') + 1])\n"
+        "    out.mkdir(parents=True, exist_ok=True)\n"
+        "    (out / 'argv.txt').write_text('\\n'.join(argv), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    repo_root = tmp_path / "RenQuant"
+    monkeypatch.setattr(mod, "resolve_subrepo_root", lambda _repo: runtime)
+    monkeypatch.setenv("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo")
+
+    assert mod._try_subrepo_screen([
+        "--strategy",
+        "renquant_104",
+        "--strategy-dir-root",
+        str(repo_root),
+    ])
+
+    argv_text = (repo_root / "logs" / "watchlist_screen" / "argv.txt").read_text()
+    assert str(cfg) in argv_text
+    umbrella_config = repo_root / "backtesting" / "renquant_104" / "strategy_config.json"
+    assert str(umbrella_config) not in argv_text
+
+
 class TestPerfStats:
     def test_sharpe_positive_on_uptrend(self, tmp_path):
         """Inject the script as a module to hit _perf_stats directly."""
-        import importlib.util
         spec = importlib.util.spec_from_file_location(
             "_screen", REPO_ROOT / "scripts" / "screen_watchlist.py",
         )
