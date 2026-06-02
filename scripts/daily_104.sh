@@ -67,7 +67,8 @@ renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] && [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
+    if { [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RENQUANT_OPS_FAIL_CLOSED:-0}" = "1" ]; } \
+        && [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
         echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" | tee -a "$LOG"
         exit 1
     fi

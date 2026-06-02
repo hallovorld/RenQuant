@@ -72,6 +72,7 @@ def test_daily_full_run_keeps_existing_daily_multirepo_bridge() -> None:
     assert 'source "$REPO_DIR/scripts/subrepo_env.sh"' in src
     assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
     assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
+    assert "RENQUANT_OPS_FAIL_CLOSED" in src
     assert 'RUNNER_ARGS=("$REPO_DIR/scripts/daily_multirepo.py")' in src
     assert "RUNNER_ARGS=(-m live.runner)" in src
 
