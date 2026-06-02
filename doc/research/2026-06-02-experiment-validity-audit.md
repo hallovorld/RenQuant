@@ -165,7 +165,8 @@ canonical references** 的复合疏忽.
 |---|---|---|
 | 撤回 task completion | Task #49, #53 | 应该是 `in_progress` 或 `deleted` — 它们的 "completed" 是误标. |
 | 改 task description | Task #17, #32, #33, #34 | 加 "BLOCKED on Task #30 leak closure". 注意 #17 现在虽然标 completed, 但所有 IC 数字已无效. |
-| 加 PRE-LEAK-AUDIT 标 | `doc/roadmap.md`, `doc/experiments/panel-training-runs.md`, `doc/experiments/ab-journal.md` | 涉及 B_tuned / PatchTST IC 引用的所有段, 加 warning banner. |
+| 加 PRE-LEAK-AUDIT 标 | `doc/roadmap.md` § 1 "PatchTST sequence model" | 该节直接引用 B_tuned IC 数字, 加 warning banner 限制在 PatchTST 段内. |
+| 不需要 banner — 文件 scoping 检查后无 B_tuned/PatchTST 主张 | `doc/experiments/panel-training-runs.md` (XGBoost Panel-LTR 训练日志, 与 PatchTST 是不同 pipeline), `doc/experiments/ab-journal.md` | codex review on PR #80 [(comment)](https://github.com/hallovorld/RenQuant/pull/80#issuecomment-4598656286) 正确指出: 给 XGBoost 日志加 "B_tuned 同一训练 pipeline" 的 banner 是错误归因, 会制造假 provenance chain. 这两个文件保持原样, 在本表显式记录其 scoping 已被审计过. |
 | 新增 task | (待开) "G3 retrofit on existing PatchTST artifacts" | 让 PR #43 的 G3 gate 真的 enforce 在现有 artifact 上. |
 
 ## 6. 公开声明 (写给未来读这份文档的 agent + 自己)

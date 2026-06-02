@@ -1,19 +1,5 @@
 # Panel-LTR Training Runs — Log
 
-> 🚨 **`PRE-LEAK-AUDIT` — 2026-06-02**: The `oos_mean_ic` /
-> `oos_per_fold_ic` / "OOS IC improvement" numbers tracked in this log
-> below were computed with the same training pipeline whose B_tuned
-> baseline the 2026-06-01 Tier-3 codex harness re-run confirmed is
-> **leak-contaminated** (`timeshift_placebo IC=+0.067 > real_ic=+0.044`,
-> verdict=`invalid_experiment`). Specific Run entries quoting IC at
-> lines 161 / 352 / 504-517 / 568 are therefore pre-leak-audit numbers
-> and cannot be treated as validated improvements. The log is preserved
-> for historical traceability; any "Run N improved over Run N-1"
-> conclusion needs to be re-verified after the Claude TaskList task
-> **#30** ("PatchTST B_tuned leakage investigation") closes. Full audit
-> + 检讨 in
-> [`../research/2026-06-02-experiment-validity-audit.md`](../research/2026-06-02-experiment-validity-audit.md).
-
 > **📅 Historical snapshot — content below reflects state at the date in filename/header.**
 > Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
 > present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
