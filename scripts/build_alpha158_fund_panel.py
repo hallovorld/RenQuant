@@ -4,9 +4,22 @@
 Per CLAUDE.md §5.7 we need this in the cron pipeline so the production
 panel-ltr.alpha158_fund.json gets retrained on fresh data daily.
 
+Track B compatibility (2026-06-02): when the upstream
+``alpha158_qlib_dataset.parquet`` was built with the renquant-base-data
+``--include-track-b`` flag, the alpha158 frame already contains the 4
+additional Track B columns (mom_carry_12_1, beta_dm, rvar_total,
+idio_vol_3f). This merger is column-count-agnostic — it left-joins on
+``(ticker, date)`` regardless of how many feature columns the alpha158
+input carries, so Track B passthrough requires no code change here. The
+training-side opt-in lives in ``train_walkforward_panel.py
+--include-features``; this script is structurally compatible with both
+variants.
+
 Inputs:
     data/alpha158_qlib_dataset.parquet      (148 alpha158 features +
-                                              fwd_5/20/60d_excess + meta)
+                                              fwd_5/20/60d_excess + meta;
+                                              +4 Track B cols when built
+                                              with --include-track-b)
     data/sec_fundamentals_daily.parquet     (5 fund cols: earnings_yield,
                                               book_to_price, gross_profitability,
                                               roe, asset_growth)
@@ -15,7 +28,9 @@ Inputs:
 
 Output:
     data/alpha158_291_fundamental_dataset.parquet  (left-join + PEAD,
-                                                     **166 features total**)
+                                                     **166 features total**;
+                                                     **170 features** with
+                                                     Track B compat)
 
 PEAD features (3, added 2026-05-08 after E47 paired sanity passed):
     days_since_earnings   capped at 60d (Bernard-Thomas drift window)
