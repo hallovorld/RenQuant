@@ -1,0 +1,39 @@
+name: subrepo-pin-ci-green
+
+on:
+  pull_request:
+    paths:
+      - subrepos.lock.json
+      - scripts/check_lock_pins_ci_green.py
+      - tests/test_check_lock_pins_ci_green.py
+      - .github/workflows/subrepo-pin-ci-green.yml
+  push:
+    branches:
+      - main
+    paths:
+      - subrepos.lock.json
+      - scripts/check_lock_pins_ci_green.py
+      - .github/workflows/subrepo-pin-ci-green.yml
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  statuses: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify pinned subrepo commits have green CI
+        env:
+          # Public RenQuant pins private subrepos. github.token is enough for
+          # public repos, but private subrepo validation needs a PAT/App token
+          # with read access to every hallovorld/renquant-* repository.
+          GH_TOKEN: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+        run: python3 scripts/check_lock_pins_ci_green.py --lock-file subrepos.lock.json
+      - name: Install test tools
+        run: python3 -m pip install pytest
+      - name: Run pin-gate regression tests
+        run: python3 -m pytest -q -o addopts='' tests/test_check_lock_pins_ci_green.py tests/test_subrepo_ops_contract.py

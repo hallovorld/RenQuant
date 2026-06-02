@@ -330,6 +330,28 @@ CHECKS: tuple[Check, ...] = (
             "RQ_WEEKLY_APY_STRICT",
         ),
     ),
+    Check(
+        name="subrepo_pin_ci_green_gate_available",
+        path="scripts/check_lock_pins_ci_green.py",
+        required=(
+            "actions/runs?",
+            "commits/{full_sha}/check-runs",
+            "commits/{full_sha}/status",
+            "compare/{full_sha}...{encoded_branch}",
+            "subrepos.lock.json",
+            "CI is red, pending, or missing",
+        ),
+    ),
+    Check(
+        name="subrepo_pin_ci_green_workflow_wired",
+        path=".github/workflows/subrepo-pin-ci-green.yml",
+        required=(
+            "subrepos.lock.json",
+            "scripts/check_lock_pins_ci_green.py",
+            "tests/test_check_lock_pins_ci_green.py",
+            "Verify pinned subrepo commits have green CI",
+        ),
+    ),
 )
 
 
