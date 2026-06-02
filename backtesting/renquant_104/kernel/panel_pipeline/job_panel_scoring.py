@@ -2792,14 +2792,24 @@ class ApplyKellySizingTask(Task):
         # Compact skip-reason summary: only emit non-zero counts.
         skip_str = " ".join(f"{r.split(':',1)[1]}={c}"
                               for r, c in skip_counts.items() if c > 0)
+        # 2026-06-02 daily decision-tree audit Finding B: the previous log
+        # only printed ``holdings=N non-zero`` which the operator read as
+        # "N holdings exist" — but it was actually "of M holdings, N had a
+        # non-zero Kelly target" (the rest were zero'd by wash-sale / churn
+        # / saturation / etc.). When the broker holds 7 positions but only 6
+        # got a non-zero Kelly, the log said ``holdings=6`` and the audit
+        # spent time chasing the missing holding. Surface BOTH the total
+        # ``ctx.holdings`` count AND the non-zero subset so the gap is
+        # readable. Same for candidates.
         log.info(
             "ApplyKellySizingTask: fractional=%.2f max_conc=%.2f  "
-            "cands=%d non-zero (avg=%.1f%%)  holdings=%d non-zero (avg=%.1f%%)"
+            "cands=%d/%d non-zero (avg=%.1f%%)  "
+            "holdings=%d/%d non-zero (avg=%.1f%%)"
             "%s",
             fractional, max_concentration,
-            len(cand_targets),
+            len(cand_targets), len(ctx.candidates),
             (sum(cand_targets) / len(cand_targets) * 100) if cand_targets else 0,
-            len(held_targets),
+            len(held_targets), len(ctx.holdings),
             (sum(held_targets) / len(held_targets) * 100) if held_targets else 0,
             f"  zero_reasons[{skip_str}]" if skip_str else "",
         )

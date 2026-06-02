@@ -772,11 +772,43 @@ class ApplySectorMetadataGuardTask(Task):
 class ApplyExitOnlyTopupGuardTask(Task):
     """Prevent held-but-unadmitted names from becoming QP top-ups.
 
-    Holdings remain in the QP universe so the optimizer can reduce or close
-    them. That exit permission must not imply fresh alpha admission. If the
-    current buy/candidate path did not admit a held ticker, cap its upper
-    weight at current weight before solve; the emission path has a second
-    fail-closed check.
+    **What the counter ``qp_exit_only_topup_guard`` measures**
+
+    Emits a counter equal to the number of held tickers whose QP
+    ``w_upper`` was capped at their current weight in this bar. A
+    ticker is capped when:
+
+      * it appears in ``ctx._qp_exit_only_tickers`` — meaning it is
+        currently held but did NOT pass through the buy/candidate
+        admission gate this bar (e.g. ``regime_admission`` blocked the
+        regime, the model is ``promotion_status=gated_buys``, etc.)
+      * it has a valid (ticker_index, w_upper, w_current) entry — the
+        cap only fires when the QP universe row resolves cleanly
+
+    Reading the counter:
+
+      * ``qp_exit_only_topup_guard = N`` means N holdings are in
+        "exit-only" mode this bar. The QP solver can still REDUCE or
+        CLOSE these names; it simply cannot ADD to them. The 2026-06-02
+        audit found this counter on every BULL_CALM run today (always
+        equal to the held-ticker count) because the daily artifact is
+        ``gated_buys`` and the regime gate blocks every candidate,
+        which leaves every holding in exit-only mode.
+
+      * ``qp_exit_only_topup_guard = 0`` either means no holdings exist
+        or every holding got admitted via the buy-candidate path this
+        bar (rare under the current gated_buys policy).
+
+    Each capped ticker is also stamped via ``_stamp_qp_ticker_block``
+    with the reason ``qp_universe_exit_only`` (or a more specific reason
+    from ``ctx._qp_exit_only_reasons``) so the decision trace shows the
+    block reason, not just the count.
+
+    Holdings remain in the QP universe so the optimizer can reduce or
+    close them. That exit permission must not imply fresh alpha
+    admission. If the current buy/candidate path did not admit a held
+    ticker, cap its upper weight at current weight before solve; the
+    emission path has a second fail-closed check.
     """
     name = "ApplyExitOnlyTopupGuardTask"
 
