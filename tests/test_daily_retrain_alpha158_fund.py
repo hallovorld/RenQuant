@@ -11,6 +11,7 @@ as the existing kernel/pipeline tests.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -96,6 +97,22 @@ def test_shell_wrapper_forwards_pipeline_args():
     """Weekly promote passes unique staging paths through the bash wrapper."""
     wrapper = (REPO / "scripts" / "daily_retrain_alpha158_fund.sh").read_text()
     assert 'training_panel.daily_retrain_alpha158_fund "$@"' in wrapper
+
+
+def test_umbrella_parser_accepts_no_drop_sentiment_for_wrapper_compatibility():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "training_panel.daily_retrain_alpha158_fund",
+            "--help",
+        ],
+        cwd=str(REPO / "backtesting" / "renquant_104"),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "--no-drop-sentiment" in result.stdout
 
 
 def test_output_override_resolves_relative_to_repo(tmp_path):

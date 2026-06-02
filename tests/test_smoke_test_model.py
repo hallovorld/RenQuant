@@ -301,9 +301,25 @@ class TestWeeklyShellInvariants:
         assert "STAGING_CAL=" in weekly
         assert "--xgb-artifact-out \"$STAGING_ART\"" in weekly
         assert "--calibrator-out \"$STAGING_CAL\"" in weekly
+        assert "--no-drop-sentiment" in weekly
         assert '--artifact "$STAGING_ART"' in weekly
         assert "bash scripts/daily_retrain_alpha158_fund.sh;" not in weekly
         assert "bash scripts/daily_retrain_alpha158_fund.sh; then" not in weekly
+
+    def test_weekly_wf_manifest_matches_staging_recipe(self):
+        weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+        config = json.loads(
+            (
+                REPO
+                / "backtesting"
+                / "renquant_104"
+                / "strategy_config.sim_wl200_gbdt_prod_recipe_calibrated.json"
+            ).read_text()
+        )
+        manifest = "artifacts/sim/walkforward_manifest_v2_20260602.json"
+        assert f'WF_MANIFEST="{manifest}"' in weekly
+        assert config["walkforward"]["manifest_path"] == manifest
+        assert '--reference-artifact "$STAGING_ART"' in weekly
 
 
 class TestConditionalRetrainInvariants:

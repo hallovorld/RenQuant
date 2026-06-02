@@ -173,7 +173,8 @@ echo "Staging model: $STAGING_ART"
 echo "Staging calibrator: $STAGING_CAL"
 if ! bash scripts/daily_retrain_alpha158_fund.sh \
     --xgb-artifact-out "$STAGING_ART" \
-    --calibrator-out "$STAGING_CAL"; then
+    --calibrator-out "$STAGING_CAL" \
+    --no-drop-sentiment; then
     echo "Training FAILED — production artifact unchanged."
     notify "RenQuant 104 WEEKLY-FAIL" "Training failed; production model unchanged. Check $LOG"
     exit 1
@@ -194,12 +195,16 @@ echo "Training pipeline finished at $(date)"
 # manifest before the gate runs. Idempotent: already-stamped artifacts are a
 # no-op. Best-effort (recipe-mismatch is surfaced by the gate's own check), so
 # this never blocks the weekly run.
-WF_MANIFEST="artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.json"
+# 2026-06-02: the only committed 172-feature manifest with existing scorer +
+# calibrator artifacts is the v2 rebuild. Keep weekly retrain on the same
+# no-drop-sentiment recipe, and validate stamping against the just-trained
+# staging artifact rather than stale active prod.
+WF_MANIFEST="artifacts/sim/walkforward_manifest_v2_20260602.json"
 echo "--- Step 3.5: Stamp WF manifest fingerprints ($WF_MANIFEST) ---"
 if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     --manifest "$WF_MANIFEST" \
     --fingerprint-config "$PROD_STRATEGY_CONFIG" \
-    --reference-artifact artifacts/prod/panel-ltr.alpha158_fund.json; then
+    --reference-artifact "$STAGING_ART"; then
     echo "WARN: WF manifest stamping reported an issue (recipe mismatch?); the gate's own contract check will handle it."
 fi
 
@@ -207,7 +212,7 @@ fi
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
 if ! run_wf_gate \
     --artifact "$STAGING_ART" \
-    --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json \
+    --strategy-config strategy_config.sim_wl200_gbdt_prod_recipe_calibrated.json \
     --derive-config-from-prod \
     --strict \
     --jobs 3; then

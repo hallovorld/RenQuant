@@ -1,0 +1,6 @@
+{
+  "_schema_note": "Minimal base config for run_wf_gate --derive-config-from-prod. Wrapper expects walkforward.manifest_path; all other semantics derived from strategy_config.json (prod). Points at the 2026-06-02 v2 manifest whose 39 scorer/calibrator pairs exist and match the weekly no-drop-sentiment staging recipe.",
+  "walkforward": {
+    "manifest_path": "artifacts/sim/walkforward_manifest_v2_20260602.json"
+  }
+}
