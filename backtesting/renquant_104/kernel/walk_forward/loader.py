@@ -311,13 +311,22 @@ class WalkForwardModelLoader:
         return chosen
 
     def model_as_of(self, today: "pd.Timestamp | str") -> "PanelScorer":
-        """Return the latest retrain scorer for ``today``."""
+        """Return the latest retrain scorer for ``today``.
+
+        Manifest ``artifact_uri`` may be a path relative to the manifest's
+        directory; resolve through ``_resolve_uri`` so the consumer doesn't
+        depend on the process cwd (sim and live both call this from
+        differing cwds). Cache keys on the resolved string so equivalent
+        manifest entries share scorer instances.
+        """
         chosen = self.entry_as_of(today)
-        if chosen.artifact_uri in self._cache:
-            return self._cache[chosen.artifact_uri]
+        resolved = self._resolve_uri(chosen.artifact_uri)
+        cache_key = str(resolved)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
-        scorer = PanelScorer.load(chosen.artifact_uri)
-        self._cache[chosen.artifact_uri] = scorer
+        scorer = PanelScorer.load(resolved)
+        self._cache[cache_key] = scorer
         return scorer
 
     def calibrator_as_of(self, today: "pd.Timestamp | str"):

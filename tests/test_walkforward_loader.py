@@ -441,6 +441,82 @@ class TestManifestRoundTrip:
         assert entries_loaded[1].artifact_uri == "fake://Y/panel-ltr.json"
 
 
+class TestRelativeArtifactUriResolution:
+    """AUDIT REGRESSION GUARD — 2026-06-02 sim crash.
+
+    Bug: ``WalkForwardModelLoader.model_as_of`` passed
+    ``chosen.artifact_uri`` directly to ``PanelScorer.load``. When the
+    manifest stores a relative URI (e.g.
+    ``artifacts/walkforward_v2_20260602/2024-01-01/panel-ltr.json``),
+    ``PanelScorer.load`` resolved it against the process cwd, which during
+    a WF-gate sim is NOT the strategy dir → ``FileNotFoundError``.
+
+    Fix: route through ``_resolve_uri`` so relative URIs are anchored to
+    the manifest's parent directory (matching the contract already used
+    by ``calibrator_as_of`` and ``_scorer_fingerprints_for_entry``).
+    """
+
+    def test_relative_artifact_uri_resolved_against_manifest_parent(
+        self, tmp_path, monkeypatch,
+    ):
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        # Materialize an artifact at the path the manifest's relative URI
+        # would resolve to under the manifest's parent.
+        rel = "artifacts/walkforward_v2/2024-01-01/panel-ltr.json"
+        abs_path = tmp_path / rel
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_text("{}")
+
+        rows = [_row("2024-01-01T00:00:00", "2024-01-02T03:00:00", rel)]
+        manifest = _make_manifest(tmp_path, rows)
+
+        captured: list[str] = []
+
+        class _FakeScorer:
+            def __init__(self, uri):
+                self.uri = uri
+
+        def fake_load(path):
+            captured.append(str(path))
+            assert Path(str(path)).is_absolute(), (
+                f"PanelScorer.load received non-absolute path {path!r}; "
+                "loader must resolve relative artifact_uri against the "
+                "manifest folder before delegating."
+            )
+            return _FakeScorer(str(path))
+
+        from kernel.panel_pipeline import panel_scorer as _ps
+        monkeypatch.setattr(_ps.PanelScorer, "load", staticmethod(fake_load))
+
+        # Call from a *different* cwd to prove the loader does not lean on it.
+        monkeypatch.chdir(tmp_path.parent)
+        loader = WalkForwardModelLoader(manifest)
+        loader.model_as_of("2024-01-15")
+        assert captured == [str(abs_path)]
+
+    def test_absolute_artifact_uri_still_works(self, tmp_path, monkeypatch):
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        abs_path = tmp_path / "panel-ltr.json"
+        abs_path.write_text("{}")
+        rows = [_row("2024-01-01T00:00:00", "2024-01-02T03:00:00", str(abs_path))]
+        manifest = _make_manifest(tmp_path, rows)
+
+        captured: list[str] = []
+
+        def fake_load(path):
+            captured.append(str(path))
+            return object()
+
+        from kernel.panel_pipeline import panel_scorer as _ps
+        monkeypatch.setattr(_ps.PanelScorer, "load", staticmethod(fake_load))
+
+        loader = WalkForwardModelLoader(manifest)
+        loader.model_as_of("2024-01-15")
+        assert captured == [str(abs_path)]
+
+
 class TestGlobPatternTolerance:
     def test_glob_picks_lex_last_match(self, tmp_path):
         from kernel.walk_forward import WalkForwardModelLoader
