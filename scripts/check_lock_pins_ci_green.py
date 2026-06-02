@@ -265,12 +265,74 @@ def check_pin(entry: dict[str, Any], github_get: GithubGet = _github_get) -> Pin
     )
 
 
-def check_lock(lock_file: Path = DEFAULT_LOCK_FILE, github_get: GithubGet = _github_get) -> dict[str, Any]:
+def _entry_name(entry: dict[str, Any]) -> str:
+    return str(entry.get("name", ""))
+
+
+def changed_subrepo_names(lock_file: Path, base_lock_file: Path) -> set[str]:
+    """Return subrepo names whose pin identity changed from base to current.
+
+    Pull-request checks use this to validate only the pins being advanced in
+    the PR. Push/main checks still validate the full lock file.
+    """
+    current = json.loads(lock_file.read_text(encoding="utf-8"))
+    base = json.loads(base_lock_file.read_text(encoding="utf-8"))
+    base_by_name = {
+        _entry_name(entry): entry
+        for entry in base.get("subrepos", [])
+        if _entry_name(entry)
+    }
+    changed: set[str] = set()
+    for entry in current.get("subrepos", []):
+        name = _entry_name(entry)
+        if not name:
+            continue
+        base_entry = base_by_name.get(name)
+        if base_entry is None:
+            changed.add(name)
+            continue
+        current_identity = (
+            str(entry.get("remote", "")),
+            str(entry.get("branch", "main") or "main"),
+            str(entry.get("commit", "")),
+        )
+        base_identity = (
+            str(base_entry.get("remote", "")),
+            str(base_entry.get("branch", "main") or "main"),
+            str(base_entry.get("commit", "")),
+        )
+        if current_identity != base_identity:
+            changed.add(name)
+    return changed
+
+
+def check_lock(
+    lock_file: Path = DEFAULT_LOCK_FILE,
+    github_get: GithubGet = _github_get,
+    *,
+    only_subrepos: set[str] | None = None,
+    base_lock_file: Path | None = None,
+    changed_only: bool = False,
+) -> dict[str, Any]:
     lock = json.loads(lock_file.read_text(encoding="utf-8"))
-    results = [check_pin(entry, github_get) for entry in lock.get("subrepos", [])]
+    selected = set(only_subrepos or set())
+    if changed_only:
+        if base_lock_file is None:
+            raise ValueError("--changed-only requires --base-lock-file")
+        changed = changed_subrepo_names(lock_file, base_lock_file)
+        selected = changed if not selected else selected & changed
+    entries = list(lock.get("subrepos", []))
+    if selected:
+        entries = [entry for entry in entries if _entry_name(entry) in selected]
+    elif changed_only:
+        entries = []
+    results = [check_pin(entry, github_get) for entry in entries]
     return {
         "ok": all(result.ok for result in results),
         "lock_file": str(lock_file),
+        "base_lock_file": str(base_lock_file) if base_lock_file else None,
+        "changed_only": changed_only,
+        "validated_subrepos": [_entry_name(entry) for entry in entries],
         "pins": [result.as_dict() for result in results],
     }
 
@@ -278,10 +340,18 @@ def check_lock(lock_file: Path = DEFAULT_LOCK_FILE, github_get: GithubGet = _git
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK_FILE)
+    parser.add_argument("--base-lock-file", type=Path)
+    parser.add_argument("--changed-only", action="store_true")
+    parser.add_argument("--only-subrepo", action="append", default=[])
     parser.add_argument("--json", action="store_true", help="emit machine-readable result")
     args = parser.parse_args(argv)
 
-    result = check_lock(args.lock_file)
+    result = check_lock(
+        args.lock_file,
+        only_subrepos=set(args.only_subrepo or []),
+        base_lock_file=args.base_lock_file,
+        changed_only=args.changed_only,
+    )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

@@ -56,7 +56,18 @@ jobs:
           # public repos, but private subrepo validation needs a PAT/App token
           # with read access to every hallovorld/renquant-* repository.
           GH_TOKEN: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
-        run: python3 scripts/check_lock_pins_ci_green.py --lock-file subrepos.lock.json
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git show "${BASE_SHA}:subrepos.lock.json" > /tmp/base-subrepos.lock.json
+            python3 scripts/check_lock_pins_ci_green.py \
+              --lock-file subrepos.lock.json \
+              --base-lock-file /tmp/base-subrepos.lock.json \
+              --changed-only
+          else
+            python3 scripts/check_lock_pins_ci_green.py --lock-file subrepos.lock.json
+          fi
       - name: Install test tools
         run: python3 -m pip install pytest
       - name: Run pin-gate regression tests
