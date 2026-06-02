@@ -8,6 +8,8 @@ from pathlib import Path
 
 from subrepo_paths import resolve_subrepo_root
 
+GLOBAL_STRICT_ENV = "RENQUANT_OPS_FAIL_CLOSED"
+
 
 def _has_repo_root_arg(argv: list[str]) -> bool:
     return "--repo-root" in argv or any(arg.startswith("--repo-root=") for arg in argv)
@@ -16,6 +18,14 @@ def _has_repo_root_arg(argv: list[str]) -> bool:
 def _pinned_strategy_config(subrepo_root: Path) -> Path | None:
     path = subrepo_root / "renquant-strategy-104" / "configs" / "strategy_config.json"
     return path if path.exists() else None
+
+
+def _strict_enabled(strict_env: str) -> bool:
+    return (
+        os.environ.get(strict_env) == "1"
+        or os.environ.get(GLOBAL_STRICT_ENV) == "1"
+        or os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1"
+    )
 
 
 def delegate_to_subrepo_module(
@@ -27,14 +37,22 @@ def delegate_to_subrepo_module(
     runner_env: str,
     strict_env: str,
 ) -> int | None:
-    """Run a pinned subrepo module, or return None to use umbrella fallback."""
+    """Run a pinned subrepo module, or return None to use umbrella fallback.
+
+    ``strict_env`` keeps per-wrapper control. ``RENQUANT_OPS_FAIL_CLOSED=1``
+    lets production/CI fail closed across all delegated ops entrypoints, while
+    ``RENQUANT_STRICT_SUBREPO_PATHS=1`` keeps runtime-root assemblies strict.
+    """
     if os.environ.get(runner_env, "multirepo") != "multirepo":
         return None
 
     try:
         subrepo_root = resolve_subrepo_root(repo_root)
         strategy_config = _pinned_strategy_config(subrepo_root)
-        if strategy_config is None and os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1":
+        if strategy_config is None and (
+            os.environ.get("RENQUANT_STRICT_SUBREPO_PATHS") == "1"
+            or _strict_enabled(strict_env)
+        ):
             raise FileNotFoundError(
                 "pinned renquant-strategy-104 strategy_config.json unavailable"
             )
@@ -60,12 +78,12 @@ def delegate_to_subrepo_module(
         finally:
             sys.argv = old_argv
     except Exception as exc:  # noqa: BLE001
-        if os.environ.get(strict_env) == "1":
+        if _strict_enabled(strict_env):
             raise
         print(
             f"[multirepo fallback] {module_name} unavailable ({type(exc).__name__}: {exc}); "
             "using umbrella implementation. Set "
-            f"{strict_env}=1 to fail closed.",
+            f"{strict_env}=1 or {GLOBAL_STRICT_ENV}=1 to fail closed.",
             file=sys.stderr,
         )
         return None
