@@ -1,6 +1,8 @@
 """Regression guards for the alpha158 retrain multirepo wrapper."""
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -54,3 +56,26 @@ def test_weekly_still_calls_wrapper_with_explicit_staging_paths() -> None:
     assert "renquant_backtesting.forensics.model_acceptance" in weekly
     assert '--xgb-artifact-out "$STAGING_ART"' in weekly
     assert '--calibrator-out "$STAGING_CAL"' in weekly
+
+
+def test_weekly_wf_manifest_and_base_config_exist_and_match() -> None:
+    weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+    manifest_match = re.search(r'^WF_MANIFEST="([^"]+)"', weekly, flags=re.MULTILINE)
+    strategy_match = re.search(r"--strategy-config\s+([^\s\\]+)", weekly)
+    assert manifest_match, "weekly_wf_promote.sh must define WF_MANIFEST"
+    assert strategy_match, "weekly_wf_promote.sh must pass --strategy-config"
+
+    strategy_dir = REPO / "backtesting" / "renquant_104"
+    manifest_rel = manifest_match.group(1)
+    config_name = strategy_match.group(1)
+    manifest_path = strategy_dir / manifest_rel
+    config_path = strategy_dir / config_name
+
+    assert manifest_path.exists(), f"weekly WF manifest is missing: {manifest_rel}"
+    assert config_path.exists(), f"weekly WF base config is missing: {config_name}"
+
+    config = json.loads(config_path.read_text())
+    assert config["walkforward"]["manifest_path"] == manifest_rel
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.get("retrains"), f"weekly WF manifest has no retrains: {manifest_rel}"
