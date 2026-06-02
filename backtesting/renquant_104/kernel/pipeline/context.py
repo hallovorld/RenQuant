@@ -70,6 +70,13 @@ class InferenceContext:
     # RegimeJob
     regime: str = "BULL_CALM"
     confidence: float = 0.5
+    # Track C (2026-06-02) ensemble-scorer contract — written by
+    # RegimeFinalizeTask alongside the legacy regime/confidence fields.
+    # final_regime mirrors regime; regime_confidence mirrors confidence;
+    # regime_posterior carries the GMM posterior dict[label → prob].
+    final_regime: str = "BULL_CALM"
+    regime_confidence: float = 0.5
+    regime_posterior: dict = field(default_factory=dict)
 
     # DrawdownJob — updates hwm and skip_buys in place (no separate fields)
 

@@ -397,6 +397,14 @@ class RegimeFinalizeTask(Task):
         state.confidence = confidence
         ctx.regime       = new_regime
         ctx.confidence   = confidence
+        # Track C (2026-06-02): explicit ensemble-scorer contract fields.
+        # These are aliases over the long-standing ctx.regime / ctx.confidence
+        # plus the GMM posterior, so the RegimeEnsemblePanelScorer can read
+        # confidence + posterior without depending on regime_state internals.
+        # Existing callers continue to use ctx.regime / ctx.confidence.
+        ctx.final_regime       = new_regime
+        ctx.regime_confidence  = confidence
+        ctx.regime_posterior   = dict(gmm_probs or {})
         ctx.regime_counts[new_regime] = ctx.regime_counts.get(new_regime, 0) + 1
         ctx._regime_evidence = {  # noqa: SLF001
             "source": decision_source,
