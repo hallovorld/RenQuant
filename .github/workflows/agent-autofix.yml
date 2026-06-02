@@ -17,7 +17,11 @@ concurrency:
 
 jobs:
   claude-fix:
-    uses: hallovorld/RenQuant/.github/workflows/_agent-fix-template.yml@main
+    uses: ./.github/workflows/_agent-fix-template.yml
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     with:
       agent: claude
       model: claude-opus-4-7   # fix uses the more capable model
@@ -26,7 +30,11 @@ jobs:
       git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
 
   codex-fix:
-    uses: hallovorld/RenQuant/.github/workflows/_agent-fix-template.yml@main
+    uses: ./.github/workflows/_agent-fix-template.yml
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     with:
       agent: codex
       model: gpt-5-codex

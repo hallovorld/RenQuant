@@ -86,10 +86,13 @@ jobs:
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Claude review + fix | console.anthropic.com → API Keys |
 | `OPENAI_API_KEY` | Codex review + fix | platform.openai.com → API keys |
-| `AGENT_GIT_PUSH_TOKEN` | Fix template (push commits) | PAT or GitHub App token with `contents:write` + `pull-requests:write` scoped to this repo |
+| `AGENT_GIT_PUSH_TOKEN` | Fix template (push commits) | Optional but recommended PAT or GitHub App token with `contents:write` + `pull-requests:write` scoped to this repo; if absent, same-repo fix pushes fall back to `github.token` |
 
 Set via repo Settings → Secrets and variables → Actions, OR as an
-org-wide secret accessible to all renquant repos.
+org-wide secret accessible to all renquant repos. The reusable templates
+intentionally declare these secrets as optional so repositories without
+agent credentials skip agent jobs cleanly instead of failing workflow
+startup before any job is created.
 
 ## Per-repo customization points
 

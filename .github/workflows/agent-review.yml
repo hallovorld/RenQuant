@@ -24,7 +24,11 @@ jobs:
   claude-review:
     # MANDATORY size gate: skip mega-PRs (human-only review territory).
     if: github.event.pull_request.changed_files < 100
-    uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+    uses: ./.github/workflows/_agent-review-template.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     with:
       agent: claude
       model: claude-sonnet-4-6
@@ -33,7 +37,11 @@ jobs:
 
   codex-review:
     if: github.event.pull_request.changed_files < 100
-    uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+    uses: ./.github/workflows/_agent-review-template.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     with:
       agent: codex
       model: gpt-5-codex
