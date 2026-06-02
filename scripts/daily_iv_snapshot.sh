@@ -37,13 +37,22 @@ set -a
 source .env
 set +a
 
+if ! STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
+    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RQ_DAILY_IV_STRICT:-0}" = "1" ]; then
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" \
+            | tee -a "$LOG"
+        exit 1
+    fi
+    STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+fi
+
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common):${PYTHONPATH:-}"
 if "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_base_data.options_iv_refresh  # noqa: F401
 PY
 then
     "$PYTHON" -u -m renquant_base_data.options_iv_refresh \
-        --strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json" \
+        --strategy-config "$STRATEGY_CONFIG" \
         --data-dir "$REPO_DIR/data" \
         --json 2>&1 | tee -a "$LOG"
 elif [ "${RQ_DAILY_IV_STRICT:-0}" = "1" ]; then

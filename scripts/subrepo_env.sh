@@ -51,6 +51,17 @@ renquant_subrepo_src() {
     printf '%s/%s/src\n' "$root" "$repo"
 }
 
+renquant_strategy_config() {
+    local root="${1:?root required}"
+    local config_name="${2:-strategy_config.json}"
+    local path="$root/renquant-strategy-104/configs/$config_name"
+    if [ -f "$path" ]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+    return 1
+}
+
 renquant_subrepo_pythonpath() {
     local root="${1:?root required}"
     shift
