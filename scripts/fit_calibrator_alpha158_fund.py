@@ -278,6 +278,15 @@ def main():
              "legacy artifacts; do NOT promote isotonic to prod (2026-05-18 "
              "incident: 57%% flat region tied 79%% of candidates).",
     )
+    p.add_argument(
+        "--regime-filter", default=None,
+        choices=["BULL_CALM", "BULL_VOLATILE", "BEAR", "CHOPPY"],
+        help="Track A (2026-06-02): restrict calibrator-fit rows to a single "
+             "regime as labelled by the production regime detector "
+             "(scripts/analyze_manifest_sanity_placebo.build_regime_series). "
+             "Default: no filter (existing pooled behavior). When set, "
+             "metadata.regime + metadata.fit_window_regime are stamped.",
+    )
     args = p.parse_args()
     # Make args visible to fit logic
     global cli_args
@@ -336,6 +345,34 @@ def main():
         before = len(panel)
         panel = panel[panel["date"] < end]
         log.info("--data-end=%s: filtered %d → %d rows", args.data_end, before, len(panel))
+
+    # Track A (2026-06-02): per-regime filter. Uses the production regime
+    # detector via build_regime_series so the labels match what ApplyGlobal-
+    # CalibrationTask sees at inference time.
+    regime_filter = getattr(args, "regime_filter", None)
+    if regime_filter:
+        from scripts.analyze_manifest_sanity_placebo import build_regime_series  # noqa: PLC0415
+        before = len(panel)
+        regimes_df = build_regime_series(panel["date"].unique())
+        regimes_df["date"] = pd.to_datetime(regimes_df["date"]).dt.normalize()
+        panel["__date_norm"] = pd.to_datetime(panel["date"]).dt.normalize()
+        panel = panel.merge(
+            regimes_df[["date", "regime"]],
+            left_on="__date_norm", right_on="date",
+            how="left", suffixes=("", "_regime"),
+        )
+        panel = panel.drop(columns=["__date_norm", "date_regime"], errors="ignore")
+        unlabeled = int(panel["regime"].isna().sum())
+        panel = panel[panel["regime"] == regime_filter].drop(columns=["regime"])
+        log.info(
+            "--regime-filter=%s: filtered %d → %d rows (%d rows had no regime label)",
+            regime_filter, before, len(panel), unlabeled,
+        )
+        if len(panel) == 0:
+            raise ValueError(
+                f"--regime-filter={regime_filter}: no rows remain after filtering. "
+                "Check date window vs the detector's BULL_CALM/BEAR/CHOPPY coverage."
+            )
 
     panel, er_label_col, er_label_diag, er_label_source = _load_expected_return_labels(
         scoring_panel=panel,
@@ -485,6 +522,11 @@ def main():
     if args.data_end:
         metadata["data_window_end"] = args.data_end
     metadata["lookahead_days_used"] = lookahead_days
+    # Track A: stamp the regime filter so downstream auditors + the
+    # ApplyGlobalCalibrationTask consumer can identify the artifact's scope.
+    if regime_filter:
+        metadata["regime"] = regime_filter
+        metadata["fit_window_regime"] = regime_filter
 
     calib.save(out_path, metadata=metadata)
     log.info("Saved: n_unique_prob_y=%d  pool_ic=%+.4f  per_date_ic=%+.4f  base_rate=%.4f",
