@@ -62,6 +62,22 @@ def _stamp_all_qp_blocks(ctx, reason: str) -> None:
         _stamp_qp_ticker_block(ctx, str(ticker), reason)
 
 
+# Module-level single source of truth for "the QP solution can drive orders".
+# Both ``SolveMarkowitzQPTask`` (failure-stamping branch) and
+# ``EmitOrdersFromQPSolutionTask`` (emit branch) consult this set; keeping
+# them in sync prevents the codex #75/#10 blocker class where a synthetic
+# success status is treated as a failure upstream while the emit task
+# happily emits orders from it.
+#
+# Add a new status here when a new synthetic-but-successful solver path
+# lands (e.g., ``cap_compliance_fallback`` for the audit #2 / issue #70
+# force-sell escape).
+QP_EMITTABLE_STATUSES: frozenset[str] = frozenset({
+    "optimal",
+    "cap_compliance_fallback",
+})
+
+
 def _stamp_qp_failure_counter(ctx, status: str) -> None:
     """Single source for the no-trade observability counters (codex PR #48
     review #1). Every QP failure path that sets ``ctx._qp_status`` /
@@ -1592,10 +1608,25 @@ class SolveMarkowitzQPTask(Task):
             _solve,
             policy=str(cfg.get("qp_c2_infeasible_policy", "strict")),
         )
+        # Audit #2 / issue #70: when QP is infeasible AND at least one
+        # holding is over its per-asset cap, fall back to a deterministic
+        # force-sell-to-cap for the over-cap holdings. Opt-in via the
+        # ``allow_cap_compliance_sells_on_infeasible`` config knob (default
+        # False, preserves strict behavior). The fallback emits SELLS only
+        # — buys remain blocked by upstream gates (regime_admission etc.).
+        if bool(cfg.get("allow_cap_compliance_sells_on_infeasible", False)):
+            sol = _retry_for_per_asset_cap_compliance(sol, kwargs, _solve)
         ctx._qp_solution = sol  # noqa: SLF001
         ctx._qp_status = str(getattr(sol, "status", "missing_solution"))  # noqa: SLF001
         ctx._qp_diagnostics = dict(getattr(sol, "diagnostics", {}) or {})  # noqa: SLF001
-        if sol.status != "optimal":
+        # codex #75/#10: treat any QP_EMITTABLE_STATUSES outcome as a
+        # successful solve, NOT a failure. Pre-fix, ``cap_compliance_fallback``
+        # was both stamped here as ``qp_global:cap_compliance_fallback`` +
+        # all-symbol-blocked + failure-counter-incremented AND simultaneously
+        # emitted by ``EmitOrdersFromQPSolutionTask`` — contradictory state
+        # that broke observability/no-trade-attribution for the exact path
+        # the fallback is supposed to rescue.
+        if sol.status not in QP_EMITTABLE_STATUSES:
             reason = "qp_no_signal" if sol.status == "optimal_no_signal" else f"qp_global:{sol.status}"
             ctx._qp_failure_reason = reason  # noqa: SLF001
             _stamp_qp_failure_counter(ctx, ctx._qp_status)  # noqa: SLF001 (codex PR #48 #1)
@@ -1795,6 +1826,79 @@ def _retry_with_relaxed_c2_caps(sol, kwargs, solve_fn, *, policy: str = "strict"
         "c2_infeasible_policy": "drop",
     }
     return sol
+
+
+def _retry_for_per_asset_cap_compliance(sol, kwargs, solve_fn):
+    """When QP is infeasible and at least one holding is over its per-asset
+    cap, attempt a sells-only re-solve that targets cap-compliance.
+
+    This is the §7.6 force-sell-to-cap escape for the audit #2 / issue #70
+    failure mode:
+
+      * artifact is ``promotion_status=gated_buys`` (no buy candidates
+        admitted via regime_admission)
+      * one or more holdings drift above ``regime_params.<R>.max_position_pct``
+        due to price appreciation
+      * strict QP can't redistribute (no buy slack to absorb the freed
+        weight) → status=infeasible → no orders emitted → over-cap
+        position stays above cap indefinitely
+
+    Resolution: bring the over-cap holdings back to exactly the cap via a
+    deterministic Δw = (cap - current_weight) for each violating asset.
+    Other assets get Δw = 0 (hold). No QP optimization is needed for a
+    cap-compliance reduction — the action is fully determined by the cap
+    + current weight.
+
+    This preserves the spirit of ``gated_buys`` (no fresh BUYS) while
+    enforcing the per-asset risk discipline that the strict QP was
+    refusing to act on.
+
+    Returns a synthetic QPSolution with ``status="cap_compliance_fallback"``
+    when sells were generated, or the original infeasible ``sol`` if no
+    holding is actually over cap.
+    """
+    if not sol.status.startswith("infeasible"):
+        return sol
+    w_current = kwargs.get("w_current")
+    w_upper   = kwargs.get("w_upper")
+    if w_current is None or w_upper is None:
+        return sol
+    w_current = np.asarray(w_current, dtype=float)
+    n = w_current.size
+    if n == 0:
+        return sol
+    if np.isscalar(w_upper):
+        w_upper_arr = np.full(n, float(w_upper))
+    else:
+        w_upper_arr = np.asarray(w_upper, dtype=float)
+        if w_upper_arr.size != n:
+            return sol
+    over_mask = w_current > (w_upper_arr + 1e-9)
+    if not over_mask.any():
+        return sol
+    delta_w = np.zeros(n)
+    delta_w[over_mask] = w_upper_arr[over_mask] - w_current[over_mask]  # negative (sell)
+    target_w = w_current + delta_w
+    n_sold = int(over_mask.sum())
+    total_sold = float(-np.sum(delta_w[over_mask]))
+    log.warning(
+        "QP cap-compliance fallback: forcing %d over-cap holding(s) "
+        "to per-asset cap (total Δw = -%.3f). Preserves gated_buys policy "
+        "(no buys) while enforcing risk discipline.",
+        n_sold, total_sold,
+    )
+    diagnostics = dict(getattr(sol, "diagnostics", {}) or {})
+    diagnostics["c2_infeasible_policy"] = "cap_compliance_fallback"
+    diagnostics["cap_compliance_n_sold"] = n_sold
+    diagnostics["cap_compliance_total_sold"] = total_sold
+    return sol.__class__(
+        delta_w=delta_w,
+        target_w=target_w,
+        objective=0.0,
+        n_iter=-1,
+        status="cap_compliance_fallback",
+        diagnostics=diagnostics,
+    )
 
 
 # ── 7. Translate Δw → orders / exits ───────────────────────────────────────
@@ -2477,9 +2581,15 @@ class EmitOrdersFromQPSolutionTask(Task):
     """
     name = "EmitOrdersFromQPSolutionTask"
 
+    # Module-level ``QP_EMITTABLE_STATUSES`` is the single source of truth
+    # for "the QP solution can drive orders". Re-exported here as a class
+    # attribute for backward compatibility with tests that import via the
+    # class.
+    _EMITTABLE_STATUSES = QP_EMITTABLE_STATUSES
+
     def run(self, ctx) -> bool | None:
         sol = _get_path(ctx, "_qp_solution")
-        if sol is None or sol.status != "optimal":
+        if sol is None or sol.status not in QP_EMITTABLE_STATUSES:
             status = str(sol.status if sol else "missing_solution")
             reason = (
                 "qp_missing_solution" if sol is None
