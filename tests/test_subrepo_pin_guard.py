@@ -134,6 +134,24 @@ def test_old_strict_subrepo_paths_env_still_fails_closed(monkeypatch):
         raise AssertionError("expected SystemExit")
 
 
+def test_global_ops_fail_closed_env_fails_pin_drift(monkeypatch):
+    module = _load_module()
+    monkeypatch.setenv("RENQUANT_OPS_FAIL_CLOSED", "1")
+
+    issue = module.PinIssue(
+        repo="test-repo",
+        path="/tmp/test-repo",
+        reason="HEAD abc does not match lock commit def",
+    )
+
+    try:
+        module.enforce_or_warn([issue])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("expected SystemExit")
+
+
 def test_dirty_requires_clean_strict_env(monkeypatch):
     module = _load_module()
     monkeypatch.setenv("RENQUANT_STRICT_SUBREPO_PATHS", "1")

@@ -12,7 +12,11 @@ from typing import Iterable
 
 
 CACHE_PATH = Path(os.environ.get("RENQUANT_SUBREPO_PIN_CACHE", "/tmp/renquant_subrepo_pin_guard_cache.json"))
-STRICT_PIN_ENVS = ("RENQUANT_STRICT_SUBREPO_PATHS", "RENQUANT_STRICT_SUBREPO_PINS")
+STRICT_PIN_ENVS = (
+    "RENQUANT_STRICT_SUBREPO_PATHS",
+    "RENQUANT_STRICT_SUBREPO_PINS",
+    "RENQUANT_OPS_FAIL_CLOSED",
+)
 STRICT_CLEAN_ENV = "RENQUANT_STRICT_SUBREPO_CLEAN"
 
 
@@ -215,7 +219,8 @@ def enforce_or_warn(issues: list[PinIssue]) -> None:
     print(
         message
         + "\n[multirepo] set RENQUANT_STRICT_SUBREPO_PATHS=1 to fail closed "
-        "on missing/pin/remote drift; set RENQUANT_STRICT_SUBREPO_CLEAN=1 "
+        "on missing/pin/remote drift, or RENQUANT_OPS_FAIL_CLOSED=1 for "
+        "all ops entrypoints; set RENQUANT_STRICT_SUBREPO_CLEAN=1 "
         "to also fail on dirty in-progress worktrees.",
         file=sys.stderr,
     )
