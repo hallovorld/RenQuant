@@ -507,6 +507,38 @@ at WRITE time:
 3. **Calibrator scope** — fit on train rows ONLY (NOT val OR test). Verify the script reads `split_label == "train"` (NOT `!= "val"` which includes test).
 4. **Triad executed** on the new code path before the FIRST log line reporting an IC/Sharpe number. If `--label-shift-days 10` doesn't drop IC ≈ 0, there is leakage — STOP, audit, do not report.
 
+#### 7.2.1 · Mandatory rules R1–R5 (post 2026-06-02 audit)
+
+Five operating rules installed after the B_tuned leak audit
+([`doc/research/2026-06-02-experiment-validity-audit.md`](doc/research/2026-06-02-experiment-validity-audit.md))
+caught five distinct §7.2 / §6.4 / §7.7 / §7.13 violations across two
+weeks. Every agent must observe these — codex PR review is empowered to
+mark non-compliance as a HIGH blocker:
+
+- **R1** — Marking a task `completed` requires reading the verdict file
+  (`verdict.json`, `invalid_experiment.json`, `placebo_gate.json`, …) and
+  reproducing the key numbers in the TaskUpdate description or commit
+  message. "Background job exited 0" is NOT a verdict.
+- **R2** — Any PR / commit / status report quoting an IC / Sharpe / APY
+  number MUST include a companion placebo verdict block: at least one of
+  `{shuffle_placebo, timeshift_placebo, a/a split}` with concrete values
+  and the gate threshold. Reviewers (codex / agents) mark IC-without-
+  placebo as a HIGH blocker.
+- **R3** — Once a leakage gate (e.g., the G3 / G4 / G5 gates in the
+  2026-06-01 leakage architecture, PR #43 v12) lands, all PRE-EXISTING
+  artifacts must be retrofitted within 30 days. A gate that only fires
+  on new artifacts is §7.7 "decoration".
+- **R4** — When a leak / failure has a hypothesis list, every hypothesis
+  must get a written audit memo (`ruled_in` / `ruled_out` /
+  `inconclusive` + evidence + commit SHAs) BEFORE any new experiment is
+  launched. "Fix one and re-run" is forbidden — re-runs are §6.4
+  compute waste until the audit log is closed.
+- **R5** — Memory files (`memory/*.md`) that contradict an earlier memory
+  must explicitly `invalidate` the older entry OR resolve the conflict
+  in the body. Silent coexistence of contradictory findings is the
+  failure mode that let the 2026-05-29 "+0.066 placebo-clean" claim
+  survive next to the 2026-05-31 leak verdict for two weeks.
+
 ### 7.3 · Multi-measurement requirement
 
 **Single performance number = unverified claim.** Any APY / Sharpe / IC

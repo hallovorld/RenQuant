@@ -1,6 +1,5 @@
 # Panel-LTR Training Runs — Log
 
-
 > **📅 Historical snapshot — content below reflects state at the date in filename/header.**
 > Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
 > present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
