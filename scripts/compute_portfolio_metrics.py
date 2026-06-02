@@ -24,7 +24,13 @@ import math
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from subrepo_module_delegate import delegate_to_subrepo_module
+
+REPO_ROOT = SCRIPT_DIR.parent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -252,4 +258,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    delegated = delegate_to_subrepo_module(
+        "renquant_backtesting.analysis.compute_portfolio_metrics",
+        sys.argv[1:],
+        repo_root=REPO_ROOT,
+        packages=("renquant-backtesting", "renquant-pipeline", "renquant-common"),
+        runner_env="RQ_BACKTESTING_OPS_RUNNER",
+        strict_env="RQ_BACKTESTING_OPS_STRICT",
+    )
+    if delegated is not None:
+        raise SystemExit(delegated)
     main()

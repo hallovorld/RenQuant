@@ -276,6 +276,42 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="model_smoke_test_uses_backtesting_repo",
+        path="scripts/smoke_test_model.py",
+        required=(
+            "from subrepo_module_delegate import delegate_to_subrepo_module",
+            "delegate_to_subrepo_module(",
+            "renquant_backtesting.analysis.smoke_test_model",
+            "renquant-backtesting",
+            "RQ_BACKTESTING_OPS_RUNNER",
+            "RQ_BACKTESTING_OPS_STRICT",
+        ),
+    ),
+    Check(
+        name="lean_watchlist_export_uses_backtesting_repo",
+        path="scripts/export_lean_watchlist.py",
+        required=(
+            "from subrepo_module_delegate import delegate_to_subrepo_module",
+            "delegate_to_subrepo_module(",
+            "renquant_backtesting.lean_export.export_lean_watchlist",
+            "renquant-backtesting",
+            "RQ_BACKTESTING_OPS_RUNNER",
+            "RQ_BACKTESTING_OPS_STRICT",
+        ),
+    ),
+    Check(
+        name="portfolio_metrics_uses_backtesting_repo",
+        path="scripts/compute_portfolio_metrics.py",
+        required=(
+            "from subrepo_module_delegate import delegate_to_subrepo_module",
+            "delegate_to_subrepo_module(",
+            "renquant_backtesting.analysis.compute_portfolio_metrics",
+            "renquant-backtesting",
+            "RQ_BACKTESTING_OPS_RUNNER",
+            "RQ_BACKTESTING_OPS_STRICT",
+        ),
+    ),
+    Check(
         name="monthly_meta_label_uses_model_repo",
         path="scripts/monthly_meta_label_retrain.sh",
         required=(
