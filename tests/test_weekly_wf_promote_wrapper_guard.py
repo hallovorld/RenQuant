@@ -279,6 +279,110 @@ class TestWeeklyWrapperRegressionGuard:
             "partial regeneration is the rot."
         )
 
+    # --- Layer 3 (cross-artifact): manifest cuts MUST match candidate ----
+
+    def test_layer3_cuts_match_candidate_artifact_recipe(self) -> None:
+        """Layer 3 (cross-artifact): manifest cuts share the candidate's recipe.
+
+        Codex review on PR #103 (2026-06-02) caught that the
+        intra-manifest check above is necessary but NOT sufficient: a
+        manifest whose cuts are uniformly 169-feature can pass that
+        check while the weekly candidate / prod artifact is 172-feature,
+        and the real gate still fail-closes with
+        ``panel_scorer_config_mismatch`` — the exact 2026-06-02 incident.
+
+        Resolution: the candidate is the artifact at
+        ``ranking.panel_scoring.artifact_path`` in
+        ``strategy_config.json`` (the production scoring artifact).
+        Compare its ``kind`` + ``feature_cols`` + ``recipe_fingerprint``
+        / ``config_fingerprint`` against the (already-uniform-per the
+        prior test) manifest cuts. Any axis drift here means a future
+        weekly retrain into this manifest will scoreing-fail-closed.
+        """
+        src = _read_wrapper()
+        manifest_rel = _shell_assignments(src)["WF_MANIFEST"]
+        manifest_path = (STRATEGY_ROOT / manifest_rel).resolve()
+        manifest: dict[str, Any] = json.loads(manifest_path.read_text())
+        retrains = manifest.get("retrains", [])
+        assert retrains, "Layer 2 should have caught an empty manifest"
+
+        prod_cfg = json.loads(
+            (STRATEGY_ROOT / "strategy_config.json").read_text()
+        )
+        candidate_rel = (
+            prod_cfg.get("ranking", {})
+            .get("panel_scoring", {})
+            .get("artifact_path")
+        )
+        assert candidate_rel, (
+            "strategy_config.json missing ranking.panel_scoring."
+            "artifact_path; cannot resolve wrapper's scoring artifact "
+            "for cross-check"
+        )
+        candidate_path = (STRATEGY_ROOT / candidate_rel).resolve()
+        assert candidate_path.exists(), (
+            f"candidate artifact missing on disk: {candidate_path}. "
+            "Resolved via strategy_config.json's "
+            "ranking.panel_scoring.artifact_path."
+        )
+
+        candidate: dict[str, Any] = json.loads(candidate_path.read_text())
+        cand_kind = candidate.get("kind")
+        cand_features = tuple(sorted(candidate.get("feature_cols") or []))
+        cand_recipe_fp = candidate.get("recipe_fingerprint")
+        cand_config_fp = candidate.get("config_fingerprint")
+
+        # Reuse cut[0] as a representative; Layer 3 intra-manifest test
+        # already pinned cut-uniformity, so any single cut speaks for all.
+        cut_path = (STRATEGY_ROOT / retrains[0]["artifact_uri"]).resolve()
+        cut: dict[str, Any] = json.loads(cut_path.read_text())
+
+        # kind: must match (model family agreement)
+        assert cut.get("kind") == cand_kind, (
+            f"kind mismatch: manifest cuts are {cut.get('kind')!r}, "
+            f"candidate scoring artifact at {candidate_rel} is "
+            f"{cand_kind!r}. The gate will fail-closed."
+        )
+
+        # feature_cols: must match exactly (this is the 169-vs-172 trap)
+        cut_features = tuple(sorted(cut.get("feature_cols") or []))
+        if cut_features != cand_features:
+            cut_only = set(cut_features) - set(cand_features)
+            cand_only = set(cand_features) - set(cut_features)
+            raise AssertionError(
+                f"feature_cols mismatch between manifest cuts and "
+                f"candidate at {candidate_rel}:\n"
+                f"  manifest cut shape: n={len(cut_features)}\n"
+                f"  candidate shape:    n={len(cand_features)}\n"
+                f"  cut-only feats:    {sorted(cut_only)[:8]}\n"
+                f"  candidate-only feats: {sorted(cand_only)[:8]}\n"
+                "This is the exact 2026-06-02 169-vs-172 incident: the "
+                "WF gate's recipe-match check would fire and 3/3 cuts "
+                "would fail at panel_scorer_config_mismatch."
+            )
+
+        # fingerprint: prefer recipe_fingerprint; fall back to
+        # config_fingerprint (since WF v2 cuts predate recipe-fp stamping
+        # — both candidate + cuts may be None on that axis legitimately).
+        if cand_recipe_fp is not None or cut.get("recipe_fingerprint") is not None:
+            assert cut.get("recipe_fingerprint") == cand_recipe_fp, (
+                "recipe_fingerprint mismatch: cuts="
+                f"{cut.get('recipe_fingerprint')!r}, candidate="
+                f"{cand_recipe_fp!r}. Stamp the cuts (or re-train) so the "
+                "WF gate's recipe-validate step passes against this "
+                "candidate."
+            )
+        else:
+            # Both None → fall back to config_fingerprint axis
+            assert cut.get("config_fingerprint") == cand_config_fp, (
+                "config_fingerprint mismatch (recipe_fingerprint absent "
+                "on both): cuts="
+                f"{cut.get('config_fingerprint')!r}, candidate="
+                f"{cand_config_fp!r}. The cuts were trained from a "
+                "different recipe than the wrapper's scoring artifact; "
+                "WF gate's assert_consistent will fail-closed every bar."
+            )
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
