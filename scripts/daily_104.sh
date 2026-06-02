@@ -66,6 +66,13 @@ source "$REPO_DIR/scripts/subrepo_env.sh"
 renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
+if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
+    if [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] && [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" | tee -a "$LOG"
+        exit 1
+    fi
+    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+fi
 
 exec >> "$LOG" 2>&1
 echo "=== daily_104 started at $(date) ==="
@@ -174,7 +181,7 @@ PANEL_INFO=$("$PYTHON" -c "
 import json, datetime
 from pathlib import Path
 sd = Path('$REPO_DIR/backtesting/renquant_104')
-cfg = json.loads((sd / 'strategy_config.json').read_text())
+cfg = json.loads(Path('$PROD_STRATEGY_CONFIG').read_text())
 p_rel = cfg['ranking']['panel_scoring']['artifact_path']
 try:
     p = json.loads((sd / p_rel).read_text())
@@ -200,7 +207,7 @@ import json, datetime
 from pathlib import Path
 sd = Path('$REPO_DIR/backtesting/renquant_104')
 try:
-    cfg = json.loads((sd / 'strategy_config.json').read_text())
+    cfg = json.loads(Path('$PROD_STRATEGY_CONFIG').read_text())
     p = json.loads((sd / cfg['ranking']['panel_scoring']['artifact_path']).read_text())
     age = (datetime.date.today() - datetime.date.fromisoformat(p['trained_date'])).days
     print(age)
