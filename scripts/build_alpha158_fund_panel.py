@@ -8,7 +8,9 @@ Track B compatibility (2026-06-02): when the upstream
 ``alpha158_qlib_dataset.parquet`` was built with the renquant-base-data
 ``--include-track-b`` flag, the alpha158 frame already contains the 4
 additional Track B columns (mom_carry_12_1, beta_dm, rvar_total,
-idio_vol_3f). This merger is column-count-agnostic — it left-joins on
+idio_vol_market — renamed from ``idio_vol_3f`` in renquant-base-data
+#16; production is a SPY+size 2-factor residual, not 3-factor). This
+merger is column-count-agnostic — it left-joins on
 ``(ticker, date)`` regardless of how many feature columns the alpha158
 input carries, so Track B passthrough requires no code change here. The
 training-side opt-in lives in ``train_walkforward_panel.py

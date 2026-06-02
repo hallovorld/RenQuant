@@ -53,15 +53,27 @@ without a companion placebo verdict block.
 | Expected sign in BULL_CALM | NEGATIVE (low-vol outperforms in calm regimes). The "low-vol anomaly" is the cross-sectional negative beta of returns on idiosyncratic + total volatility (Baker-Bradley-Wurgler 2011 *Financial Analysts Journal* 67(1)). |
 | Hand-computed fixture | With `close = [100, 102, 101, 99, 100, 103, 105]` the daily returns are `[NaN, 0.02, -0.00980, -0.01980, 0.01010, 0.0300, 0.01942]`; the rolling-3 sum-of-squares at idx 4 = `0.00980² + 0.01980² + 0.01010² ≈ 0.000490`. Pinned by `test_rvar_total_matches_hand_sum_of_squared_returns` (using the same `rolling(3).sum()` formula in reverse). Causality pinned by `test_rvar_total_production_window_causal`. Non-negativity pinned by `test_rvar_total_is_non_negative`. |
 
-### 4. `idio_vol_3f`
+### 4. `idio_vol_market`
+
+> **Naming note (renquant-base-data #16, 2026-06-02):** the original name
+> `idio_vol_3f` was a misnomer. In production, `renquant-base-data` callers
+> pass `sector_close=None` (the sector taxonomy lives in the strategy
+> layer, not in base-data), so the prod feature is a **SPY + size 2-factor
+> residual std** — NOT a 3-factor residual. The honest rename to
+> `idio_vol_market` landed in renquant-base-data #16; this memo + the
+> Track B constants in `scripts/train_production_model.py` +
+> `src/renquant_model_gbdt/panel_data.py` were swapped in the paired
+> consumer PRs (RenQuant#120 + renquant-model#29). The 3-factor variant
+> remains available to research callers that supply a sector ETF series,
+> but production never exercises that path.
 
 | Field | Value |
 |---|---|
-| Definition | 60-day rolling residual std after OLS regressing stock daily returns on `[1, r_spy, r_sector, z_size]` where `r_spy` is SPY daily return, `r_sector` is the sector ETF daily return (or 0 when sector data is absent), and `z_size` is the in-window z-score of `log(close * volume + 1)` as a market-cap proxy. |
-| Canonical reference | Ang, A., Hodrick, R. J., Xing, Y., & Zhang, X. (2006). "The Cross-Section of Volatility and Expected Returns." *Journal of Finance* 61(1), 259–299. Their IDIO-VOL is residual std from a Fama-French 3-factor regression; we substitute the sector ETF for HML/SMB (cheap to compute from per-ticker OHLCV alone) per the methodology note in their section II.B that allows alternate factor sets. |
-| Causality argument | Each 60-day window at `t` uses `[t-59 .. t]` returns + SPY returns + sector returns + size proxy; no point at `> t` enters the regression. The in-window z-score for size uses `rolling(60).mean()` / `rolling(60).std(ddof=1)` ending at `t`, which is strictly causal. The OLS via `np.linalg.lstsq` operates on the window-only matrix. Pinned by `test_idio_vol_3f_causal_at_t_does_not_use_future`. |
-| Expected sign in BULL_CALM | NEGATIVE (idio-vol puzzle). Ang et al. 2006 documented a robust negative cross-sectional relation between idio-vol and future returns — strongest in calm-market regimes per their Table 7 sub-sample analysis. |
-| Hand-computed fixture | When `stock_ret == 1.0 * spy_ret` exactly (perfect linear combo, no idio noise), the 3-factor residual std is ≈ 0 (within `1e-8` floating-point). Pinned by `test_idio_vol_3f_returns_zero_resid_for_perfect_linear_combo`. |
+| Definition | 60-day rolling residual std after OLS regressing stock daily returns on `[1, r_spy, z_size]` (production: `sector_close=None`) — equivalently `[1, r_spy, r_sector, z_size]` when a research caller supplies a sector ETF. `r_spy` is SPY daily return; `r_sector` is the sector ETF daily return (absent in production); `z_size` is the in-window z-score of `log(close * volume + 1)` as a market-cap proxy. |
+| Canonical reference | Ang, A., Hodrick, R. J., Xing, Y., & Zhang, X. (2006). "The Cross-Section of Volatility and Expected Returns." *Journal of Finance* 61(1), 259–299. Their IDIO-VOL is residual std from a Fama-French 3-factor regression; section II.B explicitly permits alternate factor sets. Production runs the **2-factor** market+size variant (no sector ETF wired through base-data); this captures the same idio-vol-puzzle signal at lower data cost. |
+| Causality argument | Each 60-day window at `t` uses `[t-59 .. t]` returns + SPY returns + (optional sector returns) + size proxy; no point at `> t` enters the regression. The in-window z-score for size uses `rolling(60).mean()` / `rolling(60).std(ddof=1)` ending at `t`, which is strictly causal. The OLS via `np.linalg.lstsq` operates on the window-only matrix. Pinned by `test_idio_vol_market_causal_at_t_does_not_use_future` (the renamed test in renquant-base-data #16). |
+| Expected sign in BULL_CALM | NEGATIVE (idio-vol puzzle). Ang et al. 2006 documented a robust negative cross-sectional relation between idio-vol and future returns — strongest in calm-market regimes per their Table 7 sub-sample analysis. The 2-factor (market + size) residual carries the same sign as the canonical 3-factor variant; SMB/HML add specification refinement, not the dominant signal. |
+| Hand-computed fixture | When `stock_ret == 1.0 * spy_ret` exactly (perfect linear combo, no idio noise), the 2-factor residual std is ≈ 0 (within `1e-8` floating-point). Pinned by `test_idio_vol_market_returns_zero_resid_for_perfect_linear_combo` (renquant-base-data #16). |
 
 ## Hypothesis status table (per §7.2.1 R4)
 
@@ -70,13 +82,13 @@ without a companion placebo verdict block.
 | `mom_carry_12_1` is causal | ruled_in | `test_mom_carry_12_1_causal_at_t_does_not_use_future` perturbs `close[t+1:]` and confirms zero impact at `t` | this PR (renquant-base-data feat/bull-calm-track-b-features) |
 | `beta_dm` is causal | ruled_in | `test_beta_dm_causal_at_t_does_not_use_future` perturbs both close and SPY at `t+1:` and confirms zero impact at `t` | this PR |
 | `rvar_total` is causal | ruled_in | `test_rvar_total_production_window_causal` perturbs `close[t+1:] *= 10` and confirms zero impact at `t` | this PR |
-| `idio_vol_3f` is causal | ruled_in | `test_idio_vol_3f_causal_at_t_does_not_use_future` perturbs all 4 input series at `t+1:` and confirms zero impact at `t` | this PR |
+| `idio_vol_market` is causal | ruled_in | `test_idio_vol_market_causal_at_t_does_not_use_future` perturbs all input series at `t+1:` and confirms zero impact at `t` (renamed from `idio_vol_3f` in renquant-base-data #16) | renquant-base-data #16 |
 | Track B lifts BULL_CALM mean_ic ≥ +0.020 | UNRESOLVED | retrain + WF gate eval pending (user fires explicitly after PR review) | not yet |
 
 ## Sanity contract for the upcoming retrain (per §7.2 + §7.2.1 R2)
 
 When the user fires `train_walkforward_panel.py --include-features
-mom_carry_12_1,beta_dm,rvar_total,idio_vol_3f`, the following sanity
+mom_carry_12_1,beta_dm,rvar_total,idio_vol_market`, the following sanity
 artifacts MUST appear before any IC number is quoted:
 
 1. **Shuffled-label placebo** on the same 176-feature recipe. IC must be

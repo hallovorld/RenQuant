@@ -63,7 +63,7 @@ DEFAULT_OUTPUT = REPO / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"
 # DROPS them by default (preserving the baseline 172-feature recipe) and opts
 # them back in via the ``--include-features`` flag (comma-list).
 TRACK_B_FEATURES: tuple[str, ...] = (
-    "mom_carry_12_1", "beta_dm", "rvar_total", "idio_vol_3f",
+    "mom_carry_12_1", "beta_dm", "rvar_total", "idio_vol_market",
 )
 
 
@@ -119,9 +119,12 @@ def parse_args() -> argparse.Namespace:
         "--include-features", type=str, default=None,
         help=(
             "Comma-separated opt-in list of addendum feature names (e.g. "
-            "'mom_carry_12_1,beta_dm,rvar_total,idio_vol_3f' for Track B). "
+            "'mom_carry_12_1,beta_dm,rvar_total,idio_vol_market' for Track B). "
             "Default: empty — drops every Track B column from feat_cols if "
-            "present in the panel, preserving the 172-feature baseline recipe."
+            "present in the panel, preserving the 172-feature baseline recipe. "
+            "Names that do NOT appear in the panel are an error (no silent "
+            "rename translation; pin the upstream renquant-base-data version "
+            "explicitly — see doc/research/2026-06-02-track-b-feature-audit.md)."
         ),
     )
     return p.parse_args()
@@ -187,6 +190,25 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     feat_cols = [c for c in panel.columns if c not in excl]
     # Track B opt-in filter: drop any Track B column the user did not opt in to.
     opted_in = set(include_features or [])
+    # Fail loudly when ``--include-features`` names a column not in the panel.
+    # Catches stale names (e.g. the old ``idio_vol_3f`` after the upstream
+    # renquant-base-data #16 rename to ``idio_vol_market``) instead of
+    # silently producing a baseline-equivalent run that drops every Track B
+    # column. No silent rename translation by design — pin the upstream
+    # version explicitly. See doc/research/2026-06-02-track-b-feature-audit.md.
+    missing = sorted(opted_in - set(feat_cols))
+    if missing:
+        # Honest hint when the caller used the pre-#16 name.
+        hint = ""
+        if "idio_vol_3f" in missing and "idio_vol_market" in feat_cols:
+            hint = (" Hint: renquant-base-data #16 renamed 'idio_vol_3f' to "
+                    "'idio_vol_market' (SPY+size 2-factor residual; the prior "
+                    "'_3f' suffix was a misnomer).")
+        raise SystemExit(
+            f"--include-features names not present in panel: {missing}. "
+            f"Panel columns Track-B-relevant: "
+            f"{sorted(set(feat_cols) & set(TRACK_B_FEATURES))}.{hint}"
+        )
     drop_track_b = [c for c in TRACK_B_FEATURES if c in feat_cols and c not in opted_in]
     if drop_track_b:
         feat_cols = [c for c in feat_cols if c not in drop_track_b]

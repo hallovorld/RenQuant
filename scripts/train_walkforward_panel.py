@@ -170,9 +170,11 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
         watchlist_file: --watchlist-file passthrough (wl174 retrained variant)
         artifact_root: override WF_V2_SUBDIR (e.g. 'walkforward_horizon_5d')
         include_features: comma-list of opt-in addendum feature names
-            (Track B: 'mom_carry_12_1,beta_dm,rvar_total,idio_vol_3f'). When
-            None, baseline 172-feature recipe is preserved even if the panel
-            parquet contains Track B columns.
+            (Track B: 'mom_carry_12_1,beta_dm,rvar_total,idio_vol_market').
+            When None, baseline 172-feature recipe is preserved even if the
+            panel parquet contains Track B columns. Names not present in the
+            panel raise loudly in the per-cutoff trainer (no silent rename
+            translation; pin upstream renquant-base-data version explicitly).
 
     Returns (success, artifact_path, calibrator_path, error_msg). On non-zero exit, success=False
     and the caller logs + continues (does not abort the whole batch).
@@ -329,11 +331,13 @@ def parse_args() -> argparse.Namespace:
         "--include-features", default=None,
         help=(
             "Comma-separated opt-in list of addendum features (Track B BULL_CALM "
-            "recovery: 'mom_carry_12_1,beta_dm,rvar_total,idio_vol_3f'). "
+            "recovery: 'mom_carry_12_1,beta_dm,rvar_total,idio_vol_market'). "
             "Forwarded to train_production_model.py per cutoff. When unset, the "
             "baseline 172-feature recipe is preserved even if the panel parquet "
-            "carries Track B columns. Pinned by "
-            "tests/test_walkforward_panel_train_include_features.py."
+            "carries Track B columns. Names not present in the panel fail loudly "
+            "in the per-cutoff trainer (no silent rename translation). Pinned by "
+            "tests/test_walkforward_panel_train_include_features.py + "
+            "tests/test_track_b_feature_drop_default.py."
         ),
     )
     p.add_argument("--dry-run", action="store_true",

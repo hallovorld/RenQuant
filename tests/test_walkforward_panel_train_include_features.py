@@ -52,7 +52,7 @@ def test_include_features_flag_flows_into_train_production_subprocess(tmp_path: 
         ok, artifact_path, _calibrator_path, err = train_one_cutoff(
             pd.Timestamp("2024-06-01"),
             tmp_path,
-            include_features="mom_carry_12_1,beta_dm,rvar_total,idio_vol_3f",
+            include_features="mom_carry_12_1,beta_dm,rvar_total,idio_vol_market",
             fit_calibrator=False,
         )
     assert ok, err
@@ -60,7 +60,7 @@ def test_include_features_flag_flows_into_train_production_subprocess(tmp_path: 
     cmd = captured[0]
     assert "--include-features" in cmd
     idx = cmd.index("--include-features")
-    assert cmd[idx + 1] == "mom_carry_12_1,beta_dm,rvar_total,idio_vol_3f"
+    assert cmd[idx + 1] == "mom_carry_12_1,beta_dm,rvar_total,idio_vol_market"
     # The cutoff and output path also flow.
     assert "--train-cutoff" in cmd and "2024-06-01" in cmd
     assert any("walkforward" in part for part in cmd), \
