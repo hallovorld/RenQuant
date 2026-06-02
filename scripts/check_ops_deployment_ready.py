@@ -60,6 +60,7 @@ def run_readiness(
     launchagents_dir: Path | None = None,
     allow_non_canonical: bool = False,
     allow_non_main: bool = False,
+    skip_launchagents: bool = False,
 ) -> dict[str, Any]:
     repo_root = repo_root.expanduser().resolve()
     canonical_repo = canonical_repo.expanduser().resolve()
@@ -116,13 +117,23 @@ def run_readiness(
     if not contract.get("ok"):
         issues.append(Issue("error", "subrepo_ops_contract", json.dumps(contract.get("failures", []))))
 
-    launchagents = inspect_launchagents(
-        repo_root=repo_root,
-        launchagents_dir=launchagents_dir or Path.home() / "Library" / "LaunchAgents",
-    )
-    details["launchagents_ok"] = bool(launchagents.get("ok"))
-    if not launchagents.get("ok"):
-        issues.append(Issue("error", "launchagents", "installed LaunchAgents drift from repo; run install after repo is ready"))
+    if skip_launchagents:
+        launchagents: dict[str, Any] = {"ok": None, "skipped": True, "issues": [], "entries": []}
+        details["launchagents_ok"] = None
+    else:
+        launchagents = inspect_launchagents(
+            repo_root=repo_root,
+            launchagents_dir=launchagents_dir or Path.home() / "Library" / "LaunchAgents",
+        )
+        details["launchagents_ok"] = bool(launchagents.get("ok"))
+        if not launchagents.get("ok"):
+            issues.append(
+                Issue(
+                    "error",
+                    "launchagents",
+                    "installed LaunchAgents drift from repo; run install after repo is ready",
+                )
+            )
 
     errors = [issue for issue in issues if issue.severity == "error"]
     return {
@@ -140,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--launchagents-dir", default=None)
     parser.add_argument("--allow-non-canonical", action="store_true")
     parser.add_argument("--allow-non-main", action="store_true")
+    parser.add_argument(
+        "--skip-launchagents",
+        action="store_true",
+        help="Skip installed LaunchAgents drift checks for pre-install gating.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -149,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         launchagents_dir=Path(args.launchagents_dir).expanduser() if args.launchagents_dir else None,
         allow_non_canonical=args.allow_non_canonical,
         allow_non_main=args.allow_non_main,
+        skip_launchagents=args.skip_launchagents,
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
