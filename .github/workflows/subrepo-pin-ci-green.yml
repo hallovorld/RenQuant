@@ -1,0 +1,63 @@
+name: subrepo-pin-ci-green
+
+on:
+  pull_request:
+    paths:
+      - subrepos.lock.json
+      - scripts/check_lock_pins_ci_green.py
+      - tests/test_check_lock_pins_ci_green.py
+      - .github/workflows/subrepo-pin-ci-green.yml
+  push:
+    branches:
+      - main
+    paths:
+      - subrepos.lock.json
+      - scripts/check_lock_pins_ci_green.py
+      - .github/workflows/subrepo-pin-ci-green.yml
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  statuses: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect subrepos.lock.json changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          ZERO_SHA="0000000000000000000000000000000000000000"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git fetch --no-tags origin "${BASE_SHA}"
+            RANGE="${BASE_SHA}..HEAD"
+          elif [ -n "${BEFORE_SHA:-}" ] && [ "${BEFORE_SHA}" != "${ZERO_SHA}" ]; then
+            RANGE="${BEFORE_SHA}..HEAD"
+          else
+            RANGE="HEAD^..HEAD"
+          fi
+          if git diff --name-only "${RANGE}" | grep -qx 'subrepos.lock.json'; then
+            echo "lock_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lock_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify pinned subrepo commits have green CI
+        if: steps.changes.outputs.lock_changed == 'true'
+        env:
+          # Public RenQuant pins private subrepos. github.token is enough for
+          # public repos, but private subrepo validation needs a PAT/App token
+          # with read access to every hallovorld/renquant-* repository.
+          GH_TOKEN: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+        run: python3 scripts/check_lock_pins_ci_green.py --lock-file subrepos.lock.json
+      - name: Install test tools
+        run: python3 -m pip install pytest
+      - name: Run pin-gate regression tests
+        run: python3 -m pytest -q -o addopts='' tests/test_check_lock_pins_ci_green.py tests/test_subrepo_ops_contract.py
