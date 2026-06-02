@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "subrepo_module_delegate.py"
@@ -95,3 +97,82 @@ def test_delegate_fails_closed_without_strategy_config_when_strict(
         assert "strategy_config.json unavailable" in str(exc)
     else:  # pragma: no cover - assertion path
         raise AssertionError("strict delegate did not fail closed")
+
+
+def test_delegate_default_preserves_umbrella_fallback(
+    monkeypatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mod = _load_delegate_module()
+    runtime = tmp_path / "runtime" / "repos"
+    fake_pkg = runtime / "fakepkg" / "src" / "fakepkg"
+    fake_pkg.mkdir(parents=True)
+    (fake_pkg / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(mod, "resolve_subrepo_root", lambda _repo: runtime)
+    monkeypatch.delenv("RQ_FAKE_STRICT", raising=False)
+    monkeypatch.delenv("RENQUANT_OPS_FAIL_CLOSED", raising=False)
+
+    rc = mod.delegate_to_subrepo_module(
+        "fakepkg.missing_ops",
+        [],
+        repo_root=tmp_path / "RenQuant",
+        packages=("fakepkg",),
+        runner_env="RQ_FAKE_RUNNER",
+        strict_env="RQ_FAKE_STRICT",
+    )
+
+    assert rc is None
+    assert "RENQUANT_OPS_FAIL_CLOSED=1" in capsys.readouterr().err
+
+
+def test_delegate_global_fail_closed_rethrows_import_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    mod = _load_delegate_module()
+    runtime = tmp_path / "runtime" / "repos"
+    strategy_config = runtime / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    fake_pkg = runtime / "fakepkg" / "src" / "fakepkg"
+    strategy_config.parent.mkdir(parents=True)
+    fake_pkg.mkdir(parents=True)
+    strategy_config.write_text("{}", encoding="utf-8")
+    (fake_pkg / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(mod, "resolve_subrepo_root", lambda _repo: runtime)
+    monkeypatch.setenv("RENQUANT_OPS_FAIL_CLOSED", "1")
+
+    with pytest.raises(ModuleNotFoundError):
+        mod.delegate_to_subrepo_module(
+            "fakepkg.missing_ops",
+            [],
+            repo_root=tmp_path / "RenQuant",
+            packages=("fakepkg",),
+            runner_env="RQ_FAKE_RUNNER",
+            strict_env="RQ_FAKE_STRICT",
+        )
+
+
+def test_delegate_strict_subrepo_paths_rethrows_import_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    mod = _load_delegate_module()
+    runtime = tmp_path / "runtime" / "repos"
+    strategy_config = runtime / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    fake_pkg = runtime / "fakepkg" / "src" / "fakepkg"
+    strategy_config.parent.mkdir(parents=True)
+    fake_pkg.mkdir(parents=True)
+    strategy_config.write_text("{}", encoding="utf-8")
+    (fake_pkg / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(mod, "resolve_subrepo_root", lambda _repo: runtime)
+    monkeypatch.setenv("RENQUANT_STRICT_SUBREPO_PATHS", "1")
+
+    with pytest.raises(ModuleNotFoundError):
+        mod.delegate_to_subrepo_module(
+            "fakepkg.missing_ops",
+            [],
+            repo_root=tmp_path / "RenQuant",
+            packages=("fakepkg",),
+            runner_env="RQ_FAKE_RUNNER",
+            strict_env="RQ_FAKE_STRICT",
+        )
