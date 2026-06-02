@@ -49,6 +49,36 @@ def test_subrepo_pythonpath_preserves_repo_order() -> None:
     )
 
 
+def test_strategy_config_resolves_from_strategy_subrepo(tmp_path: Path) -> None:
+    root = tmp_path / "runtime" / "repos"
+    config = root / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text("{}", encoding="utf-8")
+
+    out = _bash(
+        'source scripts/subrepo_env.sh; '
+        f'renquant_strategy_config "{root}" strategy_config.json'
+    )
+    assert out == str(config)
+
+
+def test_strategy_config_fails_when_missing(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source scripts/subrepo_env.sh; '
+            f'renquant_strategy_config "{tmp_path}" strategy_config.json',
+        ],
+        cwd=REPO,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 def test_subrepo_root_loads_current_env_runtime_root(tmp_path: Path) -> None:
     repo = tmp_path / "RenQuant"
     runtime = tmp_path / "runtime" / "repos"
