@@ -82,7 +82,9 @@ class _StateAndBrokerJob(PreflightJob):
 
 
 def build_preflight_pipeline() -> PreflightPipeline:
-    """Return the FULL PreflightPipeline holding ALL 16 migrated checks.
+    """Return the FULL PreflightPipeline holding ALL 17 migrated checks.
+
+    P-BROKER-FILL-FRESHNESS added 2026-06-02 per audit finding 9.
 
     Jobs run in semantic dependency order. ``kernel.preflight.run_preflight``
     preserves the legacy returned-list order by sorting the results after the

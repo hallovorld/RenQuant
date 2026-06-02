@@ -9,9 +9,10 @@ Drop-in architecture for ``kernel.preflight.run_preflight`` migration:
   - PreflightPipeline: orchestrates Jobs in declaration order; ``run`` returns
     list[PreflightCheck] identical in shape to the legacy ``run_preflight``
 
-All 16 checks are represented as Tasks. ``run_preflight`` is wired as a thin
-wrapper in the follow-up PR so production callers keep the legacy API while
-the business logic moves behind Task/Job/Pipeline boundaries.
+All 17 checks are represented as Tasks (P-BROKER-FILL-FRESHNESS added
+2026-06-02 per audit finding 9). ``run_preflight`` is wired as a thin
+wrapper in the follow-up PR so production callers keep the legacy API
+while the business logic moves behind Task/Job/Pipeline boundaries.
 """
 from .ctx import PreflightContext
 from .base import PreflightTask, PreflightJob, PreflightPipeline

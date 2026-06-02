@@ -189,12 +189,12 @@ class TestMetaLabelArtifactContractTaskParity:
         assert new.message == leg.message
 
 
-# ─── COMPLETE pipeline test: all 16 checks fire in order ─────────────────────
+# ─── COMPLETE pipeline test: all 17 checks fire in order ─────────────────────
 
 class TestFullPipeline:
     """The Track H goal: complete preflight via the new T/J/P pipeline."""
 
-    def test_full_pipeline_has_16_checks(self, tmp_path):
+    def test_full_pipeline_has_17_checks(self, tmp_path):
         ctx = PreflightContext(config={}, strategy_dir=tmp_path)
         pipeline = build_preflight_pipeline()
         results = pipeline.run(ctx, strict=False)
@@ -206,10 +206,11 @@ class TestFullPipeline:
             "P-CALIBRATOR-HEALTH", "P-CALIBRATOR-FLAT-REGION",
             "P-FEATURE-COVER", "P-RUN-ID",
             "P-META-LABEL",
-            "P-STATE-FILE", "P-BROKER-CONNECT",
+            # P-BROKER-FILL-FRESHNESS added 2026-06-02 (audit finding 9).
+            "P-STATE-FILE", "P-BROKER-CONNECT", "P-BROKER-FILL-FRESHNESS",
         }
         assert names == expected
-        assert len(results) == 16
+        assert len(results) == 17
 
     def test_full_pipeline_order_mirrors_legacy(self, tmp_path):
         """Ordering should match kernel.preflight.run_preflight's ALL_CHECKS."""
@@ -229,5 +230,9 @@ class TestFullPipeline:
         assert names[11:13] == ["P-FEATURE-COVER", "P-RUN-ID"]
         # Meta-label
         assert names[13] == "P-META-LABEL"
-        # State + broker last
-        assert names[14:16] == ["P-STATE-FILE", "P-BROKER-CONNECT"]
+        # State + broker last (P-BROKER-FILL-FRESHNESS added 2026-06-02
+        # audit finding 9; runs after BROKER-CONNECT so the connection is
+        # up before the freshness query).
+        assert names[14:17] == [
+            "P-STATE-FILE", "P-BROKER-CONNECT", "P-BROKER-FILL-FRESHNESS",
+        ]
