@@ -202,6 +202,24 @@ def solve_portfolio_qp(
     dw_max_arr  = (np.full(n, float(dw_max))  if np.isscalar(dw_max)
                     else np.asarray(dw_max, dtype=float))
 
+    # ── Hold-flat-feasibility clamp (2026-06-02 daily-full bug fix) ──────
+    # ApplyExposureScalingTask + ApplyConvictionCapTask multiply w_upper by
+    # combined regime / vol-target / drawdown / conviction factors. In low-
+    # conviction or high-cap-pressure scenarios these can drive w_upper
+    # BELOW w_current for held positions, making "hold flat" (Δw=0)
+    # infeasible. The QP then falls back to zero-trade — including
+    # blocking exit/sell signals — and emits status=infeasible. Today's
+    # daily-104 hit this: per_asset_cap_max=-0.042 with 4 holdings and
+    # cash_slack=0.55 (trivially feasible by hold).
+    #
+    # Fix: clamp w_upper >= w_current per asset. The QP can still WANT to
+    # sell via mu-gradient or turnover trade-offs, but the BOX constraint
+    # never forces a sale. The "always-feasible hold" invariant is
+    # restored. w_lower remains untouched (shorts/disabled paths intact).
+    w_current_clamp = np.asarray(w_current, dtype=float).flatten()
+    if w_current_clamp.size == n:
+        w_upper_arr = np.maximum(w_upper_arr, w_current_clamp)
+
     # ── μ cleanup + Garleanu-Pedersen 2013 signal-decay scaling ──────────
     finite_mu = np.isfinite(mu_raw)
     mu_clean  = np.where(finite_mu, mu_raw, 0.0)

@@ -129,6 +129,91 @@ class TestConstraints:
         assert sol.delta_w[0] < 0.0   # selling permitted
 
 
+class TestHoldFlatFeasibilityClamp:
+    """2026-06-02 daily-full bug regression guard.
+
+    ApplyExposureScalingTask + ApplyConvictionCapTask multiply
+    `_qp_w_upper` by combined regime / vol-target / drawdown / conviction
+    factors. In low-conviction or high-cap-pressure scenarios these can
+    drive `w_upper` BELOW `w_current` for held positions, making
+    "hold flat" (Δw=0) infeasible. The QP then falls back to zero-trade
+    AND emits status=infeasible — blocking exit/sell signals too.
+
+    Today's daily-104 hit this: `per_asset_cap_max=-0.042` with 4
+    holdings and `cash_slack=0.55` — trivially feasible by hold-flat,
+    yet the solver said infeasible. Root cause: `w_upper < w_current`
+    on all 4 holdings.
+
+    Fix: clamp `w_upper >= w_current` per asset at solve entry. QP can
+    still WANT to sell via mu/risk gradient, but the BOX constraint
+    never forces a sale.
+    """
+
+    def test_hold_flat_feasible_when_w_upper_below_current(self):
+        """w_upper < w_current must NOT make the QP infeasible.
+
+        Reconstructs today's pattern: 4 holdings ~5%/each, w_upper set
+        to a cap that's *below* the current weight (e.g., regime gate
+        + low-conviction scaling pushed it down). The QP must succeed
+        and produce a Δw vector — Δw=0 (hold flat) is always feasible
+        because the clamp lifts each w_upper to w_current.
+        """
+        sol = solve_portfolio_qp(
+            w_current=[0.10, 0.10, 0.10, 0.10],
+            mu=[0.0, 0.0, 0.0, 0.0],
+            sigma=[0.10, 0.10, 0.10, 0.10],
+            w_upper=0.05,                      # below w_current — pre-fix this caused infeasibility
+            w_lower=0.0,
+            cash_reserve=0.0,
+            cost_kappa=0.0001,
+            turnover_max=0.15,                  # tight turnover that would forbid 4× forced shrink
+        )
+        # Pre-fix: solver returned status="infeasible" + zero-trade fallback.
+        # Post-fix: clamp lifts w_upper to w_current and the QP is solvable.
+        # Status may be any "optimal-*" variant (clean, no_signal, inaccurate);
+        # what matters is we're NOT infeasible.
+        assert "infeasible" not in sol.status.lower(), (
+            f"hold-flat feasibility clamp broken; QP returned {sol.status}"
+        )
+        assert sol.status.startswith("optimal"), sol.status
+
+    def test_clamp_does_not_block_natural_sells_via_mu(self):
+        """The clamp lifts w_upper to w_current, but Δw<0 is still permitted
+        via the box's lower bound + the mu gradient. A negative-mu position
+        with no buy constraints should still sell normally."""
+        sol = solve_portfolio_qp(
+            w_current=[0.15],
+            mu=[-0.10],                         # strong sell signal
+            sigma=[0.10],
+            w_upper=0.05,                       # below current — the clamp lifts this to 0.15
+            w_lower=0.0,
+            cash_reserve=0.0,
+            cost_kappa=0.0,
+        )
+        # Even though w_upper was nominally 0.05, the clamp made it 0.15.
+        # But w_lower=0.0 lets Δw be negative. Mu=-0.10 should still produce a sale.
+        assert sol.delta_w[0] < 0.0, (
+            f"clamp should not block legitimate mu-driven sells; got Δw={sol.delta_w[0]}"
+        )
+        assert sol.target_w[0] < 0.15
+
+    def test_clamp_preserves_w_upper_when_already_above_current(self):
+        """When w_upper already exceeds w_current, the clamp must be a no-op
+        — buy headroom is preserved for the QP to use."""
+        sol = solve_portfolio_qp(
+            w_current=[0.05],
+            mu=[0.10],                          # buy signal
+            sigma=[0.10],
+            w_upper=0.20,                       # above current — should remain 0.20
+            w_lower=0.0,
+            cash_reserve=0.0,
+            cost_kappa=0.0,
+        )
+        # Buy headroom preserved: target should be > current, up to 0.20
+        assert sol.delta_w[0] > 0.0
+        assert sol.target_w[0] <= 0.20 + 1e-6
+
+
 class TestGarleanuPedersenIntuition:
     def test_higher_cost_smaller_trade(self):
         """As cost rises, trade size should shrink (G-P 2013 partial-move)."""
