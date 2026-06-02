@@ -654,11 +654,37 @@ class SimAdapter:
             log.debug("SimAdapter: %s rejected — %s", ticker, reason)
         return uctx.loaded_models
 
+    @staticmethod
+    def _gmm_leakage_present(artifact, backtest_start, as_of_extractor) -> bool:
+        """True iff artifact has a stamped as_of_date strictly after start.
+
+        Mirrors ``assert_gmm_no_leakage`` semantics without raising — used to
+        decide whether to fall back to a historical sim GMM before invoking
+        the guard. Legacy (unstamped) artifacts return False (the guard
+        accepts them with a warning), so we never substitute on those.
+        """
+        if artifact is None or backtest_start is None:
+            return False
+        as_of = as_of_extractor(artifact)
+        if as_of is None:
+            return False
+        try:
+            as_of_ts = pd.Timestamp(as_of)
+            if as_of_ts.tz is not None:
+                as_of_ts = as_of_ts.tz_convert("UTC").tz_localize(None)
+            start_ts = pd.Timestamp(backtest_start)
+            if start_ts.tz is not None:
+                start_ts = start_ts.tz_convert("UTC").tz_localize(None)
+        except (TypeError, ValueError):
+            return False
+        return as_of_ts > start_ts
+
     def _load_artifacts(self, fallback_corr):
         from kernel.regime import load_gmm_artifact  # noqa: PLC0415
         from kernel.walk_forward import (  # noqa: PLC0415
             assert_correlation_no_leakage,
             assert_gmm_no_leakage,
+            gmm_artifact_as_of,
             parse_correlation_artifact,
         )
         artifacts_dir = self._strategy_dir / "artifacts"
@@ -678,12 +704,43 @@ class SimAdapter:
             except Exception as exc:
                 log.warning("earnings calendar load failed: %s", exc)
 
-        gmm = load_gmm_artifact(
-            artifacts_dir / regime_cfg.get("gmm_artifact", "prod/spy-gmm-regime.json"),
-        )
+        # 2026-06-02 (bug fix): when the configured GMM is point-in-time-
+        # invalid for this backtest (as_of_date > backtest_start), try a
+        # historical sim artifact at the canonical sim/ path BEFORE letting
+        # the leakage guard raise. This unblocks WF gate sim cuts whose
+        # derived prod-semantic config inherited prod/spy-gmm-regime.json
+        # from production. The guard itself is unchanged: if no historical
+        # alternative is available the original assertion still fires.
+        configured_rel = regime_cfg.get("gmm_artifact", "prod/spy-gmm-regime.json")
+        gmm_path = artifacts_dir / configured_rel
+        gmm = load_gmm_artifact(gmm_path)
+        backtest_start = self._config.get("backtest_start")
+        if backtest_start is not None and self._gmm_leakage_present(
+            gmm, backtest_start, gmm_artifact_as_of,
+        ):
+            historical_rel = "sim/spy-gmm-regime.json"
+            historical_path = artifacts_dir / historical_rel
+            if historical_path.exists() and historical_path != gmm_path:
+                hist = load_gmm_artifact(historical_path)
+                if not self._gmm_leakage_present(
+                    hist, backtest_start, gmm_artifact_as_of,
+                ):
+                    log.warning(
+                        "SimAdapter: configured GMM %s has as_of_date %s > "
+                        "backtest_start %s; substituting historical sim "
+                        "artifact %s (as_of_date=%s) to preserve point-in-"
+                        "time regime labels. Update regime.gmm_artifact in "
+                        "the sim/WF config to silence this warning.",
+                        configured_rel,
+                        gmm_artifact_as_of(gmm),
+                        backtest_start,
+                        historical_rel,
+                        gmm_artifact_as_of(hist),
+                    )
+                    gmm = hist
         assert_gmm_no_leakage(
             gmm,
-            self._config.get("backtest_start"),
+            backtest_start,
             is_live_mode=False,
             context="SimAdapter gmm",
         )
