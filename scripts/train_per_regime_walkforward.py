@@ -192,9 +192,13 @@ def _train_regime(regime: str, retrain_dates: list[pd.Timestamp],
 
     log.info("regime=%s start (%d cutoffs, jobs=%d)", regime, len(retrain_dates), jobs)
     if jobs == 1:
+        # 2026-06-02 codex MED fix: `failures` is a list[tuple], not a dict,
+        # so the prior `(entries if ok else failures).setdefault(iso, None)`
+        # crashed with `AttributeError: 'list' object has no attribute
+        # 'setdefault'` on the FIRST sequential cutoff failure. Branch
+        # explicitly per outcome — same shape as the parallel branch below.
         for c in retrain_dates:
             iso, ok, art, cal, err = _do(c)
-            (entries if ok else failures).setdefault(iso, None)
             if ok:
                 entries[iso] = (str(art), str(cal) if cal else None)
             else:

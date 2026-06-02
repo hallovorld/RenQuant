@@ -186,8 +186,18 @@ class RegimeEnsemblePanelScorer:
 
     # ── Score dispatch ────────────────────────────────────────────────────
 
-    def score(self, ctx: Any, feature_matrix: pd.DataFrame) -> pd.Series:
+    def score(
+        self,
+        feature_matrix: pd.DataFrame,
+        ctx: Any = None,
+    ) -> pd.Series:
         """Route to specialist(s) by detector regime + confidence.
+
+        Signature matches ``PanelScorer.score(feature_matrix, ctx=None)``
+        so a single ``ApplyScoresTask`` call site (`scorer.score(X,
+        ctx=ctx)`) works for both regime-aware and regime-blind scorers
+        — §7.5 single source of truth for the panel-scoring contract
+        (2026-06-02 Track C wiring fix).
 
         ``ctx`` must carry ``final_regime``, ``regime_confidence``, and
         ``regime_posterior`` (a dict[regime → prob]). When ``ctx`` is
