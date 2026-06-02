@@ -94,6 +94,19 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 
 ### 1. 🔬 PatchTST sequence model — **HF Trainer refactor LANDED 2026-05-19, 5×5 eval in flight**
 
+> 🚨 **`PRE-LEAK-AUDIT` — 2026-06-02**: All PatchTST IC / Sharpe / pooled
+> metrics in this §1 (including the "+0.1476 baseline", "+0.066 placebo-
+> clean", "OOS mean IC", "5×5 eval" claims) were measured against the
+> B_tuned baseline that the 2026-06-01 Tier-3 codex harness re-run
+> confirmed is **leak-contaminated**: `timeshift_placebo IC=+0.067 >
+> real_ic=+0.044`, verdict=`invalid_experiment`. The §1 numbers cannot
+> be treated as validated lift. Section preserved for historical
+> traceability; any future "improvement" decision must wait for the
+> Claude TaskList task **#30** ("PatchTST B_tuned leakage investigation")
+> to close. Full audit + 检讨 + R1-R5 process rules + canonical evidence
+> paths in
+> [`doc/research/2026-06-02-experiment-validity-audit.md`](research/2026-06-02-experiment-validity-audit.md).
+
 **Status (2026-05-20)** — see `doc/research/2026-05-19-patchtst-improvement-plan.md` for full Pillar A/B/C × Tier 1/2/3 roadmap.
 
 **Shipped 2026-05-19**:

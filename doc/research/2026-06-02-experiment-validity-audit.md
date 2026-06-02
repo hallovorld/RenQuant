@@ -2,11 +2,66 @@
 
 **触发事件**: 2026-06-01 20:19 PT, B_tuned Tier-3 placebo 重跑后 verdict =
 `invalid_experiment`. `timeshift_placebo IC (+0.067) > real_ic (+0.044)`
-— 教科书级泄漏特征. 2026-05-31 修复的 cross-split-leak guard (commit
-`7245d84`) 不是真正泄漏源.
+— 教科书级泄漏特征. 2026-05-31 修复的 cross-split-leak guard
+(renquant-model commit
+[`7245d84`](https://github.com/hallovorld/renquant-model/commit/7245d84))
+不是真正泄漏源.
 
 **结论**: 这不是 harness bug. 是模型本身泄漏. 最近所有以 B_tuned 为
 基线的"改进"实验, **无法被信任**.
+
+---
+
+## 0. Canonical evidence (codex #80 #3)
+
+Verdict files live in the renquant-model checkout. They are NOT
+git-tracked (the `artifacts/patchtst_research/` tree is in the repo's
+`.gitignore` — that's by design; experiment artifacts are workstation-
+local). Filesystem paths + sha256 below are reproducible.
+
+| Field | Value |
+|---|---|
+| Experiment dir | `~/git/github/renquant-model/artifacts/patchtst_research/tier3_doe_postfix_20260601-174726/20260602T004728Z_doe_250a6ec1_edd7c5b38ff5/` |
+| `invalid_experiment.json` sha256 | `a59dd13276015022977c036f69c29dee8a0f5ef23d82c7ba39540f4b44b02a9e` |
+| `placebo_gate.json` sha256 | `90febb52ac8c28dbdeb8e767805fb1a23b180e3b38534af5b2c716944b4bee7f` |
+| renquant-model HEAD at run time | `1128911` (`fix: resolve patchtst runtime paths explicitly`) |
+| Cross-split-leak fix that did NOT close the leak | `7245d84` (`fix(hf_trainer): timeshift placebo MUST NOT cross split boundary (Tier-3 root cause)`) — landed 2026-05-31 11:33 PT |
+| Run command | `python -m renquant_model_patchtst.research --phase doe --configs B_tuned --cuts cut1_covid,cut2_fed --seeds 42,43 --epochs 4 --device mps --out-dir artifacts/patchtst_research/tier3_doe_postfix_20260601-174726` |
+| Run launch log | `~/git/github/renquant-model/logs/btuned_tier3_postfix_20260601-174726.log` |
+
+Key fields read from `invalid_experiment.json`:
+
+```json
+{
+  "verdict": "invalid_experiment",
+  "placebo_gate": {
+    "shuffle_placebo":   {"hard_gate": true,  "passed": false, "real_ic_mean": 0.0437, "placebo_ic_mean": 0.0307, "threshold": 0.0109},
+    "timeshift_placebo": {"hard_gate": true,  "passed": false, "real_ic_mean": 0.0437, "placebo_ic_mean": 0.0668, "threshold": 0.0218},
+    "aa_split":          {"hard_gate": false, "passed": true,  "reason": "alternate cut/seed evidence present"}
+  },
+  "regime_contract": {"passed": true, "detector_version": "v2026-05-31"}
+}
+```
+
+### Task ID disambiguation
+
+The "Task #N" references throughout this document refer to the **Claude
+TaskList** (the runtime task state surfaced by the Claude CLI's
+`TaskCreate` / `TaskUpdate` tools — not git/repo state) — they are NOT
+GitHub PR or issue numbers. The TaskList isn't persistently checked
+into the repo; its contents are stamped into recent commit-message
+trailers and into [`MEMORY.md`](../../../.claude/projects/-Users-renhao-git-github-RenQuant/memory/MEMORY.md)
+pointer lines. Distinct namespaces in this doc:
+
+- `Task #17` / `Task #30` / `Task #49` / `Task #53` — Claude TaskList IDs.
+- `PR #43` / `PR #48` / `PR #57` / `PR #80` etc. — GitHub PR numbers in
+  `hallovorld/RenQuant`.
+- `pipeline #10` / `backtesting #22` / `renquant-common #5` — GitHub PRs
+  in the named subrepo.
+
+When a future agent needs to look up a Claude TaskList ID and finds
+nothing in the repo, the source is the active Claude session's
+TaskList tool surface, not the git tree.
 
 ---
 
