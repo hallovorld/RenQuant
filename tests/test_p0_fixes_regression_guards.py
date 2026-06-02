@@ -367,10 +367,10 @@ class TestP0_19_LaunchdInventory:
         src = (REPO / "scripts/install_launchagents.sh").read_text()
         assert 'scripts/com.renquant.backup.plist' in src
 
-    def test_install_launchagents_check_runs_subrepo_ops_contract(self):
+    def test_install_launchagents_check_runs_full_ops_readiness(self):
         src = (REPO / "scripts/install_launchagents.sh").read_text()
-        assert "scripts/check_launchagents.py" in src
-        assert "scripts/subrepo_ops_contract.py" in src
+        assert "scripts/check_ops_deployment_ready.py" in src
+        assert "--launchagents-dir" in src
 
     def test_install_launchagents_preflights_runtime_readiness_before_install(self):
         src = (REPO / "scripts/install_launchagents.sh").read_text()

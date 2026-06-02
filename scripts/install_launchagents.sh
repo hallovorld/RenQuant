@@ -38,14 +38,8 @@ mkdir -p "$DEST_DIR"
 plists=("$SRC_DIR"/*.plist "$REPO_DIR/scripts/com.renquant.backup.plist")
 
 if [ "$CHECK_ONLY" = "1" ]; then
-    launchagents_rc=0
-    subrepo_contract_rc=0
-    "$PYTHON" "$REPO_DIR/scripts/check_launchagents.py" --launchagents-dir "$DEST_DIR" || launchagents_rc=$?
-    "$PYTHON" "$REPO_DIR/scripts/subrepo_ops_contract.py" || subrepo_contract_rc=$?
-    if [ "$launchagents_rc" -ne 0 ] || [ "$subrepo_contract_rc" -ne 0 ]; then
-        exit 1
-    fi
-    exit 0
+    "$PYTHON" "$REPO_DIR/scripts/check_ops_deployment_ready.py" --launchagents-dir "$DEST_DIR"
+    exit $?
 fi
 
 if [ "$DRY_RUN" = "0" ] && [ "${RENQUANT_SKIP_OPS_PRECHECK:-0}" != "1" ]; then
