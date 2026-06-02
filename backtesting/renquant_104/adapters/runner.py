@@ -1599,6 +1599,96 @@ class RunnerAdapter:
             log.warning("Z9: cancel stop %s for %s failed: %s",
                         existing.get("order_id"), ticker, exc)
 
+    # ── STATE-EXT-SELL fill attribution (issue #71 / audit #5) ────────────────
+
+    def _lookup_ext_sell_fills(
+        self,
+        ctx,  # noqa: ANN001
+        disappeared: list[str],
+    ) -> dict[str, dict]:
+        """Fetch the most recent broker SELL fill per disappeared ticker.
+
+        Issue #71: STATE-EXT-SELL used to log only the ticker name. Now we
+        correlate against ``broker.get_filled_orders`` so the operator sees
+        WHICH sell fill emptied the position — was it a Z9 broker-side stop
+        firing, a manual close at Alpaca's UI, or a corporate action?
+
+        Returns ``{ticker: {order_id, fill_price, fill_qty, filled_at}}``.
+        Empty dict if the broker can't surface fills (e.g., sim path).
+        """
+        if not disappeared:
+            return {}
+        if not hasattr(self._broker, "get_filled_orders"):
+            return {}
+        # Look back 5 calendar days — generous cushion for weekend gaps.
+        import datetime as _dt  # noqa: PLC0415
+        today = ctx.today if isinstance(ctx.today, _dt.date) else _dt.date.today()
+        after = (today - _dt.timedelta(days=5)).isoformat()
+        try:
+            fills = self._broker.get_filled_orders(after=after) or []
+        except Exception as exc:
+            log.info(
+                "STATE-EXT-SELL attribution: broker.get_filled_orders failed (%s); "
+                "logging without fill record",
+                exc,
+            )
+            return {}
+        wanted = set(disappeared)
+        latest: dict[str, dict] = {}
+        for f in fills:
+            sym = str(f.get("symbol") or f.get("ticker") or "")
+            if sym not in wanted:
+                continue
+            side = str(f.get("side") or "").lower()
+            if side and side != "sell":
+                continue
+            filled_at = f.get("filled_at") or ""
+            existing = latest.get(sym)
+            if existing is None or str(existing.get("filled_at") or "") < str(filled_at):
+                latest[sym] = {
+                    "order_id":   f.get("order_id") or f.get("id"),
+                    "fill_price": f.get("fill_price") or f.get("filled_avg_price"),
+                    "fill_qty":   f.get("filled_qty") or f.get("qty"),
+                    "filled_at":  filled_at,
+                }
+        return latest
+
+    def _attribute_ext_sell(
+        self,
+        ticker: str,
+        fills: dict[str, dict],
+    ) -> str:
+        """Produce a human-readable attribution string for a STATE-EXT-SELL.
+
+        Two-line decision:
+          1. If the matching fill's ``order_id`` equals a Z9 stop we tracked
+             for this ticker, attribute to ``z9_stop``.
+          2. Otherwise the fill is external — manual close, corporate action,
+             or out-of-band liquidation. Surface as ``external_or_manual``.
+
+        Returns a short string suitable for inclusion in the WARNING log.
+        Falls back to ``"no_broker_fill_record"`` when the broker didn't
+        surface a fill we can match.
+        """
+        fill = fills.get(ticker)
+        if not fill:
+            return "no_broker_fill_record"
+        z9_meta = self._stop_orders.get(ticker) or {}
+        z9_order_id = z9_meta.get("order_id")
+        source = (
+            "z9_stop"
+            if z9_order_id and z9_order_id == fill.get("order_id")
+            else "external_or_manual"
+        )
+        # Compact rendering so the WARNING stays single-line.
+        return (
+            f"source={source} "
+            f"order_id={fill.get('order_id') or '?'} "
+            f"price={fill.get('fill_price') or '?'} "
+            f"qty={fill.get('fill_qty') or '?'} "
+            f"filled_at={fill.get('filled_at') or '?'}"
+        )
+
     # ── commit ─────────────────────────────────────────────────────────────────
 
     def commit(self, ctx) -> None:  # noqa: ANN001
@@ -2218,12 +2308,21 @@ class RunnerAdapter:
                 "not external sell): %s",
                 len(skipped_pending), sorted(skipped_pending),
             )
+        # Issue #71 / audit #5: STATE-EXT-SELL used to log only the ticker
+        # name, leaving the operator unable to distinguish Z9 broker-side
+        # stops from manual closes or corporate actions. Pre-fetch the recent
+        # SELL-side broker fill history once so each disappeared ticker can
+        # be attributed to a specific fill record (order_id, price, qty,
+        # filled_at) and a source guess (z9_stop / external).
+        ext_sell_fills = self._lookup_ext_sell_fills(ctx, disappeared)
         for t in disappeared:
             self._last_sell_dates_str[t] = today_str
+            attribution = self._attribute_ext_sell(t, ext_sell_fills)
             log.warning(
                 "STATE-EXT-SELL: %s disappeared from broker without runner sell — "
-                "stamping wash-sale clock today (%s) to prevent re-entry within 30d",
-                t, today_str,
+                "stamping wash-sale clock today (%s) to prevent re-entry within 30d "
+                "(attribution: %s)",
+                t, today_str, attribution,
             )
             # Z9: cancel any orphan broker-side stop for this ticker.
             # The position is already gone; the stop on broker side is now
