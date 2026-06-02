@@ -74,6 +74,15 @@ def parse_args() -> argparse.Namespace:
         help="ISO date (e.g. 2024-01-01); only rows where panel.date < cutoff are used.",
     )
     p.add_argument(
+        "--train-start-date", type=str, default=None,
+        help=(
+            "ISO date (e.g. 2022-01-01); only rows where panel.date >= start are "
+            "used. Defaults to None (use full panel history). Useful for Track D "
+            "regime-drift retraining where only recent data is gradient-relevant. "
+            "Combined with --train-cutoff: rows with start <= date < cutoff."
+        ),
+    )
+    p.add_argument(
         "--output-path", type=str, default=None,
         help="Artifact output path. Defaults to data/panel-ltr-prod-alpha158-fund-fwd60d.json.",
     )
@@ -173,7 +182,8 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                          watchlist_file: Optional[str] = None,
                          label_override: Optional[str] = None,
                          cutoff_embargo_days: Optional[int] = None,
-                         include_features: Optional[list[str]] = None) -> tuple[pd.DataFrame, list[str], str]:
+                         include_features: Optional[list[str]] = None,
+                         train_start_date: Optional[str] = None) -> tuple[pd.DataFrame, list[str], str]:
     """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used).
 
     ``include_features``: opt-in list for Track B addendum columns. When None
@@ -181,6 +191,12 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     the 172-feature baseline recipe. When supplied, only the listed Track B
     columns are kept (others are dropped). Has no effect on baseline alpha158
     + fund + PEAD + SUE + sentiment columns.
+
+    ``train_start_date``: ISO date lower bound. Rows with ``panel.date <
+    train_start_date`` are excluded. Used by Track D regime-drift retraining
+    (post-2022 only) where older data is no longer gradient-relevant for
+    recent BULL_CALM dynamics. ``None`` (default) preserves full-history
+    behaviour.
     """
     label_used = label_override or LABEL
     log.info("Loading R1K + 5-fund panel (already normalized: alpha158=zscore, fund=robust-zscore)...")
@@ -231,6 +247,16 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                      len(set(wl) & set(panel["ticker"].unique())))
 
     train = panel.dropna(subset=[label_used])
+    if train_start_date is not None:
+        before = len(train)
+        train = train[train["date"] >= pd.Timestamp(train_start_date)]
+        log.info("Train-start filter: date>=%s — %d → %d rows (min date %s)",
+                 pd.Timestamp(train_start_date).date().isoformat(), before, len(train),
+                 train["date"].min().date() if len(train) else "EMPTY")
+        if len(train) == 0:
+            raise SystemExit(
+                f"No training rows with date >= {pd.Timestamp(train_start_date).date()}"
+            )
     if cutoff_date is not None:
         before = len(train)
         embargo_days = (
@@ -821,7 +847,9 @@ def main():
         ]
     train, feat_cols, label_used = load_and_slice_panel(
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
-        cutoff_embargo_days=args.cutoff_embargo_days, include_features=include_features,
+        cutoff_embargo_days=args.cutoff_embargo_days,
+        include_features=include_features,
+        train_start_date=args.train_start_date,
     )
     fingerprint_cfg = build_fingerprint_config(
         fingerprint_config_path=args.fingerprint_config,
