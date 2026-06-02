@@ -29,7 +29,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from subrepo_module_delegate import delegate_to_subrepo_module
+
+REPO_ROOT = SCRIPT_DIR.parent
 
 
 def _walk(d: Any, prefix: str = "") -> dict[str, Any]:
@@ -157,4 +163,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    delegated = delegate_to_subrepo_module(
+        "renquant_strategy_104.config_drift",
+        sys.argv[1:],
+        repo_root=REPO_ROOT,
+        packages=("renquant-strategy-104", "renquant-common"),
+        runner_env="RQ_STRATEGY_OPS_RUNNER",
+        strict_env="RQ_STRATEGY_OPS_STRICT",
+    )
+    if delegated is not None:
+        sys.exit(delegated)
     sys.exit(main())

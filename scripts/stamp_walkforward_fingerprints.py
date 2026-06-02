@@ -15,7 +15,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-REPO = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from subrepo_module_delegate import delegate_to_subrepo_module
+
+REPO = SCRIPT_DIR.parent
 STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
@@ -204,4 +210,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    delegated = delegate_to_subrepo_module(
+        "renquant_backtesting.wf_gate.stamp_walkforward_fingerprints",
+        sys.argv[1:],
+        repo_root=REPO,
+        packages=("renquant-backtesting", "renquant-pipeline", "renquant-common"),
+        runner_env="RQ_BACKTESTING_OPS_RUNNER",
+        strict_env="RQ_BACKTESTING_OPS_STRICT",
+    )
+    if delegated is not None:
+        raise SystemExit(delegated)
     main()
