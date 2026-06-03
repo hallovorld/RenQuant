@@ -97,6 +97,11 @@ jobs:
   claude-review:
     if: github.event.pull_request.changed_files < 100
     uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write   # claude-code-action@v1 OIDC setup
     with:
       agent: claude
       model: claude-sonnet-4-6
@@ -106,6 +111,11 @@ jobs:
   codex-review:
     if: github.event.pull_request.changed_files < 100
     uses: hallovorld/RenQuant/.github/workflows/_agent-review-template.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write   # codex-action@v1 OIDC setup
     with:
       agent: codex
       model: gpt-5-codex

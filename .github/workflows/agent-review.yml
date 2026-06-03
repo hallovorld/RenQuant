@@ -25,6 +25,13 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      # Required by claude-code-action@v1 and codex-action@v1 to fetch
+      # an OIDC token during action setup (see
+      # `_agent-review-template.yml` line note + 2026-06-03 incident
+      # log: "Could not fetch an OIDC token. Did you remember to add
+      # `id-token: write` to your workflow permissions?"). Caller MUST
+      # grant this; the reusable template can't claim it on its own.
+      id-token: write
     with:
       agent: claude
       model: claude-sonnet-4-6
@@ -38,6 +45,13 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      # Required by claude-code-action@v1 and codex-action@v1 to fetch
+      # an OIDC token during action setup (see
+      # `_agent-review-template.yml` line note + 2026-06-03 incident
+      # log: "Could not fetch an OIDC token. Did you remember to add
+      # `id-token: write` to your workflow permissions?"). Caller MUST
+      # grant this; the reusable template can't claim it on its own.
+      id-token: write
     with:
       agent: codex
       model: gpt-5-codex
