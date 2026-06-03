@@ -136,9 +136,31 @@ candidate matrix.
 }
 ```
 
-CLAUDE.md §7.4 Tier 3 says **both** DSR > 0.5 AND PBO < 0.5 are
-required for live promotion. The `live_promotable_per_clause_7_4`
-flag uses the stronger DSR ≥ 0.95 (selection-bias 5% threshold).
+**§7.4 vs §8 Step 4 gate distinction (codex #134 review correction)**:
+- CLAUDE.md §7.4 Tier 3 actually says: `Tier 2 + (DSR > 0.5 OR PBO < 0.5
+  OR (n ≥ 30 AND t > 3.0))` — three **disjuncts**, not "both".
+- The §8 Step 4 A/B gate is **deliberately stricter** than §7.4
+  because the comparison picks among 5 candidates. Multi-candidate
+  selection bias is higher than the single-change setup §7.4 is
+  written for, so the gate requires `DSR ≥ 0.95 AND
+  (PBO is None OR PBO < 0.5)`. DSR ≥ 0.95 is the Bailey-López de Prado
+  2014 selection-bias 5% threshold.
+- The `live_promotable_per_clause_7_4` field name is therefore
+  somewhat misleading — it implements the **stricter §8 Step 4
+  adaptation of §7.4**, not §7.4's literal disjunction. The
+  implementation field name was chosen for stability; a future
+  rename to `live_promotable_per_section_8` is acceptable.
+
+**PBO small-N caveat (codex #134 review)**: with N=5 candidates and
+`pbo_n_slices=16`, the CSCV combinatorial count is C(16,8) = 12,870
+splits but trial-rank variance is dominated by the 5-allocator
+selection. Bailey-Borwein-LdP-Zhu 2015 §3 derives PBO with implicit
+larger N (paper examples N ∈ {25, 50, 100}). At small N the PBO
+point estimate has high SE. The reporter SHOULD emit a `pbo_se`
+bootstrap-SE alongside the point estimate; the verdict reads
+`pbo < 0.5 AND (pbo_se is None OR pbo + pbo_se < 0.55)` to avoid
+gating on noise. When `pbo_se` is unavailable the verdict falls back
+to the point estimate.
 
 ## `regime_stratified`
 
@@ -212,20 +234,23 @@ AND (b) passes `live_promotable_per_clause_7_4: true` AND
   "promotion_candidate": "<name> | null",
   "rationale": "<short text — points at the key paired_comparisons + significance entries>",
   "fallback_recommendation": "<name>",
-  "next_action": "<live_shadow | reject_all | iterate>",
+  "next_action": "<promote_to_shadow | keep_incumbent | iterate>",
   "non_negotiable_gate_passed": {
     "zero_hard_constraint_regressions": <bool>,
     "pbo_below_0_5": <bool>,
     "dsr_above_0_95": <bool>,
-    "win_rate_above_0_55": <bool>
+    "win_rate_z_score_above_2": <bool>
   }
 }
 ```
 
-`next_action` is one of:
-- `"live_shadow"` — promote the candidate to Step 5 live shadow for
-  operational telemetry + implementation parity verification
-- `"reject_all"` — current_qp wins on all the gates; do nothing
+`next_action` is one of (codex #134 review: enum describes the
+operational follow-up, not the candidate status):
+- `"promote_to_shadow"` — promote the candidate to Step 5 live shadow
+  for operational telemetry + implementation parity verification
+- `"keep_incumbent"` — current_qp wins on all the gates; no shadow
+  run scheduled (the `verdict.promotion_candidate: null` already
+  conveys "no winner")
 - `"iterate"` — the candidate has potential but failed one gate
   (typically PBO or DSR); refine and re-run
 
@@ -276,4 +301,4 @@ the live shadow until enough days have elapsed.
 | "Why is PBO shared across allocators, not per-allocator?" | CSCV PBO is defined over the candidate set, not a single strategy — Bailey-Borwein-López de Prado-Zhu 2015 §3. One PBO per A/B run, applied to all candidates. |
 | "Why deny promotion on a single family violation?" | §8 gate is "zero regressions vs `ConstraintSnapshot`". Any infeasible allocator's Sharpe is unreliable. |
 | "Why no Sortino / Calmar?" | They can be added later; the verdict gate uses Sharpe + DSR + PBO + paired delta + violation count as the minimal sufficient set per §7.3 / §7.4. |
-| "Why `win_rate > 0.55`?" | Conservative bound on paired-bar wins; rejects coin-flip differences. Configurable in the run script. |
+| "Why `win_rate > 0.55`?" | (Codex #134 review correction) Fixed 0.55 threshold is unsafe at small N. Bernoulli SE ≈ √(0.25/n) — at n=540 bars SE≈0.022 so 0.55 is 2.4σ (significant), but at n=100 (per-regime slice) SE≈0.05 so 0.55 is 1.0σ (coin flip). The verdict gate is therefore `win_rate_z_score > 2.0` (= `(win_rate − 0.5) / sqrt(0.25 / n_bars) > 2`), parameterised by `n_bars` not by a fixed pct. The `win_rate_above_0_55` field is retained as a diagnostic but does NOT gate.  |
