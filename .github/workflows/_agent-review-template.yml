@@ -17,7 +17,7 @@ name: agent-review-template
 #         api_key: ${{ secrets.OPENAI_API_KEY }}
 #
 # The wrapper owns: events (pull_request types), concurrency, changed_files
-# gate. This template owns: per-agent skip
+# gate. This template owns: live-label routing, per-agent skip
 # (don't review own PR / manual-hold / draft), checkout, prompt assembly,
 # LLM dispatch, comment posting.
 
@@ -55,22 +55,50 @@ permissions:
 
 jobs:
   review:
-    # Per-agent skip conditions (universal skips like draft / changed_files
-    # gate live in the per-repo wrapper):
-    #
-    #   1. self-review loop guard: agent doesn't review its own PRs
-    #   2. universal manual-hold opt-out
-    #   3. needs-review override (forces review even if normally skipped)
-    if: |
-      !contains(github.event.pull_request.labels.*.name, 'agent:manual-hold') &&
-      (
-        !contains(github.event.pull_request.labels.*.name, format('agent:{0}', inputs.agent)) ||
-        contains(github.event.pull_request.labels.*.name, 'agent:needs-review')
-      )
+    # Do not use github.event.pull_request.labels for routing here.
+    # PR-open and label workflows race; the event payload can be stale.
+    # The first step live-fetches labels and later steps key off its output.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Resolve live review routing
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          AGENT: ${{ inputs.agent }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,isDraft > pr.json
+          LABELS_JSON=$(jq -c '[.labels[].name]' pr.json)
+          IS_DRAFT=$(jq -r '.isDraft' pr.json)
+          echo "live labels: $LABELS_JSON"
+
+          should_review=true
+          reason="review-required"
+          if [ "$IS_DRAFT" = "true" ]; then
+            should_review=false
+            reason="draft-pr"
+          elif echo "$LABELS_JSON" | grep -q '"agent:manual-hold"'; then
+            should_review=false
+            reason="manual-hold"
+          elif echo "$LABELS_JSON" | grep -q "\"agent:${AGENT}\"" &&
+               ! echo "$LABELS_JSON" | grep -q '"agent:needs-review"'; then
+            should_review=false
+            reason="self-review"
+          fi
+
+          echo "should_review=$should_review" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          if [ "$should_review" = "false" ]; then
+            echo "Skipping ${AGENT} review: ${reason}"
+          else
+            echo "Running ${AGENT} review: ${reason}"
+          fi
+
       - name: Check agent API key availability
+        if: steps.route.outputs.should_review == 'true'
         id: secret_gate
         env:
           AGENT: ${{ inputs.agent }}
@@ -85,14 +113,14 @@ jobs:
           echo "has_api_key=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR head
-        if: steps.secret_gate.outputs.has_api_key == 'true'
+        if: steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Build review prompt
-        if: steps.secret_gate.outputs.has_api_key == 'true'
+        if: steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true'
         id: prompt
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -162,11 +190,12 @@ jobs:
       # below. See README's "Action API contract (verified)" section.
 
       - name: Run agent (Claude)
-        if: steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'claude'
+        if: steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'claude'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.api_key }}
+          github_token: ${{ github.token }}
           prompt: ${{ steps.prompt.outputs.prompt }}
           # claude_args restricts tool access: gh CLI for posting comments,
           # git for context, no Bash(rm) etc. --max-turns bounds runtime.
@@ -176,7 +205,7 @@ jobs:
             --model ${{ inputs.model }}
 
       - name: Run agent (Codex)
-        if: steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'codex'
+        if: steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'codex'
         id: codex
         uses: openai/codex-action@v1
         with:
@@ -197,7 +226,7 @@ jobs:
       # surface it here for the reviewer to see what the agent
       # concluded.
       - name: Post Codex fallback comment
-        if: always() && steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'codex'
+        if: always() && steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'codex'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
