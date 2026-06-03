@@ -7,6 +7,15 @@
 **Outputs**: [`evidence/2026-06-03-mu-hat-autocorrelation-by-regime.json`](evidence/2026-06-03-mu-hat-autocorrelation-by-regime.json) (canonical evidence artifact)
 **Script**: [`scripts/measure_mu_hat_autocorrelation_by_regime.py`](../../scripts/measure_mu_hat_autocorrelation_by_regime.py)
 
+> **#128 review (v2 correction)**: codex flagged that v1 of the fix
+> measured "same-regime-both-endpoints" persistence rather than the
+> documented "regime-at-t-only" contract. v2 fixes the helpers so each
+> ticker's FULL μ̂ series (across all regimes) is reindexed against the
+> global trading-day grid and only the BASE date t is required to be in
+> the target regime — t+k can be in any regime. The corrected BULL_CALM
+> autocorr values shifted slightly: L20 went from +0.238 to +0.166,
+> L60 from −0.200 to −0.158. Interpretation updated accordingly.
+>
 > **#128 review correction**: codex (HIGH-1) caught that the first
 > version of the script measured *observation-index lag*, not
 > *trading-day lag*. `pd.Series.shift(5)` on a sparse in-regime
@@ -46,11 +55,11 @@ separately when we have more BULL_VOLATILE / CHOPPY / BEAR data).
 
 | Lag (global trading days) | mean autocorr | top-5 overlap | top-10 overlap | top-20 overlap |
 |--------------------------:|--------------:|--------------:|---------------:|---------------:|
-| 1                         | **+0.858**    | 0.85          | 0.96           | 0.92           |
-| 5                         | **+0.561**    | 0.68          | 0.79           | 0.78           |
-| 10                        | **+0.377**    | 0.58          | 0.69           | 0.69           |
-| 20                        | **+0.238**    | 0.47          | 0.58           | 0.60           |
-| 60                        | **−0.200**    | 0.33          | 0.42           | 0.43           |
+| 1                         | **+0.860**    | 0.85          | 0.96           | 0.92           |
+| 5                         | **+0.565**    | 0.68          | 0.79           | 0.78           |
+| 10                        | **+0.361**    | 0.58          | 0.69           | 0.69           |
+| 20                        | **+0.166**    | 0.47          | 0.58           | 0.60           |
+| 60                        | **−0.158**    | 0.33          | 0.42           | 0.43           |
 
 **Half-life: 10 trading days** (smallest lag where mean autocorr ≤ 0.5).
 
@@ -83,9 +92,9 @@ The BULL_CALM μ̂ surface is **strongly persistent day-to-day**
 the 5-20 day horizon**, and is **mildly anti-correlated at the 60-day
 horizon** (L=60 = −0.20).
 
-- **Half-life of about two trading weeks.** L=5 autocorr is +0.56;
+- **Half-life of about two trading weeks.** L=5 autocorr is +0.57;
   mean autocorr crosses 0.5 between lag 5 and lag 10.
-- **By the 20-day horizon the forecast still has signal** (+0.24
+- **By the 20-day horizon the forecast still has noticeable signal** (+0.17
   Pearson) — not the "L=20 near zero" claim the first (buggy) version
   reported. The 60-day decorrelation is genuine but consistent with
   the calibrator targeting a 60-day excess return horizon (a new
@@ -118,7 +127,7 @@ critique, weaker than the original (incorrect) script suggested:
 
 - **For current Level-1 SinglePeriodOpt**: the day-to-day persistence
   (+0.86 L=1) is comfortably enough that single-period decisions are
-  not random. The L=20 = +0.24 Pearson still has signal; the
+  not random. The L=20 = +0.17 Pearson still has signal; the
   optimizer is *not* over-fitting a horizon where the forecast has
   drifted to noise. This is a softer version of the §4
   DeMiguel-mechanism argument than the original (incorrect) script

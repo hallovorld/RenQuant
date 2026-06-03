@@ -101,40 +101,57 @@ def load_mu_panel(db_path: Path) -> pd.DataFrame:
 
 
 def per_ticker_autocorr_trading_day_lag(
-    series: pd.Series,
+    full_series: pd.Series,
+    base_in_regime_dates: pd.DatetimeIndex,
     global_trading_dates: pd.DatetimeIndex,
     lag: int,
 ) -> tuple[Optional[float], int]:
     """Pearson corr(μ̂_t, μ̂_{t+k}) at trading-day lag ``lag`` for one ticker.
 
-    ``series`` is the ticker's (date, μ̂) observations within one regime
-    (may be sparse).  We reindex against the *global* trading-day
-    index so ``.shift(lag)`` advances by exactly ``lag`` trading days,
-    not by ``lag`` later observations.
+    **Regime-at-t-only stratification** (codex #128 v2 review fix). The
+    correlation pairs (t, t+k) are formed on the ticker's FULL μ̂
+    series (across all regimes); we only require the BASE date t to
+    be in the target regime — the future date t+k can be in any
+    regime. This matches the documented contract ("given regime R at
+    t, how stable is μ̂ k days later regardless of regime at t+k").
+
+    The previous version restricted BOTH endpoints to the regime
+    series, which measured "same-regime-both-endpoints" persistence
+    — a different observable.
 
     Returns ``(corr, n_pairs)`` — ``corr`` is None when fewer than
     :data:`MIN_PAIRS_PER_TICKER_LAG` valid (t, t+k) pairs survive or
     when either side has zero variance.
     """
-    s_global = series.reindex(global_trading_dates).sort_index()
-    paired = pd.concat([s_global, s_global.shift(lag)], axis=1).dropna()
+    s_global = full_series.reindex(global_trading_dates).sort_index()
+    # At index t: (s_t, s_{t+lag}). ``shift(-lag)`` puts s_{t+lag} at index t.
+    paired = pd.DataFrame({
+        "t": s_global,
+        "tk": s_global.shift(-lag),
+    })
+    # Keep only rows whose BASE date t is in the target regime.
+    base_set = pd.DatetimeIndex(base_in_regime_dates)
+    paired = paired.loc[paired.index.isin(base_set)]
+    paired = paired.dropna()
     n = len(paired)
     if n < MIN_PAIRS_PER_TICKER_LAG:
         return (None, n)
-    a = paired.iloc[:, 0].values
-    b = paired.iloc[:, 1].values
+    a = paired["t"].values
+    b = paired["tk"].values
     if np.std(a) < 1e-12 or np.std(b) < 1e-12:
         return (None, n)
     return (float(np.corrcoef(a, b)[0, 1]), n)
 
 
 def regime_mean_autocorr(
-    regime_df: pd.DataFrame,
+    full_df: pd.DataFrame,
+    regime: str,
     global_trading_dates: pd.DatetimeIndex,
     lag: int,
     min_ticker_dates: int,
 ) -> tuple[Optional[float], int, int]:
-    """Mean per-ticker autocorr at trading-day lag ``lag``.
+    """Mean per-ticker autocorr at trading-day lag ``lag``, conditional
+    on the BASE date t being in ``regime``.
 
     Returns ``(mean_corr, n_eligible_tickers, n_total_valid_pairs)``.
     A ticker is *eligible* when it has ≥ ``min_ticker_dates``
@@ -142,12 +159,16 @@ def regime_mean_autocorr(
     """
     corrs = []
     total_pairs = 0
-    for ticker, sub in regime_df.groupby("ticker"):
-        if len(sub) < min_ticker_dates:
+    for ticker, sub in full_df.groupby("ticker"):
+        regime_dates = sub.loc[sub["regime"] == regime, "date"]
+        if len(regime_dates) < min_ticker_dates:
             continue
-        series = sub.set_index("date")["mu"]
+        full_series = sub.set_index("date")["mu"]
         c, npairs = per_ticker_autocorr_trading_day_lag(
-            series, global_trading_dates, lag,
+            full_series,
+            pd.DatetimeIndex(regime_dates),
+            global_trading_dates,
+            lag,
         )
         if c is not None and np.isfinite(c):
             corrs.append(c)
@@ -158,23 +179,38 @@ def regime_mean_autocorr(
 
 
 def topk_overlap_rate_trading_day_lag(
-    regime_df: pd.DataFrame,
+    full_df: pd.DataFrame,
+    regime: str,
     global_trading_dates: pd.DatetimeIndex,
     K: int,
     lag: int,
 ) -> tuple[Optional[float], int]:
-    """Fraction of top-K names that survive K-day-by-K-day re-ranking.
+    """Top-K rank overlap at trading-day lag ``lag``, conditional on
+    the BASE date t being in ``regime``.
 
-    Pivots on the global trading-day index so the lag is in trading
-    days. Returns ``(mean_overlap, n_valid_pairs)``.
+    Pivots on the FULL panel so the t+k snapshot is well-defined even
+    when t+k falls into a different regime — matching the
+    regime-at-t-only contract (codex #128 v2 fix). Only base dates t
+    whose modal regime is the target regime contribute to the mean.
+
+    Returns ``(mean_overlap, n_valid_pairs)``.
     """
-    pivot = regime_df.pivot_table(
+    pivot = full_df.pivot_table(
         index="date", columns="ticker", values="mu", aggfunc="mean",
     )
     pivot = pivot.reindex(global_trading_dates).sort_index()
+    # Per-date regime — take the modal regime on that date. Regime is a
+    # portfolio-level state so the mode is almost always single-valued.
+    regime_by_date = (
+        full_df.groupby("date")["regime"]
+        .agg(lambda s: s.mode().iat[0] if not s.mode().empty else None)
+        .reindex(global_trading_dates)
+    )
     overlaps = []
     for i in range(len(global_trading_dates) - lag):
         t1 = global_trading_dates[i]
+        if regime_by_date.get(t1) != regime:
+            continue
         t2 = global_trading_dates[i + lag]
         row1 = pivot.loc[t1].dropna()
         row2 = pivot.loc[t2].dropna()
@@ -208,11 +244,18 @@ def half_life(mean_autocorr: dict) -> Optional[int]:
 
 def measure_regime(
     regime: str,
-    regime_df: pd.DataFrame,
+    full_df: pd.DataFrame,
     global_trading_dates: pd.DatetimeIndex,
     min_ticker_dates: int,
 ) -> dict:
-    """Build the per-regime evidence block on a global trading-day index."""
+    """Build the per-regime evidence block on a global trading-day index.
+
+    Takes the FULL panel (across all regimes), not a pre-filtered
+    in-regime subset (codex #128 v2 review fix). The conditional-on-
+    regime-at-t logic lives inside ``regime_mean_autocorr`` and
+    ``topk_overlap_rate_trading_day_lag``.
+    """
+    regime_df = full_df[full_df["regime"] == regime]
     n_rows = len(regime_df)
     n_dates = regime_df["date"].nunique()
     n_tickers = regime_df["ticker"].nunique()
@@ -222,7 +265,7 @@ def measure_regime(
     n_pairs_by_lag: dict[str, int] = {}
     for lag in LAGS:
         c, n_eligible, n_pairs = regime_mean_autocorr(
-            regime_df, global_trading_dates, lag, min_ticker_dates,
+            full_df, regime, global_trading_dates, lag, min_ticker_dates,
         )
         mean_autocorr[str(lag)] = c
         n_eligible_by_lag[str(lag)] = n_eligible
@@ -235,7 +278,7 @@ def measure_regime(
         topk_pairs_by_lag[str(K)] = {}
         for lag in LAGS:
             ov, np_ = topk_overlap_rate_trading_day_lag(
-                regime_df, global_trading_dates, K, lag,
+                full_df, regime, global_trading_dates, K, lag,
             )
             topk_overlap[str(K)][str(lag)] = ov
             topk_pairs_by_lag[str(K)][str(lag)] = np_
@@ -336,16 +379,17 @@ def main() -> None:
     }
 
     for regime in ("BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"):
-        regime_df = df[df["regime"] == regime].copy()
-        if regime_df.empty:
+        if not (df["regime"] == regime).any():
             payload["regimes"][regime] = {
                 "n_rows": 0,
                 "skipped": True,
                 "reason": "no rows in this regime",
             }
             continue
+        # Pass the FULL panel — measure_regime + its helpers stratify
+        # internally by regime-at-t only (codex #128 v2 fix).
         payload["regimes"][regime] = measure_regime(
-            regime, regime_df, global_trading_dates, args.min_ticker_dates,
+            regime, df, global_trading_dates, args.min_ticker_dates,
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
