@@ -9,9 +9,10 @@ Drop-in architecture for ``kernel.preflight.run_preflight`` migration:
   - PreflightPipeline: orchestrates Jobs in declaration order; ``run`` returns
     list[PreflightCheck] identical in shape to the legacy ``run_preflight``
 
-All 18 checks are represented as Tasks (P-BROKER-FILL-FRESHNESS added
+All 19 checks are represented as Tasks (P-BROKER-FILL-FRESHNESS added
 2026-06-02 per audit finding 9; P-NEWS-SENTIMENT-FRESHNESS added per
-issue #73). ``run_preflight`` is wired as a thin
+issue #73; P-KELLY-SIGMA-HORIZON added per 2026-06-03 Kelly audit).
+``run_preflight`` is wired as a thin
 wrapper in the follow-up PR so production callers keep the legacy API
 while the business logic moves behind Task/Job/Pipeline boundaries.
 """
@@ -28,6 +29,7 @@ from .tasks.watchlist import WatchlistSizeTask
 from .tasks.correlation import CorrelationMetadataTask
 from .tasks.calibrator import CalibratorFlatRegionTask, CalibratorHealthTask
 from .tasks.feature_coverage import FeatureCoverageTask
+from .tasks.kelly_config import KellySigmaHorizonTask
 from .tasks.run_id import ArtifactRunIdAlignmentTask
 from .tasks.config_fingerprint import ConfigFingerprintTask
 from .tasks.meta_label import MetaLabelArtifactContractTask
@@ -53,6 +55,7 @@ __all__ = [
     "CalibratorHealthTask",
     "CalibratorFlatRegionTask",
     "FeatureCoverageTask",
+    "KellySigmaHorizonTask",
     "ArtifactRunIdAlignmentTask",
     "ConfigFingerprintTask",
     "MetaLabelArtifactContractTask",

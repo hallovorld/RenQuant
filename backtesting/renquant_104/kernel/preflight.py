@@ -1455,6 +1455,52 @@ def _check_meta_label_artifact_contract(
     )
 
 
+def _check_kelly_sigma_horizon_config(
+    config: dict,
+    strategy_dir: Path | None = None,
+    run_mode: str | None = None,
+) -> PreflightCheck:
+    """P-KELLY-SIGMA-HORIZON: optional σ horizon override is usable."""
+    name = "P-KELLY-SIGMA-HORIZON"
+    kelly_cfg = ((config.get("ranking") or {}).get("kelly_sizing") or {})
+    if "sigma_horizon_days" not in kelly_cfg:
+        return PreflightCheck(
+            name, "hard", True,
+            "ranking.kelly_sizing.sigma_horizon_days unset; using default 252",
+            details={"default_sigma_horizon_days": 252.0},
+        )
+
+    raw = kelly_cfg.get("sigma_horizon_days")
+    if isinstance(raw, bool):
+        return PreflightCheck(
+            name, "hard", False,
+            "ranking.kelly_sizing.sigma_horizon_days must be a positive "
+            f"number, got bool {raw!r}",
+            details={"raw_sigma_horizon_days": raw},
+        )
+    try:
+        days = float(raw)
+    except (TypeError, ValueError):
+        return PreflightCheck(
+            name, "hard", False,
+            "ranking.kelly_sizing.sigma_horizon_days must be a positive "
+            f"number, got {raw!r}",
+            details={"raw_sigma_horizon_days": raw},
+        )
+    if not math.isfinite(days) or days <= 0.0:
+        return PreflightCheck(
+            name, "hard", False,
+            "ranking.kelly_sizing.sigma_horizon_days must be finite and "
+            f"> 0, got {raw!r}",
+            details={"sigma_horizon_days": days},
+        )
+    return PreflightCheck(
+        name, "hard", True,
+        f"ranking.kelly_sizing.sigma_horizon_days={days:g}",
+        details={"sigma_horizon_days": days},
+    )
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 ALL_CHECKS = (
@@ -1464,6 +1510,7 @@ ALL_CHECKS = (
     _check_regime_layered_ic,
     _check_best_iter,
     _check_config_fingerprint,
+    _check_kelly_sigma_horizon_config,
     _check_watchlist_size,
     _check_sector_map_coverage,
     _check_correlation_artifact_metadata,
@@ -1737,6 +1784,7 @@ _LEGACY_CHECK_ORDER: tuple[str, ...] = (
     "P-REGIME-IC",
     "P-BEST-ITER",
     "P-CONFIG-FP",
+    "P-KELLY-SIGMA-HORIZON",
     "P-WATCHLIST",
     "P-SECTOR-MAP",
     "P-CORR-METADATA",
