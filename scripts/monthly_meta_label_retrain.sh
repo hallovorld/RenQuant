@@ -47,33 +47,36 @@ renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
+META_LABEL_STRICT=0
+META_LABEL_SIM_STRICT=0
+if renquant_strict_enabled RQ_META_LABEL_STRICT; then
+    META_LABEL_STRICT=1
+fi
+if renquant_strict_enabled RQ_META_LABEL_SIM_STRICT; then
+    META_LABEL_SIM_STRICT=1
+fi
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if renquant_strict_enabled RQ_META_LABEL_STRICT || renquant_strict_enabled RQ_META_LABEL_SIM_STRICT; then
-        notify "META-LABEL RETRAIN ✗" "pinned renquant-strategy-104 strategy_config.json unavailable"
-        exit 1
-    fi
-    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+    notify "META-LABEL RETRAIN ✗" "pinned renquant-strategy-104 strategy_config.json unavailable; monthly job fails closed"
+    exit 1
 fi
 
-HAVE_BACKTESTING_SIM=0
 if "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_backtesting.wf_gate.sim_driver  # noqa: F401
 PY
 then
-    HAVE_BACKTESTING_SIM=1
-elif renquant_strict_enabled RQ_META_LABEL_SIM_STRICT; then
-    notify "META-LABEL RETRAIN ✗" "renquant_backtesting.wf_gate.sim_driver unavailable and strict multirepo mode is enabled"
+    :
+else
+    notify "META-LABEL RETRAIN ✗" "renquant_backtesting.wf_gate.sim_driver unavailable; monthly job fails closed"
     exit 1
 fi
 
-HAVE_MODEL_META_LABEL=0
 if "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_model_common.meta_label_exit  # noqa: F401
 PY
 then
-    HAVE_MODEL_META_LABEL=1
-elif renquant_strict_enabled RQ_META_LABEL_STRICT; then
-    notify "META-LABEL RETRAIN ✗" "renquant_model_common.meta_label_exit unavailable and strict multirepo mode is enabled"
+    :
+else
+    notify "META-LABEL RETRAIN ✗" "renquant_model_common.meta_label_exit unavailable; monthly job fails closed"
     exit 1
 fi
 
@@ -82,6 +85,7 @@ fi
 TRAIN_END=$(date -v-60d +%Y-%m-%d 2>/dev/null || date -d "today - 60 days" +%Y-%m-%d)
 TRAIN_START=$(date -v-60d -v-365d +%Y-%m-%d 2>/dev/null || date -d "today - 60 days - 365 days" +%Y-%m-%d)
 echo "[$(date '+%H:%M:%S')] Monthly meta-label retrain — training window $TRAIN_START → $TRAIN_END" | tee -a "$LOG"
+echo "[$(date '+%H:%M:%S')] Multirepo fail-closed: enabled (strict_model=$META_LABEL_STRICT strict_sim=$META_LABEL_SIM_STRICT)" | tee -a "$LOG"
 
 # ── Step 2: snapshot sim on prior 12 months ─────────────────────────
 SNAP_CFG="strategy_config.sim_monthly_retrain_snapshot.json"
@@ -102,19 +106,14 @@ print(f"Built snapshot config: $SNAP_CFG")
 PY
 
 echo "[$(date '+%H:%M:%S')] Step 2: snapshot sim …" | tee -a "$LOG"
-if [ "$HAVE_BACKTESTING_SIM" = "1" ]; then
-    $PYTHON -m renquant_backtesting.wf_gate.sim_driver \
-        --repo-root "$REPO_DIR" \
-        --start "$TRAIN_START" --end "$TRAIN_END" \
-        --strategy-config-name "$SNAP_CFG" \
-        --no-persist --no-compare >> "$LOG" 2>&1
-else
-    echo "WARN: renquant_backtesting.wf_gate.sim_driver unavailable; falling back to umbrella sim script." \
-        >> "$LOG"
-    $PYTHON scripts/run_sim_104.py \
-        --start "$TRAIN_START" --end "$TRAIN_END" \
-        --strategy-config-name "$SNAP_CFG" \
-        --no-persist --no-compare >> "$LOG" 2>&1
+if ! $PYTHON -m renquant_backtesting.wf_gate.sim_driver \
+    --repo-root "$REPO_DIR" \
+    --start "$TRAIN_START" --end "$TRAIN_END" \
+    --strategy-config-name "$SNAP_CFG" \
+    --no-persist --no-compare >> "$LOG" 2>&1
+then
+    notify "META-LABEL RETRAIN ✗" "snapshot sim failed — check $LOG"
+    exit 1
 fi
 
 if [ ! -f "$SNAP_OUT" ]; then
@@ -124,36 +123,27 @@ fi
 
 # ── Step 3: triple-barrier labels ───────────────────────────────────
 echo "[$(date '+%H:%M:%S')] Step 3: label …" | tee -a "$LOG"
-if [ "$HAVE_MODEL_META_LABEL" = "1" ]; then
-    $PYTHON -m renquant_model_common.meta_label_exit generate-labels \
-        --snapshots "$REPO_DIR/$SNAP_OUT" \
-        --out       "$REPO_DIR/$LABEL_OUT" \
-        --data-dir  "$REPO_DIR/data" \
-        --pt-mult 10 --sl-mult 10 --fwd-window 20 \
-        --json >> "$LOG" 2>&1
-else
-    echo "WARN: renquant_model_common.meta_label_exit unavailable; falling back to umbrella labeler." \
-        >> "$LOG"
-    $PYTHON scripts/_meta_label_generate.py \
-        --snapshots "$SNAP_OUT" \
-        --out       "$LABEL_OUT" \
-        --pt-mult 10 --sl-mult 10 --fwd-window 20 >> "$LOG" 2>&1
+if ! $PYTHON -m renquant_model_common.meta_label_exit generate-labels \
+    --snapshots "$REPO_DIR/$SNAP_OUT" \
+    --out       "$REPO_DIR/$LABEL_OUT" \
+    --data-dir  "$REPO_DIR/data" \
+    --pt-mult 10 --sl-mult 10 --fwd-window 20 \
+    --json >> "$LOG" 2>&1
+then
+    notify "META-LABEL RETRAIN ✗" "label generation failed — check $LOG"
+    exit 1
 fi
 
 # ── Step 4: train classifier ────────────────────────────────────────
 echo "[$(date '+%H:%M:%S')] Step 4: train …" | tee -a "$LOG"
-if [ "$HAVE_MODEL_META_LABEL" = "1" ]; then
-    $PYTHON -m renquant_model_common.meta_label_exit train \
-        --labels "$REPO_DIR/$LABEL_OUT" \
-        --out    "$NEW_ARTIFACT" \
-        --n-splits 5 --label-horizon-days 20 --pct-embargo 0.02 \
-        --json >> "$LOG" 2>&1
-else
-    $PYTHON scripts/_meta_label_train.py \
-        --labels "$LABEL_OUT" \
-        --out    "$NEW_ARTIFACT" \
-        --n-splits 5 --label-horizon-days 20 --pct-embargo 0.02 \
-        >> "$LOG" 2>&1
+if ! $PYTHON -m renquant_model_common.meta_label_exit train \
+    --labels "$REPO_DIR/$LABEL_OUT" \
+    --out    "$NEW_ARTIFACT" \
+    --n-splits 5 --label-horizon-days 20 --pct-embargo 0.02 \
+    --json >> "$LOG" 2>&1
+then
+    notify "META-LABEL RETRAIN ✗" "training failed — check $LOG"
+    exit 1
 fi
 
 if [ ! -f "$NEW_ARTIFACT" ]; then
