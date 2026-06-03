@@ -1,10 +1,10 @@
-# 🔴 CRITICAL — Production runtime is pre-2026-05-30; QP architecture refactor is NOT in prod
+# CRITICAL: Refresh Vendored QP Runtime Before Prod
 
 **Date**: 2026-06-03
-**Status**: ACTIVE — operational concern surfaced by PR #143 drift audit.
+**Status**: ACTIVE — runtime refresh and paper smoke still required.
 **Severity**: P0 — silent functional drift; not a crash, but the prod
 behavior diverges from what the config + tests describe.
-**Author**: Claude
+**Author**: Claude; Codex path/status refresh
 **References**:
 - PR #143 (drift audit) — root finding
 - `memory/project_subrepo_runtime_vendored_snapshot_2026-06-01.md` — vendored-runtime mechanism
@@ -14,15 +14,15 @@ behavior diverges from what the config + tests describe.
 The production daily runner reads QP code from
 `.subrepo_runtime/repos/renquant-pipeline/`, which is a **vendored
 snapshot** that has NOT been refreshed since before 2026-05-30. That
-snapshot's `tasks.py` is **3,419 LOC vs subrepo-main's 3,671 LOC**
-and predates the entire 2026-05-30+ QP-architecture refactor — including:
+snapshot predates the 2026-05-30+ QP-architecture refactor.
 
-1. **`davis_norman.py`** module (added 2026-05-30 commit `87773e6`).
-2. **`proportional_trade.py`** module (added 2026-05-30 commit `bfc08b9`).
-3. **PR #123 v4** — hard-cap snapshot fix (`_qp_w_upper_hard`) merged 2026-06-03.
-4. **PR #126** — `ConstraintSnapshot` contract merged 2026-06-03.
-5. **PR #127** — `solve_portfolio_qp_from_snapshot` wrapper merged 2026-06-03.
-6. **PR #129** — `BuildConstraintSnapshotTask` wired into Job merged 2026-06-03.
+As of this memo refresh, the QP mirror queue has advanced materially:
+`davis_norman.py`, `proportional_trade.py`, `ConstraintSnapshot`,
+`solve_portfolio_qp_from_snapshot`, snapshot/replay/significance,
+hard-only QP, and Hybrid Option F have landed in the subrepo/umbrella
+PR chain. The remaining blocker is operational: the vendored runtime
+must be refreshed to the current `renquant-pipeline` main and smoked
+before production cron depends on it.
 
 **Practical effect**: production today is running pre-2026-05-30
 portfolio_qp code. The `qp_band_method='davis_norman'` config flag in
@@ -47,26 +47,24 @@ Per `memory/project_subrepo_runtime_vendored_snapshot_2026-06-01.md`:
 
 The mechanism is correct — `make subrepo-runtime-root` is the
 documented refresh path. It just hasn't been invoked since before
-2026-05-30. Since then:
-- 6+ portfolio_qp PRs have merged in renquant-pipeline (subrepo) — #19, #20, #21, #22, #26, #27 (Step 1e mirror).
-- `davis_norman.py` + `proportional_trade.py` are NOT YET in the
-  subrepo at all (drift audit P0 findings #1 + #2; subrepo mirror PR
-  in flight per Task #79).
-- Even after that mirror lands, the vendored runtime needs
-  `make subrepo-runtime-root` to pick up everything.
+2026-05-30. Since then, portfolio_qp functionality has moved through
+the `renquant-pipeline` subrepo and the umbrella mirror, but vendored
+runtime deployment remains a separate step. Merging code PRs is not
+enough; `make subrepo-runtime-root` is the handoff from subrepo main
+to the runtime directory used by daily operations.
 
 ## Why prod has not crashed
 
 The missing-code paths fail-soft, not fail-hard:
 
-1. **`qp_band_method='davis_norman'`** — the runtime's pre-2026-05-30
+1. **`qp_band_method='davis_norman'`**: the runtime's pre-2026-05-30
    code does not have an `if method == 'davis_norman'` branch. It
    silently uses the default ad-hoc 5% band.
-2. **`_qp_w_upper_hard`** — pre-2026-05-30 code never reads this
+2. **`_qp_w_upper_hard`**: pre-2026-05-30 code never reads this
    attribute, so the absence is invisible. The cap-compliance retry
    path keys off `infeasible` status which still fires correctly via
    the legacy w_upper.
-3. **`ConstraintSnapshot`** — pre-refactor consumers use kwargs
+3. **`ConstraintSnapshot`**: pre-refactor consumers use kwargs
    directly. The contract just isn't exercised.
 
 So the runtime is functionally "older, weaker, but stable". Not
@@ -79,14 +77,14 @@ imply is running.
 refactor to prod:
 
 1. ✅ Land `davis_norman.py` + `proportional_trade.py` mirror to
-   subrepo (Task #79 — subagent in flight as of 2026-06-03).
-2. ✅ Land all currently-open subrepo portfolio_qp mirror PRs (#23, #24,
-   #26, plus the davis_norman/proportional_trade PR from step 1).
-3. ⏳ Verify subrepo-main `tests/test_no_bare_kernel_imports.py` is
-   green AND the test suite passes against the subrepo's HEAD.
+   `renquant-pipeline`.
+2. ✅ Land the QP mirror queue through hard-only QP, replay harness,
+   significance/WF replay, and Hybrid Option F.
+3. ⏳ Verify subrepo-main targeted QP tests and
+   `tests/test_no_bare_kernel_imports.py` are green against HEAD.
 4. ⏳ Run `make subrepo-runtime-root` from the umbrella to refresh the
    vendored snapshot to subrepo-main HEAD.
-5. ⏳ Run a `daily_104.sh` smoke through paper / shadow broker BEFORE
+5. ⏳ Run `daily_104.sh` smoke through paper / shadow broker BEFORE
    re-enabling prod cron. Verify:
    - `davis_norman` code path actually fires (look for "Davis-Norman
      no-trade band" log line, or an explicit count in `_qp_diagnostics`).
@@ -94,8 +92,9 @@ refactor to prod:
    - `BuildConstraintSnapshotTask` short-circuits cleanly on a
      synthetic over-cap fixture (the integration test in
      `tests/test_build_constraint_snapshot_task.py::test_failure_path_stamps_qp_attribution_fields`).
-6. ⏳ Only then, re-enable the prod daily cron (or let the next
-   natural run take it).
+6. ⏳ Add a daily sanity guard that fails loud when the vendored
+   runtime does not expose the expected QP modules/config path.
+7. ⏳ Only then, re-enable prod cron or let the next natural run take it.
 
 ## Rollback path
 
@@ -107,14 +106,13 @@ risk** — the QP runs are stateless.
 
 ## Recommendation
 
-1. **Don't refresh the snapshot today.** Subagent (Task #79) is still
-   creating the davis_norman + proportional_trade mirror PR. Wait
-   for it to merge + the broader subrepo mirror queue (#23, #24, #26)
-   to clear.
-2. **Schedule the refresh as the FIRST step of the 2026-06-04 daily
-   cycle**, after a paper-broker smoke run confirms the new code
-   paths fire as expected.
-3. **Add a runtime sanity check** to the daily cycle (follow-up PR):
+1. **Refresh the snapshot only after the subrepo HEAD tests pass.**
+   The mirror queue has cleared enough that the next blocker is test
+   confirmation, not code availability.
+2. **Schedule the refresh as the FIRST step of the next daily cycle**,
+   after a paper-broker smoke run confirms the new code paths fire as
+   expected.
+3. **Add a runtime sanity check** to the daily cycle:
    verify `kernel.portfolio_qp.davis_norman` is importable and that
    `_qp_diagnostics["band_method"]` is "davis_norman" on at least one
    bar per day. Fail loud if not — catches future drift.
