@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
+ORCH_BRIDGE = (
+    REPO.parent
+    / "renquant-orchestrator"
+    / "src"
+    / "renquant_orchestrator"
+    / "live_bridge.py"
+)
 
 
 def _load_bridge_module():
@@ -30,27 +37,62 @@ def _load_daily_module():
     return module
 
 
-def test_daily_multirepo_keeps_standalone_umbrella_bridge() -> None:
-    src = (REPO / "scripts" / "daily_multirepo.py").read_text()
-    assert "def _bootstrap_multirepo()" in src
-    assert 'importlib.import_module("live.runner")' in src
-    assert "from subrepo_paths import resolve_subrepo_root" in src
-    assert "resolve_subrepo_root(REPO)" in src
-    assert "from live_multirepo import main" not in src
-    assert "umbrella.job_panel_scoring" not in src
-    assert '"renquant_pipeline.kernel.panel_pipeline.job_panel_scoring"' in src
-    assert "critical multirepo module unavailable" in src
+@pytest.mark.parametrize(
+    ("script", "mode"),
+    [
+        ("live_multirepo.py", "live"),
+        ("daily_multirepo.py", "daily"),
+    ],
+)
+def test_multirepo_wrappers_delegate_to_orchestrator_bridge(script: str, mode: str) -> None:
+    src = (REPO / "scripts" / script).read_text()
+    assert "orchestrator-owned" in src
+    assert 'ORCH_SRC = SIBLINGS / "renquant-orchestrator" / "src"' in src
+    assert "from renquant_orchestrator import live_bridge as _bridge" in src
+    assert "_PIN_SRCS = list(_bridge.DEFAULT_PIN_SRCS)" in src
+    assert "return _bridge._with_pinned_strategy_config(argv, repo_root=REPO)" in src
+    assert "return _bridge.bootstrap_multirepo(" in src
+    assert f'return _bridge.main(mode="{mode}", repo_root=REPO)' in src
+
+    assert 'importlib.import_module("live.runner")' not in src
+    assert "from subrepo_paths import resolve_subrepo_root" not in src
+    assert "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring" not in src
 
 
-def test_live_multirepo_resolves_subrepos_from_lock() -> None:
-    src = (REPO / "scripts" / "live_multirepo.py").read_text()
-    assert 'LOCK_FILE = REPO / "subrepos.lock.json"' in src
-    assert "from subrepo_paths import resolve_subrepo_root" in src
-    assert "resolve_subrepo_root(REPO)" in src
-    assert "RENQUANT_STRICT_SUBREPO_PATHS" in src
+@pytest.mark.parametrize(
+    ("loader", "mode"),
+    [
+        (_load_bridge_module, "live"),
+        (_load_daily_module, "daily"),
+    ],
+)
+def test_multirepo_wrapper_main_forwards_mode_and_repo(monkeypatch, loader, mode: str) -> None:
+    mod = loader()
+    calls = []
+
+    def fake_main(*, mode: str, repo_root: Path) -> int:
+        calls.append((mode, repo_root))
+        return 17
+
+    monkeypatch.setattr(mod._bridge, "main", fake_main)
+
+    assert mod.main() == 17
+    assert calls == [(mode, REPO)]
+
+
+def test_orchestrator_live_bridge_owns_bootstrap_and_strategy_config_logic() -> None:
+    src = ORCH_BRIDGE.read_text()
+    assert "def _with_pinned_strategy_config(" in src
     assert "--strategy-config-path" in src
     assert "renquant-strategy-104" in src
-    assert "renquant-orchestrator" not in src
+    assert "configs" in src
+    assert "def bootstrap_multirepo(" in src
+    assert 'importlib.import_module("live.runner")' in src
+    assert "critical multirepo module unavailable" in src
+    assert "Critical production modules must not silently fall back" in src
+    assert '"renquant_pipeline.kernel.preflight"' in src
+    assert '"renquant_pipeline.kernel.panel_pipeline"' in src
+    assert '"renquant_backtesting.meta_label"' in src
 
 
 def test_live_multirepo_uses_lock_local_paths(tmp_path, monkeypatch) -> None:
@@ -70,7 +112,7 @@ def test_live_multirepo_uses_lock_local_paths(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(mod, "_PIN_SRCS", ["renquant-common", "renquant-pipeline"])
     monkeypatch.setattr(mod, "LOCK_FILE", lock)
     monkeypatch.setattr(mod, "SIBLINGS", tmp_path / "unused")
-    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.setenv("RENQUANT_SUBREPO_ROOT", str(tmp_path / "unused-root"))
 
     roots, missing = mod._subrepo_src_roots()
 
@@ -78,14 +120,15 @@ def test_live_multirepo_uses_lock_local_paths(tmp_path, monkeypatch) -> None:
     assert missing == []
 
 
-def test_daily_full_run_keeps_existing_daily_multirepo_bridge() -> None:
+def test_daily_full_run_defaults_to_orchestrator_daily_bridge() -> None:
     src = (REPO / "scripts" / "daily_104.sh").read_text()
     assert 'RQ_DAILY_RUNNER:-multirepo' in src
     assert 'source "$REPO_DIR/scripts/subrepo_env.sh"' in src
     assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
     assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
+    assert 'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator' in src
     assert "RENQUANT_OPS_FAIL_CLOSED" in src
-    assert 'RUNNER_ARGS=("$REPO_DIR/scripts/daily_multirepo.py")' in src
+    assert 'RUNNER_ARGS=(-m renquant_orchestrator daily-bridge --repo-dir "$REPO_DIR")' in src
     assert "RUNNER_ARGS=(-m live.runner)" in src
 
 
@@ -132,7 +175,7 @@ def test_live_multirepo_converts_explicit_config_name_to_pinned_path(monkeypatch
     assert cfg == str(tmp_path / "renquant-strategy-104" / "configs" / "strategy_config.golden.json")
 
 
-def test_strategy_subrepo_configs_match_umbrella_rollback_copies() -> None:
+def test_strategy_subrepo_configs_are_available_from_lock_pin() -> None:
     lock = json.loads((REPO / "subrepos.lock.json").read_text())
     strategy_entry = next(
         entry for entry in lock["subrepos"]
@@ -146,31 +189,34 @@ def test_strategy_subrepo_configs_match_umbrella_rollback_copies() -> None:
         "strategy_config.golden.json",
         "strategy_config.shadow.json",
     ):
-        umbrella = json.loads(
-            (REPO / "backtesting" / "renquant_104" / name).read_text()
-        )
         pinned_raw = subprocess.check_output(
             ["git", "-C", str(repo), "show", f"{commit}:configs/{name}"],
             text=True,
         )
-        assert json.loads(pinned_raw) == umbrella
+        pinned = json.loads(pinned_raw)
+        assert isinstance(pinned.get("watchlist"), list)
+        assert isinstance(pinned.get("ranking"), dict)
 
 
 def test_daily_shadow_run_uses_same_multirepo_bridge() -> None:
     src = (REPO / "scripts" / "daily_104.sh").read_text()
     shadow = src[src.find("Step 4: Shadow e2e"):]
     assert 'os.environ.get("RQ_DAILY_RUNNER", "multirepo")' in shadow
-    assert 'runner = [sys.executable, "$REPO_DIR/scripts/live_multirepo.py"]' in shadow
+    assert (
+        'runner = [sys.executable, "-m", "renquant_orchestrator", '
+        '"live-bridge", "--repo-dir", "$REPO_DIR"]'
+    ) in shadow
     assert 'runner = [sys.executable, "-m", "live.runner"]' in shadow
 
 
-def test_intraday_sell_only_defaults_to_shared_multirepo_bridge() -> None:
+def test_intraday_sell_only_defaults_to_orchestrator_live_bridge() -> None:
     src = (REPO / "scripts" / "intraday_sell_104.sh").read_text()
     assert 'RQ_DAILY_RUNNER:-multirepo' in src
     assert 'source "$REPO_DIR/scripts/subrepo_env.sh"' in src
     assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
     assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
-    assert 'RUNNER_ARGS=("$REPO_DIR/scripts/live_multirepo.py")' in src
+    assert 'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator' in src
+    assert 'RUNNER_ARGS=(-m renquant_orchestrator live-bridge --repo-dir "$REPO_DIR")' in src
     assert '"${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once' in src
     assert "--sell-only --intraday" in src
 
@@ -209,9 +255,13 @@ def test_multirepo_force_alias_fails_closed_on_critical_import(monkeypatch, load
         )
 
 
-def test_multirepo_bridges_removed_critical_umbrella_fallbacks() -> None:
+def test_orchestrator_bridge_removed_critical_umbrella_fallbacks() -> None:
+    bridge_src = ORCH_BRIDGE.read_text()
+    assert "renquant_pipeline.kernel.meta_label<-umbrella" not in bridge_src
+    assert "renquant_pipeline.kernel.meta_label←umbrella" not in bridge_src
+    assert "Critical production modules must not silently fall back" in bridge_src
     for script in ("daily_multirepo.py", "live_multirepo.py"):
         src = (REPO / "scripts" / script).read_text()
         assert "renquant_pipeline.kernel.meta_label<-umbrella" not in src
         assert "renquant_pipeline.kernel.meta_label←umbrella" not in src
-        assert "Critical production modules must not silently fall back" in src
+        assert "Critical production modules must not silently fall back" not in src

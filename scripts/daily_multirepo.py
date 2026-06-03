@@ -1,200 +1,65 @@
 #!/usr/bin/env python
-"""Multi-repo daily runner — run the REAL daily through the pinned subrepos.
-
-Goal (2026-05-27): execute the production daily (`live.runner`) but route every
-LIFTED kernel module to the pinned `renquant-pipeline` subrepo, so the decision
-tree genuinely runs out of the multi-repo packages — while the umbrella RenQuant
-stays the untouched baseline/rollback (copy-not-move).
-
-Bridge state (2026-06-01):
-  * `kernel.preflight`     → renquant-pipeline.kernel.preflight (lifted)
-  * `kernel.panel_pipeline`→ renquant-pipeline.kernel.panel_pipeline (lifted)
-  * `renquant_pipeline.panel_scoring`
-                            → renquant-pipeline.kernel.panel_pipeline.job_panel_scoring
-  * `kernel.meta_label`    → renquant-backtesting.meta_label (lifted; bridged here)
-  * everything else        → renquant-pipeline (already lifted)
-The umbrella `kernel/` retains all of these as byte-equivalent copies for
-rollback (RQ_DAILY_RUNNER=umbrella) and for any code still doing
-`from kernel.x import …` outside the bootstrap.
-
-Usage (safe default = readonly-alpaca, no orders):
-    python scripts/daily_multirepo.py --broker readonly-alpaca --once
-For the live full run (real account, same as the umbrella daily):
-    python scripts/daily_multirepo.py --broker alpaca --once
-"""
+"""Compatibility entrypoint for the orchestrator-owned daily bridge."""
 from __future__ import annotations
 
 import importlib
 import sys
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-from subrepo_pin_guard import enforce_or_warn, resolve_subrepo_src_roots
-from subrepo_pin_guard import strict_clean_enabled
-from subrepo_paths import resolve_subrepo_root
 
 REPO = Path(__file__).resolve().parent.parent
 SIBLINGS = REPO.parent
-STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
 LOCK_FILE = REPO / "subrepos.lock.json"
+ORCH_SRC = SIBLINGS / "renquant-orchestrator" / "src"
+if str(ORCH_SRC) not in sys.path:
+    sys.path.insert(0, str(ORCH_SRC))
 
-# Pinned subrepo source roots (must match subrepos.lock.json local_paths).
-_PIN_SRCS = [
-    "renquant-common", "renquant-base-data", "renquant-artifacts",
-    "renquant-strategy-104", "renquant-model", "renquant-pipeline",
-    "renquant-execution", "renquant-backtesting",
-]
+from renquant_orchestrator import live_bridge as _bridge  # noqa: E402
+
+
+_PIN_SRCS = list(_bridge.DEFAULT_PIN_SRCS)
 
 
 def _arg_value(argv: list[str], flag: str, default: str | None = None) -> str | None:
-    prefix = flag + "="
-    for idx, arg in enumerate(argv):
-        if arg == flag and idx + 1 < len(argv):
-            return argv[idx + 1]
-        if arg.startswith(prefix):
-            return arg[len(prefix):]
-    return default
+    return _bridge._arg_value(argv, flag, default)
 
 
 def _without_arg(argv: list[str], flag: str) -> list[str]:
-    out: list[str] = []
-    skip = False
-    prefix = flag + "="
-    for arg in argv:
-        if skip:
-            skip = False
-            continue
-        if arg == flag:
-            skip = True
-            continue
-        if arg.startswith(prefix):
-            continue
-        out.append(arg)
-    return out
+    return _bridge._without_arg(argv, flag)
 
 
 def _strategy_config_name(argv: list[str]) -> str:
-    explicit = _arg_value(argv, "--strategy-config-name")
-    if explicit:
-        return explicit
-    strategy = _arg_value(argv, "--strategy", "renquant_104")
-    broker = _arg_value(argv, "--broker", "paper")
-    if strategy == "renquant_104" and broker == "readonly-alpaca":
-        return "strategy_config.shadow.json"
-    return "strategy_config.json"
+    return _bridge._strategy_config_name(argv)
 
 
 def _with_pinned_strategy_config(argv: list[str]) -> list[str]:
-    """Route renquant_104 config reads to the pinned strategy subrepo.
+    return _bridge._with_pinned_strategy_config(argv, repo_root=REPO)
 
-    The runtime strategy_dir remains the umbrella checkout so live_state,
-    artifacts, and data stay in the existing production location.
-    """
-    if _arg_value(argv, "--strategy-config-path"):
-        return argv
-    if _arg_value(argv, "--strategy", "renquant_104") != "renquant_104":
-        return argv
-    config_name = _strategy_config_name(argv)
-    cfg_path = (
-        resolve_subrepo_root(REPO)
-        / "renquant-strategy-104"
-        / "configs"
-        / config_name
+
+def _subrepo_src_roots() -> tuple[list[Path], list[str]]:
+    return _bridge._subrepo_src_roots(
+        repo_root=REPO,
+        lock_file=LOCK_FILE,
+        siblings=SIBLINGS,
+        pin_srcs=_PIN_SRCS,
     )
-    return _without_arg(argv, "--strategy-config-name") + [
-        "--strategy-config-path",
-        str(cfg_path),
-    ]
 
 
 def _force_alias(alias: str, target: str, aliased: list[str]) -> None:
-    try:
-        mod = importlib.import_module(target)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"critical multirepo module unavailable: {target}") from exc
-    sys.modules[alias] = mod
-    aliased.append(f"{alias}<-{target}")
+    return _bridge._force_alias(alias, target, aliased)
 
 
 def _bootstrap_multirepo() -> list[str]:
-    """Put pinned subrepos on path and alias every lifted kernel.* module to the
-    pin. Returns the list of aliased module names (for the run report)."""
-    # umbrella + strategy dir first so `live`/`adapters` and explicit rollback
-    # paths still resolve locally; lifted kernel.* modules are overwritten below.
-    for p in (str(REPO), str(STRATEGY_DIR)):
-        if p not in sys.path:
-            sys.path.insert(0, p)
-    src_roots, pin_issues = resolve_subrepo_src_roots(
+    return _bridge.bootstrap_multirepo(
+        repo_root=REPO,
         lock_file=LOCK_FILE,
-        names=_PIN_SRCS,
         siblings=SIBLINGS,
-        root_override=str(resolve_subrepo_root(REPO)),
-        check_dirty=strict_clean_enabled(),
+        pin_srcs=_PIN_SRCS,
     )
-    enforce_or_warn(pin_issues)
-    for src in src_roots:
-        if str(src) not in sys.path:
-            sys.path.append(str(src))
-
-    pk = importlib.import_module("renquant_pipeline.kernel")
-    pk_dir = Path(pk.__file__).resolve().parent
-
-    aliased: list[str] = []
-    # Top-level lifted kernel modules/packages (everything the pin carries).
-    for entry in sorted(pk_dir.iterdir()):
-        stem = entry.stem if entry.suffix == ".py" else entry.name
-        if stem in {"__init__", "__pycache__"} or stem.startswith("."):
-            continue
-        if entry.suffix not in {".py", ""}:
-            continue
-        modname = f"kernel.{stem}"
-        try:
-            mod = importlib.import_module(f"renquant_pipeline.kernel.{stem}")
-        except Exception:
-            continue  # leaf with heavy optional deps — skip; umbrella fallback
-        sys.modules[modname] = mod
-        aliased.append(modname)
-
-    # Critical production modules must not silently fall back to umbrella. If
-    # one of these imports fails, the multirepo runner is not actually running
-    # the pinned production path and should fail closed.
-    _force_alias("kernel.preflight", "renquant_pipeline.kernel.preflight", aliased)
-    _force_alias("kernel.panel_pipeline", "renquant_pipeline.kernel.panel_pipeline", aliased)
-    # 2026-05-30: meta_label was lifted to renquant-backtesting (C2.4). Alias
-    # it here so the pin's pp_inference path still resolves through subrepos.
-    _force_alias(
-        "renquant_pipeline.kernel.meta_label",
-        "renquant_backtesting.meta_label",
-        aliased,
-    )
-    # pp_inference imports `renquant_pipeline.panel_scoring.PanelScoringJob`.
-    # Production daily needs the byte-equivalent fail-closed scorer job lifted
-    # under renquant-pipeline.kernel.panel_pipeline, not the experimental
-    # load_scorer rewrite exposed at renquant_pipeline.panel_scoring.
-    _force_alias(
-        "renquant_pipeline.panel_scoring",
-        "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring",
-        aliased,
-    )
-    return aliased
 
 
 def main() -> int:
-    aliased = _bootstrap_multirepo()
-    sys.stderr.write(
-        f"[multirepo] routed {len(aliased)} kernel modules to renquant-pipeline; "
-        "preflight/panel_pipeline/panel_scoring resolve from pinned subrepos; "
-        "meta_label resolves from renquant-backtesting when available.\n"
-    )
-    # Hand off to the real production runner with the original CLI args.
-    if _arg_value(sys.argv[1:], "--strategy") is None:
-        sys.argv = [sys.argv[0], "--strategy", "renquant_104"] + sys.argv[1:]
-    sys.argv = [sys.argv[0]] + _with_pinned_strategy_config(sys.argv[1:])
-    runner = importlib.import_module("live.runner")
-    return int(runner.main() or 0)
+    return _bridge.main(mode="daily", repo_root=REPO)
 
 
 if __name__ == "__main__":

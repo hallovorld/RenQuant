@@ -66,6 +66,7 @@ source "$REPO_DIR/scripts/subrepo_env.sh"
 renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator renquant-common renquant-base-data renquant-artifacts renquant-model renquant-pipeline renquant-execution renquant-strategy-104 renquant-backtesting):${PYTHONPATH:-}"
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
     if { [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RENQUANT_OPS_FAIL_CLOSED:-0}" = "1" ]; } \
         && [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
@@ -283,15 +284,15 @@ except Exception:
 BUY_BLOCKED_BY_PREFLIGHT=0
 PREFLIGHT_SYSTEM_FAILURE=0
 
-# 2026-05-27: route the daily decision pipeline through the pinned subrepos
-# (multi-repo). scripts/daily_multirepo.py aliases lifted kernel.* modules to
-# sibling subrepos (+ common/model/execution/backtesting/...) then delegates to
+# 2026-06-03: route the daily decision pipeline through the orchestrator-owned
+# multirepo bridge. The bridge aliases lifted kernel.* modules to sibling
+# subrepos (+ common/model/execution/backtesting/...) then delegates to
 # live.runner.main() with the same argv. Instant rollback (§5.5):
 #   RQ_DAILY_RUNNER=umbrella  → plain `-m live.runner` (the untouched baseline).
 if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
     RUNNER_ARGS=(-m live.runner)
 else
-    RUNNER_ARGS=("$REPO_DIR/scripts/daily_multirepo.py")
+    RUNNER_ARGS=(-m renquant_orchestrator daily-bridge --repo-dir "$REPO_DIR")
 fi
 
 FULL_RUN_LOG=$(mktemp "/tmp/renquant_104_daily_full.XXXXXX")
@@ -492,7 +493,7 @@ import sys
 if os.environ.get("RQ_DAILY_RUNNER", "multirepo") == "umbrella":
     runner = [sys.executable, "-m", "live.runner"]
 else:
-    runner = [sys.executable, "$REPO_DIR/scripts/live_multirepo.py"]
+    runner = [sys.executable, "-m", "renquant_orchestrator", "live-bridge", "--repo-dir", "$REPO_DIR"]
 
 cmd = runner + [
     "--strategy", "renquant_104",
