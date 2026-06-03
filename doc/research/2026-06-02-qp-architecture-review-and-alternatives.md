@@ -656,9 +656,16 @@ fallback-rate drift, broker-side rounding behavior, observability hooks.
 NOT a Sharpe selection gate. 30 trading days is insufficient sample for
 a Sharpe delta of 0.1 (codex MED-6).
 
-### What stays from QP
+### What stays from QP (only relevant IF Step 4 selects Hybrid)
 
-- `qp_solver.py` itself (used as fallback in Phase 1; can be kept indefinitely)
+The following "stays / goes" lists describe the END-STATE of a Hybrid
+adoption — they only apply if the Step 4 offline A/B replay actually
+selects Option F over the other 4 baselines. They are NOT a
+pre-decided migration plan.
+
+- `qp_solver.py` itself (would be the fallback under Hybrid; can be kept
+  indefinitely if not selected, or kept as the live engine if A/B
+  selects current-QP / hard-only QP / Level-2 MPO)
 - Davis-Norman closed-form no-trade band logic (already used; would be
   Stage 3.5 in the Hybrid)
 - The wash-sale + earnings + admission gates (all Stage 1)
@@ -667,12 +674,13 @@ a Sharpe delta of 0.1 (codex MED-6).
 - The Ledoit-Wolf shrinkage (Stage 4 fallback only)
 - The Markowitz / G-P theoretical references (move into Hybrid docstring)
 
-### What goes away
+### What goes away (only IF Step 4 selects Hybrid)
 
 - The 32-parameter API on `solve_portfolio_qp` (becomes internal-only,
   fewer callers).
 - The 5-task constraint composition chain (collapses into 3 closed-form
-  stages).
+  stages — but only after the Step 1 `ConstraintSnapshot` contract
+  refactor, which lands regardless of which allocator wins).
 - The "infeasible" bug class on the common path.
 - ~400 LOC of QP-supporting Tasks (ApplyExposureScalingTask,
   ApplyConvictionCapTask, BuildSectorConstraintMatrixTask, etc.) — they
@@ -697,10 +705,11 @@ a Sharpe delta of 0.1 (codex MED-6).
    migration logic gets noisier — should we set a "max fallback rate"
    threshold and roll back if exceeded?
 
-4. **Shadow path tax accounting.** §7.5 says one source of truth for
-   tax. The shadow path during Phase 1 doesn't execute, so it doesn't
-   need full tax simulation. But its log should still reflect
-   after-tax expected return to be comparable. Right?
+4. **Tax accounting under Step 5 live shadow.** §7.5 says one source of
+   truth for tax. The Step 5 live-shadow logs (operational telemetry,
+   not Sharpe gate) don't execute, so they don't need full tax
+   simulation. But their log should still reflect after-tax expected
+   return to be comparable. Right?
 
 5. **Does codex's experience with cvxportfolio production show similar
    1/N-beats-MV patterns?** Or is the textbook Boyd-style optimizer
@@ -777,25 +786,44 @@ a Sharpe delta of 0.1 (codex MED-6).
 - `tests/test_portfolio_qp_solver.py` + `tests/test_qp_*.py` —
   current 456-test QP suite
 
-## 11. Verdict for the user
+## 11. Verdict for the user (REVISED 2026-06-02 after codex re-review)
 
-**QP is not "wrong" — it's over-engineered for our problem class.** The
-empirical literature (DeMiguel 2009, Brodie 2009, López de Prado 2016)
-says simpler methods often win when μ̂ and Σ̂ are noisy, which describes
-RenQuant 104's data regime.
+**QP is not "wrong" — its constraint-composition layer is the bug
+class, and the empirical literature (DeMiguel 2009, Michaud 1989,
+Chopra-Ziemba 1993, Brodie 2009, López de Prado 2016) provides a
+*mechanism* (μ̂-error damage) under which simpler methods may match
+or beat MV. The literature does NOT bound the IC at which 1/N catches
+MV, so we cannot conclude RenQuant 104 sits below a known boundary
+without measurement.**
 
-The migration to **Hybrid (Option F)** is:
-- **Incremental**: shadow → sim → live in three phases
-- **Reversible**: config flag, QP stays as fallback
-- **Empirically gated**: Phase 2 requires Sharpe within 0.1 of QP path
-- **Estimated effort**: 2-3 weeks total, of which 30 days is calendar
-  observation (engineering touch time ≈ 8-10 days)
+The earlier "verdict" in this section recommended **authorizing
+Phase 1 (Hybrid shadow path, 2 engineering days, 30 days observation)
+now**. Codex and gemini both rejected that recommendation on PR #125
+re-review (2026-06-02):
 
-If the shadow path during Phase 1 shows the Hybrid would have traded
-similarly to QP (with the SAME daily-104 BULL_CALM-silence behaviour
-since both use the same regime_admission gate), the migration is a net
-simplification win. If the Hybrid diverges materially, we keep QP and
-learn that the optimization gain DOES matter for our regime, which is
-also a useful finding.
+- **Codex MED-6**: 30 trading days does not statistically separate a
+  Sharpe delta of 0.1. Live shadow is operational telemetry, not a
+  Sharpe selection gate.
+- **Codex / gemini convergent**: the constraint-composition contract
+  must be fixed BEFORE any allocator comparison can be trusted. A
+  Hybrid that consumes contradictory constraint state can still
+  produce contradictory outputs.
 
-Recommendation: **authorize Phase 1 (shadow path, 2-day eng cost) now.**
+The revised verdict is **authorize the measurement-and-contract
+sequence** in §8 (Steps 0–5):
+
+1. Land PR #123 v4 (hard-cap separation) so cap-compliance observably
+   fires on over-cap holdings.
+2. Build the single `ConstraintSnapshot` / `BuildQPConstraintsTask`
+   contract that all candidate allocators consume.
+3. Measure μ̂ autocorrelation per regime (closes HIGH-4).
+4. (Done) Param inventory rebuilt from current config.
+5. Offline WF A/B replay with 5 baselines + DSR/PBO.
+6. ONLY IF a candidate dominates offline → live shadow for
+   operational telemetry + implementation parity.
+
+The decision-grade artifact is the offline A/B result + the
+`ConstraintSnapshot` contract PR — NOT this memo.
+
+**Authorization request**: NONE for migration. The next concrete
+authorization request will come with the offline A/B replay PR.

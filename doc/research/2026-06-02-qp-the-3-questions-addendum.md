@@ -255,7 +255,11 @@ The QP architectural review memo's recommended Option F (Hybrid) is item 1, with
 | What's its functional role? | **Sizing-and-order-translation layer**: converts {admitted candidates + (μ̂, Σ̂) signal + hard caps} into concrete buy/sell orders. NOT an alpha layer, NOT a candidate selector. |
 | Is it the ultimate solution? | **No.** It's Level 1 (single-period MV) in a 5-level hierarchy. The "ultimate" within the same family is Level 2 (cvxportfolio MultiPeriodOpt). The "practical apex" for our regime is closer to Level 0 (Kelly + Davis-Norman). The current Level 1 sits between, and DeMiguel 2009 + Michaud 1989 + Chopra-Ziemba 1993 all suggest Level 0 likely wins at our SNR. |
 
-The recommendation in [`2026-06-02-qp-architecture-review-and-alternatives.md §8`](./2026-06-02-qp-architecture-review-and-alternatives.md) (Hybrid Option F with 3-phase migration) is consistent with the "practical apex" finding above: it moves us toward Level 0 for the common case while keeping QP as the fallback for the rare hard-constraint case.
+**The earlier version of this line said: "the parent memo §8 recommendation is Hybrid Option F with 3-phase migration."** That is no longer the recommendation. Codex + gemini convergent re-review on PR #125 (2026-06-02) rejected the 3-phase Hybrid plan: live shadow does not statistically separate a Sharpe delta of 0.1 over 30 trading days, and the constraint-composition contract must be fixed BEFORE any allocator comparison can be trusted.
+
+The revised parent memo §8 replaces the migration plan with a **measurement-and-contract sequence**: Step 0 (PR #123 v4 hard-cap separation) → Step 1 (single `ConstraintSnapshot` / `BuildQPConstraintsTask` contract shared by ALL allocator candidates) → Step 2 (μ̂ autocorrelation + top-K overlap + half-life measurement per regime) → Step 3 (param inventory rerun — already done in parent §2.1) → Step 4 (offline WF A/B replay with 5 baselines + DSR/PBO multiple-comparison correction) → Step 5 (live shadow ONLY for operational telemetry, NOT a Sharpe gate). The decision-grade artifact is the offline A/B result + the `ConstraintSnapshot` contract PR — NOT this memo. **Authorization for any migration is NOT requested by PR #125.**
+
+The "practical apex" finding above (Level 0 with the codex-required guardrails) is one of the candidates the offline A/B replay would compare against four other baselines (current QP, hard-only QP, inverse-vol top-K, Level-2 MultiPeriodOpt if Step 2 supports it). It is NOT a pre-decided recommendation.
 
 ## References (in addition to parent memo)
 

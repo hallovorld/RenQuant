@@ -39,9 +39,13 @@ Counted objective sites via `obj_terms.append`: 5.
 
 ### Step 2 — Audit which parameters are actually active in prod
 
-Read `backtesting/renquant_104/strategy_config.json` end-to-end and matched the 32 QP parameters against the config's `rotation.joint_actions.*` values. Counted: **8 active, 24 inactive** (default-zero, INACTIVE-by-policy like tax/leverage, or legacy kwargs).
+**Initial audit was wrong; this section reflects the corrected audit performed after codex's #125 re-review.**
 
-**Confidence**: MEDIUM-HIGH. The audit relies on my reading of one config file. The config has a `regime_params` override layer I sampled but didn't exhaustively cross-check. If a per-regime override activates a parameter I marked "INACTIVE", that's a hole in my audit. Counter: I checked the obviously regime-conditional knobs (`drawdown_*`, `kelly_*`, `qp_dw_max`); the truly latent ones (CVaR, robust-μ, sqrt-impact) are not in any regime override I saw.
+The initial audit (2026-06-02, before re-review) read `strategy_config.json` partially and claimed "8 active, 24 inactive". That count dropped the regime overlays, the admission gate, the soft-sell guard, and other behaviorally-active keys; and cited stale numeric values (`qp_cost_kappa=0.0001`, `qp_turnover_max=0.2`, `qp_min_invested_pct=0.7`, `qp_cash_drag_lambda=0.05`) that no longer match the committed config.
+
+The corrected audit re-read the head of `strategy_config.json` + the four `regime_params.{BULL_CALM, BULL_VOLATILE, BEAR, CHOPPY}` overlays + `SolveMarkowitzQPTask._build_solver_kwargs()`. Actual count is **25 active / 7 inactive**, with values listed in the parent memo's §2.1. Real values: `qp_cost_kappa=0.002`, BULL_CALM `qp_turnover_max=0.15`, `qp_cash_drag_lambda=0.0` (inactive), `qp_min_invested_pct=0.0` (inactive). Active list adds `qp_conviction_cap_enabled`, `qp_admission_gate`, `qp_soft_sell_guard`, strict horizon/μ contracts. Constraints/objectives restated as **9 hard constraints + 3 objective terms** (was "3+3"). The complexity-tax argument is now built on the right numbers.
+
+**Confidence in the corrected audit**: HIGH. The numbers come straight from the committed config head and cross-check against the regime overlay dict. A methodology doc cannot preserve a stale count as if it had been the performed method, so the wrong-count paragraph above explicitly admits the initial audit was incorrect.
 
 ### Step 3 — Trace the historical "why"
 
@@ -71,7 +75,7 @@ Searched my training-data knowledge for "Markowitz noisy μ̂" + "1/N optimal di
 - Chopra-Ziemba 1993 (μ̂ ~10× more damaging than Σ̂)
 - DeMiguel-Garlappi-Uppal 2009 (1/N is not consistently beaten by 14 MV-family models across 7 empirical datasets)
 
-For each, I documented the specific quantitative claim, not just the conclusion. The 10× number is from Chopra-Ziemba Table 3; the 14-dataset count is from DeMiguel et al. §3.
+For each, I documented the specific quantitative claim, not just the conclusion. The 10× number is from Chopra-Ziemba Table 3. The DeMiguel et al. count — **14 portfolio models compared across 7 empirical datasets** — is from DeMiguel et al. §3 (earlier drafts of this doc mis-stated this as "14 datasets"; codex's #125 re-review corrected it).
 
 **Confidence**: HIGH on the existence and content of these papers. MEDIUM on the *applicability* to our specific dataset — see §3 below for counter-arguments.
 
@@ -118,9 +122,9 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 | Claim | Why I'm uncertain |
 |---|---|
-| "Practical apex for our regime is Level 0" | This is a strong empirical claim based on extrapolating DeMiguel/Michaud/Chopra-Ziemba from monthly equity-sector data to daily firm-level. I have NOT run a sim comparing Level 0 to Level 1 on our data. Codex's counter: it's possible that for THIS specific data + signal, Level 1 actually wins. The honest answer is "we don't know until we measure" — Phase 1 (shadow path) is what would tell us |
+| "Practical apex for our regime is Level 0" | This is a strong empirical claim based on extrapolating DeMiguel/Michaud/Chopra-Ziemba from monthly equity-sector data to daily firm-level. I have NOT run a sim comparing Level 0 to Level 1 on our data. Codex's counter: it's possible that for THIS specific data + signal, Level 1 actually wins. The honest answer is "we don't know until we measure" — Step 4 (offline WF A/B replay in the revised §8 sequence) is what would tell us |
 | "QP is over-engineered for our problem class" | Subjective. A different team would say "we built the right infrastructure; the bugs are growing pains." Both framings are defensible. My framing reflects my own bias toward simplicity |
-| "<10% of bars need QP fallback under Hybrid" | A guess based on how often sector caps actually bind in production. I don't have logging for this; could be 1%, could be 30%. Phase 1 of migration would tell us |
+| "<10% of bars need QP fallback under Hybrid" | A guess based on how often sector caps actually bind in production. I don't have logging for this; could be 1%, could be 30%. Step 4 (offline WF A/B replay) would tell us — and Step 5 live shadow would refine the rate empirically |
 | Cvxportfolio MultiPeriodOpt would be better than SinglePeriodOpt for us | Theoretically: yes, if signal-decay model is meaningful. Empirically: depends on label horizon vs decay rate. For fwd_60d_excess at our scale, marginal lift might be small |
 
 ---
@@ -139,9 +143,9 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 **Strength**: HIGH validity. The current QP has 456 tests passing, has been in production for ~5 weeks, has survived several real-money days. A migration to Hybrid will introduce a new bug surface.
 
-**Why I still recommend Hybrid**: My recommendation is *not* "rewrite QP" — it's "decompose decision-making so QP is only invoked rarely". The QP stays; it becomes a fallback. The new code is Stages 1-3, which is each simpler than what they replace (a single Task replacing a sub-tree of constraint-building Tasks). The shadow-path Phase 1 explicitly measures bug rate before live cutover.
+**Why I still recommend Hybrid**: My recommendation is *not* "rewrite QP" — it's "decompose decision-making so QP is only invoked rarely". The QP stays; it becomes a fallback. The new code is Stages 1-3, which is each simpler than what they replace (a single Task replacing a sub-tree of constraint-building Tasks). The offline WF A/B replay (revised §8 Step 4) is what measures decision divergence + bug rate. Live shadow (Step 5) is operational telemetry, NOT a Sharpe gate.
 
-**What would change my mind**: If Phase 1 reveals that the shadow Hybrid path produces materially different (worse) decisions than QP on 20%+ of bars, I'd retract and recommend "stay on QP, fix constraint composition layer instead."
+**What would change my mind**: If the offline WF A/B replay (revised §8 Step 4) shows the Hybrid produces materially worse decisions than QP on 20%+ of bars, I'd retract and recommend "stay on QP, fix constraint composition layer instead."
 
 ### CA3 — "Why not just fix the constraint-composition layer?"
 
@@ -204,7 +208,7 @@ My estimate of "<10% of bars need QP fallback" is a guess. The actual rate depen
 - How often correlation pair caps bind (depends on universe correlation structure)
 - How often turnover_max is the binding constraint
 
-If the actual rate is 1%, the migration is even better than I claim (QP becomes near-vestigial). If it's 30%, the maintenance burden of two paths is high. **Phase 1 of migration is exactly the measurement that resolves this.**
+If the actual rate is 1%, the migration is even better than I claim (QP becomes near-vestigial). If it's 30%, the maintenance burden of two paths is high. **The offline WF A/B replay (revised §8 Step 4) is exactly the measurement that resolves this — fallback rate is one of the metrics it captures.**
 
 ### U3 — Is the constraint-composition layer fixable in isolation?
 
@@ -234,13 +238,13 @@ Codex flagged that this is the wrong observable: **realized forward-label autoco
 
 **Updated view**: I cannot quantify Level 2's attractiveness without these measurements. **The right next step is to measure them**, not to skip Level 2. Gemini's review explicitly pointed at the same gap from a different angle (Level 2 *might* shine in this regime — the only way to know is to measure). Until then, U4 is an open uncertainty, not a Level-2-attractiveness claim.
 
-### U5 — Does Hybrid Phase 1 actually preserve the regime-conditional discipline?
+### U5 — Does the Hybrid (Option F) actually preserve the regime-conditional discipline?
 
 PRIME DIRECTIVE (CLAUDE.md §1) says every knob is regime-conditional. Today's QP has regime-conditional `w_upper` via the cap construction chain. Hybrid Stage 2 (Kelly fraction) is regime-conditional via the calibrator. Hybrid Stage 3 (no-trade band) — is it regime-conditional in my proposed design?
 
 I haven't specified that. The Davis-Norman band already in the codebase is per-asset, not per-regime. If the band threshold should vary by regime (e.g., wider in CHOPPY for whipsaw protection, tighter in BULL_CALM for fast capital deployment), my Hybrid design doesn't address it.
 
-**This is a hole in my proposal.** Phase 1 design needs to include regime-conditional configuration of all three stages, not just Stage 2.
+**This is a hole in my proposal.** Hybrid Option F design (only relevant IF Step 4 of revised §8 selects it) needs regime-conditional configuration of all three stages, not just Stage 2.
 
 ---
 
@@ -260,49 +264,73 @@ Specific, falsifiable triggers that would flip my recommendation:
 
 ---
 
-## 6. Concrete decision tree
+## 6. Concrete decision tree (REVISED 2026-06-02 after codex re-review)
 
-I'm not asking the user to make a binary "migrate or don't" choice. The decision tree:
+**The old tree was the 3-phase Hybrid migration (Phase 1 shadow → Phase 2 sim → Phase 3 cutover). Both codex and gemini rejected that framing as the wrong order: live shadow doesn't statistically separate a Sharpe delta of 0.1 over 30 days, and the constraint-composition contract must be fixed BEFORE any allocator comparison can be trusted. The tree below replaces it with the measurement-and-contract sequence in the parent memo's revised §8.**
+
+I'm not asking the user to make a binary "migrate or don't" choice. The decision tree is:
 
 ```
-                       ┌─ Codex argues Level 2 (MultiPeriodOpt) ──┐
-                       │   for our case                            │
-USER reads PR #125 ────┤                                           │
-                       ├─ Codex argues constraint-composition ───┐ │
-                       │   refactor as the right next step       │ │
-                       │                                          │ │
-                       └─ Codex agrees with Hybrid recommendation │ │
-                                                                  │ │
-                                                                  ▼ ▼
-                                       ┌─── User decides ───┐
-                                       │                    │
-                                       ▼                    ▼
-                          A. Authorize Phase 1     B. Defer migration,
-                             (shadow path, 2 days     authorize constraint
-                             eng + 30 days obs)       composition refactor
-                                       │                    │
-                                       ▼                    │
-                          Hybrid shadow log shows           │
-                          divergence from QP                │
-                                       │                    │
-                          ┌────────────┴───────────┐        │
-                          ▼                        ▼        │
-                  Hybrid ~= QP on              Hybrid       │
-                  Sharpe + behaviour           materially   │
-                                               worse        │
-                                  ▼                ▼        │
-                          C. Phase 2:           D. Abandon  │
-                             sim verification      migration│
-                                  ▼                         │
-                          E. Phase 3:                       │
-                             live cutover                   ▼
-                                                  F. Stay at Level 1
-                                                     with cleaner
-                                                     constraint
-                                                     composition
+                       ┌─ Codex / gemini agree: fix constraints first ─┐
+                       │   (the convergent verdict, 2026-06-02)         │
+USER reads PR #125 ────┤                                                │
+                       ├─ Codex argues Level 2 (MultiPeriodOpt) ────────┤
+                       │   is more attractive than parent memo claims   │
+                       │                                                │
+                       └─ Codex agrees with Hybrid recommendation ──────┤
+                                                                        │
+                                                                        ▼
+                                                  ┌─── User decides ───┐
+                                                  │                    │
+                                                  ▼                    ▼
+                                      Step 0 — PR #123 v4         (do nothing —
+                                      land hard-cap separation     not a valid
+                                      first, then proceed          endpoint;
+                                                  │                 cap-compliance
+                                                  ▼                 contract bug
+                                      Step 1 — ConstraintSnapshot   stays open)
+                                      contract refactor (codex +
+                                      gemini convergent recommendation)
+                                                  │
+                                                  ▼
+                                      Step 2 — μ̂-autocorrelation
+                                      measurement per regime
+                                      (closes HIGH-4; quantifies
+                                      Level-2 attractiveness)
+                                                  │
+                                                  ▼
+                                      Step 3 — Param-inventory
+                                      rerun (already done in
+                                      parent memo §2.1)
+                                                  │
+                                                  ▼
+                                      Step 4 — Offline WF A/B
+                                      replay, 5 baselines:
+                                      QP / hard-only QP / Hybrid /
+                                      inverse-vol top-K / MPO
+                                      (DSR > 0.5, PBO < 0.5,
+                                      ≥ 4/N cuts consistent)
+                                                  │
+                              ┌───────────────────┼───────────────────┐
+                              ▼                   ▼                   ▼
+                       A. A candidate    B. No candidate      C. Hard-only QP
+                          dominates         dominates;            wins (means
+                          offline           stay on current        constraint
+                          │                 QP + ConstraintSnapshot composition
+                          ▼                                         was the
+                       Step 5 — live                                whole bug)
+                       shadow for
+                       operational
+                       telemetry only
+                       (NOT Sharpe gate)
+                          │
+                          ▼
+                       D. Promote winner
+                          to live via
+                          config flag
 ```
 
-A, B, C, D, E, F are all valid endpoints. The honest answer is: "I don't know which is right without measurement." My memo argues that the **EXPECTED VALUE** of Phase 1 (cheap measurement) is high regardless of which way it points.
+A, B, C, D are valid endpoints. The honest answer is still: "I don't know which is right without measurement", but the measurement order is now correct (offline WF A/B is the gate, live shadow is operational verification). The earlier "Phase 1 → Phase 2 → Phase 3" tree had live shadow as the gate, which neither codex nor gemini would accept.
 
 ---
 
@@ -313,8 +341,8 @@ If I were codex reviewing this PR, I would:
 1. **Challenge claim U1** — push me to defend that IC=0.04 is "below the 1/N-vs-MV boundary"
 2. **Probe CA3** — argue more aggressively for constraint-composition fix as the minimum-blast-radius path
 3. **Push back on §3.b dismissal of Level 2** — given the new evidence (label autocorr very low in our data), Level 2 might be the actual best next step
-4. **Question the migration timeline** — is Phase 1's 2 engineering days realistic given the depth of the existing QP integration?
-5. **Ask for sim numbers** — refuse to authorize Phase 1 until I run the equivalent of a 1-cut WF sim with Hybrid and QP and produce a Sharpe delta
+4. **Question the contract refactor timeline** — is the Step 1 `ConstraintSnapshot` / `BuildQPConstraintsTask` refactor really 2-3 days given how many Tasks currently compose the constraint vector?
+5. **Ask for sim numbers** — refuse to authorize live shadow (Step 5) until offline WF A/B replay (Step 4) produces a Sharpe delta + DSR/PBO/per-regime breakdown
 
 If codex does (1)-(5), the conversation gets MUCH sharper. I'd update the memo with the answers.
 
@@ -331,8 +359,10 @@ After all this analysis, here's the most honest summary I can produce:
 > or beats Level 1 out-of-sample because estimation error dominates the
 > optimization gain. Moving to Level 2 (multi-period MV) is a defensible
 > alternative path — IT might be the right answer rather than Level 0.
-> The honest answer is "we don't know without measurement." The Phase 1
-> shadow path is the cheapest experiment that resolves the uncertainty.**
+> The honest answer is "we don't know without measurement." The offline
+> WF A/B replay (revised §8 Step 4) is the experiment that resolves the
+> uncertainty — live shadow (Step 5) is operational telemetry, not the
+> Sharpe gate.**
 
 I am 60% confident the Hybrid recommendation is right and 40% confident
 codex's review will surface evidence shifting the recommendation toward
