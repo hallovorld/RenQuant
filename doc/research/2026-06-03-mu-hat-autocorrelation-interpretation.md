@@ -55,11 +55,11 @@ separately when we have more BULL_VOLATILE / CHOPPY / BEAR data).
 
 | Lag (global trading days) | mean autocorr | top-5 overlap | top-10 overlap | top-20 overlap |
 |--------------------------:|--------------:|--------------:|---------------:|---------------:|
-| 1                         | **+0.860**    | 0.85          | 0.96           | 0.92           |
-| 5                         | **+0.565**    | 0.68          | 0.79           | 0.78           |
-| 10                        | **+0.361**    | 0.58          | 0.69           | 0.69           |
-| 20                        | **+0.166**    | 0.47          | 0.58           | 0.60           |
-| 60                        | **−0.158**    | 0.33          | 0.42           | 0.43           |
+| 1                         | **+0.860**    | 0.827         | 0.964          | 0.950          |
+| 5                         | **+0.565**    | 0.625         | 0.868          | null          |
+| 10                        | **+0.361**    | 0.505         | 0.747          | null          |
+| 20                        | **+0.166**    | 0.374         | 0.640          | null          |
+| 60                        | **-0.158**    | 0.266         | 0.183          | null          |
 
 **Half-life: 10 trading days** (smallest lag where mean autocorr ≤ 0.5).
 
@@ -90,9 +90,9 @@ unmeasurable at this sample size.
 The BULL_CALM μ̂ surface is **strongly persistent day-to-day**
 (L=1 = +0.86, top-5 overlap 0.85), **decays at moderate speed over
 the 5-20 day horizon**, and is **mildly anti-correlated at the 60-day
-horizon** (L=60 = −0.20).
+horizon** (L=60 = −0.16).
 
-- **Half-life of about two trading weeks.** L=5 autocorr is +0.57;
+- **Half-life of about two trading weeks.** L=5 autocorr is +0.56;
   mean autocorr crosses 0.5 between lag 5 and lag 10.
 - **By the 20-day horizon the forecast still has noticeable signal** (+0.17
   Pearson) — not the "L=20 near zero" claim the first (buggy) version
@@ -115,7 +115,7 @@ critique, weaker than the original (incorrect) script suggested:
 
 - **For Level-2 MPO**: the corrected numbers show **moderate, not
   fast, signal decay**. MPO's planning-ahead value exists (autocorr
-  declines from +0.86 at L=1 to +0.24 at L=20) but the slope is less
+  declines from +0.86 at L=1 to +0.17 at L=20) but the slope is less
   steep than the original script implied. MPO is worth including as
   one of the §8 Step 4 baselines, but not as a clear front-runner
   based on this observable alone.
