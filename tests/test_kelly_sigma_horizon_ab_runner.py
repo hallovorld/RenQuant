@@ -575,3 +575,42 @@ def test_bootstrap_subrepo_imports_adds_runtime_srcs(tmp_path: Path, monkeypatch
     assert root == runtime.resolve()
     assert str(runtime / "renquant-pipeline" / "src") in sys.path
     assert str(runtime / "renquant-common" / "src") in sys.path
+
+
+# ── no-trade guard (2026-06-03 admission-gate incident) ──────────────────────
+
+def test_control_trade_activity_detects_trades() -> None:
+    mod = _load_module()
+    metrics = {
+        "per_regime": {
+            "BULL_CALM": {"n_holdings_mean": 3.2, "cash_pct_mean": 18.0},
+            "CHOPPY": {"n_holdings_mean": 1.0, "cash_pct_mean": 40.0},
+        }
+    }
+    act = mod._control_trade_activity(metrics)
+    assert act["traded"] is True
+    assert abs(act["total_holdings_mean"] - 4.2) < 1e-9
+    assert act["regimes"] == 2
+    assert act["min_cash_pct_mean"] == 18.0
+
+
+def test_control_trade_activity_detects_no_trade() -> None:
+    mod = _load_module()
+    metrics = {
+        "per_regime": {
+            "BULL_CALM": {"n_holdings_mean": 0.0, "cash_pct_mean": 100.0},
+            "CHOPPY": {"n_holdings_mean": 0.0, "cash_pct_mean": 100.0},
+        }
+    }
+    act = mod._control_trade_activity(metrics)
+    assert act["traded"] is False
+    assert act["total_holdings_mean"] == 0.0
+
+
+def test_control_trade_activity_handles_empty_and_nonfinite() -> None:
+    mod = _load_module()
+    assert mod._control_trade_activity(None)["traded"] is False
+    assert mod._control_trade_activity({})["traded"] is False
+    # NaN holdings must not count as trading
+    metrics = {"per_regime": {"X": {"n_holdings_mean": float("nan")}}}
+    assert mod._control_trade_activity(metrics)["traded"] is False
