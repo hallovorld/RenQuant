@@ -49,6 +49,16 @@ def _patch_green_dependencies(
     monkeypatch.setattr(module, "run_contract", lambda: {"ok": True, "failures": []})
     monkeypatch.setattr(
         module,
+        "_run_runtime_qp_sanity",
+        lambda repo_root, runtime_root: {
+            "ok": True,
+            "returncode": 0,
+            "stdout_tail": ["OK: 13 runtime symbols present."],
+            "stderr_tail": [],
+        },
+    )
+    monkeypatch.setattr(
+        module,
         "inspect_launchagents",
         lambda **kwargs: {"ok": True, "issues": [], "entries": []},
     )
@@ -129,7 +139,9 @@ def test_readiness_passes_with_runtime_root_and_green_checks(monkeypatch, tmp_pa
     assert result["details"]["strict_subrepo_paths"] == "1"
     assert result["details"]["ops_fail_closed"] == "1"
     assert result["details"]["runtime_pins_ok"] is True
+    assert result["details"]["runtime_qp_sanity_ok"] is True
     assert result["runtime_pins"]["entries"][0]["name"] == "renquant-common"
+    assert result["runtime_qp_sanity"]["ok"] is True
 
 
 def test_readiness_blocks_runtime_root_without_strict_env(monkeypatch, tmp_path: Path) -> None:
@@ -236,6 +248,32 @@ def test_readiness_blocks_stale_runtime_pin(monkeypatch, tmp_path: Path) -> None
     assert result["details"]["runtime_pins_ok"] is False
     assert any(issue["check"] == "runtime_pins" for issue in result["issues"])
     assert result["runtime_pins"]["failures"][0]["name"] == "renquant-common"
+
+
+def test_readiness_blocks_failed_runtime_qp_sanity(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    _patch_green_dependencies(monkeypatch, module)
+    _write_pinned_runtime(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "_run_runtime_qp_sanity",
+        lambda repo_root, runtime_root: {
+            "ok": False,
+            "returncode": 1,
+            "stdout_tail": ["FAIL renquant_pipeline.kernel.portfolio_qp.run_ab_replay"],
+            "stderr_tail": [],
+        },
+    )
+
+    result = module.run_readiness(
+        repo_root=tmp_path,
+        canonical_repo=tmp_path,
+        allow_non_canonical=True,
+    )
+
+    assert result["ok"] is False
+    assert result["details"]["runtime_qp_sanity_ok"] is False
+    assert any(issue["check"] == "runtime_qp_sanity" for issue in result["issues"])
 
 
 def test_readiness_blocks_dirty_worktree(monkeypatch, tmp_path: Path) -> None:
