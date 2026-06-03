@@ -9,6 +9,25 @@
   paired umbrella+subrepo PRs while the byte-equivalent mirror invariant
   holds.
 
+## Post-Audit Status Update (2026-06-03)
+
+This memo records the original drift audit. Subsequent PRs closed the
+source-tree hazards:
+
+- `renquant-pipeline@main` now contains `davis_norman.py` and
+  `proportional_trade.py`.
+- The matching subrepo tests now exist:
+  `tests/test_davis_norman_band.py` and
+  `tests/test_proportional_trade.py`.
+- The QP mirror queue has advanced through snapshot/replay/significance,
+  hard-only QP, WF replay, and Hybrid Option F.
+
+The remaining P0 is operational, not source-tree parity: refresh
+`.subrepo_runtime/repos/renquant-pipeline/` to subrepo `main`, run
+paper/shadow smoke, and fail loud if the vendored runtime does not expose
+the expected QP modules. See
+[`doc/ops/2026-06-03-prod-runtime-qpmultirepo-refresh.md`](../../ops/2026-06-03-prod-runtime-qpmultirepo-refresh.md).
+
 ---
 
 ## Methodology
@@ -30,7 +49,7 @@ as drift.
 
 ---
 
-## Per-file status
+## Original Per-File Status
 
 | File | Umbrella | Subrepo | Status |
 |---|---|---|---|
@@ -269,28 +288,22 @@ guard rail that would have caught Findings 1 and 2.
 
 ---
 
-## Action items (PRs to close drift)
+## Action Items
 
-This memo does NOT fix the drift — it documents it. Required follow-up
-work, ordered by deployment impact:
+Original source-tree action items #1 and #2 are now closed by follow-up
+subrepo mirror PRs. The remaining work is deployment and regression
+guarding:
 
-1. **Subrepo paired-PR for `davis_norman.py`** (`renquant-pipeline`)
-   - Copy `backtesting/renquant_104/kernel/portfolio_qp/davis_norman.py`
-     into `src/renquant_pipeline/kernel/portfolio_qp/davis_norman.py`
-     verbatim (zero cross-kernel imports so no prefix rewrite needed).
-   - Lift `tests/test_davis_norman_band.py` and
-     `tests/test_passes_no_trade_band_dn.py` to subrepo `tests/`.
-   - **Priority**: P0 — blocks the next `.subrepo_runtime/` refresh.
-     Mandatory prerequisite before action item #4 can land.
+1. **Refresh `.subrepo_runtime/repos/renquant-pipeline/` vendored snapshot**
+   (umbrella; `make subrepo-runtime-root` per the memory note).
+   - **Priority**: P0 — production is still running pre-2026-05-30
+     portfolio_qp code, silently no-oping DN config + the QP architecture
+     refactor.
+   - Verify post-refresh with a paper/shadow daily run. Grep logs for the
+     Davis-Norman path, `BuildConstraintSnapshotTask`, and absence of
+     `ModuleNotFoundError`.
 
-2. **Subrepo paired-PR for `proportional_trade.py`** (`renquant-pipeline`)
-   - Same shape as #1, source file:
-     `backtesting/renquant_104/kernel/portfolio_qp/proportional_trade.py`.
-   - Lift `tests/test_proportional_trade.py`.
-   - **Priority**: P0 — same blocker as #1; the `tasks.py` lazy import
-     fires unconditionally on every QP solve after the snapshot refresh.
-
-3. **Drift regression guard test**
+2. **Drift regression guard test**
    - Add a test asserting that the set of `.py` files under
      `backtesting/renquant_104/kernel/portfolio_qp/` matches
      `src/renquant_pipeline/kernel/portfolio_qp/` (paired byte-mirror
@@ -300,24 +313,14 @@ work, ordered by deployment impact:
      pinning style — extend or add a portfolio_qp counterpart.
    - Same guard would have caught the entire Finding 1+2 class.
 
-4. **Refresh `.subrepo_runtime/repos/renquant-pipeline/` vendored snapshot**
-   (umbrella; `make subrepo-runtime-root` per the memory note).
-   - **Priority**: P1 — Production is currently running pre-2026-05-30
-     portfolio_qp code, silently no-oping DN config + the entire 2026-05-30
-     QP-architecture refactor. Refresh ONLY AFTER actions #1 + #2 land —
-     refreshing now would push the runtime into the Layer B
-     ModuleNotFoundError state described in Findings 1 + 2.
-   - Verify post-refresh: run a daily shadow cycle, grep the log for
-     the new BuildConstraintSnapshotTask output + ModuleNotFoundError.
-
-5. **§7.6 hardening — fail-fast import at module level (optional)**
+3. **§7.6 hardening — fail-fast import at module level (optional)**
    - Promote the two lazy imports in `tasks.py` (subrepo + umbrella) to
      module-level imports. Today they are lazy (`# noqa: PLC0415`); if
      the helper modules exist there's no circular-import cost. Module-
      level imports would catch the missing-mirror class of bug at
      import time instead of latent under a specific config branch.
 
-6. **Audit other umbrella-only `kernel/*` leaves** (out of scope for
+4. **Audit other umbrella-only `kernel/*` leaves** (out of scope for
    this audit, but recommended follow-up).
    - The pattern that produced Findings 1 + 2 (umbrella-only leaf
      referenced from a subrepo-mirrored caller) probably repeats
@@ -333,7 +336,8 @@ work, ordered by deployment impact:
 §3.5-blessed import prefix swap), confirming the recent multi-PR refactor
 campaign held the mirror invariant on the files it touched.
 
-However, three independent drift hazards remain:
+At the time of the original audit, three independent drift hazards
+remained:
 
 - **Source-tree drift** (Findings 1 + 2): two 2026-05-30 umbrella-only
   leaf modules (`davis_norman.py`, `proportional_trade.py`) are
@@ -348,10 +352,10 @@ However, three independent drift hazards remain:
   DN+PT have no subrepo counterparts, so neither the byte-equivalence
   mirror invariant nor §7.1 paired-test mandate is satisfied.
 
-Hazards 1 and 3 INTERACT: refreshing the vendored snapshot today
-(natural next step to get the 2026-05-30 work into production) would
-also push the Layer B ModuleNotFoundError live. Action items #1 + #2
-must land FIRST, then #4.
+As of the post-audit update above, the source-tree and paired-test
+hazards are closed. The vendored runtime snapshot drift remains and must
+be closed by runtime refresh + smoke before production cron relies on
+the QP refactor.
 
 The paired-PR mandate (§3.5) only holds if every umbrella `kernel/`
 change ships its subrepo counterpart on the same day — these two
@@ -360,5 +364,5 @@ landed 4 days ago and have been silently drifting since.
 ---
 
 *Audit complete. Memo is docs-only; no source code modified. Follow-up
-fix PRs (action items #1 + #2) should be opened separately and
-individually verified before action item #4 lands.*
+deployment work should prioritize the vendored runtime refresh and
+runtime sanity guard.*
