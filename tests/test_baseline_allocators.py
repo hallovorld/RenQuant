@@ -29,6 +29,7 @@ from kernel.portfolio_qp.baseline_allocators import (  # noqa: E402
     AllocatorResult,
     equal_weight_top_k,
     fractional_kelly_top_k,
+    hard_only_qp_allocator,
     hybrid_option_f_allocator,
     inverse_vol_top_k,
 )
@@ -419,24 +420,155 @@ class TestFullHardConstraintEnforcement:
         assert float(res.target_w.sum()) > 0.20 + 1e-9
 
 
-class TestHybridOptionFAllocator:
-    """§8 Step 4d — Hybrid Option F (parent memo §5).
-
-    Four-stage allocator: greedy SELECT + Kelly SIZE + min_dw band +
-    QP fallback. Tests pin: (a) the common closed-form path returns
-    ``"optimal"``, (b) Stage 1 gracefully drops names below the edge
-    floor, (c) Stage 4 fires when stages 1-3 violate hard constraints
-    and the QP rescues the bar, (d) the QP-infeasible path returns
-    ``"infeasible:hybrid_qp_fallback"`` with hold-flat Δw=0.
+class TestHardOnlyQPAllocator:
+    """§8 Step 4f — 5th baseline. The QP solver with EVERY soft-penalty
+    objective term zeroed (cvar=0, robust=0, cash_drag=0, signal_decay=0,
+    tax=0, impact=0). Isolates the mean-variance core + hard constraints
+    so the offline A/B can attribute lift between the soft-penalty stack
+    and the optimisation gain.
     """
 
-    def test_basic_feasible_path_optimal_no_qp_fallback(self):
-        """Stages 1-3 succeed; status='optimal', QP not invoked.
+    def test_basic_feasible_solve(self):
+        """Healthy 4-asset snapshot → optimal status, valid allocator output.
 
-        Loose hard cap (1.0), loose dw_max (1.0), no turnover/sector
-        caps, σ large enough that Kelly stays well under cap. The
-        post-Stage-3 target must be feasible without QP help.
+        μ̂ all positive, σ̂ uniform, no binding caps → solver should
+        invest non-trivially in the highest-μ̂ names, hard caps respected.
         """
+        snap = _snap(4, w_upper_hard=np.full(4, 0.40), turnover_max=None)
+        mu = np.array([0.05, 0.04, 0.03, 0.02])
+        sigma = np.array([0.10, 0.10, 0.10, 0.10])
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+        assert isinstance(res, AllocatorResult)
+        assert res.status == "optimal"
+        # Hard cap respected per-asset
+        assert (res.target_w <= snap.w_upper_hard + 1e-6).all()
+        assert (res.target_w >= -1e-6).all()
+        # Cash budget respected
+        assert res.target_w.sum() <= 1.0 - snap.cash_reserve + 1e-6
+        # delta_w + w_current == target_w (math sanity)
+        np.testing.assert_allclose(
+            res.target_w, snap.w_current + res.delta_w, atol=1e-9,
+        )
+        # selected_indices match |Δw| > 1e-9
+        expected_sel = tuple(
+            int(i) for i in np.where(np.abs(res.delta_w) > 1e-9)[0]
+        )
+        assert res.selected_indices == expected_sel
+        # At least one name was actually sized (μ̂ > 0 everywhere)
+        assert len(res.selected_indices) > 0
+
+    def test_over_cap_holding_infeasible(self):
+        """Contradictory hard constraints → ``infeasible:hard_only_qp:...``.
+
+        High cash_reserve (0.95) + dw_max=0 (can't sell) + existing
+        holdings totalling 0.50 → solver cannot satisfy
+        Σwp ≤ 0.05 because wp is locked to w_current. The allocator
+        must surface this as ``infeasible:hard_only_qp:<solver_status>``
+        per the §8 Step 4f spec.
+        """
+        snap = _snap(
+            3,
+            w_current=np.array([0.20, 0.20, 0.10]),
+            w_upper_hard=np.full(3, 0.30),
+            w_upper=np.full(3, 0.30),
+            cash_reserve=0.95,
+            dw_max=np.zeros(3),  # locked — no trade possible
+            turnover_max=None,
+        )
+        mu = np.array([0.05, 0.04, 0.03])
+        sigma = np.array([0.10, 0.10, 0.10])
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+        assert isinstance(res, AllocatorResult)
+        assert res.status.startswith("infeasible:hard_only_qp:"), (
+            f"expected infeasible:hard_only_qp:* prefix, got {res.status!r}"
+        )
+        # Infeasible fallback per solver convention: Δw=0, target=w_current
+        np.testing.assert_allclose(res.delta_w, np.zeros(3), atol=1e-9)
+        np.testing.assert_allclose(res.target_w, snap.w_current, atol=1e-9)
+
+    def test_sector_cap_respected(self):
+        """Hard sector cap binds — solver output must respect it.
+
+        3 assets all in sector 0 with cap 0.15; the unconstrained
+        QP would push allocation toward the 0.40 per-asset cap. After
+        the sector cap the sector load must be ≤ 0.15.
+        """
+        snap = _snap(
+            3,
+            w_upper_hard=np.full(3, 0.40),
+            w_upper=np.full(3, 0.40),
+            turnover_max=None,
+            sector_indicator=np.array([[1.0, 1.0, 1.0]]),
+            sector_cap_vec=np.array([0.15]),
+            sector_names=("Tech",),
+        )
+        mu = np.array([0.05, 0.04, 0.03])
+        sigma = np.array([0.10, 0.10, 0.10])
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+        assert res.status == "optimal"
+        sector_load = float(res.target_w.sum())
+        assert sector_load <= 0.15 + 1e-6, (
+            f"sector cap violated: load={sector_load}"
+        )
+
+    def test_replay_harness_shape_contract(self):
+        """Integration with the §8 Step 4b replay harness contract.
+
+        The harness expects ``AllocatorResult`` with:
+          - ``delta_w``: np.ndarray, shape (snap.n,), float
+          - ``target_w``: np.ndarray, shape (snap.n,), float
+          - ``status``: str
+          - ``selected_indices``: tuple of int
+        AND ``allocator(snap, mu=..., sigma=...)`` must be callable
+        with that exact kwargs shape (the
+        ``AllocatorFn = Callable[..., AllocatorResult]`` contract
+        documented in ``allocator_replay.py``).
+
+        We replay one synthetic bar end-to-end against the harness
+        contract — fwd_return → daily P&L → turnover cost — without
+        importing the (not-yet-merged) replay harness module. Shape +
+        dtype + cost-math sanity is what the harness keys off.
+        """
+        n = 4
+        snap = _snap(n, w_upper_hard=np.full(n, 0.40), turnover_max=None)
+        mu = np.array([0.05, 0.04, 0.03, 0.02])
+        sigma = np.array([0.10, 0.10, 0.10, 0.10])
+        fwd_return = np.array([0.01, -0.005, 0.003, 0.002])
+        cost_per_trade_bps = 5.0
+
+        # Call signature must accept (snap, mu=, sigma=) per AllocatorFn
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+
+        # Replay-harness shape contract — these are the EXACT
+        # access patterns in allocator_replay.replay_one_allocator.
+        assert isinstance(res, AllocatorResult)
+        assert isinstance(res.delta_w, np.ndarray)
+        assert isinstance(res.target_w, np.ndarray)
+        assert res.delta_w.shape == (n,)
+        assert res.target_w.shape == (n,)
+        assert res.delta_w.dtype == np.float64
+        assert res.target_w.dtype == np.float64
+        assert isinstance(res.status, str)
+        assert isinstance(res.selected_indices, tuple)
+        for i in res.selected_indices:
+            assert isinstance(i, int)
+
+        # Reproduce the replay-harness daily-return math on this bar
+        # (gross P&L − turnover cost) — proves the harness can compute
+        # well-defined floats from the allocator's outputs.
+        gross = float(np.sum(res.target_w * fwd_return))
+        turn = float(np.sum(np.abs(res.delta_w)))
+        cost = turn * cost_per_trade_bps * 1e-4
+        daily = gross - cost
+        assert np.isfinite(daily), "daily P&L must be finite"
+        assert turn >= 0.0
+
+
+class TestHybridOptionFAllocator:
+    """§8 Step 4d — Hybrid Option F (parent memo §5)."""
+
+    def test_basic_feasible_path_optimal_no_qp_fallback(self):
+        """Stages 1-3 succeed; status='optimal', QP not invoked."""
         snap = _snap(
             5,
             w_upper_hard=np.full(5, 1.0),
@@ -446,7 +578,7 @@ class TestHybridOptionFAllocator:
             cash_reserve=0.05,
         )
         mu = np.array([0.05, 0.04, 0.03, 0.02, 0.01])
-        sigma = np.full(5, 0.30)  # high σ → Kelly stays small
+        sigma = np.full(5, 0.30)
         res = hybrid_option_f_allocator(
             snap, mu=mu, sigma=sigma, K=3,
             kelly_fraction=0.10, mu_shrinkage=0.0,
@@ -456,26 +588,18 @@ class TestHybridOptionFAllocator:
         assert res.status == "optimal", (
             f"expected 'optimal' (no fallback), got {res.status!r}"
         )
-        # Top-3 by μ̂ should be selected
         assert set(res.selected_indices) == {0, 1, 2}
-        # Per-name Kelly size: f* = 0.10 · 0.05 / 0.09 ≈ 0.0556
-        # All three sized positively
         for i in res.selected_indices:
             assert res.target_w[i] > 0.0
-        # Untouched names → 0
         for i in (3, 4):
             assert res.target_w[i] == 0.0
-        # Δw invariant
         np.testing.assert_allclose(
             res.target_w, snap.w_current + res.delta_w, atol=1e-12,
         )
 
     def test_low_mu_falls_back_to_no_candidates(self):
-        """Stage 1 returns ``no_candidates`` when every μ̂ is below
-        the edge floor after shrinkage. The QP is NOT invoked.
-        """
+        """Stage 1 returns no_candidates below the edge floor."""
         snap = _snap(3, w_upper_hard=np.full(3, 1.0), turnover_max=None)
-        # μ̂ - 0.5·σ = 0.005 - 0.05 < 0; edge_floor=0.001 drops them
         mu = np.array([0.005, 0.005, 0.005])
         sigma = np.full(3, 0.10)
         res = hybrid_option_f_allocator(
@@ -488,17 +612,7 @@ class TestHybridOptionFAllocator:
         np.testing.assert_array_equal(res.delta_w, np.zeros(3))
 
     def test_over_cap_holding_triggers_qp_fallback_and_respects_hard_cap(self):
-        """Stages 1-3 produce an over-cap target; Stage 4 routes the
-        joint problem to the QP. The QP must drag the over-cap name
-        DOWN to the hard cap.
-
-        Setup: w_current[0] = 0.50 but w_upper_hard[0] = 0.20. Stage 1
-        selects T0 (high μ̂), Stage 2 sizes target[0] = Kelly value
-        (clipped at 0.20 by Stage 3 cap), but w_current[0]=0.50 is
-        already above the cap → the Stage-3 target violates the hard
-        cap (or violates dw_max because |Δw|=0.30 > dw_max=0.10).
-        Stage 4 fires; the QP must respect w_upper_hard.
-        """
+        """Over-cap current holding routes to QP fallback."""
         snap = _snap(
             3,
             w_current=np.array([0.50, 0.0, 0.0]),
@@ -515,12 +629,10 @@ class TestHybridOptionFAllocator:
             kelly_fraction=0.25, mu_shrinkage=0.0,
             edge_floor=0.0, min_dw=0.01,
         )
-        # QP fallback must have fired
         assert res.status in {
             "optimal:qp_fallback",
             "infeasible:hybrid_qp_fallback",
         }, f"expected fallback, got {res.status!r}"
-        # If the QP rescued, hard cap is respected
         if res.status == "optimal:qp_fallback":
             assert res.target_w[0] <= snap.w_upper_hard[0] + 1e-9, (
                 f"hard cap violated post-QP: target[0]={res.target_w[0]}"
@@ -528,13 +640,7 @@ class TestHybridOptionFAllocator:
             assert (res.target_w <= snap.w_upper_hard + 1e-9).all()
 
     def test_sector_cap_violation_triggers_qp_fallback(self):
-        """Stages 1-3 produce a sector-cap-violating target; Stage 4
-        fires and the QP must respect the sector cap.
-
-        Setup: 3 names all in sector 0 with cap=0.15. Stage-3 sizes
-        sum to > 0.15 → sector violation → QP fallback. QP solution
-        must satisfy S·w ≤ sector_cap_vec.
-        """
+        """Sector-cap-violating raw target routes to QP fallback."""
         snap = _snap(
             3,
             w_upper_hard=np.full(3, 0.20),
@@ -552,11 +658,9 @@ class TestHybridOptionFAllocator:
             kelly_fraction=0.25, mu_shrinkage=0.0,
             edge_floor=0.0, min_dw=0.005,
         )
-        # QP fallback must have fired (Stages 1-3 violate sector cap)
         assert res.status.startswith(("optimal:qp_fallback", "infeasible:")), (
             f"expected fallback or infeasible, got {res.status!r}"
         )
-        # If QP rescued, sector cap respected
         if res.status == "optimal:qp_fallback":
             sector_load = float(res.target_w.sum())
             assert sector_load <= 0.15 + 1e-6, (
@@ -564,11 +668,7 @@ class TestHybridOptionFAllocator:
             )
 
     def test_tight_turnover_cap_triggers_qp_fallback(self):
-        """Stage 3's min_dw band cannot enforce turnover_max — that
-        is a Stage 4 concern. Tight turnover_max=0.05 with Kelly
-        sizes ~0.1 each violates the L1 budget → QP fallback fires
-        and must satisfy ‖Δw‖₁ ≤ turnover_max.
-        """
+        """Stage 4 handles turnover caps that the min_dw band cannot."""
         snap = _snap(
             3,
             w_upper_hard=np.full(3, 1.0),
@@ -579,8 +679,6 @@ class TestHybridOptionFAllocator:
         )
         mu = np.array([0.05, 0.04, 0.03])
         sigma = np.full(3, 0.30)
-        # Kelly target ≈ 0.10·0.05/0.09 ≈ 0.056 each → Σ|Δw| ≈ 0.13
-        # > turnover_max=0.05 → Stage 4 fires
         res = hybrid_option_f_allocator(
             snap, mu=mu, sigma=sigma, K=3,
             kelly_fraction=0.10, mu_shrinkage=0.0,
@@ -597,11 +695,7 @@ class TestHybridOptionFAllocator:
             )
 
     def test_min_dw_band_zeros_tiny_trades(self):
-        """Stage 3's min_dw band snaps |Δw| < min_dw back to
-        ``w_current``. With Kelly producing 0.0005 sizes and
-        min_dw=0.02, the band must zero them out, leaving the target
-        at w_current.
-        """
+        """Stage 3 snaps |Δw| < min_dw back to w_current."""
         snap = _snap(
             3,
             w_current=np.array([0.10, 0.10, 0.10]),
@@ -610,49 +704,30 @@ class TestHybridOptionFAllocator:
             dw_max=np.full(3, 1.0),
             turnover_max=None,
         )
-        mu = np.array([0.001, 0.001, 0.001])  # tiny μ̂ above floor
-        sigma = np.full(3, 0.50)  # high σ → Kelly very small
-        # Kelly = 0.25 · 0.001 / 0.25 = 0.001 per name
-        # |Δw| = |0.001 - 0.10| = 0.099 > min_dw=0.02 → would trade
-        # But we want Kelly to be ≈ w_current so |Δw|< min_dw.
-        # Adjust: use sigma so Kelly ≈ 0.10
-        # Kelly = kf · μ / σ² = 0.10 → σ² = kf·μ/0.10 = 0.25·0.001/0.10 = 0.0025 → σ=0.05
+        mu = np.array([0.001, 0.001, 0.001])
         sigma = np.full(3, 0.05)
         res = hybrid_option_f_allocator(
             snap, mu=mu, sigma=sigma, K=3,
             kelly_fraction=0.25, mu_shrinkage=0.0,
             edge_floor=0.0, min_dw=0.02,
         )
-        # Stage 2: Kelly ≈ 0.10 each → matches w_current → Δw ≈ 0
-        # Stage 3 band: |Δw| ≈ 0 < min_dw → snap back to w_current
-        # Stage 4: target == w_current → feasible → status="optimal"
         assert res.status == "optimal", (
             f"expected 'optimal' (band snap to w_current), got {res.status!r}"
         )
-        # Trades smaller than min_dw → ≈ w_current
         np.testing.assert_allclose(
             res.target_w, snap.w_current, atol=0.02,
         )
 
     def test_replay_harness_integration_on_10_bar_sequence(self):
-        """End-to-end: feed the allocator a 10-bar sequence (rolling
-        ``w_current``) and assert: (a) every bar returns a valid
-        AllocatorResult, (b) hard caps respected across the sequence,
-        (c) status mix includes both ``optimal`` and ``optimal:qp_fallback``
-        outcomes (the replay harness needs both paths exercised), (d)
-        the Δw invariant holds bar-by-bar.
-        """
+        """End-to-end 10-bar sequence keeps allocator contract intact."""
         rng = np.random.default_rng(2026)
         n_bars = 10
         n = 4
         w = np.zeros(n)
         statuses: list[str] = []
         for bar in range(n_bars):
-            # Vary mu_hat and sigma a little per bar
             mu = rng.uniform(0.005, 0.05, size=n)
             sigma = rng.uniform(0.10, 0.30, size=n)
-            # Use a snapshot with a tight turnover cap so fallback
-            # fires on some bars and not others.
             snap = ConstraintSnapshot(
                 n=n,
                 tickers=tuple(f"T{i}" for i in range(n)),
@@ -674,23 +749,17 @@ class TestHybridOptionFAllocator:
                 edge_floor=0.001, min_dw=0.02,
             )
             assert isinstance(res, AllocatorResult)
-            # Hard cap respected on every bar
             assert (res.target_w <= snap.w_upper_hard + 1e-6).all(), (
                 f"bar {bar}: hard cap violated"
             )
             assert (res.target_w >= -1e-9).all(), (
                 f"bar {bar}: long-only violated"
             )
-            # Δw == target_w - w_current invariant
             np.testing.assert_allclose(
                 res.target_w, snap.w_current + res.delta_w, atol=1e-9,
             )
             statuses.append(res.status)
-            w = res.target_w  # roll forward
-        # The 10-bar sequence must surface at least the 'optimal' path
-        # (closed-form success). Fallback is rng-dependent; assert it
-        # occurred at least once across the bar set since turnover=0.15
-        # is tight relative to the Kelly sizing from cash.
+            w = res.target_w
         assert any(s == "optimal" or s == "optimal:qp_fallback" for s in statuses), (
             f"expected at least one feasible bar, got statuses={statuses}"
         )

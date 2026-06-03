@@ -537,3 +537,124 @@ def hybrid_option_f_allocator(
     # the returned AllocatorResult satisfies the same contract as the
     # closed-form baselines (defensive idempotent projection).
     return _build_result(snap, qp.target_w, selected, "optimal:qp_fallback")
+
+
+def hard_only_qp_allocator(
+    snap: ConstraintSnapshot,
+    *,
+    mu: Sequence[float],
+    sigma: Optional[Sequence[float]] = None,
+    Sigma: Optional[np.ndarray] = None,
+    risk_aversion: float = 3.0,
+    cost_kappa: float = 0.002,
+) -> AllocatorResult:
+    """5th §8 Step 4 baseline — QP with EVERY soft-penalty term zeroed.
+
+    Calls :func:`solve_portfolio_qp_from_snapshot` with the standard
+    Markowitz mean-variance core (μᵀw − γ wᵀΣw − κ‖Δw‖₁) but every
+    soft objective term disabled:
+
+    - ``cvar_lambda=0`` — no tail penalty (Rockafellar-Uryasev 2002)
+    - ``robust_mu_kappa=0`` — no μ̂ robust subtraction (Garlappi 2007)
+    - ``cash_drag_lambda=0`` — no SOFT cash-drag pull (Boyd 2017)
+    - ``signal_decay=0`` — no signal-half-life damping
+    - ``impact_coef=0`` — no Almgren-Chriss impact term
+    - ``tax_cost_per_sell=None`` — no Brown-Smith after-tax sells
+
+    The remaining hard-constraint set (budget, box bounds, dw_max,
+    wash-sale, turnover, sector caps, corr-pair caps, gross_max) is
+    fully respected by the solver itself — same projection logic the
+    cvxpy formulation already encodes.
+
+    Why this baseline (parent memo §2 + §8 Step 4): the current
+    production QP buries 6 soft-penalty knobs that the offline A/B
+    must isolate. If the hard-only QP matches the full QP's Sharpe
+    within DSR/PBO tolerance, the soft-penalty machinery is NOT
+    paying for alpha; it's paying for noise. If the full QP wins,
+    the offline A/B can credibly attribute the lift to the soft terms.
+
+    Parameters
+    ----------
+    snap : ConstraintSnapshot
+        The immutable hard-constraint contract.
+    mu : Sequence[float]
+        Per-asset μ̂ vector (shape ``(snap.n,)``).
+    sigma : Sequence[float], optional
+        Per-asset σ̂. If both ``sigma`` and ``Sigma`` are ``None``,
+        defaults to ``0.05`` per asset so the solver's risk term is
+        well-defined (the solver rejects σ=Σ=None).
+    Sigma : np.ndarray, optional
+        Full covariance matrix (shape ``(snap.n, snap.n)``). Takes
+        precedence over ``sigma`` if supplied.
+    risk_aversion : float, default 3.0
+        Markowitz γ. Mirrors the production QP default so the
+        hard-only vs full-QP A/B isolates ONLY the soft-penalty
+        contribution.
+    cost_kappa : float, default 0.002
+        Linear ‖Δw‖₁ transaction-cost coefficient. Cost is NOT a
+        soft penalty — it's a real cash outflow per the
+        cvxportfolio idiom — so we keep it. Default matches the
+        production QP's 20 bp round-trip cost assumption.
+
+    Returns
+    -------
+    AllocatorResult
+        ``status`` mirrors the QP convention:
+
+        - ``"optimal"`` ← QP ``"optimal"`` or ``"optimal_no_signal"``
+        - ``"infeasible:hard_only_qp:<solver_status>"`` ← any
+          ``"infeasible:..."`` solver status
+        - any other status passed through verbatim
+
+        ``selected_indices`` are the asset indices the allocator
+        actually traded (``|Δw_i| > 1e-9``).
+
+    References
+    ----------
+    - Boyd, Mueller, O'Donoghue & Wang (2017) *MPC for portfolio*
+      — soft-penalty objective formulation, only physics is hard
+    - DeMiguel-Garlappi-Uppal (2009) — closed-form baselines bound
+      the optimisation-gain measurement from below
+    - Parent memo PR #125 §8 Step 4 — A/B replay design
+    """
+    # Handle the σ=None ∧ Σ=None case so the solver doesn't raise.
+    # 5% per-asset is a small default that keeps the risk term
+    # well-defined without dominating the mean-variance trade-off.
+    sigma_eff = sigma
+    if sigma_eff is None and Sigma is None:
+        sigma_eff = np.full(snap.n, 0.05, dtype=float)
+
+    sol = solve_portfolio_qp_from_snapshot(
+        snap,
+        mu=mu,
+        sigma=sigma_eff,
+        Sigma=Sigma,
+        risk_aversion=risk_aversion,
+        cost_kappa=cost_kappa,
+        cvar_lambda=0.0,
+        robust_mu_kappa=0.0,
+        cash_drag_lambda=0.0,
+        signal_decay=0.0,
+        impact_coef=0.0,
+    )
+
+    # Status mapping per parent memo §8 Step 4f spec.
+    if sol.status == "optimal" or sol.status == "optimal_no_signal":
+        out_status = "optimal"
+    elif sol.status.startswith("infeasible"):
+        out_status = f"infeasible:hard_only_qp:{sol.status}"
+    else:
+        out_status = sol.status
+
+    delta_w = np.asarray(sol.delta_w, dtype=float)
+    target_w = np.asarray(sol.target_w, dtype=float)
+    selected = tuple(
+        int(i) for i in np.where(np.abs(delta_w) > 1e-9)[0]
+    )
+
+    return AllocatorResult(
+        delta_w=delta_w,
+        target_w=target_w,
+        status=out_status,
+        selected_indices=selected,
+    )
