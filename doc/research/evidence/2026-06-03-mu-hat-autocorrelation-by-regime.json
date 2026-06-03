@@ -6,10 +6,11 @@
     "2026-03-27"
   ],
   "interpretation_notes": [
-    "mean_autocorr is the mean Pearson corr(\u03bc\u0302_t, \u03bc\u0302_{t+k}) taken across tickers that appear on at least min_ticker_dates dates in the regime. Values close to 1.0 mean the forecast barely changes from bar to bar (Level-2 MultiPeriodOpt has little to optimize); values near 0 mean fast forecast decay (Level-2 has more to optimize).",
-    "topk_overlap measures rank-set persistence \u2014 useful for checking whether the TOP K names cycle rapidly even if the marginal \u03bc\u0302 value is stable.",
-    "half_life_days is the smallest lag at which mean autocorr first crosses 0.5; null means the autocorr never crosses 0.5 within the measured lag range.",
-    "BULL_CALM dominates the row count (\u224878% of bars) per the current 2024-2025 market regime mix. BEAR and CHOPPY may be undersampled; the 'undersampled' flag highlights regimes with < 50 rows where autocorr estimates are unreliable."
+    "Lag is in GLOBAL TRADING DAYS (corrected after #128 review). An earlier version of this script used pd.Series.shift on each ticker's sparse in-regime series, which on this DB averaged 37 trading-day gaps at nominal L=20.",
+    "mean_autocorr is the mean Pearson corr(\u03bc\u0302_t, \u03bc\u0302_{t+k}) taken across tickers eligible at this lag. Values close to 1 mean the forecast barely changes (Level-2 MPO has little to optimize); near 0 means fast forecast decay (Level-2 has more to optimize).",
+    "topk_overlap measures rank-set persistence \u2014 useful for checking whether the top-K names cycle rapidly even when marginal \u03bc\u0302 values are stable.",
+    "n_eligible_tickers_by_lag tells you why a null autocorr is null (zero eligible tickers \u21d2 no per-ticker correlation could be computed). n_valid_pairs_by_lag is the total (t, t+k) pair count summed across eligible tickers.",
+    "'undersampled' (#128 review fix) is True when fewer than 3 tickers are eligible at the most-permissive lag, OR all lags yield null autocorr. n_rows alone is not the right criterion."
   ],
   "lags_measured_trading_days": [
     1,
@@ -19,9 +20,10 @@
     60
   ],
   "min_ticker_dates_for_autocorr_inclusion": 30,
+  "n_global_trading_dates": 540,
   "n_total_rows": 3052,
-  "n_unique_dates": 540,
   "n_unique_tickers": 65,
+  "regime_stratification": "by regime at t only. The persistence question is: given we are in regime R at t, how stable is \u03bc\u0302 k trading days later regardless of the regime at t+k. A 'regime stays R from t to t+k' alternative would shrink the sample and answer a different question.",
   "regimes": {
     "BEAR": {
       "half_life_days": null,
@@ -33,8 +35,23 @@
         "60": null
       },
       "n_dates": 13,
+      "n_eligible_tickers_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "n_eligible_tickers_max": 0,
       "n_rows": 24,
       "n_tickers": 8,
+      "n_valid_pairs_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
       "topk_overlap": {
         "10": {
           "1": null,
@@ -58,27 +75,65 @@
           "60": null
         }
       },
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "20": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        }
+      },
       "undersampled": true
     },
     "BULL_CALM": {
-      "half_life_days": 5,
+      "half_life_days": 10,
       "mean_autocorr": {
-        "1": 0.7826502377026878,
-        "10": 0.1445893958643169,
-        "20": -0.04630226185935842,
-        "5": 0.35209301101685575,
-        "60": -0.07838504982193252
+        "1": 0.8582993002950693,
+        "10": 0.3771195678528504,
+        "20": 0.23751095524027482,
+        "5": 0.5614354785740493,
+        "60": -0.20024677067026558
       },
       "n_dates": 480,
+      "n_eligible_tickers_by_lag": {
+        "1": 26,
+        "10": 25,
+        "20": 21,
+        "5": 26,
+        "60": 9
+      },
+      "n_eligible_tickers_max": 26,
       "n_rows": 2699,
       "n_tickers": 59,
+      "n_valid_pairs_by_lag": {
+        "1": 1989,
+        "10": 1288,
+        "20": 866,
+        "5": 1585,
+        "60": 412
+      },
       "topk_overlap": {
         "10": {
-          "1": 0.9597014925373134,
-          "10": 0.7607142857142858,
-          "20": 0.5789473684210528,
-          "5": 0.861904761904762,
-          "60": 0.38000000000000006
+          "1": 0.963076923076923,
+          "10": 0.7586206896551724,
+          "20": 0.6937500000000001,
+          "5": 0.8780487804878047,
+          "60": 0.17272727272727273
         },
         "20": {
           "1": 0.95,
@@ -88,11 +143,34 @@
           "60": null
         },
         "5": {
-          "1": 0.8253968253968254,
-          "10": 0.5267605633802818,
-          "20": 0.37000000000000005,
-          "5": 0.630379746835443,
-          "60": 0.2835443037974683
+          "1": 0.8290322580645161,
+          "10": 0.5186206896551724,
+          "20": 0.38947368421052636,
+          "5": 0.6382165605095541,
+          "60": 0.29850746268656714
+        }
+      },
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 65,
+          "10": 29,
+          "20": 16,
+          "5": 41,
+          "60": 11
+        },
+        "20": {
+          "1": 2,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 186,
+          "10": 145,
+          "20": 114,
+          "5": 157,
+          "60": 67
         }
       },
       "undersampled": false
@@ -107,14 +185,29 @@
         "60": null
       },
       "n_dates": 31,
+      "n_eligible_tickers_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "n_eligible_tickers_max": 0,
       "n_rows": 266,
       "n_tickers": 47,
+      "n_valid_pairs_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
       "topk_overlap": {
         "10": {
-          "1": 0.875,
-          "10": 0.2,
-          "20": 0.1,
-          "5": 0.575,
+          "1": 0.911111111111111,
+          "10": 0.7333333333333334,
+          "20": null,
+          "5": 0.8600000000000001,
           "60": null
         },
         "20": {
@@ -125,14 +218,37 @@
           "60": null
         },
         "5": {
-          "1": 0.7333333333333333,
-          "10": 0.044444444444444446,
-          "20": 0.05714285714285715,
-          "5": 0.36,
+          "1": 0.7714285714285715,
+          "10": 0.6,
+          "20": 0.0,
+          "5": 0.6,
           "60": null
         }
       },
-      "undersampled": false
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 9,
+          "10": 3,
+          "20": 0,
+          "5": 5,
+          "60": 0
+        },
+        "20": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 14,
+          "10": 3,
+          "20": 2,
+          "5": 5,
+          "60": 0
+        }
+      },
+      "undersampled": true
     },
     "CHOPPY": {
       "half_life_days": null,
@@ -144,8 +260,23 @@
         "60": null
       },
       "n_dates": 16,
+      "n_eligible_tickers_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "n_eligible_tickers_max": 0,
       "n_rows": 63,
       "n_tickers": 19,
+      "n_valid_pairs_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
       "topk_overlap": {
         "10": {
           "1": null,
@@ -169,7 +300,30 @@
           "60": null
         }
       },
-      "undersampled": false
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "20": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 2,
+          "10": 1,
+          "20": 0,
+          "5": 1,
+          "60": 0
+        }
+      },
+      "undersampled": true
     }
   },
   "topk_values_measured": [

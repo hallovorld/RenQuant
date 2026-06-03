@@ -1,11 +1,21 @@
 # μ̂ autocorrelation per regime — measurement results
 
-**Date**: 2026-06-03
+**Date**: 2026-06-03 · **Updated**: 2026-06-03 after codex #128 review
 **Status**: §8 Step 2 of [`2026-06-02-qp-architecture-review-and-alternatives.md`](2026-06-02-qp-architecture-review-and-alternatives.md). Closes the codex #125 HIGH-4 finding.
 **Author**: Claude
 **Inputs**: `data/sim_runs.db::score_distribution` (3,052 (date, ticker, μ̂, regime) rows, 540 dates, 65 tickers, 2024-01-02 → 2026-03-27)
 **Outputs**: [`evidence/2026-06-03-mu-hat-autocorrelation-by-regime.json`](evidence/2026-06-03-mu-hat-autocorrelation-by-regime.json) (canonical evidence artifact)
 **Script**: [`scripts/measure_mu_hat_autocorrelation_by_regime.py`](../../scripts/measure_mu_hat_autocorrelation_by_regime.py)
+
+> **#128 review correction**: codex (HIGH-1) caught that the first
+> version of the script measured *observation-index lag*, not
+> *trading-day lag*. `pd.Series.shift(5)` on a sparse in-regime
+> series shifts by the 5th later observation, which on this DB had
+> median 5 / p90 70 / max 422 trading-day gap. The script now reindexes
+> each ticker's regime series against the global trading-day index
+> (sorted unique dates across the full panel) before shifting. The
+> corrected headline numbers below replace the original (incorrect)
+> set; the qualitative interpretation is also updated.
 
 ## Why this measurement exists
 
@@ -19,78 +29,105 @@ the *forecast-state* persistence**, `corr(μ̂_t, μ̂_{t+k})`, measured
 on the calibrator output the QP actually consumes.
 
 This script measures exactly that, plus top-K rank overlap and
-expected-return half-life, per regime, for trading-day lags
-{1, 5, 10, 20, 60}.
+expected-return half-life, per regime, for **global trading-day**
+lags {1, 5, 10, 20, 60}.
 
-## Headline numbers
+## Regime stratification choice
 
-| Regime         | n_rows | L=1     | L=5     | L=10    | L=20    | L=60    | Half-life |
-|----------------|--------|---------|---------|---------|---------|---------|-----------|
-| BULL_CALM      | 2,699  | +0.783  | +0.352  | +0.145  | −0.046  | −0.078  | **5 d**   |
-| BULL_VOLATILE  |   266  | —       | —       | —       | —       | —       | (insufficient per-ticker history) |
-| CHOPPY         |    63  | —       | —       | —       | —       | —       | (undersampled) |
-| BEAR           |    24  | —       | —       | —       | —       | —       | (undersampled) |
+We stratify by **regime at t** (the bar where the decision is made),
+not by "regime stays constant from t to t+k". The persistence
+question is: *given we are in regime R at t, how stable is μ̂ k
+trading days later regardless of the regime at t+k*. The
+"regime-stays-constant" alternative shrinks the sample dramatically
+and answers a different question (which we may want to measure
+separately when we have more BULL_VOLATILE / CHOPPY / BEAR data).
 
-(BULL_VOLATILE / CHOPPY / BEAR per-regime ticker histories are too
-short under the default `min_ticker_dates=30` threshold; lowering it
-to ~10 would surface a number but with wide standard error. We
-explicitly flag those as undersampled in the JSON and do not draw a
-quantitative conclusion from them.)
+## Headline numbers (BULL_CALM, the dominant regime — 78% of recent bars)
 
-## Top-K rank overlap (BULL_CALM, the dominant regime)
+| Lag (global trading days) | mean autocorr | top-5 overlap | top-10 overlap | top-20 overlap |
+|--------------------------:|--------------:|--------------:|---------------:|---------------:|
+| 1                         | **+0.858**    | 0.85          | 0.96           | 0.92           |
+| 5                         | **+0.561**    | 0.68          | 0.79           | 0.78           |
+| 10                        | **+0.377**    | 0.58          | 0.69           | 0.69           |
+| 20                        | **+0.238**    | 0.47          | 0.58           | 0.60           |
+| 60                        | **−0.200**    | 0.33          | 0.42           | 0.43           |
 
-| K  | L=1   | L=5   | L=10  | L=20  | L=60  |
-|----|-------|-------|-------|-------|-------|
-|  5 | 0.83  | 0.63  | 0.53  | 0.37  | 0.28  |
-| 10 | 0.96  | 0.86  | 0.76  | 0.58  | 0.38  |
-| 20 | 0.95  | —     | —     | —     | —     |
+**Half-life: 10 trading days** (smallest lag where mean autocorr ≤ 0.5).
 
-(K=20 only has enough valid pairs at L=1 — most bars don't have 20+
-candidates with valid μ̂.)
+Per-ticker eligibility: 26 of 65 tickers had ≥ 30 BULL_CALM
+observations and contributed to the per-regime mean at all measured
+lags.
+
+## Per-regime summary
+
+| Regime          | n_rows | n_eligible tickers | half-life          |
+|-----------------|-------:|--------------------|--------------------|
+| BULL_CALM       |  2,699 | 26                 | 10 trading days    |
+| BULL_VOLATILE   |    266 | 0                  | undersampled       |
+| CHOPPY          |     63 | 0                  | undersampled       |
+| BEAR            |     24 | 0                  | undersampled       |
+
+BULL_VOLATILE / CHOPPY / BEAR per-ticker regime histories are all
+below the `min_ticker_dates=30` threshold; the JSON artifact's
+`n_eligible_tickers_by_lag` field is 0 across lags for those regimes,
+so `undersampled: true` is set correctly (codex #128 MED-2 fix —
+flag is now driven by eligibility, not just `n_rows`). Lowering the
+threshold would surface numbers at the cost of noisier per-ticker
+estimates; we hold the threshold and explicitly mark the regimes
+unmeasurable at this sample size.
 
 ## Interpretation
 
-The BULL_CALM μ̂ surface is **persistent day-to-day** (L=1 = +0.78,
-top-5 overlap 0.83) but **decays fast on the multi-day timescale**:
+The BULL_CALM μ̂ surface is **strongly persistent day-to-day**
+(L=1 = +0.86, top-5 overlap 0.85), **decays at moderate speed over
+the 5-20 day horizon**, and is **mildly anti-correlated at the 60-day
+horizon** (L=60 = −0.20).
 
-- **Half-life of about a week.** L=5 autocorr is +0.35; mean-autocorr
-  crosses 0.5 between lag 1 and lag 5.
-- **By 2 weeks (L=10) the marginal forecast value is small** (+0.14
-  Pearson), and by a month (L=20) the forecast is essentially
-  uncorrelated with its earlier self.
-- **Top-K rank overlap holds up better than Pearson** — even at L=60,
-  ~28% of the top-5 names from a month-and-a-half ago are still on
-  the current top-5. The ranking persists longer than the magnitudes.
+- **Half-life of about two trading weeks.** L=5 autocorr is +0.56;
+  mean autocorr crosses 0.5 between lag 5 and lag 10.
+- **By the 20-day horizon the forecast still has signal** (+0.24
+  Pearson) — not the "L=20 near zero" claim the first (buggy) version
+  reported. The 60-day decorrelation is genuine but consistent with
+  the calibrator targeting a 60-day excess return horizon (a new
+  forecast at t+60 has essentially no information overlap with the
+  one at t).
+- **Top-K rank overlap holds up substantially better than Pearson.**
+  Even at L=60, ~33% of the top-5 names from 60 trading days ago are
+  still on the current top-5. The ranking persists longer than the
+  magnitudes — which is the more relevant observable for a top-K
+  selector like the Hybrid Stage 1 in §5 Option F.
 
 ## Implication for the §8 Step 4 offline A/B replay
 
 Both codex (HIGH-4) and gemini (#3) flagged that the parent memo's
-dismissal of Level 2 (cvxportfolio MultiPeriodOpt) was premature.
-This measurement narrows down the question:
+dismissal of Level 2 (cvxportfolio MultiPeriodOpt) was premature. The
+corrected measurement gives a **partial confirmation** to that
+critique, weaker than the original (incorrect) script suggested:
 
-- **For Level-2 MPO**: fast Pearson decay (half-life ~5 days, L=20
-  near zero) is exactly the regime MPO mathematically exploits —
-  spreading Δw over multiple bars while alpha decays. Boyd-cvxportfolio
-  is explicit that MPO's value is in alpha-decay × friction balance.
-  **BULL_CALM may be a stronger MPO use case than the parent memo
-  claimed**.
+- **For Level-2 MPO**: the corrected numbers show **moderate, not
+  fast, signal decay**. MPO's planning-ahead value exists (autocorr
+  declines from +0.86 at L=1 to +0.24 at L=20) but the slope is less
+  steep than the original script implied. MPO is worth including as
+  one of the §8 Step 4 baselines, but not as a clear front-runner
+  based on this observable alone.
 
-- **For Level-0 Kelly / Hybrid**: persistent top-K rank (overlap 0.5
-  at L=10 trading days) means a rule-based "stay in top-K, update
-  weights when the rank changes" path is operationally viable — the
+- **For Level-0 Kelly / Hybrid**: the ~0.58 top-5 overlap at L=10 and
+  ~0.47 at L=20 means a rule-based "stay in top-K, rebalance when the
+  rank changes meaningfully" path is operationally viable — the
   cohort doesn't churn so fast that turnover costs dominate.
 
 - **For current Level-1 SinglePeriodOpt**: the day-to-day persistence
-  (+0.78 L=1) is *enough* that single-period decisions are not
-  random, but the L=20 near-zero autocorr suggests the optimizer is
-  over-fitting the *current* μ̂ to a horizon where the forecast has
-  already drifted. This is consistent with the §4 DeMiguel-mechanism
-  argument that estimation error dominates the optimization gain.
+  (+0.86 L=1) is comfortably enough that single-period decisions are
+  not random. The L=20 = +0.24 Pearson still has signal; the
+  optimizer is *not* over-fitting a horizon where the forecast has
+  drifted to noise. This is a softer version of the §4
+  DeMiguel-mechanism argument than the original (incorrect) script
+  supported.
 
-**The offline A/B replay (§8 Step 4) should include Level-2 MPO
-explicitly as one of the 5 baselines** — the autocorr profile makes
-it a real candidate, not (as the original parent memo wrote) a
-"defensive infrastructure" addition.
+**Net for §8 Step 4**: include Level-2 MPO explicitly as one of the
+5 baselines, but treat its expected advantage over Level-1 as smaller
+than the original (incorrect) script implied. The decision-grade
+artifact remains the offline A/B output, not this measurement alone.
 
 ## Limits of this measurement
 
@@ -101,24 +138,26 @@ it a real candidate, not (as the original parent memo wrote) a
   (matching the live market regime distribution since 2024). The
   per-regime claim above is BULL_CALM-only; BULL_VOLATILE, CHOPPY,
   and BEAR autocorrelation would need a longer or paper-augmented
-  sample. This is consistent with the regime-stratified diagnostic
-  ([`2026-06-02-bull-calm-no-signal-diagnostic.md`](2026-06-02-bull-calm-no-signal-diagnostic.md))
-  finding: 78% of recent bars are BULL_CALM, and that is the only
-  regime where we currently have enough rows for stable per-regime
-  inference of any kind.
+  sample.
 - **`min_ticker_dates=30` was the threshold.** Lowering it would
   surface per-regime numbers for the other 3 regimes at the cost of
-  noisier per-ticker autocorr estimates. We can re-run with a lower
-  threshold if codex thinks the trade-off is worth it.
+  noisier per-ticker autocorr estimates.
 
-## Reproduction recipe
+## Reproduction recipe (#128 review fix)
 
 ```bash
 .venv/bin/python scripts/measure_mu_hat_autocorrelation_by_regime.py
-# Writes doc/research/evidence/2026-06-03-mu-hat-autocorrelation-by-regime.json
-# Console summary as in the table above.
+# Default writes doc/research/evidence/2026-06-03-mu-hat-autocorrelation-by-regime.json
+
+# External DB (now works after the #128 MED-3 fix):
+.venv/bin/python scripts/measure_mu_hat_autocorrelation_by_regime.py \
+    --db /path/to/other/sim_runs.db
+# data_source label falls back gracefully to absolute path when the DB
+# is outside the repo.
 ```
 
-The script reads `data/sim_runs.db::score_distribution`. Pass `--db
-<other-db>` to point at a paper-broker or alpaca decision-trace DB
-once we have those tables populated; the schema is the same.
+The script fails fast with a clear error if the DB does not exist
+(`data/` is gitignored; a fresh checkout will not have
+`data/sim_runs.db` and must point `--db` at an external location —
+previously this surfaced as `sqlite3.OperationalError`, now it surfaces
+as a clean `SystemExit` with reproduction hints).
