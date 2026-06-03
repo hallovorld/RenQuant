@@ -1,0 +1,191 @@
+{
+  "as_of_date": "2026-06-03",
+  "bull_calm_counterfactual_grid": [
+    {
+      "ann_ret_pct": -18.275419620051945,
+      "ann_vol_pct": 8.29932756985661,
+      "fill": 0.5,
+      "mean_daily_pct": -0.07252150642877755,
+      "n": 111,
+      "sharpe": -2.2020361850071786,
+      "threshold": 0.1
+    },
+    {
+      "ann_ret_pct": -27.41312943007792,
+      "ann_vol_pct": 12.448991354784912,
+      "fill": 0.75,
+      "mean_daily_pct": -0.10878225964316636,
+      "n": 111,
+      "sharpe": -2.2020361850071795,
+      "threshold": 0.1
+    },
+    {
+      "ann_ret_pct": -36.55083924010389,
+      "ann_vol_pct": 16.59865513971322,
+      "fill": 1.0,
+      "mean_daily_pct": -0.1450430128575551,
+      "n": 111,
+      "sharpe": -2.2020361850071786,
+      "threshold": 0.1
+    },
+    {
+      "ann_ret_pct": -24.92163579068328,
+      "ann_vol_pct": 9.575375823681316,
+      "fill": 0.5,
+      "mean_daily_pct": -0.09889538012175904,
+      "n": 83,
+      "sharpe": -2.602679649298819,
+      "threshold": 0.15
+    },
+    {
+      "ann_ret_pct": -37.38245368602492,
+      "ann_vol_pct": 14.363063735521974,
+      "fill": 0.75,
+      "mean_daily_pct": -0.14834307018263856,
+      "n": 83,
+      "sharpe": -2.602679649298819,
+      "threshold": 0.15
+    },
+    {
+      "ann_ret_pct": -49.84327158136656,
+      "ann_vol_pct": 19.150751647362632,
+      "fill": 1.0,
+      "mean_daily_pct": -0.19779076024351808,
+      "n": 83,
+      "sharpe": -2.602679649298819,
+      "threshold": 0.15
+    },
+    {
+      "ann_ret_pct": -29.33155262798576,
+      "ann_vol_pct": 10.261442138182755,
+      "fill": 0.5,
+      "mean_daily_pct": -0.11639505011105462,
+      "n": 72,
+      "sharpe": -2.8584240141883432,
+      "threshold": 0.2
+    },
+    {
+      "ann_ret_pct": -43.99732894197862,
+      "ann_vol_pct": 15.392163207274137,
+      "fill": 0.75,
+      "mean_daily_pct": -0.17459257516658183,
+      "n": 72,
+      "sharpe": -2.8584240141883406,
+      "threshold": 0.2
+    },
+    {
+      "ann_ret_pct": -58.66310525597152,
+      "ann_vol_pct": 20.52288427636551,
+      "fill": 1.0,
+      "mean_daily_pct": -0.23279010022210925,
+      "n": 72,
+      "sharpe": -2.8584240141883432,
+      "threshold": 0.2
+    }
+  ],
+  "caveats": [
+    "Single-asset (SPY only); does not test QQQ split",
+    "No transaction cost, no slippage, no tax modeled",
+    "No portfolio-level interaction modeled (overlay does not affect existing positions)",
+    "Counterfactual is an upper bound on overlay value-add",
+    "Placebo battery (\u00a77.2.1 R2) NOT YET RUN \u2014 these numbers are pre-sanity"
+  ],
+  "counterfactual_grid": [
+    {
+      "annualized_return_pct": -14.332640128096877,
+      "annualized_vol_pct": 3.7796036530561827,
+      "fill_frac": 0.5,
+      "mean_daily_pct": -0.05687555606387649,
+      "n_active": 44,
+      "sharpe_add": -3.792101353407128,
+      "std_daily_pct": 0.23809265048518835,
+      "threshold": 0.2
+    },
+    {
+      "annualized_return_pct": -21.498960192145315,
+      "annualized_vol_pct": 5.669405479584274,
+      "fill_frac": 0.75,
+      "mean_daily_pct": -0.08531333409581475,
+      "n_active": 44,
+      "sharpe_add": -3.792101353407129,
+      "std_daily_pct": 0.3571389757277825,
+      "threshold": 0.2
+    },
+    {
+      "annualized_return_pct": -28.665280256193753,
+      "annualized_vol_pct": 7.5592073061123655,
+      "fill_frac": 1.0,
+      "mean_daily_pct": -0.11375111212775298,
+      "n_active": 44,
+      "sharpe_add": -3.792101353407128,
+      "std_daily_pct": 0.4761853009703767,
+      "threshold": 0.2
+    },
+    {
+      "annualized_return_pct": -14.77970123270583,
+      "annualized_vol_pct": 4.064971965920455,
+      "fill_frac": 0.5,
+      "mean_daily_pct": -0.05864960806629297,
+      "n_active": 38,
+      "sharpe_add": -3.635867936264888,
+      "std_daily_pct": 0.25606916448273453,
+      "threshold": 0.3
+    },
+    {
+      "annualized_return_pct": -22.169551849058745,
+      "annualized_vol_pct": 6.097457948880683,
+      "fill_frac": 0.75,
+      "mean_daily_pct": -0.08797441209943947,
+      "n_active": 38,
+      "sharpe_add": -3.6358679362648885,
+      "std_daily_pct": 0.3841037467241018,
+      "threshold": 0.3
+    },
+    {
+      "annualized_return_pct": -29.55940246541166,
+      "annualized_vol_pct": 8.12994393184091,
+      "fill_frac": 1.0,
+      "mean_daily_pct": -0.11729921613258594,
+      "n_active": 38,
+      "sharpe_add": -3.635867936264888,
+      "std_daily_pct": 0.5121383289654691,
+      "threshold": 0.3
+    },
+    {
+      "annualized_return_pct": -14.587080439382952,
+      "annualized_vol_pct": 4.135774935305913,
+      "fill_frac": 0.5,
+      "mean_daily_pct": -0.05788523983882123,
+      "n_active": 34,
+      "sharpe_add": -3.527048900765192,
+      "std_daily_pct": 0.260529332317945,
+      "threshold": 0.4
+    },
+    {
+      "annualized_return_pct": -21.880620659074427,
+      "annualized_vol_pct": 6.203662402958869,
+      "fill_frac": 0.75,
+      "mean_daily_pct": -0.08682785975823185,
+      "n_active": 34,
+      "sharpe_add": -3.527048900765192,
+      "std_daily_pct": 0.39079399847691754,
+      "threshold": 0.4
+    },
+    {
+      "annualized_return_pct": -29.174160878765903,
+      "annualized_vol_pct": 8.271549870611826,
+      "fill_frac": 1.0,
+      "mean_daily_pct": -0.11577047967764247,
+      "n_active": 34,
+      "sharpe_add": -3.527048900765192,
+      "std_daily_pct": 0.52105866463589,
+      "threshold": 0.4
+    }
+  ],
+  "interpretation": "BULL_VOLATILE overlay produces NEGATIVE Sharpe (-3.5 to -3.8) because BULL_VOLATILE bars cluster during SPY drawdowns \u2014 deploying excess cash into SPY in that regime buys the dip and realizes the volatility losses. BULL_CALM overlay is small in magnitude (cash% low) but worth scoring for sign. The original codex hypothesis (passive overlay captures equity premium) does NOT survive this regime-conditional empirical test.",
+  "method": "Analytical: for each BULL_VOLATILE bar with cash_pct > threshold, incremental_return = (cash_pct - cash_reserve_0.10) * fill_frac * SPY_fwd_1d. Mean/std/Sharpe annualized at 252 trading days.",
+  "n_bull_volatile_bars": 62,
+  "n_with_spy_data": 62,
+  "study": "cash-overlay-bull-volatile-counterfactual",
+  "verdict": "REJECT_REGIME_CONDITIONAL_PASSIVE_OVERLAY"
+}

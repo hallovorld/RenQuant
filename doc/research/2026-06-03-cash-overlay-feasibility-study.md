@@ -12,7 +12,9 @@ independent and additive.
 
 ## TL;DR
 
-**Yes, the feature is feasible and well-motivated.** Three observations:
+**Revised after Stage 0 + Stage 1 counterfactual (2026-06-03): the codex feature, as proposed, fails the empirical test.** The original theoretical motivation is sound (§3), but the regime-conditional Sharpe of the counterfactual overlay is **negative across all tested knob combinations** (BULL_CALM Sharpe ≈ −2.2, BULL_VOLATILE Sharpe ≈ −3.6). Root cause: conditional adverse selection — high-cash days correlate with bad-SPY days because the strategy raises cash via bearish-signal exits (§5.6.3). The originally well-motivated codex proposal is therefore **REJECTED** at the §6 promotion gate before any sim compute is spent. The §5 BEAR defensive sleeve audit is **PROMOTED to standalone §7.7-class dead-gate bug** — config promises 30% deployment, sim shows zero defensive trades.
+
+Before the §5.5 / §5.6 evidence landed, the memo's original framing was: "feasible and well-motivated" — those original three observations stay valuable for context and are preserved below. Three observations:
 
 1. **The drag is real and measured.** Failed-experiments-log §"3-cut
    12-mo OOS reality check" (line 1947) attests *"the strategy is
@@ -288,99 +290,183 @@ the per-regime overlay spec. No conflict with existing knobs.
 
 ---
 
-## 5.5 Stage 0 evidence — what the sim DB actually says (2026-06-03)
+## 5.6 Stage 1 counterfactual — passive overlay fails the empirical test
 
-Stage 0 was fired against `data/sim_runs.db::pipeline_runs` (the
-empirical sim-panel cash% distribution, 1,089 rows, 2024-01-02 →
-2026-03-27). **The result changes the targeting of the proposed
-overlay materially** — see the verdict JSON at
-[`artifacts/cash_overlay_stage0.json`](../../artifacts/cash_overlay_stage0.json).
+**Date**: 2026-06-03 (same session as Stage 0).
+**Verdict JSON**: [`artifacts/cash_overlay_stage1_counterfactual.json`](../../artifacts/cash_overlay_stage1_counterfactual.json).
 
-### 5.5.1 Per-regime cash% distribution
+Rather than build the overlay code path and run a full Stage-1 sim
+(~30 min), I ran an **analytical counterfactual** against
+`pipeline_runs` joined with `ticker_forward_returns::SPY::fwd_1d`:
+for each historical sim bar where `cash_pct > threshold`, compute the
+incremental return the overlay sleeve would have realized on day
+`t+1` if it had deployed `(cash_pct − 0.10) × fill_frac` of NAV
+into SPY at the day-`t` close. This is faster than a Stage 1 sim
+and uses only data already in the DB.
 
-| Regime | n | min | p25 | **median** | p75 | p90 | max | mean |
-|---|--:|--:|--:|--:|--:|--:|--:|--:|
-| BULL_CALM | 943 | −1.1% | 1.7% | **3.7%** | 6.9% | 11.8% | 100.0% | 8.9% |
-| BULL_VOLATILE | 62 | 3.1% | 9.0% | **44.6%** | 53.2% | 89.3% | 89.5% | 41.9% |
-| BEAR | 52 | 99.8% | 100.0% | **100.0%** | 100.0% | 100.0% | 100.0% | 100.0% |
-| CHOPPY | 32 | 0.8% | 13.0% | **15.4%** | 20.8% | 48.3% | 59.2% | 18.5% |
+### 5.6.1 Grid results — BULL_VOLATILE (FINDING-2 target)
 
-Last 90 sim bars (2026-01-23 → 2026-03-27): BULL_CALM median 6.3% (n=70);
-BULL_VOLATILE median 44.6% (n=20).
+| threshold | fill | n_active | mean daily return | annualized Sharpe |
+|---|---|--:|--:|--:|
+| 0.20 | 0.50 | 44 | −0.057% | **−3.79** |
+| 0.20 | 0.75 | 44 | −0.085% | **−3.79** |
+| 0.20 | 1.00 | 44 | −0.114% | **−3.79** |
+| 0.30 | 0.50 | 38 | −0.059% | **−3.64** |
+| 0.30 | 0.75 | 38 | −0.088% | **−3.64** |
+| 0.30 | 1.00 | 38 | −0.117% | **−3.64** |
+| 0.40 | 0.50 | 34 | −0.058% | **−3.53** |
+| 0.40 | 0.75 | 34 | −0.087% | **−3.53** |
+| 0.40 | 1.00 | 34 | −0.116% | **−3.53** |
 
-### 5.5.2 Three load-bearing findings
+All 9 combinations produce **negative** Sharpe ranging −3.53 to −3.79.
 
-**FINDING-1 — BULL_CALM is not the target regime.** The codex
-hypothesis was that BULL_CALM cash% is large enough to deploy
-profitably. The sim says median BULL_CALM cash% is **3.7% all-time
-and 6.3% in the last 90 bars** — well below the §6.1 acceptance
-threshold of 20%. **The overlay solves a non-problem in BULL_CALM at
-current sim cash levels.** A BULL_CALM-only overlay per the original
-codex spec is **DEFER** per §6.1.
+### 5.6.2 Grid results — BULL_CALM (FINDING-1 target, for completeness)
 
-**FINDING-2 — BULL_VOLATILE is the real target.** Median cash% in
-BULL_VOLATILE is **44.6%**, more than 2× the §6.1 threshold. That
-regime carries the bulk of the failed-experiments-log line 1947
-"~30–40% cash drag" attestation. A BULL_VOLATILE overlay is **PROCEED**
-material.
+| threshold | fill | n_active | mean daily return | annualized Sharpe |
+|---|---|--:|--:|--:|
+| 0.10 | 0.50 | 111 | −0.073% | **−2.20** |
+| 0.10 | 1.00 | 111 | −0.145% | **−2.20** |
+| 0.15 | 0.75 | 83 | −0.148% | **−2.60** |
+| 0.20 | 1.00 | 72 | −0.233% | **−2.86** |
 
-**FINDING-3 — BEAR cash% is ≈ 100%, not the 30% the BEAR sleeve
-implies.** Golden config has `bear_defensive_slots=2,
-bear_defensive_pct=0.15` which should deploy 30% into GLD/TLT/XLV/XLU.
-The sim shows **median 100.0% cash in BEAR (n=52)**. Either the BEAR
-sleeve is not firing in the sim path, or it fires but the trades
-abort before live_state captures them. **This is a §7.7-class dead-
-gate diagnostic** — the defensive sleeve looks active in config but
-empirically does nothing. Worth a separate audit memo.
+Best BULL_CALM cell: **−2.20 Sharpe at threshold=10% fill=50%**.
+Every BULL_CALM combination is also negative.
 
-### 5.5.3 Reconciliation with failed-experiments-log line 1947
+### 5.6.3 Why every cell is negative — conditional adverse selection
 
-The line-1947 attestation ("~30–40% cash drag, alpha vs SPY
-−15.62% ± 10.21% sign-consistent negative") is consistent with the
-Stage 0 finding IF the drag is dominated by BULL_VOLATILE periods
-and the unfired BEAR defensive sleeve, NOT by BULL_CALM. Net
-portfolio cash%:
+SPY's unconditional daily return averages roughly **+0.04%/day**
+(~10%/yr equity premium). A regime-agnostic overlay sampled on
+random days would be slightly positive in expectation. Why are BOTH
+BULL_CALM AND BULL_VOLATILE conditional samples negative?
 
-```
-weighted_avg = 0.866 · 0.037 + 0.057 · 0.446
-             + 0.048 · 1.000 + 0.029 · 0.154
-           ≈ 0.032 + 0.025 + 0.048 + 0.005
-           ≈ 11.0%  (sim panel, all-time)
-```
+**Conditioning artifact.** The overlay only fires when `cash_pct >
+threshold`. High-cash days in `renquant_104` are **not random** —
+they are the days when the strategy raised cash by selling. The sell
+triggers are:
 
-11.0% pooled is well below the 30–40% line-1947 claim. Three
-candidate reconciliations: (a) the sim panel does not include the
-preflight-aborted bars that fail to take any positions (zero-trade
-days inflate the live cash%); (b) live ≠ sim — daily preflight gates
-abort bars where the sim simulator would have just held cash; (c)
-the line-1947 attestation pre-dates fixes that closed the BULL_CALM
-gap. All three deserve a follow-up audit; the rest of this memo's
-§6 plan still holds, with the regime target shifted from BULL_CALM
-to BULL_VOLATILE.
+- Calibrator score drop
+- Stop-loss
+- Drawdown halt
+- Regime change to BEAR
+- Rotation out
 
-### 5.5.4 Pivoted recommendation
+Of these, **stop-loss + drawdown halt + regime-change-to-BEAR are
+bearish-signal sells** — they fire when SPY is dropping or has
+just dropped. Conditioning on "cash% high" therefore selects days
+where the model has been bearish, and those days correlate strongly
+with negative day-`t+1` SPY returns.
 
-| Original codex proposal | Revised after Stage 0 |
-|---|---|
-| BULL_CALM overlay | BULL_VOLATILE overlay (primary), BULL_CALM deferred |
-| `bull_calm_overlay_pct=0.15` | `bull_volatile_overlay_pct=0.30` (per the BULL_VOLATILE median cash%) |
-| BEAR sleeve assumed working | BEAR-sleeve fires-or-not audit added as parallel work |
+Net: the overlay deploys cash **precisely on the days SPY is about
+to drop**. This is the K-1 risk I called out in §5: *"deploying
+overlay at the top of BULL_CALM immediately before a BEAR transition
+is a deep negative tail"*. The counterfactual shows the risk is not
+just theoretical — it is the empirical dominant mode.
 
-The §6 experiment design carries over directly — only the regime
-gating and the default knob ranges change. The Box-Behnken DOE in
-§6.3 should sweep:
+### 5.6.4 What the counterfactual does NOT account for
 
-| Knob | Low | Center | High |
-|---|--:|--:|--:|
-| `bull_volatile_overlay_pct` | 0.15 | 0.25 | 0.35 |
-| `overlay_threshold` (cash%) | 0.20 | 0.30 | 0.40 |
-| `overlay_split_qqq` | 0.0 | 0.5 | 1.0 |
-| `overlay_rebalance_band` (pp) | 0.02 | 0.05 | 0.10 |
+The numbers are an **upper bound** on overlay value-add (i.e., the
+"best case" we are still rejecting):
 
-(The original §6.3 ranges for `bull_calm_overlay_pct` and
-`overlay_threshold` were calibrated assuming median cash% ≈ 25%;
-Stage 0 says BULL_VOLATILE median ≈ 45%, so all 4 knob ranges shift
-up accordingly.)
+- No transaction cost (real spread + commission ≈ 1–3 bps per trade)
+- No slippage
+- No tax (ST capital gains on rebalancing — would shift mean
+  further negative)
+- No interaction with existing positions (e.g., overlay + alpha could
+  push portfolio β > 1)
+- Placebo battery (§7.2.1 R2) NOT run
+
+If the counterfactual were already positive Sharpe, the full sim with
+TC + slippage + tax would shave it. Since it is already deeply
+negative, those frictions only deepen the loss — there is no point
+running the full sim.
+
+### 5.6.5 FINDING-3 promoted: BEAR sleeve is dead
+
+The BEAR-sleeve audit I added as a parallel work item in §5.5.4 is
+confirmed:
+
+- `pipeline_runs` BEAR-day count: 26 distinct runs × 2 (day +
+  intraday) = 52
+- BEAR-day rows with any trade activity: **2** (10 trade rows total)
+- Of those, **zero** are GLD / TLT / XLV / XLU
+- GLD has only **12 trade rows in the entire DB** — and **none on
+  BEAR days**
+
+The golden config promises `bear_defensive_slots=2 ×
+bear_defensive_pct=0.15 = 30%` deployment into defensives during
+BEAR. Empirically: zero defensive trades on BEAR days, ever. **The
+sleeve is configured but never fires.** This is a §7.7-class
+implicit-decoration bug:
+
+> "Safety gate ≠ enforced safety gate. Every safety gate ships TWO
+> artifacts: (a) gate function + tests, (b) a scheduled cron (plist
+> + .sh) that invokes it WITHOUT override. If only (a), the gate is
+> decoration."
+
+Recommend separate audit memo + fix-or-delete decision. This is NOT
+part of the cash-overlay study scope but is a high-priority
+sibling finding.
+
+---
+
+## 5.7 Revised verdict
+
+| Hypothesis | Verdict | Reason |
+|---|---|---|
+| BULL_CALM regime-conditional overlay | **REJECT** | Stage 1 counterfactual Sharpe ≈ −2.2 (conditional adverse selection) |
+| BULL_VOLATILE regime-conditional overlay | **REJECT** | Stage 1 counterfactual Sharpe ≈ −3.6 (conditional adverse selection) |
+| Regime-agnostic overlay | **NOT TESTED** | Would risk the K-1 / K-3 / K-8 concerns from §5 without the regime-gate safeguard |
+| BEAR defensive sleeve | **BROKEN, separate audit** | Configured 30% deployment in 2 ETFs, empirically zero defensive trades |
+
+### 5.7.1 Why the theory and the empirics disagree
+
+The §3 theory (Sharpe 1991, Tobin 1958, Frazzini-Pedersen 2014) says
+cash-as-residual loses the equity premium *in expectation*. That is
+true for **unconditional** overlay deployment. Our overlay is
+*conditional* on cash% being high, and that conditional sample is
+adversely selected against the equity premium for the reason in §5.6.3.
+
+Sharpe (1991) explicitly assumes the marginal passively-managed
+dollar is **the average dollar**, deployed at random times. The codex
+proposal's deployment trigger (`cash% > threshold`) is **not
+random** — it is a downstream consequence of the strategy's bearish
+signals. The arithmetic only holds when the overlay is unconditional
+or the conditional sample is information-symmetric. Neither holds
+here.
+
+### 5.7.2 What COULD still work (out of scope for this memo)
+
+Three hypothesis variants might escape the conditional-adverse-
+selection trap. Each is its own §7.2-compliant study:
+
+1. **Unconditional overlay** — fixed e.g. `overlay_pct=0.10` of NAV
+   in SPY, set-and-forget. No `cash% > threshold` gate; you simply
+   target 90/10 NAV/SPY on every bar. Caveat: total portfolio β >> 1
+   in fully-invested periods.
+
+2. **SPY-momentum-gated overlay** — only deploy when SPY 20d momentum
+   is positive AND cash% is high. Filters out the adverse-selection
+   tail at the cost of activation frequency.
+
+3. **Defensive overlay** — buy SHORT-VOL (e.g. SVXY) or LONG-BOND
+   (TLT) when cash% is high, rather than SPY. Negative correlation
+   with the strategy's sell-trigger pattern would flip the
+   conditional sign.
+
+None of these are the codex proposal; all are research-only follow-ups.
+
+### 5.7.3 What changes operationally
+
+**Nothing in production.** This memo is research-only. The pivot
+recommendation is:
+
+- Close the cash-overlay study with a NEGATIVE result and document in
+  `doc/research/failed-experiments-log.md`.
+- Open a separate §7.7 audit on the BEAR defensive sleeve (the dead-
+  gate finding) — that is a real bug, not a research question.
+- Continue the Kelly σ-horizon work (#158 / #169) — it addresses the
+  sizing-side lever and remains the primary path to closing the
+  ~30–40% cash drag in `failed-experiments-log` line 1947.
 
 ---
 
