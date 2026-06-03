@@ -47,8 +47,8 @@ migrate:
 | Group | Fields |
 |---|---|
 | Universe | `n`, `tickers` |
-| Per-asset caps | `w_current`, `w_upper_hard` (immutable hard risk cap), `w_upper` (soft target cap after scaling), `w_lower`, `dw_max` |
-| Scalar limits | `cash_reserve`, `turnover_max`, `drawdown`, `drawdown_limit`, `gross_max` |
+| Per-asset arrays (shape `(n,)`) | `w_current`, `w_upper_hard` (immutable hard risk cap), `w_upper` (soft target cap after scaling), `dw_max` |
+| Scalar limits | `w_lower` (short-side cap; `0.0` for long-only), `cash_reserve`, `turnover_max`, `drawdown`, `drawdown_limit`, `gross_max` |
 | Masks | `wash_sale_mask` (per-asset bool) |
 | Sector cap (optional) | `sector_indicator`, `sector_cap_vec`, `sector_names`, `missing_sector_tickers` |
 | Correlation cap (optional) | `corr_group_pairs`, `missing_correlation_tickers` |
@@ -61,10 +61,27 @@ migrate:
    `flags.writeable = False`. Constructing a snapshot does NOT mutate
    the caller's arrays (codex #126 review caught a regression that
    silently flipped `ctx._qp_w_upper_hard` read-only).
-3. `_validate` runs first: shape / dtype / finiteness checks, plus the
-   load-bearing `w_upper ≤ w_upper_hard` and `w_current ≤ w_upper_hard`
-   invariants. Malformed snapshots fail loud at build time, never
-   silently degrade a downstream allocator.
+3. `_validate` runs first: shape / dtype / finiteness checks on every
+   per-asset array, plus the load-bearing `w_upper ≤ w_upper_hard`
+   invariant (the bug class that PR #123 v1/v2/v3 violated three
+   different ways). Sector / correlation / cash-reserve / turnover /
+   gross sanity bounds are checked too. Malformed snapshots fail loud
+   at build time, never silently degrade a downstream allocator.
+
+   **Not enforced at construction**: `w_current ≤ w_upper_hard`. The
+   contract treats `w_current > w_upper_hard` as a **legal-but-
+   infeasible starting state** — exactly the case where the current
+   book is already outside a hard cap (e.g. ORCL above its 20% cap
+   after a strong day) and the QP needs to repair it. The contract is
+   the snapshot can carry the over-cap state into the allocator; the
+   **allocator** must convert it to `infeasible:w_upper_hard` (or
+   `infeasible:dw_max` / `infeasible:turnover_max` when the cap can't
+   be reached in one bar). PR #137 made this the explicit
+   `_finalize_result` post-projection validation in
+   `baseline_allocators.py`; the cap-compliance fallback path in the
+   current QP solver does the same. If `_validate` enforced the
+   invariant, the snapshot would be unbuildable for the exact bars
+   that need cap-repair logic to fire.
 
 ### The bug class it locks
 

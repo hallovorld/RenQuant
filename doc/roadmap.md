@@ -109,16 +109,16 @@ detail: [`doc/components/portfolio-qp.md`](components/portfolio-qp.md)
 | 1b | `solve_portfolio_qp_from_snapshot` wrapper | **DONE** — PR #127 merged |
 | 1c | `BuildConstraintSnapshotTask` wired into `JointPortfolioQPJob` | **DONE** — PR #129 merged |
 | 1d | Collapse 4 composed Tasks into one `BuildQPConstraintsTask` | PENDING |
-| 1e | Migrate `SolveMarkowitzQPTask` to consume snapshot via wrapper | IN PROGRESS |
+| 1e | Migrate `SolveMarkowitzQPTask` to consume snapshot via wrapper | PR #140 open |
 | 2 | μ̂ autocorrelation per regime (closes HIGH-4) | **DONE** — PR #128 merged |
 | 3 | Param inventory rebuilt against committed config | **DONE** — in PR #125 §2.1 |
-| 4a | 3 baseline allocators (equal-weight, inverse-vol, fractional Kelly top-K) | **DONE** — PR #130 merged |
+| 4a | 3 baseline allocators (equal-weight, inverse-vol, fractional Kelly top-K) | **DONE** — PR #130 + PR #137 (fail-closed) merged |
 | 4b | Replay harness math (paired daily returns, regime buckets) | PR #131 open |
 | 4c | DSR / PBO multiple-comparison correction wired into harness | PR #132 open |
-| 4d | Hybrid Option F allocator (§5 / §8 Step 4 candidate) | IN PROGRESS |
-| 4e | WF cut loader for real data (replay against §1.4 detector) | IN PROGRESS |
-| 4f | Hard-only QP allocator (§5 Option D variant) | IN PROGRESS |
-| 4g | Run 5-baseline A/B + commit evidence JSON | PENDING — depends on 4d / 4e / 4f |
+| 4d | Hybrid Option F allocator (§5 / §8 Step 4 candidate) | PR #135 open |
+| 4e | WF cut loader for real data (replay against §1.4 detector) | PR #142 open |
+| 4f | Hard-only QP allocator (§5 Option D variant) | PR #135 open (combined with 4d) |
+| 4g | Run 5-baseline A/B + commit evidence JSON | PR #138 open (CLI driver) — depends on 4d / 4e / 4f / schema PR #134 |
 | 5 | Live shadow telemetry for operational parity (NOT a Sharpe gate) | PENDING — depends on 4g |
 
 **Pass gate (per §8 + codex MED-6 + PRIME DIRECTIVE)**:
