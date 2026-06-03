@@ -243,7 +243,7 @@ Ordered by likely OOS Sharpe given our (μ̂ noise, Σ̂ noise, 60-day-horizon, 
 4. **(Risk)** Move UP to cvxportfolio MultiPeriodOpt — Level 2 — only justifiable if we have a published signal-decay model for `fwd_60d_excess` and want to spread Δw over multiple bars. Not obviously a win at our scale.
 5. **(Currently)** Full QP with all 32 params. Theoretically most general, empirically over-engineered for our regime.
 
-The QP architectural review memo's recommended Option F (Hybrid) is item 1, with QP as fallback for the rare hard-constraint case.
+**Note (corrected after codex re-review 2026-06-03)**: an earlier draft of this line said the architecture memo "recommends" Option F (Hybrid). The architecture memo no longer recommends any specific allocator — see the Summary block below for what it now says. Item 1 above is *Claude's hypothesis* for which row is likely to win the §8 Step 4 offline WF A/B replay; it is NOT a pre-decided recommendation and the user should not read it as one. The ranking is an input to the A/B design (which baselines to include), not a substitute for the measurement.
 
 ---
 
@@ -253,7 +253,7 @@ The QP architectural review memo's recommended Option F (Hybrid) is item 1, with
 |---|---|
 | Why introduce QP? | 21-bug audit (2026-04-27) of the predecessor + user mandate "industrial-grade not hand-rolled" → cvxportfolio (Boyd/Stanford) chosen as reference → implemented matching the textbook |
 | What's its functional role? | **Sizing-and-order-translation layer**: converts {admitted candidates + (μ̂, Σ̂) signal + hard caps} into concrete buy/sell orders. NOT an alpha layer, NOT a candidate selector. |
-| Is it the ultimate solution? | **No.** It's Level 1 (single-period MV) in a 5-level hierarchy. The "ultimate" within the same family is Level 2 (cvxportfolio MultiPeriodOpt). The "practical apex" for our regime is closer to Level 0 (Kelly + Davis-Norman). The current Level 1 sits between, and DeMiguel 2009 + Michaud 1989 + Chopra-Ziemba 1993 all suggest Level 0 likely wins at our SNR. |
+| Is it the ultimate solution? | **No.** It's Level 1 (single-period MV) in a 5-level hierarchy. The "ultimate" within the same family is Level 2 (cvxportfolio MultiPeriodOpt). Whether Level 0 (Kelly + Davis-Norman) actually beats Level 1 at our SNR is the open empirical question — DeMiguel 2009 + Michaud 1989 + Chopra-Ziemba 1993 supply the *mechanism* (μ̂-error damage) but no IC threshold; the §8 Step 4 offline WF A/B replay is what would tell us, NOT this memo. |
 
 **The earlier version of this line said: "the parent memo §8 recommendation is Hybrid Option F with 3-phase migration."** That is no longer the recommendation. Codex + gemini convergent re-review on PR #125 (2026-06-02) rejected the 3-phase Hybrid plan: live shadow does not statistically separate a Sharpe delta of 0.1 over 30 trading days, and the constraint-composition contract must be fixed BEFORE any allocator comparison can be trusted.
 

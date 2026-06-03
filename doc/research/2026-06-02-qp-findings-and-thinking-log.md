@@ -116,7 +116,7 @@ The parent memo's load-bearing claims, ranked by confidence:
 | ~25 of 32 params actually drive prod (corrected from "8 of 32") | Re-audited 2026-06-02 against current `strategy_config.json` + regime overlays + `_build_solver_kwargs`. See parent memo §2.1 for the full table; only 7 keys are inactive |
 | Today's bug is a "constraint-composition bug" not a QP bug | My architectural reading; codex's #123 v2 catch (`ApplyConvictionCapTask` raised the hard cap up to over-cap `w_current`) is independent confirmation: bug surfaced in constraint assembly, not in cvxpy |
 | The MV-vs-1/N mechanism applies to us in principle | Mechanism (μ̂-error damage) is well-established (DeMiguel 2009, Michaud 1989, Chopra-Ziemba 1993). But codex correctly flagged DeMiguel does NOT publish an IC-threshold; we cannot conclude RenQuant sits below a known boundary. Mechanism credible, quantitative placement unsupported |
-| Migration to Hybrid is "incremental and reversible" | Asserted in §8 of parent memo; not yet validated by code — codex should challenge whether the shadow-path implementation is actually as clean as I claim |
+| Earlier draft claim: "Migration to Hybrid is incremental and reversible" | This was asserted in an earlier draft of parent §8; the corrected §8 no longer asserts Hybrid is the path forward (it says no allocator is pre-selected and migration is NOT authorized). The incremental-and-reversible claim survives only as a property of the eventual A/B winner if Hybrid wins. |
 
 ### Low confidence (judgment calls; please challenge)
 
@@ -143,7 +143,7 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 **Strength**: HIGH validity. The current QP has 456 tests passing, has been in production for ~5 weeks, has survived several real-money days. A migration to Hybrid will introduce a new bug surface.
 
-**Why I still recommend Hybrid**: My recommendation is *not* "rewrite QP" — it's "decompose decision-making so QP is only invoked rarely". The QP stays; it becomes a fallback. The new code is Stages 1-3, which is each simpler than what they replace (a single Task replacing a sub-tree of constraint-building Tasks). The offline WF A/B replay (revised §8 Step 4) is what measures decision divergence + bug rate. Live shadow (Step 5) is operational telemetry, NOT a Sharpe gate.
+**Why I still find Hybrid worth carrying into the A/B (NOT a recommendation)**: It is not a rewrite — it's "decompose decision-making so QP is only invoked rarely". The QP stays; it becomes a fallback. The new code is Stages 1-3, each simpler than what they replace. Whether this actually delivers a Sharpe lift over Level-1 QP for OUR data is the open empirical question; the §8 Step 4 offline WF A/B replay is what measures it. **Codex's re-review explicitly rejected pre-deciding Hybrid in this memo; it is one of 5 candidates the A/B compares.**
 
 **What would change my mind**: If the offline WF A/B replay (revised §8 Step 4) shows the Hybrid produces materially worse decisions than QP on 20%+ of bars, I'd retract and recommend "stay on QP, fix constraint composition layer instead."
 
@@ -151,7 +151,7 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 **Strength**: VERY HIGH. This is the most legitimate counter — it's a less ambitious change with smaller blast radius.
 
-**Why I still recommend Hybrid**: Fixing constraint composition keeps us at Level 1 (the over-engineered level for our problem). It would take engineering effort to refactor `ComputeQPConstraintsTask` / `ApplyExposureScalingTask` / etc into a single coherent constraint-building module, and the result would be… a slightly better Level 1 implementation. Hybrid moves us toward Level 0 + Level 1 fallback, which has the theoretical advantage of less estimation-error sensitivity.
+**Why I still find Hybrid worth carrying into the A/B (NOT a recommendation)**: Fixing constraint composition keeps us at Level 1 (the level codex+gemini agree is over-engineered for our problem class). It takes engineering effort to land the single coherent `ConstraintSnapshot` contract, and the result would be a Level 1 implementation that is correct-by-construction but still Level 1. Hybrid would move us toward Level 0 + Level 1 fallback IF it actually wins the A/B — the §8 Step 4 offline replay is what decides.
 
 **What would change my mind**: If codex argues that the constraint-composition refactor is genuinely cheaper (e.g., 3 days work) and the empirical Level 0 advantage is small in our data, that's a valid concession. The constraint-composition fix is a defensible halfway position. I'd prefer it to the status quo even if I think full Hybrid is even better.
 
@@ -167,7 +167,7 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 **Strength**: HIGH. The user's 2026-05-04 mandate (`feedback_industry_leading_quality`) explicitly says "no hand-rolled, use mature libraries."
 
-**Why I still recommend Hybrid**: My Level 0 recommendation is NOT hand-rolled. It cites:
+**Why I still carry the Level-0 / Hybrid hypothesis (NOT a recommendation)**: The hypothesis is NOT hand-rolled. It cites:
 - DeMiguel-Garlappi-Uppal 2009 (1/N + Bayes-Stein literature)
 - Kelly 1956 / Thorp 1969 (per-name Kelly fraction)
 - Davis-Norman 1990 (closed-form no-trade band — already in our codebase)
@@ -277,18 +277,19 @@ USER reads PR #125 ────┤                                              
                        ├─ Codex argues Level 2 (MultiPeriodOpt) ────────┤
                        │   is more attractive than parent memo claims   │
                        │                                                │
-                       └─ Codex agrees with Hybrid recommendation ──────┤
+                       └─ Codex agrees: keep Hybrid as one A/B candidate ─┤
                                                                         │
                                                                         ▼
                                                   ┌─── User decides ───┐
                                                   │                    │
                                                   ▼                    ▼
                                       Step 0 — PR #123 v4         (do nothing —
-                                      land hard-cap separation     not a valid
-                                      first, then proceed          endpoint;
-                                                  │                 cap-compliance
-                                                  ▼                 contract bug
-                                      Step 1 — ConstraintSnapshot   stays open)
+                                      DONE (merged 2026-06-03)     not a valid
+                                                  │                  endpoint)
+                                                  ▼
+                                      Step 1 — ConstraintSnapshot
+                                      contract refactor (codex +
+                                      gemini convergent recommendation)
                                       contract refactor (codex +
                                       gemini convergent recommendation)
                                                   │
@@ -364,15 +365,9 @@ After all this analysis, here's the most honest summary I can produce:
 > uncertainty — live shadow (Step 5) is operational telemetry, not the
 > Sharpe gate.**
 
-I am 60% confident the Hybrid recommendation is right and 40% confident
-codex's review will surface evidence shifting the recommendation toward
-either (a) constraint-composition refactor in place at Level 1 or
-(b) move to Level 2 (cvxportfolio MultiPeriodOpt) instead.
+**Earlier draft said**: *"60% confident the Hybrid recommendation is right and 40% confident codex's review will surface evidence shifting the recommendation toward either (a) constraint-composition refactor in place at Level 1 or (b) move to Level 2 (cvxportfolio MultiPeriodOpt) instead. Any of (a), (b), or Hybrid is a strict improvement over the current 'keep iterating on Level 1 with growing technical debt' path."*
 
-Any of (a), (b), or Hybrid is a strict improvement over the current
-"keep iterating on Level 1 with growing technical debt" path. The user's
-decision should be informed by codex's review of this analysis, not by
-my prior alone.
+**Corrected stance after codex's third re-review (2026-06-03)**: this memo does NOT recommend Hybrid (or any other allocator). My prior on which allocator wins is irrelevant to the §8 plan — the offline WF A/B replay (Step 4) does the comparison, and the answer is whatever the data says. The work order that DOES survive: Step 0 (DONE — PR #123 v4 merged), Step 1 (`ConstraintSnapshot` contract refactor — codex + gemini convergent), Step 2 (μ̂ autocorrelation measurement), then Step 4 to decide between the 5 baselines. The user's decision should be informed by the A/B output, not by my prior.
 
 ---
 
