@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -84,6 +85,67 @@ def test_csv_kelly_targets_are_summarized_per_regime(tmp_path: Path) -> None:
     assert bull["histogram_pct"]["0"] == 1
     assert bull["histogram_pct"]["2..5"] == 1
     assert result["metrics"]["sigma"]["summary_pct"]["median"] == 35.0
+    horizon = result["metrics"]["sigma_horizon"]
+    assert horizon["annualized_horizon_days"] == 252.0
+    assert horizon["target_horizon_days"] == 60.0
+    assert horizon["sigma_rescale"] == math.sqrt(60.0 / 252.0)
+    assert horizon["kelly_multiplier"] == 4.2
+    assert "4.20x" in horizon["interpretation"]
+
+
+def test_sigma_horizon_diagnostic_accepts_custom_horizons(tmp_path: Path) -> None:
+    mod = _load_module()
+    data_path = tmp_path / "decision_trace.csv"
+    data_path.write_text(
+        "run_date,kelly_target_pct,sigma\n"
+        "2026-06-01,0.06,0.40\n",
+        encoding="utf-8",
+    )
+
+    result = mod.run_diagnostic(
+        root=tmp_path,
+        log_specs=[],
+        data_specs=[str(data_path)],
+        state_specs=[],
+        use_defaults=False,
+        annualized_sigma_horizon_days=120,
+        target_sigma_horizon_days=30,
+    )
+
+    horizon = result["metrics"]["sigma_horizon"]
+    assert horizon == {
+        "annualized_horizon_days": 120.0,
+        "target_horizon_days": 30.0,
+        "sigma_rescale": 0.5,
+        "kelly_multiplier": 4.0,
+        "interpretation": (
+            "Same-period Kelly using sigma rescaled from 120d to 30d "
+            "multiplies targets by about 4.00x versus leaving sigma "
+            "on the 120d horizon."
+        ),
+    }
+
+
+def test_sigma_horizon_text_render_includes_multiplier(tmp_path: Path) -> None:
+    mod = _load_module()
+    data_path = tmp_path / "decision_trace.csv"
+    data_path.write_text(
+        "run_date,kelly_target_pct,sigma\n"
+        "2026-06-01,0.06,0.40\n",
+        encoding="utf-8",
+    )
+
+    result = mod.run_diagnostic(
+        root=tmp_path,
+        log_specs=[],
+        data_specs=[str(data_path)],
+        state_specs=[],
+        use_defaults=False,
+    )
+
+    rendered = mod.render_text(result)
+    assert "same-period horizon: annualized_days=252 target_days=60" in rendered
+    assert "kelly_multiplier=4.2000" in rendered
 
 
 def test_json_state_cash_time_series_uses_recent_rows(tmp_path: Path) -> None:

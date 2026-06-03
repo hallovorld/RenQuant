@@ -38,6 +38,8 @@ DEFAULT_STATE_SPECS = (
     "backtesting/renquant_104/live_state.alpaca.json",
     "backtesting/renquant_104/live_state.alpaca_shadow.json",
 )
+DEFAULT_ANNUALIZED_SIGMA_HORIZON_DAYS = 252.0
+DEFAULT_TARGET_SIGMA_HORIZON_DAYS = 60.0
 
 KELLY_LOG_RE = re.compile(
     r"ApplyKellySizingTask: .*?"
@@ -214,6 +216,35 @@ def _bucket_counts(values: list[float], edges: list[tuple[str, float | None, flo
                 counts[label] += 1
                 break
     return counts
+
+
+def _positive_days(value: float, name: str) -> float:
+    out = float(value)
+    if not math.isfinite(out) or out <= 0:
+        raise ValueError(f"{name} must be positive")
+    return out
+
+
+def summarize_sigma_horizon(
+    *,
+    annualized_horizon_days: float,
+    target_horizon_days: float,
+) -> dict[str, Any]:
+    annualized = _positive_days(annualized_horizon_days, "annualized_horizon_days")
+    target = _positive_days(target_horizon_days, "target_horizon_days")
+    sigma_rescale = math.sqrt(target / annualized)
+    kelly_multiplier = annualized / target
+    return {
+        "annualized_horizon_days": annualized,
+        "target_horizon_days": target,
+        "sigma_rescale": sigma_rescale,
+        "kelly_multiplier": kelly_multiplier,
+        "interpretation": (
+            f"Same-period Kelly using sigma rescaled from {annualized:g}d to {target:g}d "
+            f"multiplies targets by about {kelly_multiplier:.2f}x versus leaving sigma "
+            f"on the {annualized:g}d horizon."
+        ),
+    }
 
 
 def _extract_date(row: dict[str, Any]) -> str | None:
@@ -483,6 +514,8 @@ def run_diagnostic(
     state_specs: list[str] | None = None,
     use_defaults: bool = True,
     recent_bars: int = 30,
+    annualized_sigma_horizon_days: float = DEFAULT_ANNUALIZED_SIGMA_HORIZON_DAYS,
+    target_sigma_horizon_days: float = DEFAULT_TARGET_SIGMA_HORIZON_DAYS,
 ) -> dict[str, Any]:
     root = root.expanduser().resolve()
     log_defaults = DEFAULT_LOG_SPECS if use_defaults else ()
@@ -508,6 +541,10 @@ def run_diagnostic(
 
     logs = summarize_log_records(log_records, recent_bars)
     metrics = summarize_metric_rows(metric_rows, recent_bars)
+    metrics["sigma_horizon"] = summarize_sigma_horizon(
+        annualized_horizon_days=annualized_sigma_horizon_days,
+        target_horizon_days=target_sigma_horizon_days,
+    )
     ok = bool(
         logs["records"] > 0
         or metrics["kelly"]["summary_pct"]["n"] > 0
@@ -611,6 +648,14 @@ def render_text(result: dict[str, Any]) -> str:
     lines.append("sigma rows:")
     sigma_hist = ", ".join(f"{label}={count}" for label, count in sigma["histogram_pct"].items())
     lines.append(f"  annualized sigma: {_fmt_summary(sigma['summary_pct'])} hist[{sigma_hist}]")
+    horizon = metrics["sigma_horizon"]
+    lines.append(
+        f"  same-period horizon: annualized_days={horizon['annualized_horizon_days']:g} "
+        f"target_days={horizon['target_horizon_days']:g} "
+        f"sigma_rescale={horizon['sigma_rescale']:.4f} "
+        f"kelly_multiplier={horizon['kelly_multiplier']:.4f}"
+    )
+    lines.append(f"  interpretation: {horizon['interpretation']}")
 
     cash = metrics["cash"]
     lines.append("")
@@ -670,6 +715,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of most recent parsed log/state rows to summarize for recent views.",
     )
     parser.add_argument(
+        "--annualized-sigma-horizon-days",
+        type=float,
+        default=DEFAULT_ANNUALIZED_SIGMA_HORIZON_DAYS,
+        help="Assumed horizon, in days, for annualized sigma fields. Default: 252.",
+    )
+    parser.add_argument(
+        "--target-sigma-horizon-days",
+        type=float,
+        default=DEFAULT_TARGET_SIGMA_HORIZON_DAYS,
+        help="Target same-period Kelly sigma horizon, in days. Default: 60.",
+    )
+    parser.add_argument(
         "--format",
         choices=("text", "json"),
         default="text",
@@ -688,6 +745,8 @@ def main(argv: list[str] | None = None) -> int:
         state_specs=_flatten(args.state_specs),
         use_defaults=not args.no_defaults,
         recent_bars=args.recent_bars,
+        annualized_sigma_horizon_days=args.annualized_sigma_horizon_days,
+        target_sigma_horizon_days=args.target_sigma_horizon_days,
     )
     if args.format == "json":
         print(json.dumps(result, indent=2, sort_keys=True))
