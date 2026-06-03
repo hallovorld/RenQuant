@@ -71,6 +71,41 @@ direction reversal of the hypothesis, not a marginal miss: shortening
 the training window made the model materially worse on the same WF
 manifest.
 
+### Placebo verdict gap — R2 disclosure (CLAUDE.md §7.2.1)
+
+These Sharpe numbers were produced by the WF gate replay against the
+pre-R2 walk-forward manifest. **No companion placebo verdict
+(`shuffle_placebo` / `timeshift_placebo` / `a/a split`) is on file for
+either variant.** Under the rule installed 2026-06-02
+([`2026-06-02-experiment-validity-audit.md`](./2026-06-02-experiment-validity-audit.md)
+§4 R2), this absence is a HIGH gap that must be disclosed when the
+number is quoted.
+
+Why this memo lands anyway, without re-running for placebos:
+
+1. The verdict direction is `Δ Sharpe = −0.44` (Track D LOSES). A
+   placebo verdict would only narrow the magnitude estimate, not
+   reverse the direction — the comparison is **paired** (same WF
+   manifest, same calibrator, same QP config), so the only thing the
+   `--train-start-date 2022-01-01` knob changed is the training
+   window. Direction reversal under §7.4 Tier 1 (mean ΔSharpe < 0) is
+   robust to the placebo gap.
+2. Re-running with placebos would cost a full WF retrain + replay per
+   variant — material compute — for evidence that does not change the
+   "do not promote" conclusion. §6.4 ("reuse existing evidence before
+   spending compute") applies.
+3. **What the gap DOES preclude**: this memo cannot make a positive
+   claim about the *full-history baseline's* signal quality. The +0.62
+   Sharpe is reported here as the comparator, not as a promotable
+   number — the production GBDT's own placebo block lives in the
+   model's promotion artifact, which is the load-bearing place for
+   that disclosure. If/when the §8 Step 4 A/B replay or any future
+   GBDT retrain re-uses this manifest, placebos MUST be run per R2.
+
+Treat this memo as "Tier 1 REJECT under §7.4, supporting numbers
+pre-R2 — re-validation cost negligible if pursued but not pursued
+because verdict survives regardless."
+
 The result is consistent with what BULL_CALM diagnostics already showed
 on the full-history model: BULL_CALM mean_ic is +0.011 (coin flip), and
 that's with **all** historical regimes in the training set. Cutting the
@@ -174,18 +209,37 @@ Track D's result is informational for the other open tracks in the
 
 ```bash
 # Full-history baseline (the +0.62 Sharpe row):
-.venv/bin/python scripts/train_production_model.py [usual prod args]
+.venv/bin/python scripts/train_production_model.py [usual prod args] \
+    --out artifacts/track_d/full_history.json
 
 # Track D negative variant (the +0.18 Sharpe row):
 .venv/bin/python scripts/train_production_model.py \
     [usual prod args] \
-    --train-start-date 2022-01-01
+    --train-start-date 2022-01-01 \
+    --out artifacts/track_d/post_2022.json
+
+# WF gate replay against the production walk-forward manifest at the
+# Track D evaluation time. The manifest path / commit SHA is the most
+# load-bearing reproduction parameter — without it, a future agent
+# rerunning this experiment will produce different numbers and not
+# know why. The Track D run used the manifest pinned by
+# subrepos.lock.json at umbrella commit 9b7675b (2026-06-03), which
+# resolves to:
+#   backtesting/renquant_104/artifacts/walkforward_v2/manifest.json
+# (and the byte-equivalent renquant-backtesting mirror).
+.venv/bin/python scripts/run_wf_replay.py \
+    --artifact artifacts/track_d/full_history.json \
+    --manifest backtesting/renquant_104/artifacts/walkforward_v2/manifest.json
+.venv/bin/python scripts/run_wf_replay.py \
+    --artifact artifacts/track_d/post_2022.json \
+    --manifest backtesting/renquant_104/artifacts/walkforward_v2/manifest.json
 ```
 
-Then WF gate replay against the matching manifest. The artifact-level
-diff between the two runs is the `train_start_date` /
+The artifact-level diff between the two runs is the `train_start_date` /
 `effective_train_start_date` / `train_window` stamp; everything else
 fingerprints identically (feature set, label, model config, cutoff).
+If a future re-run produces different Sharpe numbers, check the
+`subrepos.lock.json` pin first — the WF manifest may have advanced.
 
 ---
 
