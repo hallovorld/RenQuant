@@ -26,6 +26,157 @@ Boyd, and Markowitz into one solver.
 
 ---
 
+## ConstraintSnapshot contract (§8 refactor 2026-06-03)
+
+The "constraint composition" layer — the path that BUILDS the per-asset
+box bound + sector cap + correlation cap + turnover budget the solver
+consumes — has been pulled behind a single immutable contract,
+`ConstraintSnapshot`. This is Step 1 of the §8 measurement-and-contract
+plan from the QP architecture review
+([`doc/research/2026-06-02-qp-architecture-review-and-alternatives.md`](../research/2026-06-02-qp-architecture-review-and-alternatives.md)),
+the codex + gemini convergent recommendation on PR #125.
+
+### What it is
+
+A frozen dataclass per bar that carries the entire hard-constraint set
+every candidate allocator (current QP, hard-only QP, Hybrid Option F,
+Level-2 MPO, inverse-vol top-K, equal-weight top-K) must respect. Fields
+mirror `solve_portfolio_qp` kwargs so the call sites are mechanical to
+migrate:
+
+| Group | Fields |
+|---|---|
+| Universe | `n`, `tickers` |
+| Per-asset arrays (shape `(n,)`) | `w_current`, `w_upper_hard` (immutable hard risk cap), `w_upper` (soft target cap after scaling), `dw_max` |
+| Scalar limits | `w_lower` (short-side cap; `0.0` for long-only), `cash_reserve`, `turnover_max`, `drawdown`, `drawdown_limit`, `gross_max` |
+| Masks | `wash_sale_mask` (per-asset bool) |
+| Sector cap (optional) | `sector_indicator`, `sector_cap_vec`, `sector_names`, `missing_sector_tickers` |
+| Correlation cap (optional) | `corr_group_pairs`, `missing_correlation_tickers` |
+| Provenance | `regime`, `confidence`, `conviction_caps`, `sector_cap_source`, `contract_version` |
+
+**Immutability invariants** (`__post_init__` enforces all of them):
+
+1. `frozen=True` dataclass — no attribute reassignment after construction.
+2. Every ndarray is defensively copied INTO the snapshot and marked
+   `flags.writeable = False`. Constructing a snapshot does NOT mutate
+   the caller's arrays (codex #126 review caught a regression that
+   silently flipped `ctx._qp_w_upper_hard` read-only).
+3. `_validate` runs first: shape / dtype / finiteness checks on every
+   per-asset array, plus the load-bearing `w_upper ≤ w_upper_hard`
+   invariant (the bug class that PR #123 v1/v2/v3 violated three
+   different ways). Sector / correlation / cash-reserve / turnover /
+   gross sanity bounds are checked too. Malformed snapshots fail loud
+   at build time, never silently degrade a downstream allocator.
+
+   **Not enforced at construction**: `w_current ≤ w_upper_hard`. The
+   contract treats `w_current > w_upper_hard` as a **legal-but-
+   infeasible starting state** — exactly the case where the current
+   book is already outside a hard cap (e.g. ORCL above its 20% cap
+   after a strong day) and the QP needs to repair it. The contract is
+   the snapshot can carry the over-cap state into the allocator; the
+   **allocator** must convert it to `infeasible:w_upper_hard` (or
+   `infeasible:dw_max` / `infeasible:turnover_max` when the cap can't
+   be reached in one bar). PR #137 made this the explicit
+   `_finalize_result` post-projection validation in
+   `baseline_allocators.py`; the cap-compliance fallback path in the
+   current QP solver does the same. If `_validate` enforced the
+   invariant, the snapshot would be unbuildable for the exact bars
+   that need cap-repair logic to fire.
+
+### The bug class it locks
+
+Every QP incident in May / June 2026 surfaced in **constraint
+composition**, not in cvxpy arithmetic:
+
+- 2026-05-30 Bug F (`delta_below_min_dw` truncating top picks)
+- 2026-06-02 daily-104 infeasibility (soft-scaling pushed `w_upper <
+  w_current`)
+- PR #123 v1 — solver-level clamp masked cap-compliance
+- PR #123 v2 — moved clamp to soft-scaling tasks; `ApplyConvictionCapTask`
+  still raised the hard cap up to over-cap `w_current`
+- PR #123 v3 — separate `_qp_w_upper_hard` snapshot but the over-cap
+  branch returned the soft-scaled `w_upper` (≈7.5%) instead of the hard
+  15%, so the cap-compliance fallback would have sold to the soft cap
+- PR #123 v4 (DONE, merged 2026-06-03) — closed the specific cap-
+  compliance vector with `test_cap_compliance_fallback_sells_to_hard_
+  cap_not_soft_cap`. The *class* remained open.
+
+The class is "many Tasks producing pieces of one constraint vector with
+no shared contract." `ConstraintSnapshot` is the contract; the per-Task
+ctx mutations now have a single typed destination that fails loud on
+contradiction.
+
+### Data flow
+
+```
+ComputeQPConstraintsTask  ─┐
+ApplyExposureScalingTask  ─┤
+ApplyConvictionCapTask    ─┤──► ctx._qp_w_upper / ctx._qp_w_upper_hard / ...
+sector / correlation tasks ┘
+                                              │
+                                              ▼
+                          BuildConstraintSnapshotTask
+                                              │
+                                              ▼
+                          ctx._qp_constraint_snapshot : ConstraintSnapshot
+                                              │
+                                              ▼
+                          solve_portfolio_qp_from_snapshot(snap, ...)
+                                              │
+                                              ▼
+                                       cvxpy / CLARABEL
+```
+
+`BuildConstraintSnapshotTask` is wired into `JointPortfolioQPJob` after
+the four composed Tasks (PR #129, merged). It assembles a frozen view
+over their ctx writes; on validation failure it stamps
+`ctx._qp_constraint_snapshot = None` plus a
+`ctx._qp_constraint_snapshot_error` string and lets the existing solver
+path observe the error rather than crashing the bar.
+
+`solve_portfolio_qp_from_snapshot` (PR #127, merged) is the canonical
+entry point for new allocators — current QP migrates onto it
+incrementally so the contract is exercised end-to-end before any
+allocator swap.
+
+### Step 1 sub-step status
+
+| Sub-step | Description | Status |
+|---|---|---|
+| Step 1a | `ConstraintSnapshot` contract + builder + validation | DONE (PR #126, merged) |
+| Step 1b | `solve_portfolio_qp_from_snapshot` wrapper | DONE (PR #127, merged) |
+| Step 1c | `BuildConstraintSnapshotTask` wired into `JointPortfolioQPJob` | DONE (PR #129, merged) |
+| Step 1d | Collapse 4 composed Tasks into one `BuildQPConstraintsTask` | PENDING cleanup |
+| Step 1e | Migrate `SolveMarkowitzQPTask` to consume snapshot via wrapper | DONE (PR #140, merged) |
+
+The intermediate state is still intentionally additive: the four
+composed Tasks run and stamp the same `ctx._qp_*` fields, and
+`BuildConstraintSnapshotTask` assembles the frozen view consumed by the
+solver wrapper. Step 1d remains a cleanup/refactor step after runtime
+deployment proves the snapshot path in daily operations.
+
+### Pointers
+
+- Contract + builder — [`kernel/portfolio_qp/constraint_snapshot.py`](../../backtesting/renquant_104/kernel/portfolio_qp/constraint_snapshot.py)
+- Wrapper — `solve_portfolio_qp_from_snapshot` in [`kernel/portfolio_qp/qp_solver.py`](../../backtesting/renquant_104/kernel/portfolio_qp/qp_solver.py)
+- Task — `BuildConstraintSnapshotTask` in [`kernel/portfolio_qp/tasks.py`](../../backtesting/renquant_104/kernel/portfolio_qp/tasks.py)
+- Job wiring — [`kernel/portfolio_qp/job_qp.py`](../../backtesting/renquant_104/kernel/portfolio_qp/job_qp.py)
+- Baseline allocators (Step 4a, all snapshot-consuming) — [`kernel/portfolio_qp/baseline_allocators.py`](../../backtesting/renquant_104/kernel/portfolio_qp/baseline_allocators.py)
+- Contract unit tests — [`tests/test_constraint_snapshot.py`](../../tests/test_constraint_snapshot.py)
+- Task wiring tests — [`tests/test_build_constraint_snapshot_task.py`](../../tests/test_build_constraint_snapshot_task.py)
+- Architecture review memo — [`doc/research/2026-06-02-qp-architecture-review-and-alternatives.md`](../research/2026-06-02-qp-architecture-review-and-alternatives.md)
+
+### Why this lands regardless of which allocator wins
+
+The §8 plan is decoupled from allocator choice. Even if the Step 4
+offline WF A/B replay selects current QP (or hard-only QP, or MPO) over
+Hybrid, the `ConstraintSnapshot` refactor still ships first — it's the
+fix for the *bug class*, not the symptom. Allocator selection comes
+after measurement; the contract is the prerequisite for any measurement
+to be trustworthy.
+
+---
+
 ## 0. Solver architecture (2026-05-06 cvxpy refactor) — READ FIRST
 
 `solve_portfolio_qp` is a **cvxpy + CLARABEL** convex solver in the
