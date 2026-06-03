@@ -11,7 +11,9 @@ name: agent-auto-merge-template
 #         `AGENT_AUTO_MERGE_DEFAULT == "true"`
 #   G-A3  Universal stop labels absent: `agent:manual-hold`,
 #         `agent:paired-hold` (owned by Phase C paired-merge-gate),
-#         `agent:rebase-conflict`, `agent:cost-cap` (Phase D)
+#         `agent:rebase-conflict`, `agent:cost-cap` (Phase D),
+#         `agent:review-degraded` (an agent review could not run; a
+#         human must merge — graceful-degrade policy 2026-06-03)
 #   G-A4  Latest head has at least one `APPROVED` review from a
 #         registered agent reviewer (Claude or Codex), AND zero
 #         `CHANGES_REQUESTED` reviews on the latest head
@@ -172,7 +174,7 @@ jobs:
           LABELS: ${{ steps.ctx.outputs.labels }}
         run: |
           set -euo pipefail
-          for stop in agent:manual-hold agent:paired-hold agent:rebase-conflict agent:cost-cap; do
+          for stop in agent:manual-hold agent:paired-hold agent:rebase-conflict agent:cost-cap agent:review-degraded; do
             if echo "$LABELS" | grep -q "\"${stop}\""; then
               echo "stop label present: $stop"
               echo "pass=false" >> "$GITHUB_OUTPUT"; exit 0

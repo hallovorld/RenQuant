@@ -470,6 +470,62 @@ Rough envelope per agent at Opus 4.7 / GPT-5-Codex prices:
 
 Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.). Mitigations from §4.2 hold the upper bound to ~$200/month/agent in realistic use.
 
+### 6.1 · Quota exhaustion — fail-closed vs graceful-degrade (2026-06-03)
+
+**Incident**: OpenAI returned `Quota exceeded. Check your plan and
+billing details.` mid-session. `openai/codex-action@v1` exited 1, the
+`codex-review` job failed, and — because `codex-review / review` is a
+**required** status check on `main` — **every** open PR (Claude's and
+Codex's alike) was wedged at the review gate until quota refilled. The
+operator had to temporarily edit branch protection to land a docs PR.
+
+**Root cause**: the G2 template's only failure mode was fail-closed.
+That is the correct default (no review possible ⇒ don't let the PR
+merge "as reviewed"), but it conflates two very different events:
+
+| Event | What it means | Right response |
+|---|---|---|
+| Agent posts `CHANGES_REQUESTED` | Review ran, found a blocker | Block merge (G3 may auto-fix) — job SUCCESS |
+| Agent action exits non-zero | Review **could not run** (quota / rate-limit / 5xx / OIDC) | Either fail-closed OR degrade |
+
+Crucially, a review-**found**-blocker is expressed by the agent posting
+a `CHANGES_REQUESTED` review, which is a **successful** job. So a job
+**failure** in the run-agent step *only ever* means "no valid review
+produced" — never "review found a problem". That makes it safe to
+treat a job failure as a degradable infra event without suppressing a
+real finding.
+
+**Mechanism** (opt-in, default preserves fail-closed):
+
+- Repo variable `AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE`:
+  - **unset / `!= "true"`** (default) → original fail-closed behavior;
+    the required review check goes red, nothing merges until a review
+    runs.
+  - **`"true"`** → the run-agent step's failure is classified as an
+    infra failure and the review **degrades**: the required check is
+    allowed to pass (so the whole pipeline isn't wedged), but the PR is
+    stamped with the `agent:review-degraded` label.
+- The Phase B auto-merge gate (G-A3) treats `agent:review-degraded` as
+  a **stop label** — a degraded PR can be merged by a **human** who has
+  read it, but it never auto-merges "as reviewed". The human is the
+  fallback reviewer.
+- A sticky PR comment (markered per `agent:HEAD_SHA`) explains the
+  degrade and tells the operator to either merge manually after reading,
+  or re-run the review once quota recovers and remove the label.
+
+**Tradeoff**: with the variable on, a quota outage no longer wedges the
+whole repo, but it does mean a human can merge a PR that an agent never
+reviewed. That is strictly weaker than pure fail-closed — hence opt-in.
+Turn it on per repo only when the operator accepts "human is the
+fallback reviewer during outages"; leave it off to keep the hard
+guarantee that nothing merges without an agent review.
+
+Enable with:
+
+```bash
+gh variable set AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE --body "true" --repo <owner>/<repo>
+```
+
 ---
 
 ## 7 · Safety gates
@@ -484,6 +540,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 | **Cost runaway** | Org-level API spend alert; `concurrency: cancel-in-progress`; file-count gate; model downgrade per workflow |
 | **Hostile contributor** | G3 trust check (`actor in owners/members/write-collaborators`); G3 only fires on `agent:*`-labeled PR (outside contributor can't trigger autofix) |
 | **Misattribution** | Layer C gate fails the PR; `no-claude-attribution` / `no-codex-attribution` label opt-out |
+| **Quota outage wedges every PR** | Default fail-closed; opt-in `AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE=true` degrades an infra-failed review to `agent:review-degraded` (auto-merge G-A3 stop; human is fallback reviewer). See §6.1 |
 
 ---
 

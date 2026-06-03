@@ -195,6 +195,13 @@ jobs:
       - name: Run agent (Claude)
         if: steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'claude'
         id: claude
+        # continue-on-error so an LLM-side INFRA failure (quota exceeded,
+        # rate limit, 5xx, OIDC hiccup) does not hard-fail the job before
+        # the "Classify review outcome" step can decide whether to
+        # graceful-degrade. A review-FOUND-blocker is expressed via PR
+        # review state (CHANGES_REQUESTED), NOT via job exit code, so a
+        # non-zero exit here always means "no valid review was produced".
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.api_key }}
@@ -210,6 +217,12 @@ jobs:
       - name: Run agent (Codex)
         if: steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true' && inputs.agent == 'codex'
         id: codex
+        # See the claude step's continue-on-error note. The 2026-06-03
+        # incident that motivated this: OpenAI returned "Quota exceeded.
+        # Check your plan and billing details." -> action exit 1 ->
+        # codex-review check FAILURE -> every Claude AND codex PR blocked
+        # at the required codex-review gate until quota refilled.
+        continue-on-error: true
         uses: openai/codex-action@v1
         with:
           # codex-action@v1 inputs use DASHES (verified against
@@ -246,3 +259,85 @@ jobs:
           BODY=$(printf '%s\n\n%s\n\n_Posted by codex agent-review workflow on commit %s._' \
             "$MARKER" "$CODEX_RESULT" "$HEAD_SHA")
           gh pr comment "$PR_NUMBER" --body "$BODY"
+
+      # ── Graceful-degrade gate (2026-06-03) ──────────────────────────
+      # Decides whether an LLM INFRA failure (quota / rate-limit / 5xx /
+      # OIDC) should hard-fail the review check (fail-closed, the default)
+      # OR degrade to a NEUTRAL "review unavailable, needs human" state.
+      #
+      # SAFETY MODEL (why this does not let unreviewed PRs auto-merge):
+      #   1. A review-FOUND-blocker is expressed by the agent posting a
+      #      CHANGES_REQUESTED review, which is a successful job. So a
+      #      job FAILURE here only ever means "no valid review produced"
+      #      — never "review found a problem". Degrading a job failure
+      #      therefore never suppresses a real finding.
+      #   2. Degrade is OPT-IN per repo variable
+      #      AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE=true. Default (unset
+      #      or != true) preserves the original fail-closed behavior the
+      #      codex G2 design intended.
+      #   3. When degrading, this step stamps the PR with the
+      #      `agent:review-degraded` label. The Phase B auto-merge gate
+      #      (G-A3) treats that label as a STOP — so a degraded PR can be
+      #      merged by a HUMAN who has read it, but never auto-merges
+      #      "as reviewed". The human is the fallback reviewer.
+      - name: Classify review outcome (fail-closed vs graceful-degrade)
+        if: always() && steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AGENT: ${{ inputs.agent }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          CODEX_OUTCOME: ${{ steps.codex.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$AGENT" = "claude" ]; then
+            OUTCOME="$CLAUDE_OUTCOME"
+          else
+            OUTCOME="$CODEX_OUTCOME"
+          fi
+          echo "${AGENT} run-agent step outcome: ${OUTCOME:-<none>}"
+
+          # The agent step was skipped (wrong agent branch) — not our case
+          # because secret_gate gated us in, but be defensive.
+          if [ -z "${OUTCOME:-}" ] || [ "$OUTCOME" = "skipped" ]; then
+            echo "no agent run recorded; nothing to classify"
+            exit 0
+          fi
+          if [ "$OUTCOME" = "success" ]; then
+            echo "${AGENT} review completed normally"
+            exit 0
+          fi
+
+          # OUTCOME == failure → the LLM call itself failed (infra). A
+          # review-found-blocker would have been a SUCCESS with a
+          # CHANGES_REQUESTED review, so this is never a suppressed finding.
+          DEGRADE=$(gh api "repos/${REPO}/actions/variables/AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE" \
+            -q .value 2>/dev/null || echo "")
+          if [ "$DEGRADE" != "true" ]; then
+            echo "::error::${AGENT} review did not complete (infra failure: quota / rate-limit / 5xx / OIDC) and AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE is not 'true'; failing closed so the PR cannot merge as reviewed when no review was possible. Set the repo variable to 'true' to graceful-degrade instead."
+            exit 1
+          fi
+
+          # Graceful degrade: stamp the label + post a sticky comment so a
+          # human knows the agent review is missing and they are the
+          # fallback reviewer. Auto-merge G-A3 treats the label as a stop.
+          echo "AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE=true → degrading ${AGENT} review to NEUTRAL + label"
+          LABEL="agent:review-degraded"
+          if ! gh label list --repo "$REPO" --search "$LABEL" --json name --jq '.[].name' | grep -qx "$LABEL"; then
+            gh label create "$LABEL" --repo "$REPO" --color "D93F0B" \
+              --description "An agent review could not run (infra/quota); needs human review before merge" --force
+          fi
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "$LABEL"
+
+          MARKER="<!-- agent-review:degraded:${AGENT}:${HEAD_SHA} -->"
+          if gh pr view "$PR_NUMBER" --repo "$REPO" --json comments \
+               --jq '.comments[].body' 2>/dev/null | grep -qF "$MARKER"; then
+            echo "degrade comment already posted for this head; skipping"
+          else
+            BODY=$(printf '%s\n\n⚠️ \`agent-review\` (%s) could not complete on commit \`%s\` — most likely an LLM infra failure (quota exceeded / rate limit / 5xx / OIDC). This is NOT a clean review.\n\nPer the graceful-degrade policy (repo var \`AGENT_REVIEW_DEGRADE_ON_INFRA_FAILURE=true\`):\n- The required %s-review check is allowed to pass so the whole PR pipeline is not wedged.\n- BUT the \`agent:review-degraded\` label is added, which the Phase B auto-merge gate treats as a STOP.\n- A human must read this PR and merge manually, OR re-run the review once quota recovers and remove the label.\n' \
+              "$MARKER" "$AGENT" "$HEAD_SHA" "$AGENT")
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$BODY"
+          fi
+          echo "degraded; job exits 0 so the required check is not red"
