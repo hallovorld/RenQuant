@@ -8,6 +8,93 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## 2026-06-03 Track D — Post-2022-only regime-drift retrain — NEGATIVE / ABANDONED
+
+**Hypothesis.** Production GBDT under-performs in BULL_CALM (the regime
+that dominates ~78% of 2024-2025 trading days). Concept-drift prior says
+restricting training to post-2022 data should reduce regime drift and
+recover BULL_CALM ranking quality. Tested via the
+`--train-start-date 2022-01-01` flag on `scripts/train_production_model.py`.
+
+**Method.** Single-knob retrain holding feature set (alpha158 + fund),
+label, XGBoost `rank:pairwise` config, cutoff, and downstream calibrator
+/ QP / regime detector identical to the full-history baseline. WF gate
+replay on the same manifest used for the full-history incumbent.
+Artifact stamps `train_start_date`, `effective_train_start_date`, and
+`train_window` so the post-2022 variant is auditable distinctly from the
+full-history artifact.
+
+**Result.**
+
+```
+Full-history baseline (no --train-start-date): WF mean Sharpe = +0.62
+Track D post-2022 retrain (--train-start-date 2022-01-01): WF mean Sharpe = +0.18
+
+Δ Sharpe = -0.44 (Track D LOSES)
+```
+
+This is a direction reversal of the hypothesis, not a marginal miss.
+BULL_CALM mean_ic did NOT lift on the post-2022 retrain; instead the
+high-dispersion BEAR / CHOPPY / BULL_VOLATILE training rows that drive
+most of the model's gradient were starved, degrading the regimes the
+strategy actually trades.
+
+**Verdict.** ❌ NEGATIVE FINDING. Tier 1 REJECT under §7.4 (mean
+ΔSharpe < 0). Not promotable. No live config flip. No artifact
+promotion.
+
+**Interpretation.** Regime drift is real, but a recent-window retrain is
+the wrong cure: it discards more signal-bearing history than the drift
+it removes. BULL_CALM no-signal is a **feature coverage** problem, not a
+**training-set composition** problem — confirmed because training on a
+sample dominated by BULL_CALM still produces near-zero BULL_CALM IC. The
+alpha158 + fund feature panel simply doesn't carry
+BULL_CALM-discriminating information at this universe / horizon.
+
+**Implication for the BULL_CALM signal-recovery plan**
+([`2026-06-02-bull-calm-signal-recovery-plan.md`](./2026-06-02-bull-calm-signal-recovery-plan.md)):
+
+- Track A (per-regime calibrator) and Track C (specialist regime
+  models) are unaffected.
+- Track B (BULL_CALM-specific features per Kelly-Gu-Xiu Table 9) is
+  upgraded to primary attempt: Track D rules out training-data
+  composition as the lever, leaving feature coverage as the remaining
+  hypothesis space.
+- Track C, if pursued, must NOT collapse into "retrain on recent data
+  per regime" — that's the Track D failure mode. Per-regime
+  specialists allocate full-history rows per regime; they do not slice
+  by recent date.
+- General: any future "retrain on recent data only" proposal must
+  contend with this evidence. Pooled-mean training under-uses
+  high-dispersion regimes when recent data is BULL_CALM-dominated; the
+  correct shape is per-regime gradient weighting (Track C territory),
+  not a global date cut.
+
+**Status.** ABANDONED. The `--train-start-date` flag stays in-tree as
+research infrastructure (artifact provenance is wired). It is NOT
+invoked by any prod scheduler, training cron, or default training
+script. Re-open only with a fundamentally different hypothesis (e.g.
+per-regime gradient weighting from full-history rows; this experiment
+did not test that and does not invalidate it).
+
+**Full memo.** [`2026-06-03-track-d-declare-done-negative.md`](./2026-06-03-track-d-declare-done-negative.md)
+
+**Reproduction.**
+
+```bash
+# Full-history baseline:
+.venv/bin/python scripts/train_production_model.py [usual prod args]
+
+# Track D negative variant:
+.venv/bin/python scripts/train_production_model.py \
+    [usual prod args] \
+    --train-start-date 2022-01-01
+
+# Then WF gate replay against the matching manifest.
+```
+
+---
+
 ## 2026-05-25 Feature-space staged XGB strict WF — FAIL on BULL_CALM alpha conversion
 
 **Hypothesis.** The 172-feature, feature-space-aligned panel-LTR XGBoost
