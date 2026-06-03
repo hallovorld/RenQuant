@@ -482,12 +482,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _load_bars(args) -> list[AllocatorReplayBar]:
-    """Resolve --loader-module if supplied, else use the real WF DB loader."""
+    """Resolve --loader-module if supplied, else use the real WF DB loader.
+
+    The `fwd_horizon_days` arg is recorded in the verdict JSON as the
+    horizon actually used, so it MUST plumb through to the custom loader
+    when one is supplied. Custom loaders that do not accept the kwarg
+    raise loudly here rather than silently emitting verdict evidence
+    against a different horizon than the CLI claims.
+    """
     if args.loader_module:
         mod_name, fn_name = args.loader_module.split(":")
         mod = importlib.import_module(mod_name)
         load_fn = getattr(mod, fn_name)
-        return list(load_fn(args.wf_artifact_root, args.start_cut, args.end_cut))
+        try:
+            return list(load_fn(
+                args.wf_artifact_root, args.start_cut, args.end_cut,
+                fwd_horizon_days=args.fwd_horizon_days,
+            ))
+        except TypeError as exc:
+            raise TypeError(
+                f"--loader-module {args.loader_module!r} does not accept "
+                f"`fwd_horizon_days` kwarg; the verdict JSON would claim "
+                f"horizon={args.fwd_horizon_days} while the loader emitted "
+                f"a different one. Add the kwarg to the loader signature, "
+                f"or omit --fwd-horizon-days when using a custom loader "
+                f"whose horizon is fixed."
+            ) from exc
 
     from kernel.portfolio_qp.wf_replay_loader import (
         load_replay_bars_from_sim_db,

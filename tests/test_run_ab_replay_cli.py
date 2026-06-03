@@ -508,3 +508,85 @@ class TestCLISmoke:
             payload = json.loads(out.read_text())
             assert payload["fwd_horizon_days"] == 1
             assert payload["n_bars"] == 10
+
+
+    def test_main_loader_module_receives_fwd_horizon_kwarg(self, tmp_path):
+        """--loader-module + --fwd-horizon-days plumbs the kwarg through."""
+        # Stub loader module on sys.path that asserts the kwarg arrived.
+        loader_dir = tmp_path / "stubloader"
+        loader_dir.mkdir()
+        (loader_dir / "__init__.py").write_text("")
+        (loader_dir / "loader.py").write_text(
+            "import sys\nfrom pathlib import Path\n"
+            "BACKTESTING_104 = Path(__file__).resolve().parents[5] / "
+            "'backtesting' / 'renquant_104'\n"
+            "if str(BACKTESTING_104) not in sys.path:\n"
+            "    sys.path.insert(0, str(BACKTESTING_104))\n"
+            "import numpy as np\n"
+            "from kernel.portfolio_qp.allocator_replay import AllocatorReplayBar\n"
+            "from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot\n"
+            "OBSERVED = {}\n"
+            "def load(root, start, end, *, fwd_horizon_days):\n"
+            "    OBSERVED['fwd_horizon_days'] = fwd_horizon_days\n"
+            "    snap = ConstraintSnapshot(\n"
+            "        n=2, tickers=('A','B'),\n"
+            "        w_current=np.zeros(2),\n"
+            "        w_upper_hard=np.full(2,0.5),\n"
+            "        w_upper=np.full(2,0.5),\n"
+            "        w_lower=0.0, dw_max=np.full(2,1.0),\n"
+            "        cash_reserve=0.0, turnover_max=None,\n"
+            "        drawdown=0.0, drawdown_limit=0.2, gross_max=None,\n"
+            "        wash_sale_mask=np.zeros(2,dtype=bool))\n"
+            "    return [AllocatorReplayBar(\n"
+            "        bar_date=f'd-{i:02d}', snap=snap,\n"
+            "        mu=np.array([0.02,0.01]),\n"
+            "        sigma=np.array([0.1,0.1]),\n"
+            "        fwd_return=np.array([0.001,-0.001]),\n"
+            "        regime='BULL_CALM', cost_per_trade_bps=0.0)\n"
+            "        for i in range(8)]\n"
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            out = tmp_path / "verdict.json"
+            rc = main([
+                "--wf-artifact-root", str(tmp_path),
+                "--start-cut", "2024-02-01",
+                "--end-cut", "2024-02-08",
+                "--out", str(out),
+                "--fwd-horizon-days", "5",
+                "--loader-module", "stubloader.loader:load",
+            ])
+            assert rc == 0
+            from stubloader.loader import OBSERVED  # noqa
+            assert OBSERVED["fwd_horizon_days"] == 5
+            payload = json.loads(out.read_text())
+            assert payload["fwd_horizon_days"] == 5
+        finally:
+            sys.path.remove(str(tmp_path))
+            for m in [k for k in list(sys.modules) if k.startswith("stubloader")]:
+                del sys.modules[m]
+
+    def test_main_loader_module_without_fwd_horizon_raises(self, tmp_path):
+        """Custom loader missing the fwd_horizon_days kwarg fails loudly."""
+        loader_dir = tmp_path / "badloader"
+        loader_dir.mkdir()
+        (loader_dir / "__init__.py").write_text("")
+        (loader_dir / "loader.py").write_text(
+            "def load(root, start, end):\n"
+            "    return []\n"
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            with pytest.raises(TypeError, match="fwd_horizon_days"):
+                main([
+                    "--wf-artifact-root", str(tmp_path),
+                    "--start-cut", "2024-02-01",
+                    "--end-cut", "2024-02-08",
+                    "--out", str(tmp_path / "verdict.json"),
+                    "--fwd-horizon-days", "5",
+                    "--loader-module", "badloader.loader:load",
+                ])
+        finally:
+            sys.path.remove(str(tmp_path))
+            for m in [k for k in list(sys.modules) if k.startswith("badloader")]:
+                del sys.modules[m]
