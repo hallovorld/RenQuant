@@ -103,6 +103,16 @@ def test_summarize_rows_reports_per_variant_and_regime_mean_std() -> None:
     assert treatment_choppy["metrics"]["sharpe"]["mean"] == 0.20
     assert treatment_choppy["metrics"]["sharpe"]["std"] is None
 
+    comparison = summary["comparisons"]
+    assert comparison["control_variant"] == "A_golden"
+    assert comparison["treatment_variant"] == "B_sigma_horizon_60"
+    assert comparison["by_variant"]["status"] == "available"
+    assert comparison["by_variant"]["metrics"]["apy"]["delta"] == pytest.approx(0.01)
+    bull_delta = comparison["by_regime"]["BULL_CALM"]["metrics"]
+    assert bull_delta["cash_pct"]["delta"] == pytest.approx(-0.31)
+    assert bull_delta["kelly_target_pct"]["delta"] == pytest.approx(0.08)
+    assert comparison["by_regime"]["CHOPPY"]["status"] == "missing_control"
+
 
 def test_missing_optional_kelly_and_dsr_pbo_columns_emit_placeholders() -> None:
     mod = _load_module()
@@ -129,6 +139,7 @@ def test_missing_optional_kelly_and_dsr_pbo_columns_emit_placeholders() -> None:
     assert metrics["dsr"]["status"] == "not_provided"
     assert metrics["pbo"]["status"] == "not_provided"
     assert metrics["maxdd"]["mean"] == -0.04
+    assert summary["comparisons"]["by_variant"]["status"] == "missing_treatment"
 
 
 def test_load_rows_accepts_csv_json_and_jsonl(tmp_path: Path) -> None:
@@ -206,3 +217,5 @@ def test_cli_prints_json_summary(tmp_path: Path) -> None:
     assert group["metrics"]["kelly_target_pct"]["mean"] == 0.08
     assert group["metrics"]["dsr"]["status"] == "available"
     assert payload["schema"]["dsr_pbo"] == "passed-through only; not computed by this script"
+    assert payload["schema"]["comparisons"] == "treatment mean minus control mean"
+    assert payload["comparisons"]["by_variant"]["status"] == "missing_control"
