@@ -72,7 +72,22 @@ the byte-identical `strategy_config.golden.json` overlay).
 Notes:
 - `XLK` is mapped to `giant_tech` (the ETF-of-tech proxy). It is also in
   the `sector_etf_map` as the ETF for the tech-family sectors
-  (`giant_tech / ai_chip / datacenter_hw / software`).
+  (`giant_tech / ai_chip / datacenter_hw / software`). **Rule (this audit,
+  per CLAUDE.md §7.5 single-source-of-truth, conservative interpretation):
+  the dual role is INTENDED.** Any direct XLK position counts as
+  `giant_tech` exposure under the QP sector cap (it is a member of the
+  sector group, not an exempt hedge), AND simultaneously serves as the
+  hedging ETF the regime overlay can purchase to gain tech-family beta.
+  Counting XLK exposure as risk against the `giant_tech` cap is the
+  conservative ledger: a long XLK directly inflates tech-family exposure,
+  so the cap must price it. The non-conservative alternative (remove XLK
+  from `giant_tech` membership so the cap only governs single-name tech
+  positions) would silently exempt ETF-of-sector positions from the same
+  cap that governs constituent names — a §7.7-class implicit exemption.
+  Treat this rule as the design intent until a research memo
+  empirically argues otherwise. Pin: any future refactor that strips
+  XLK from `giant_tech` membership must update this audit + add a
+  regression test that asserts the XLK cap accounting it removes.
 - `benchmark`, `defensive_bonds`, `telecom` are single-member sectors —
   the QP sector cap on those rows is materially just a per-name cap.
 - `XLF`, `XLV`, `XLE`, `XLI`, `XLY`, `XLU` are mapped into their
@@ -316,6 +331,68 @@ sector-cap config, not the live config verbatim.**
    `backtesting/renquant_104/artifacts/prod/wf_cuts/<cut_id>/sector_snapshot.json`,
    or equivalently as a new field in the existing WF manifest.
 
+### Where the historical sector_map comes from (the load-bearing decision)
+
+Three options were considered:
+
+1. **Reconstruct from git history**: walk `git log -p
+   backtesting/renquant_104/strategy_config.json` for every commit
+   touching the `sector_map` field, materializing a per-commit map
+   timeline. Pro: highest fidelity to what the live system actually
+   saw at each historical bar. Con: `sector_map` was only introduced
+   on **2026-04-21 (commit `657950e`, "feat: renquant_104 panel-LTR
+   hybrid extensions + pipeline principle")**. Every WF cut with a
+   bar date before 2026-04-21 has no historical sector_map at all —
+   the live system simply did not enforce sector caps then. So git
+   history is bounded below by that commit, and earlier cuts still
+   need a fallback.
+2. **Snapshot today's sector_map and document the limitation**: every
+   WF cut uses today's `sector_map` + per-regime caps, with a verdict-
+   JSON footnote that historical universe drift is NOT modeled. The
+   QP's `missing_sector` guard still fires correctly for any cut-date
+   ticker that fell off today's map (per §3 above), so the worst case
+   is a small number of historical names getting the conservative
+   "cannot increase weight" treatment from `ApplySectorMetadataGuardTask`.
+3. **Fetch sector membership from a vendor source per date**: most
+   faithful, but requires a new artifact under `renquant-base-data`,
+   a vendor subscription, and a backfill window that covers WF cut
+   dates back to 2020. Out of scope for §8 Step 4.
+
+**Recommendation: Option 2 (snapshot today's map, document the
+limitation in the verdict JSON).** Rationale:
+
+- For WF cuts on or after **`657950e` (2026-04-21)**, the live system's
+  effective `sector_map` and today's `sector_map` are close enough
+  that today-snapshot drift is bounded by config evolution between
+  that commit and today (config-evolution drift is captured by the
+  per-regime cap snapshot in this audit's §5 schema, and stratified
+  by `sector_cap_source` per §2's provenance).
+- For WF cuts before `657950e`, the live system enforced **no** sector
+  cap at all. Today-snapshot is strictly more restrictive (false
+  positives possible: a few historical names might get
+  `missing_sector` cap=0 they did not see live). This is the
+  conservative direction — the §8 Step 4 gate asks "zero
+  hard-constraint regression vs Step 1 ConstraintSnapshot built at the
+  same cut from the same snapshot map", which Option 2 satisfies by
+  using the same map on both sides of the gate.
+- Option 1 is reserved for if the Step 4 verdict reveals
+  sector-cap-driven baseline differences large enough to motivate
+  per-commit map reconstruction. We can revisit then.
+- Option 3 is reserved for if RenQuant ever takes a vendor sector
+  feed for production (an unrelated, larger decision).
+
+**The §4e loader (PR #142) consumes today's snapshot as the lower
+bound from `657950e`.** Cuts before that commit fall back to today's
+snapshot AND get tagged in their verdict JSON with
+`sector_snapshot_source = "today_fallback_pre_657950e"`. Cuts on or
+after that commit get `sector_snapshot_source = "today_snapshot"` —
+indistinguishable from the live config because today's map IS the
+live map at this audit's commit, and the per-cut snapshot frozen at
+loader-run time pins reproducibility going forward. The Step 4 verdict
+JSON MUST surface this field per-cut so a reviewer can immediately
+distinguish "the sector cap binding here is the cap the live system
+saw at this bar" from "we approximated with today's cap".
+
 ### What "verbatim live" is acceptable for
 
 The §8 Step 5 live-shadow phase (NOT a Sharpe gate; operational
@@ -349,6 +426,14 @@ silently regenerated against a newer live config.
 ---
 
 ## 6. Open items for the Step 4 loader PR
+
+**Loader implementation: PR #142 (merged 2026-06-03, commit
+`4d2d198`) — §8 Step 4e WF cut loader for A/B replay (sim DB →
+`AllocatorReplayBar`).** This audit memo is the source of truth for
+the loader's sector-cap contract; the cross-reference should be
+bidirectional (PR #142 description points back to this memo, and any
+future loader patch first re-reads this memo's §3 / §4 / §5 rules
+before editing the sector path).
 
 These are not asks of this audit PR — they are the implementation
 items the loader PR will pick up:
