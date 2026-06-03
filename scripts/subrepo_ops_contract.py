@@ -495,8 +495,14 @@ CHECKS: tuple[Check, ...] = (
             'json.load(open("$PROD_STRATEGY_CONFIG"))',
             "renquant-model",
             "RQ_META_LABEL_STRICT",
+            "monthly job fails closed",
         ),
-        forbidden=('json.load(open("backtesting/renquant_104/strategy_config.json"))',),
+        forbidden=(
+            'json.load(open("backtesting/renquant_104/strategy_config.json"))',
+            "scripts/_meta_label_generate.py",
+            "scripts/_meta_label_train.py",
+            "falling back to umbrella labeler",
+        ),
     ),
     Check(
         name="monthly_meta_label_snapshot_uses_backtesting_repo",
@@ -506,6 +512,11 @@ CHECKS: tuple[Check, ...] = (
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT"',
             "renquant-backtesting",
             "RQ_META_LABEL_SIM_STRICT",
+            "snapshot sim failed",
+        ),
+        forbidden=(
+            "scripts/run_sim_104.py",
+            "falling back to umbrella sim script",
         ),
     ),
     Check(
@@ -523,10 +534,13 @@ CHECKS: tuple[Check, ...] = (
             "Path('$PROD_STRATEGY_CONFIG').read_text()",
             "renquant-model",
             "RQ_MONTHLY_CALIBRATOR_STRICT",
+            "monthly calibrator fails closed",
         ),
         forbidden=(
             '--scorer-artifact "$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json"',
             "cfg = json.loads((sd / 'strategy_config.json').read_text())",
+            "scripts/fit_panel_calibrator.py",
+            "falling back to umbrella fit_panel_calibrator.py",
         ),
     ),
     Check(

@@ -13,7 +13,8 @@
 #
 # Steps:
 #   1. Smoke test (ensure model still loads — abort if broken)
-#   2. Run fit_panel_calibrator.py against the active production model
+#   2. Run renquant_model_gbdt.fit_calibrator_alpha158_fund against the
+#      active production model
 #   3. Test scorer + new calibrator produces sane (P, E[R]) on synthetic
 #      input — abort if calibrator collapsed (n_unique_prob_y < floor)
 #   4. ntfy summary — n knots, score → P(out) range
@@ -78,15 +79,17 @@ renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
+MONTHLY_CALIBRATOR_STRICT=0
+if renquant_strict_enabled RQ_MONTHLY_CALIBRATOR_STRICT; then
+    MONTHLY_CALIBRATOR_STRICT=1
+fi
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if renquant_strict_enabled RQ_MONTHLY_CALIBRATOR_STRICT; then
-        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable"
-        notify "RenQuant 104 MONTHLY-ABORT" "Pinned strategy config unavailable; calibrator NOT refreshed. Check $LOG"
-        exit 1
-    fi
-    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+    echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable; monthly calibrator fails closed"
+    notify "RenQuant 104 MONTHLY-ABORT" "Pinned strategy config unavailable; calibrator NOT refreshed. Check $LOG"
+    exit 1
 fi
 echo "Strategy config: $PROD_STRATEGY_CONFIG"
+echo "Multirepo fail-closed: enabled (strict=$MONTHLY_CALIBRATOR_STRICT)"
 
 # ── Step 1: Smoke test — abort if model broken ───────────────────────────
 echo "--- Step 1: Pre-flight smoke test ---"
@@ -164,13 +167,9 @@ PY
             --data-dir "$REPO_DIR/data" \
             --scorer-artifact "$PROD_SCORER" \
             --out "$PROD_CAL"
-    elif renquant_strict_enabled RQ_MONTHLY_CALIBRATOR_STRICT; then
-        echo "ERROR: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable and strict multirepo mode is enabled"
-        return 1
     else
-        echo "WARN: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable; falling back to umbrella fit_panel_calibrator.py."
-        "$PYTHON" scripts/fit_panel_calibrator.py --strategy renquant_104 \
-            --out "$PROD_CAL"
+        echo "ERROR: renquant_model_gbdt.fit_calibrator_alpha158_fund unavailable; monthly calibrator fails closed"
+        return 1
     fi
 }
 

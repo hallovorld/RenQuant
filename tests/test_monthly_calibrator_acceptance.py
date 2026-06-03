@@ -28,7 +28,7 @@ class TestPreRefitBackup:
         assert ATOMIC_BACKUP in SRC
         idx_backup = SRC.index(ATOMIC_BACKUP)
         # Locate the actual python invocation, not the comment mention
-        idx_fit = SRC.index('"$PYTHON" scripts/fit_panel_calibrator.py')
+        idx_fit = SRC.index('"$PYTHON" -m renquant_model_gbdt.fit_calibrator_alpha158_fund')
         assert idx_backup < idx_fit, "backup must precede the fit invocation"
 
     def test_baseline_metrics_captured(self):
