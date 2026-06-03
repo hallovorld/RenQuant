@@ -69,7 +69,7 @@ Searched my training-data knowledge for "Markowitz noisy μ̂" + "1/N optimal di
 - Markowitz 1952 (original MV)
 - Michaud 1989 (error-maximizer critique)
 - Chopra-Ziemba 1993 (μ̂ ~10× more damaging than Σ̂)
-- DeMiguel-Garlappi-Uppal 2009 (1/N beats MV across 14 datasets)
+- DeMiguel-Garlappi-Uppal 2009 (1/N is not consistently beaten by 14 MV-family models across 7 empirical datasets)
 
 For each, I documented the specific quantitative claim, not just the conclusion. The 10× number is from Chopra-Ziemba Table 3; the 14-dataset count is from DeMiguel et al. §3.
 
@@ -100,7 +100,7 @@ The parent memo's load-bearing claims, ranked by confidence:
 | 5 hard `constraints.append` sites + 3 optional | grep result, cited line numbers in parent memo §1 |
 | QP introduced 2026-04-26 / 2026-04-27 | Git log on `qp_solver.py` (first) + `rotation_convex.py` (predecessor) |
 | User mandated industrial-grade approach | `memory/feedback_industry_leading_quality.md` + `memory/feedback_validate_with_mature_lib.md` |
-| DeMiguel 2009 finding (1/N beats MV in 14 datasets) | Published paper, RFS 22(5), §3 |
+| DeMiguel 2009 finding (1/N is not consistently beaten by 14 MV-family models across 7 empirical datasets) | Published paper, RFS 22(5), §3 |
 | Chopra-Ziemba 1993 finding (μ̂ ~10× more damaging) | Published paper, JPM 19(2), Table 3 |
 | Bug F (delta_below_min_dw) | Recorded in TaskList #21 + commit `bf4edaf` audit |
 | Today's daily-104 QP infeasibility | `logs/daily_104/2026-06-02.log` lines on `per_asset_cap_max=-0.042` |
@@ -109,9 +109,9 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 | Claim | What I'm inferring from |
 |---|---|
-| 8 of 32 params actually drive prod | Reading `strategy_config.json` + cross-checking regime overrides; missed regime overlays may exist |
-| Today's bug is a "constraint-composition bug" not a QP bug | My architectural reading; codex may argue the QP solver's contract should not allow `w_upper < w_current` to be acceptable at the boundary |
-| Our IC=0.039 puts us "in the regime where DeMiguel wins" | DeMiguel's datasets were monthly equity sector / country returns, not daily firm-level. Adapting their finding to our case is a judgment call (see §3) |
+| ~25 of 32 params actually drive prod (corrected from "8 of 32") | Re-audited 2026-06-02 against current `strategy_config.json` + regime overlays + `_build_solver_kwargs`. See parent memo §2.1 for the full table; only 7 keys are inactive |
+| Today's bug is a "constraint-composition bug" not a QP bug | My architectural reading; codex's #123 v2 catch (`ApplyConvictionCapTask` raised the hard cap up to over-cap `w_current`) is independent confirmation: bug surfaced in constraint assembly, not in cvxpy |
+| The MV-vs-1/N mechanism applies to us in principle | Mechanism (μ̂-error damage) is well-established (DeMiguel 2009, Michaud 1989, Chopra-Ziemba 1993). But codex correctly flagged DeMiguel does NOT publish an IC-threshold; we cannot conclude RenQuant sits below a known boundary. Mechanism credible, quantitative placement unsupported |
 | Migration to Hybrid is "incremental and reversible" | Asserted in §8 of parent memo; not yet validated by code — codex should challenge whether the shadow-path implementation is actually as clean as I claim |
 
 ### Low confidence (judgment calls; please challenge)
@@ -155,9 +155,9 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 **Strength**: HIGH. I have not run the experiment.
 
-**Why I still write the memo**: The whole point of the migration plan's Phase 1 (shadow path, 30 days) is to do exactly this comparison empirically. My memo says "here's why I think it'll be a win, here's how to validate." It would be irresponsible to ship Phase 3 (live cutover) without Phase 1 evidence; my memo argues for the SHADOW path, not the cutover.
+**Why I still write the memo (UPDATED 2026-06-02 after codex re-review)**: The original phrasing claimed 30 trading days of shadow data would be enough to compare Sharpe. Codex correctly flagged this as insufficient (MED-6) — 30 days does not statistically separate a Sharpe delta of 0.1. The revised plan in the parent memo §8 puts paired-daily-returns offline WF A/B replay FIRST (with regime stratification + DSR/PBO multiple-comparison correction), and uses live shadow ONLY for operational telemetry (fallback-rate drift, implementation parity), not as a Sharpe gate.
 
-**What would change my mind**: If Phase 1 shows shadow Hybrid Sharpe < QP Sharpe by more than 0.1 over 30 days, my recommendation flips to "stay on QP, fix the constraint composition layer instead."
+**What would change my mind**: If the offline WF A/B (Step 4 in revised §8) shows Hybrid Sharpe < current-QP Sharpe with `DSR > 0.5` AND `PBO < 0.5` AND ≥ 4/N cuts consistent, my recommendation flips to "stay on QP, fix the constraint-composition layer (Step 1) and stop." Live shadow would not even start.
 
 ### CA5 — "The user originally wanted industrial-grade infrastructure. Going back to Level 0 violates that."
 
@@ -214,15 +214,25 @@ A naive estimate: collapse `ComputeQPConstraintsTask` + `ApplyExposureScalingTas
 
 **I haven't checked**: whether the existing Task split was deliberate for §1c size limit reasons (CLAUDE.md memory `feedback_qp_pipeline_alignment.md`: "each Task ≤50 lines"). If so, collapsing them violates that mandate. The right path might be "smaller Tasks but with a coordination contract that prevents contradictory constraint construction" — which is more work than I budgeted.
 
-### U4 — Does our 60-day-horizon label actually have meaningful signal decay?
+### U4 — Does our 60-day-horizon forecast actually have meaningful signal decay?
 
-If `fwd_60d_excess` signal at t persists with high autocorrelation to fwd_60d_excess at t+1, then single-period and multi-period optimization give nearly identical answers. Then there's no reason to move to Level 2.
+If our forecast state `μ̂_t` persists with high autocorrelation to `μ̂_{t+k}`, then single-period and multi-period optimization give nearly identical answers. Then there's no reason to move to Level 2.
 
-If signal decays significantly within a 60-day window, then Level 2 captures real value Level 1 misses.
+If the forecast state decays significantly within a 60-day window, then Level 2 captures real value Level 1 misses.
 
-**What we have**: We know from today's gate run that `label_autocorr_60` for BEAR = +0.213, for BULL_CALM = -0.040, for BULL_VOLATILE = +0.015, for CHOPPY = -0.024. **These autocorrelations are very low.** Signal-decay is FAST at this horizon — which makes Level 2 (multi-period planning) MORE useful, not less.
+**What we have — codex re-review correction (2026-06-02)**: my earlier draft of this section cited `label_autocorr_60` (realized forward-label autocorrelation) for BEAR = +0.213, BULL_CALM = −0.040, BULL_VOLATILE = +0.015, CHOPPY = −0.024 and concluded "signal-decay is FAST → Level 2 more useful."
 
-Updated view: I may have been too dismissive of Level 2 in §3 of the 3-questions addendum. With low label autocorr, signal decay IS material, and Level 2's planning-ahead value is real. Codex should challenge me on this.
+Codex flagged that this is the wrong observable: **realized forward-label autocorr conflates label noise with forecast persistence**. Multi-period optimization needs `corr(μ̂_t, μ̂_{t+k})` on the calibrated forecast state, plus rank/top-K overlap and an expected-return half-life — measured from the model's actual output, not from the realized labels.
+
+**Required measurement (NOT YET DONE)**:
+1. `corr(μ̂_t, μ̂_{t+k})` per regime, k ∈ {1, 5, 10, 20, 60 trading days}
+2. Top-K rank overlap `|topK(μ̂_t) ∩ topK(μ̂_{t+k})| / K` for K ∈ {5, 10, 20}
+3. Expected-return half-life: smallest k such that
+   `corr(μ̂_t, μ̂_{t+k}) ≤ 0.5 × corr(μ̂_t, μ̂_t)`
+4. Regime-conditional realized turnover pressure under current cost
+   structure (whether Level 2's amortization actually pays).
+
+**Updated view**: I cannot quantify Level 2's attractiveness without these measurements. **The right next step is to measure them**, not to skip Level 2. Gemini's review explicitly pointed at the same gap from a different angle (Level 2 *might* shine in this regime — the only way to know is to measure). Until then, U4 is an open uncertainty, not a Level-2-attractiveness claim.
 
 ### U5 — Does Hybrid Phase 1 actually preserve the regime-conditional discipline?
 
@@ -243,8 +253,8 @@ Specific, falsifiable triggers that would flip my recommendation:
 | Codex cites a paper showing MV beats 1/N for daily firm-level US equity at IC ≈ 0.04 | Downgrade DeMiguel-applicability claim; Level 1 may be defensible |
 | Codex says cvxportfolio production with similar μ̂ shows clear MultiPeriodOpt > SinglePeriodOpt | Promote Level 2 above Hybrid in the ranking |
 | Constraint-composition refactor turns out to be 2-3 days; produces a clean coherent constraint builder | Switch recommendation to "Fix in place + stay at Level 1, defer migration" |
-| Phase 1 shadow shows Hybrid Sharpe < QP Sharpe by > 0.1 over 30 days | Abandon Hybrid migration; investigate why QP's optimization gain is real for us |
-| Phase 1 shadow shows Hybrid fallback rate > 30% | Hybrid is not the simplification I claim; reconsider |
+| Offline WF A/B (revised §8 Step 4) shows Hybrid Sharpe < QP Sharpe with `DSR > 0.5` + `PBO < 0.5` + ≥ 4/N cuts consistent | Abandon Hybrid migration; fix constraint-composition in place at Level 1 |
+| Offline WF A/B shows Hybrid fallback rate > 30% | Hybrid is not the simplification I claim; the constraint-composition fix carries the load alone |
 | User says "industrial-grade specifically means MV optimization" | Stay at Level 1; the user mandate is binding |
 | User says "I want to keep iterating on the QP, not migrate" | Stay at Level 1; focus on constraint-composition refactor |
 
@@ -341,7 +351,7 @@ my prior alone.
 - Markowitz 1952 — original MV
 - Michaud 1989 *Financial Analysts Journal* 45(1) — "error-maximizer" critique
 - Chopra & Ziemba 1993 *JPM* 19(2) — quantitative finding that μ̂ errors ~10× more damaging than Σ̂ errors for MV
-- DeMiguel, Garlappi & Uppal 2009 *RFS* 22(5) — 1/N beats MV across 14 datasets
+- DeMiguel, Garlappi & Uppal 2009 *RFS* 22(5) — 1/N is not consistently beaten by 14 MV-family models across 7 empirical datasets
 - López de Prado 2016 *JPM* 42(4) — Hierarchical Risk Parity
 - Boyd-Busseti-Diamond-Kahn-Koh-Nystrup-Speth 2024 cvxportfolio textbook — SinglePeriodOpt vs MultiPeriodOpt distinction
 - Garleanu-Pedersen 2013 *J. Finance* 68(6) — partial-move under transaction costs (relevant to Level 2 motivation)

@@ -221,7 +221,7 @@ A higher-level abstraction (Level 2 multi-period or Level 4 robust) would still 
 
 For RenQuant 104's actual problem class (long-only US equity, ~150-name universe, daily rebalance, 60-day-horizon signal, noisy μ̂), the published-literature answer to "ultimate" is somewhere on this spectrum:
 
-1. **Practical apex** (DeMiguel 2009 + Kelly fractional + Davis-Norman bands): **1/N within top-K candidates, scaled by per-name fractional Kelly, with closed-form no-trade bands.** Stays at Level 0 but uses every tested-robust simplification. Closed-form, deterministic, no solver.
+1. **Practical apex** (DeMiguel 2009 + fractional Kelly + Davis-Norman bands), but with the codex re-review caveats explicitly required: **top-K 1/N + fractional Kelly per name, ONLY with (a) explicit μ̂ shrinkage / clipping (Ledoit-Wolf or empirical-Bayes), (b) uncertainty-aware edge floor — drop names whose calibrated expected return is below the noise level, (c) fractional Kelly (NOT full Kelly: `f* = μ/σ²` is itself μ-noise-sensitive — Kelly with point estimates blows up under estimation error), (d) regime-conditional hard caps + a sector-cap projection step.** Stays at Level 0 but uses every tested-robust simplification AND the risk-control guardrails Kelly needs to be production-grade. Closed-form, deterministic, no solver. Codex correctly flagged the original framing was missing (a)–(c) — without them, Level-0 inherits the same μ-noise damage MV does.
 
 2. **Theoretical apex** (Merton 1969 + Davis-Norman 1990 + Almgren-Chriss 2000): **Continuous-time HJB equation with transaction-cost friction.** PDE solve per bar. Mathematically elegant; computationally expensive; rarely deployed in production because the closed-form solution requires unrealistic assumptions about asset dynamics.
 
@@ -237,7 +237,7 @@ DeMiguel 2009 + Michaud 1989 + Chopra-Ziemba 1993 all point in the same directio
 
 Ordered by likely OOS Sharpe given our (μ̂ noise, Σ̂ noise, 60-day-horizon, ~150-asset universe):
 
-1. **(Probably best)** Closed-form Kelly per name, with regime-conditional caps, top-K = 4-8, equal-weight when caps don't bind, sector cap via greedy projection. Per-asset σ-aware no-trade bands (Davis-Norman). NO solver.
+1. **(Probably best — REVISED 2026-06-02 after codex MED-7)** Closed-form *fractional* Kelly per name, with: μ̂ shrinkage (Ledoit-Wolf or empirical-Bayes) + uncertainty-aware edge floor (drop names below noise) + regime-conditional hard caps + sector-cap greedy projection + per-asset σ-aware no-trade bands (Davis-Norman). Top-K = 4-8, equal-weight when caps don't bind. NO solver. The earlier framing of this row claimed "industrial-grade Level 0" without these guardrails — Kelly's `f* = μ/σ²` is itself μ-noise-sensitive; full-Kelly with point estimates blows up under estimation error. The risk-control specification above is non-negotiable for this row to be production-grade.
 2. **(Probably tied)** Current QP at Level 1, but with all soft penalties disabled, only hard constraints active. Strip down to: budget + per-asset cap + sector cap + turnover. Drop CVaR, robust-μ, impact, tax penalty, cash-drag (all already 0 in config anyway). Reduces 32 → ~10 parameters.
 3. **(Riskier)** HRP (López de Prado 2016) — robust to Σ̂ noise but ignores μ̂.
 4. **(Risk)** Move UP to cvxportfolio MultiPeriodOpt — Level 2 — only justifiable if we have a published signal-decay model for `fwd_60d_excess` and want to spread Δw over multiple bars. Not obviously a win at our scale.
