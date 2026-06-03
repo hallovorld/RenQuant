@@ -411,14 +411,24 @@ def test_promotion_verdict_passes_synthetic_tier3() -> None:
         "A_golden": {
             "apy_mean": 0.10,
             "sharpe_mean": 1.0,
-            "per_regime": _per_regime_sharpes(1.0, 0.8, 0.6),
+            "per_regime": _per_regime_metrics(
+                (1.0, 0.8, 0.6),
+                cash_pct=(0.50, 0.60, 0.70),
+                kelly_candidate_mean=(0.04, 0.03, 0.02),
+                kelly_held_mean=(0.03, 0.02, 0.01),
+            ),
         },
         "B_sigma_horizon_60": {
             "apy_mean": 0.12,
             "sharpe_mean": 1.2,
             "dsr": 0.7,
             "pbo": 0.4,
-            "per_regime": _per_regime_sharpes(1.2, 0.9, 0.7),
+            "per_regime": _per_regime_metrics(
+                (1.2, 0.9, 0.7),
+                cash_pct=(0.30, 0.50, 0.55),
+                kelly_candidate_mean=(0.08, 0.05, 0.03),
+                kelly_held_mean=(0.05, 0.03, 0.02),
+            ),
         },
         "AA_golden_resplit": {"apy_mean": 0.101, "sharpe_mean": 1.01},
     }
@@ -430,14 +440,74 @@ def test_promotion_verdict_passes_synthetic_tier3() -> None:
     assert verdict["blocked_reasons"] == []
     assert verdict["deltas"]["sharpe_lift"] == 0.19999999999999996
     assert verdict["deltas"]["per_regime_sharpe_lifts"]["CHOPPY"]["passed"] is True
+    observation_deltas = verdict["deltas"]["per_regime_observation_deltas"]
+    assert observation_deltas["BULL_CALM"]["cash_pct_mean"]["delta"] == -0.2
+    assert (
+        observation_deltas["BULL_CALM"]["kelly_candidate_mean_mean"]["delta"]
+        == 0.04
+    )
 
 
 def _per_regime_sharpes(bull_calm: float, bull_volatile: float, choppy: float) -> dict:
+    return _per_regime_metrics((bull_calm, bull_volatile, choppy))
+
+
+def _per_regime_metrics(
+    sharpes: tuple[float, float, float],
+    *,
+    cash_pct: tuple[float, float, float] = (0.50, 0.50, 0.50),
+    kelly_candidate_mean: tuple[float, float, float] = (0.04, 0.04, 0.04),
+    kelly_held_mean: tuple[float, float, float] = (0.03, 0.03, 0.03),
+) -> dict:
+    regimes = ("BULL_CALM", "BULL_VOLATILE", "CHOPPY")
     return {
-        "BULL_CALM": {"sharpe_mean": bull_calm},
-        "BULL_VOLATILE": {"sharpe_mean": bull_volatile},
-        "CHOPPY": {"sharpe_mean": choppy},
+        regime: {
+            "sharpe_mean": sharpe,
+            "cash_pct_mean": cash,
+            "kelly_candidate_mean_mean": candidate,
+            "kelly_held_mean_mean": held,
+        }
+        for regime, sharpe, cash, candidate, held in zip(
+            regimes,
+            sharpes,
+            cash_pct,
+            kelly_candidate_mean,
+            kelly_held_mean,
+            strict=True,
+        )
     }
+
+
+def test_per_regime_observation_deltas_are_non_blocking_when_missing() -> None:
+    mod = _load_module()
+    metrics = {
+        "A_golden": {
+            "apy_mean": 0.10,
+            "sharpe_mean": 1.0,
+            "per_regime": _per_regime_sharpes(1.0, 0.8, 0.6),
+        },
+        "B_sigma_horizon_60": {
+            "apy_mean": 0.12,
+            "sharpe_mean": 1.2,
+            "dsr": 0.7,
+            "pbo": 0.4,
+            "per_regime": {
+                "BULL_CALM": {"sharpe_mean": 1.2},
+                "BULL_VOLATILE": {"sharpe_mean": 0.9},
+                "CHOPPY": {"sharpe_mean": 0.7},
+            },
+        },
+        "AA_golden_resplit": {"apy_mean": 0.101, "sharpe_mean": 1.01},
+    }
+    placebo = {"provided": True, "passed": True, "items": []}
+
+    verdict = mod.promotion_verdict(metrics, placebo)
+
+    assert verdict["tier3_ready"] is True
+    deltas = verdict["deltas"]["per_regime_observation_deltas"]["BULL_CALM"]
+    assert deltas["cash_pct_mean"]["control"] == 0.50
+    assert deltas["cash_pct_mean"]["treatment"] is None
+    assert deltas["cash_pct_mean"]["delta"] is None
 
 
 def test_promotion_verdict_blocks_per_regime_sharpe_regression() -> None:
