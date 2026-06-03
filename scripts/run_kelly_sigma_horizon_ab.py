@@ -30,6 +30,10 @@ DEFAULT_END = "2026-03-28"
 DEFAULT_SEEDS = (0, 1, 2, 3, 4)
 DEFAULT_AA_SEED_OFFSET = 1000
 DEFAULT_SIGMA_HORIZON_DAYS = 60
+PREFERRED_AUTO_BASE_CONFIGS = (
+    "strategy_config.golden.json",
+    "strategy_config.json",
+)
 SUBREPO_IMPORT_ORDER = (
     "renquant-common",
     "renquant-base-data",
@@ -212,6 +216,24 @@ def _resolve_manifest_uri(manifest: Path, raw: str) -> Path:
     return path if path.is_absolute() else manifest.parent / path
 
 
+def _resolve_manifest_uri_for_runner(
+    manifest: Path,
+    raw: str,
+    *,
+    strategy_dir: Path,
+) -> Path:
+    path = Path(str(raw))
+    if path.is_absolute():
+        return path
+    manifest_relative = manifest.parent / path
+    if manifest_relative.exists():
+        return manifest_relative
+    strategy_relative = strategy_dir / path
+    if strategy_relative.exists():
+        return strategy_relative
+    return manifest_relative
+
+
 def _compact_consistency_error(exc: Exception) -> str:
     lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
     if not lines:
@@ -341,6 +363,105 @@ def preflight_walkforward_manifest(
     return result
 
 
+def manifest_artifact_config_fingerprint(
+    manifest: Path,
+    *,
+    strategy_dir: Path = STRATEGY_DIR,
+) -> dict[str, Any]:
+    payload = json.loads(manifest.read_text())
+    rows = payload.get("retrains", []) if isinstance(payload, dict) else payload
+    if not rows:
+        raise ValueError(f"walkforward manifest has no retrain entries: {manifest}")
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict) or not row.get("artifact_uri"):
+            continue
+        artifact_path = _resolve_manifest_uri_for_runner(
+            manifest,
+            str(row["artifact_uri"]),
+            strategy_dir=strategy_dir,
+        )
+        if not artifact_path.exists():
+            continue
+        artifact = json.loads(artifact_path.read_text())
+        if not isinstance(artifact, dict):
+            raise ValueError(f"artifact JSON root is not a mapping: {artifact_path}")
+        fingerprint = artifact.get("config_fingerprint")
+        if not fingerprint:
+            raise ValueError(f"artifact config_fingerprint missing: {artifact_path}")
+        fields = artifact.get("config_fingerprint_fields") or {}
+        watchlist = fields.get("watchlist") if isinstance(fields, dict) else None
+        return {
+            "manifest": str(manifest),
+            "entry": idx,
+            "artifact_path": str(artifact_path),
+            "fingerprint": str(fingerprint),
+            "watchlist_size": len(watchlist) if isinstance(watchlist, list) else None,
+        }
+    raise FileNotFoundError(f"no readable artifact_uri found in manifest: {manifest}")
+
+
+def matching_base_configs_for_fingerprint(
+    fingerprint: str,
+    *,
+    strategy_dir: Path = STRATEGY_DIR,
+) -> list[dict[str, Any]]:
+    if str(strategy_dir) not in sys.path:
+        sys.path.insert(0, str(strategy_dir))
+    from kernel.config_consistency import fingerprint_config  # noqa: PLC0415
+
+    matches: list[dict[str, Any]] = []
+    for path in sorted(strategy_dir.glob("strategy_config*.json")):
+        try:
+            config = json.loads(path.read_text())
+        except Exception:  # noqa: BLE001
+            continue
+        live_fp = fingerprint_config(config)
+        if live_fp != fingerprint:
+            continue
+        matches.append({
+            "path": str(path.resolve()),
+            "name": path.name,
+            "fingerprint": live_fp,
+            "watchlist_size": len(config.get("watchlist") or []),
+        })
+    return matches
+
+
+def select_base_config_matching_manifest(
+    manifest: Path,
+    *,
+    strategy_dir: Path = STRATEGY_DIR,
+) -> dict[str, Any]:
+    artifact = manifest_artifact_config_fingerprint(
+        manifest,
+        strategy_dir=strategy_dir,
+    )
+    matches = matching_base_configs_for_fingerprint(
+        str(artifact["fingerprint"]),
+        strategy_dir=strategy_dir,
+    )
+    if not matches:
+        raise ValueError(
+            "no strategy_config*.json matches manifest artifact fingerprint "
+            f"{artifact['fingerprint']} from {artifact['artifact_path']}"
+        )
+
+    preferred = {name: idx for idx, name in enumerate(PREFERRED_AUTO_BASE_CONFIGS)}
+
+    def _rank(row: dict[str, Any]) -> tuple[int, str]:
+        name = str(row["name"])
+        return (preferred.get(name, len(preferred)), name)
+
+    selected = sorted(matches, key=_rank)[0]
+    return {
+        "artifact": artifact,
+        "target_fingerprint": artifact["fingerprint"],
+        "selected_config_path": selected["path"],
+        "selected_config_name": selected["name"],
+        "matching_configs": matches,
+    }
+
+
 def materialize_manifest_for_runner(
     manifest: Path,
     *,
@@ -366,12 +487,13 @@ def materialize_manifest_for_runner(
             path = Path(str(raw))
             if path.is_absolute():
                 continue
-            manifest_relative = manifest.parent / path
-            strategy_relative = strategy_dir / path
-            if manifest_relative.exists():
-                row[key] = str(manifest_relative.resolve())
-            elif strategy_relative.exists():
-                row[key] = str(strategy_relative.resolve())
+            resolved = _resolve_manifest_uri_for_runner(
+                manifest,
+                str(raw),
+                strategy_dir=strategy_dir,
+            )
+            if resolved.exists():
+                row[key] = str(resolved.resolve())
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{manifest.stem}.resolved.json"
     out.write_text(json.dumps(payload, indent=2) + "\n")
@@ -598,6 +720,12 @@ def parse_args() -> argparse.Namespace:
              "Relative paths resolve under backtesting/renquant_104.",
     )
     parser.add_argument(
+        "--match-base-config-to-manifest",
+        action="store_true",
+        help="Select the base config whose model-relevant fingerprint matches "
+             "the first scorer artifact in --manifest-path.",
+    )
+    parser.add_argument(
         "--no-materialize-manifest",
         action="store_true",
         help="Do not write a resolved manifest copy under output_dir before execute.",
@@ -611,7 +739,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    base_config_match: dict[str, Any] | None = None
+    if args.match_base_config_to_manifest:
+        if not args.manifest_path:
+            raise SystemExit("--match-base-config-to-manifest requires --manifest-path")
+        base_config_match = select_base_config_matching_manifest(
+            resolve_strategy_path(args.manifest_path).resolve(),
+            strategy_dir=STRATEGY_DIR,
+        )
+        args.base_config = str(base_config_match["selected_config_path"])
     plan = build_plan(args)
+    if base_config_match is not None:
+        plan["base_config_auto_match"] = base_config_match
     out_dir = Path(plan["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     treatment_meta = build_treatment_config(
