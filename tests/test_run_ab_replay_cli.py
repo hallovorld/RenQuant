@@ -454,3 +454,57 @@ class TestCLISmoke:
             assert payload["n_bars"] == 30
             assert payload["constraint_fidelity"]["decision_grade"] is False
             assert payload["verdict"]["promotion_candidate"] is None
+            assert payload["fwd_horizon_days"] == 60  # default
+
+    def test_main_with_fwd_horizon_days_flag(self):
+        """--fwd-horizon-days plumbs through to the WF loader."""
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "sim_runs.db"
+            # Fixture only populates fwd_1d (mirrors the 60d-NULL case
+            # observed in prod data/sim_runs.db today).
+            conn = sqlite3.connect(db)
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE score_distribution ("
+                " run_id TEXT, date TEXT, ticker TEXT, raw_panel REAL,"
+                " rank_score REAL, mu REAL, sigma REAL, regime TEXT,"
+                " is_holding INTEGER)"
+            )
+            cur.execute(
+                "CREATE TABLE ticker_forward_returns ("
+                " as_of_date TEXT, ticker TEXT, close_price REAL,"
+                " fwd_1d REAL, fwd_5d REAL, fwd_10d REAL,"
+                " fwd_20d REAL, fwd_60d REAL, updated_at TEXT)"
+            )
+            rng = np.random.default_rng(7)
+            for day in range(1, 11):
+                date = f"2024-02-{day:02d}"
+                for ticker in ("AAPL", "MSFT", "GOOG"):
+                    cur.execute(
+                        "INSERT INTO score_distribution "
+                        "(run_id, date, ticker, mu, sigma, regime) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        ("run-test", date, ticker,
+                         float(rng.normal(0.02, 0.005)),
+                         0.12, "BULL_CALM"),
+                    )
+                    cur.execute(
+                        "INSERT INTO ticker_forward_returns "
+                        "(as_of_date, ticker, fwd_1d) VALUES (?, ?, ?)",
+                        (date, ticker, float(rng.normal(0.001, 0.003))),
+                    )
+            conn.commit()
+            conn.close()
+
+            out = Path(td) / "verdict.json"
+            rc = main([
+                "--wf-artifact-root", td,
+                "--start-cut", "2024-02-01",
+                "--end-cut", "2024-02-10",
+                "--out", str(out),
+                "--fwd-horizon-days", "1",
+            ])
+            assert rc == 0
+            payload = json.loads(out.read_text())
+            assert payload["fwd_horizon_days"] == 1
+            assert payload["n_bars"] == 10

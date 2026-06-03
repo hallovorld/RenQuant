@@ -452,6 +452,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--incumbent", type=str, default="fractional_kelly_top_k",
                    help="Incumbent allocator name for paired comparisons")
     p.add_argument("--pbo-n-slices", type=int, default=16)
+    p.add_argument(
+        "--fwd-horizon-days", type=int, default=60,
+        help="Forward-return horizon for realised returns in the replay "
+             "(must match a populated ticker_forward_returns column: "
+             "1, 5, 10, 20, or 60). Default 60 matches the prod label.",
+    )
     p.add_argument("--loader-module", type=str, default=None,
                    help="Optional module:function to load WF bars "
                         "(default uses wf_replay_loader.load_replay_bars_from_sim_db)")
@@ -466,6 +472,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     payload["as_of_date"] = "2026-06-03"
     payload["wf_artifact_root"] = args.wf_artifact_root
     payload["cut_range"] = [args.start_cut, args.end_cut]
+    payload["fwd_horizon_days"] = args.fwd_horizon_days
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -490,6 +497,7 @@ def _load_bars(args) -> list[AllocatorReplayBar]:
         _default_sim_db_path(args.wf_artifact_root),
         args.start_cut,
         args.end_cut,
+        fwd_horizon_days=args.fwd_horizon_days,
     )
 
 
