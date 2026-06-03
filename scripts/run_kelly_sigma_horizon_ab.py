@@ -88,9 +88,9 @@ def resolve_strategy_path(raw: str | Path) -> Path:
 
 
 def bootstrap_subrepo_imports(repo_root: Path = REPO) -> Path:
-    scripts_dir = repo_root / "scripts"
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
+    for scripts_dir in (repo_root / "scripts", REPO / "scripts"):
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
     from subrepo_paths import resolve_subrepo_root  # noqa: PLC0415
 
     subrepo_root = resolve_subrepo_root(repo_root).resolve()
@@ -158,6 +158,46 @@ def build_variants(
             offset_seeds(seeds, aa_seed_offset),
         ),
     ]
+
+
+def build_placebo_requirements(args: argparse.Namespace) -> dict[str, Any]:
+    """Return the §7.2 placebo runbook recorded in every dry-run plan."""
+    manifest_path = str(args.manifest_path or "<walkforward-manifest.json>")
+    output_dir = str(args.output_dir or "<kelly-sigma-output-dir>")
+    return {
+        "required": True,
+        "source_script": "scripts/analyze_manifest_sanity_placebo.py",
+        "controls": [
+            {
+                "name": "shuffle_placebo",
+                "purpose": "detect lift that survives label/control randomization",
+                "evidence_key": "interpretation.promotion_evidence",
+            },
+            {
+                "name": "time_shift_placebo",
+                "purpose": "detect lift explainable by 60d label persistence",
+                "shifts": [60],
+                "evidence_key": "interpretation.placebo_60_ic",
+            },
+        ],
+        "required_json_fields": [
+            "interpretation.promotion_evidence",
+            "interpretation.aligned_real_60_ic",
+            "interpretation.placebo_60_ic",
+            "interpretation.label_autocorr_60_ic",
+        ],
+        "command_template": (
+            "python scripts/analyze_manifest_sanity_placebo.py "
+            "--artifact <panel-ltr-artifact.json> "
+            f"--manifest {manifest_path} "
+            "--label auto "
+            f"--output-dir {output_dir}/placebo"
+        ),
+        "promotion_input": (
+            "pass the emitted JSON path(s) back to this runner with "
+            "--placebo-json before considering the Tier 3 verdict"
+        ),
+    }
 
 
 def _finite(value: Any) -> float | None:
@@ -923,6 +963,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         },
         "variants": [variant.as_json() for variant in variants],
         "placebo_json": list(args.placebo_json or []),
+        "placebo_requirements": build_placebo_requirements(args),
         "mandatory_checks": {
             "real_ab": ["A_golden", "B_sigma_horizon_60"],
             "aa_resplit": ["A_golden", "AA_golden_resplit"],

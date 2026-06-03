@@ -74,6 +74,33 @@ def test_build_plan_keeps_treatment_config_in_output_dir(tmp_path: Path) -> None
     assert plan["mandatory_checks"]["multi_seed_floor"] == 5
     assert plan["mandatory_checks"]["real_ab"] == ["A_golden", "B_sigma_horizon_60"]
     assert plan["run_overrides"]["manifest_path"] == "artifacts/sim/walkforward_manifest.json"
+    assert plan["placebo_requirements"]["required"] is True
+    assert "scripts/analyze_manifest_sanity_placebo.py" in (
+        plan["placebo_requirements"]["command_template"]
+    )
+    assert "interpretation.promotion_evidence" in (
+        plan["placebo_requirements"]["required_json_fields"]
+    )
+
+
+def test_placebo_requirements_point_at_manifest_and_output_dir(tmp_path: Path) -> None:
+    mod = _load_module()
+    args = Namespace(
+        manifest_path="artifacts/sim/walkforward_manifest_v2.json",
+        output_dir=str(tmp_path / "ab"),
+    )
+
+    requirements = mod.build_placebo_requirements(args)
+
+    assert requirements["source_script"] == "scripts/analyze_manifest_sanity_placebo.py"
+    assert "--manifest artifacts/sim/walkforward_manifest_v2.json" in (
+        requirements["command_template"]
+    )
+    assert str(tmp_path / "ab" / "placebo") in requirements["command_template"]
+    assert {control["name"] for control in requirements["controls"]} == {
+        "shuffle_placebo",
+        "time_shift_placebo",
+    }
 
 
 def test_default_base_config_manifest_preflight_requires_calibrators() -> None:
