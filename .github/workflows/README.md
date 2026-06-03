@@ -22,12 +22,8 @@ name: agent-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:    # mandatory cost gate per §3.1
-      - 'doc/**'
-    # NB: do NOT add '.github/**' OR '**/*.md' — both are control
-    # planes. `.github/**` houses workflows + CODEOWNERS;
-    # `.github/agent-*.md` is the automation's own prompt template.
-    # `doc/**` is project docs only and safe to skip for cost.
+    # No paths-ignore: branch protection requires review jobs to emit a
+    # status on every PR, including docs-only PRs.
 concurrency:
   group: agent-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -89,10 +85,10 @@ jobs:
 | `AGENT_GIT_PUSH_TOKEN` | Fix template (push commits) | Optional but recommended PAT or GitHub App token with `contents:write` + `pull-requests:write` scoped to this repo; if absent, same-repo fix pushes fall back to `github.token` |
 
 Set via repo Settings → Secrets and variables → Actions, OR as an
-org-wide secret accessible to all renquant repos. The reusable templates
-intentionally declare these secrets as optional so repositories without
-agent credentials skip agent jobs cleanly instead of failing workflow
-startup before any job is created.
+org-wide secret accessible to all renquant repos. Review jobs fail closed
+when `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are missing so a PR cannot
+appear reviewed when no LLM review actually ran. `AGENT_GIT_PUSH_TOKEN`
+is optional for same-repo fix pushes.
 
 ## Per-repo customization points
 

@@ -24,6 +24,11 @@ For each of the 8 P1 target repos, configure under repo Settings → Secrets and
 - [ ] `OPENAI_API_KEY` from platform.openai.com
 - [ ] `AGENT_GIT_PUSH_TOKEN` — PAT or GitHub App token with `contents:write` + `pull-requests:write` scoped to that repo. Recommend a dedicated bot identity (e.g. `claude-code-bot` / `codex-bot`) rather than a personal PAT so commits + comments are attributable to the agent.
 
+`ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are mandatory before enabling
+required review checks. The G2 review template fails closed when either
+reviewer's API key is missing; this is intentional so PRs cannot merge as
+"reviewed" after a green no-op.
+
 Verify per-repo with:
 
 ```bash
@@ -39,19 +44,22 @@ done
 ### Cost-gate spot-check
 
 The wrappers each ship the mandatory cost gates from §6:
-- `paths-ignore: ['doc/**']` (skip project docs only — NOT `.github/**`
-  or `**/*.md`; those are control planes per the §3.1 update)
 - `concurrency: cancel-in-progress: true` on the review workflow
 - `if: github.event.pull_request.changed_files < 100` on each review job
+- no `paths-ignore` on `agent-review.yml`; branch protection needs the
+  review checks to emit a status on every PR, including docs-only PRs
 
 Re-verify the wrappers in `renquant-model/.github/workflows/` still have all three before running the fan-out (a future change might drop one):
 
 ```bash
 for f in agent-review.yml; do
-  for gate in "paths-ignore:" "cancel-in-progress: true" "changed_files < 100"; do
+  for gate in "cancel-in-progress: true" "changed_files < 100"; do
     grep -q "$gate" "/Users/renhao/git/github/renquant-model/.github/workflows/$f" \
       || echo "::error::$f missing gate $gate"
   done
+  if grep -q "paths-ignore:" "/Users/renhao/git/github/renquant-model/.github/workflows/$f"; then
+    echo "::error::$f must not paths-ignore review-triggering PRs"
+  fi
 done
 ```
 
@@ -89,7 +97,9 @@ For each opened PR:
 - [ ] CI workflow runs (whatever existing CI the repo has). Agent workflows DON'T fire on the wrapper-adding PR itself (they fire on the NEXT PR after merge).
 - [ ] Merge the wrapper PR.
 - [ ] Open a small no-op test PR (e.g. a typo fix). Verify:
-  - [ ] `agent-attribution-check` workflow fires (and skips, because the test PR has no `agent:*` label)
+  - [ ] `agent-attribution-check` workflow fires. A human PR with no
+        branch/body/commit agent signal may skip; a `codex/...` or
+        `claude/...` branch without the matching `agent:*` label MUST fail.
   - [ ] `agent-review` workflow fires AND posts a Claude review + Codex review (allowed to be empty / "looks good" — we're testing dispatch, not findings)
 - [ ] If both reviews fire successfully, declare the repo migrated. If not, fix forward in the umbrella templates and re-run.
 
@@ -101,11 +111,11 @@ Post-merge rollback: open a follow-up PR removing `.github/workflows/agent-*.yml
 
 ## Cost guardrails post-fan-out
 
-Set an org-level Anthropic API spend alert + OpenAI API spend alert at, say, $200/month (the doc's §6 envelope ceiling). If either crosses, kill the workflows in the offending repo:
+Set an org-level Anthropic API spend alert + OpenAI API spend alert at, say, $200/month (the doc's §6 envelope ceiling). If either crosses, add `agent:manual-hold` to affected PRs or temporarily relax branch protection before disabling review workflows. Do not leave required review checks pointing at disabled workflows.
 
 ```bash
 # Disable the noisier workflow in a specific repo
 gh workflow disable agent-review.yml --repo hallovorld/<repo>
 ```
 
-Re-enable once the cost source is identified (usually a sweep of large docs-only PRs that bypassed `paths-ignore` somehow).
+Re-enable once the cost source is identified.

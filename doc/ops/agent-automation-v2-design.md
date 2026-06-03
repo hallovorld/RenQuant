@@ -57,7 +57,7 @@ Sources:
 | G1 attribution check | `pull_request: opened/edited/synchronize/labeled/unlabeled` | `.github/workflows/agent-attribution-check.yml` → `_agent-attribution-check-template.yml` | ✅ Verified firing on origin |
 | G2 auto-review (Claude + Codex) | `pull_request: opened/synchronize/reopened/ready_for_review` (skip `doc/**`) | `agent-review.yml` → `_agent-review-template.yml`, both agents in parallel | ✅ Verified firing on origin |
 | G3 auto-fix | `pull_request_review: submitted` OR `issue_comment: created` | `agent-autofix.yml` → `_agent-fix-template.yml` | ⚠️  Gates rarely match — see §3 |
-| Cost gates | `paths-ignore: doc/**`, `concurrency: cancel-in-progress`, `changed_files < 100` | All three workflows | ✅ |
+| Cost gates | `concurrency: cancel-in-progress`, `changed_files < 100`; `paths-ignore` removed after the 2026-06-03 fail-closed review gate because required review statuses must emit on every PR | All three workflows | ✅ |
 | Per-executor attempt counter (3-strike) | Labels `agent:fix:<name>:attempt-{1,2,3}` | `_agent-fix-template.yml` | ✅ (when G3 fires) |
 | `agent:manual-hold` universal stop | Label check | All workflows | ✅ |
 | Loop guard (skip own agent's PRs) | Label check `agent:<self>` | G2 template | ✅ |
@@ -437,7 +437,8 @@ All v1 safety gates carry forward verbatim:
   paired-merge-gate.
 - §7.4 promotion gating — v2 doesn't touch live-flip decisions; those
   remain `agent:manual-hold` territory by default.
-- All v1 cost gates (paths-ignore, concurrency, changed_files < 100)
+- All current cost gates (concurrency, changed_files < 100; no review `paths-ignore`
+  because branch protection requires a review status on every PR)
   and per-executor attempt-3 limits.
 - `agent:manual-hold` halts the entire v2 loop at any node.
 

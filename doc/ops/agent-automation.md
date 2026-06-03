@@ -136,13 +136,8 @@ name: agent-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # MANDATORY: skip docs-only PRs (zero-value LLM spend).
-    # NB: `.github/**` is the security control plane (workflows,
-    # CODEOWNERS, branch protection metadata) — explicitly DO NOT
-    # ignore it. Those are the exact PRs that need the MOST review.
-    paths-ignore:
-      - 'doc/**'
-      - '**/*.md'
+    # No paths-ignore: branch protection requires review jobs to emit a
+    # status on every PR, including docs-only PRs.
 concurrency:
   # MANDATORY: only review the latest commit when a PR is pushed
   # in quick succession — older runs cancel.
@@ -353,10 +348,13 @@ Review prompt comes from `.github/agent-review-prompt.md` (per-repo customizatio
 
 **Cost-control mitigations** (mandatory):
 
-- `paths-ignore: ['doc/**', '**/*.md']` on the parent workflow (skip docs-only PRs)
 - `concurrency: cancel-in-progress: true` (only review the latest commit when a PR is pushed in quick succession)
 - `if: github.event.pull_request.changed_files < 100` (skip megaPRs — human-only review)
 - Per-agent model selection (cheaper for review, more capable for fix)
+
+**Fail-closed review prerequisite**: missing `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` is a workflow failure, not a green skip. A PR must not
+merge as "reviewed" when the review job did not have credentials to run.
 
 ### 4.3 · G3 — Auto-fix on reviewer findings
 
@@ -483,7 +481,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 | **Force-push race** | `--force-with-lease` (standard); `concurrency: cancel-in-progress: false` for G3 |
 | **Runaway autonomy** | Manual merge always required (CLAUDE.md §3.1); per-executor `agent:fix:<name>:attempt-3` stop (§4.3.3); `agent:manual-hold` opt-out; `if: changed_files < 100` |
 | **Secret leakage in PR diff** | G2 runs `contents: read`; G3 only with `pull_request_target` for metadata ops; PR head never checked out under write secrets from forks (per Codex doc) |
-| **Cost runaway** | Org-level API spend alert; `paths-ignore`; `concurrency: cancel-in-progress`; model downgrade per workflow |
+| **Cost runaway** | Org-level API spend alert; `concurrency: cancel-in-progress`; file-count gate; model downgrade per workflow |
 | **Hostile contributor** | G3 trust check (`actor in owners/members/write-collaborators`); G3 only fires on `agent:*`-labeled PR (outside contributor can't trigger autofix) |
 | **Misattribution** | Layer C gate fails the PR; `no-claude-attribution` / `no-codex-attribution` label opt-out |
 
@@ -528,7 +526,7 @@ Two agents → roughly 2× envelope ($30–$900/month for G2 across both, etc.).
 - After this PR lands: close PR #16 and PR #17 as superseded; cherry-pick any unique strengths I missed.
 
 **Strengths preserved from PR #16** (Claude-side):
-- §5 cost envelope with concrete mitigations (paths-ignore, concurrency, model selection, file-count gate)
+- §5 cost envelope with concrete mitigations (concurrency, model selection, file-count gate)
 - Three-layer attribution defense (CLAUDE.md rule + hook + server check)
 - §7 open questions structure
 
