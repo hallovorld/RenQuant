@@ -125,6 +125,14 @@ sys.exit(0 if len(sched) > 0 else 1)
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
 
+if [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
+    if ! "$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"; then
+        echo "Runtime QP sanity check failed — aborting daily run before live trade."
+        notify "RenQuant 104 RUNTIME-SANITY-FAIL" "Stale or incomplete multirepo QP runtime; run make subrepo-runtime-root and paper smoke"
+        exit 1
+    fi
+fi
+
 # Drift guard (2026-04-24): alert if strategy_config.json has drifted from
 # strategy_config.golden.json. Non-fatal — the run continues — but WARN
 # ntfy fires so flag regressions are caught before a bad run completes.
