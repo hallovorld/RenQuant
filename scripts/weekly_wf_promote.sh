@@ -60,18 +60,24 @@ renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export RENQUANT_REPO_ROOT="$REPO_DIR"
-if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if renquant_strict_enabled RQ_WF_GATE_STRICT; then
+WF_GATE_RUNNER="${RQ_WF_GATE_RUNNER:-multirepo}"
+if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
+    echo "WARN: explicit RQ_WF_GATE_RUNNER=umbrella rollback selected."
+    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+elif [ "$WF_GATE_RUNNER" = "multirepo" ]; then
+    if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
         echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable"
         exit 1
     fi
-    PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+else
+    echo "ERROR: unknown RQ_WF_GATE_RUNNER=$WF_GATE_RUNNER (expected multirepo or umbrella)"
+    exit 2
 fi
 export RENQUANT_STRATEGY_CONFIG="$PROD_STRATEGY_CONFIG"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
 
 run_wf_gate() {
-    if [ "${RQ_WF_GATE_RUNNER:-multirepo}" = "umbrella" ]; then
+    if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
         "$PYTHON" scripts/run_wf_gate.py "$@"
         return $?
     fi
@@ -86,12 +92,8 @@ PY
         "$PYTHON" -m renquant_backtesting.wf_gate "$@"
         return $?
     fi
-    if renquant_strict_enabled RQ_WF_GATE_STRICT; then
-        echo "ERROR: renquant_backtesting.wf_gate unavailable and strict multirepo mode is enabled"
-        return 1
-    fi
-    echo "WARN: renquant_backtesting.wf_gate unavailable; falling back to umbrella run_wf_gate.py."
-    "$PYTHON" scripts/run_wf_gate.py "$@"
+    echo "ERROR: renquant_backtesting.wf_gate unavailable; set RQ_WF_GATE_RUNNER=umbrella for explicit rollback."
+    return 1
 }
 
 exec >> "$LOG" 2>&1
@@ -255,7 +257,15 @@ try:
     from renquant_backtesting.forensics.model_acceptance import promote
     print("promote=renquant_backtesting.forensics.model_acceptance", file=sys.stderr)
 except Exception as exc:  # noqa: BLE001
-    print(f"WARN: subrepo model_acceptance unavailable ({exc}); using umbrella kernel.model_acceptance", file=sys.stderr)
+    if os.environ.get("RQ_WF_GATE_RUNNER", "multirepo") != "umbrella":
+        raise SystemExit(
+            "ERROR: renquant_backtesting.forensics.model_acceptance unavailable; "
+            "set RQ_WF_GATE_RUNNER=umbrella for explicit rollback."
+        ) from exc
+    print(
+        f"WARN: explicit umbrella rollback selected; using kernel.model_acceptance ({exc})",
+        file=sys.stderr,
+    )
     sys.path.insert(0, "backtesting/renquant_104")
     from kernel.model_acceptance import promote
 
