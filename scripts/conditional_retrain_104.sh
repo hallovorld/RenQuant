@@ -64,13 +64,13 @@ PY
         return $?
     fi
 
-    if renquant_strict_enabled RQ_CONDITIONAL_TRIGGER_STRICT; then
-        echo "ERROR: renquant_orchestrator.anomaly_triggers unavailable and strict multirepo mode is enabled"
+    if [ "${RQ_CONDITIONAL_TRIGGER_RUNNER:-multirepo}" != "multirepo" ]; then
+        echo "ERROR: unknown RQ_CONDITIONAL_TRIGGER_RUNNER=${RQ_CONDITIONAL_TRIGGER_RUNNER} (expected multirepo or legacy)"
         return 2
     fi
 
-    echo "WARN: renquant_orchestrator.anomaly_triggers unavailable; falling back to umbrella trigger check."
-    "$PYTHON" scripts/check_retrain_triggers.py
+    echo "ERROR: renquant_orchestrator.anomaly_triggers unavailable; set RQ_CONDITIONAL_TRIGGER_RUNNER=legacy for explicit rollback."
+    return 2
 }
 
 # Detect triggers via renquant-orchestrator by default. Exit code 0 means no

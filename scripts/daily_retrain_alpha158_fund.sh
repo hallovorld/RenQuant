@@ -35,33 +35,6 @@ PYTHON="$VENV_DIR/bin/python"
 LOG_DIR="$REPO_DIR/logs/daily_retrain_alpha158_fund"
 mkdir -p "$LOG_DIR"
 
-notify_retrain_fallback_once() {
-    local stamp="$LOG_DIR/.subrepo_fallback_alert_stamp"
-    local cooldown="${RQ_RETRAIN_FALLBACK_ALERT_COOLDOWN_SEC:-86400}"
-    local now last age topic body
-
-    now="$(date +%s)"
-    last=0
-    if [ -f "$stamp" ]; then
-        last="$(cat "$stamp" 2>/dev/null || echo 0)"
-    fi
-    case "$last" in
-        ''|*[!0-9]*) last=0 ;;
-    esac
-    age=$((now - last))
-    if [ "$age" -lt "$cooldown" ]; then
-        return 0
-    fi
-
-    printf '%s\n' "$now" > "$stamp" 2>/dev/null || true
-    topic="${RENQUANT_NTFY_TOPIC:-${NTFY_TOPIC:-renquant}}"
-    body="RETRAIN_FALLBACK: renquant_orchestrator.retrain_alpha158_fund unavailable on $(hostname); using umbrella training_panel.daily_retrain_alpha158_fund. Set RQ_RETRAIN_STRICT=1 to fail closed."
-    curl -sS -H "Title: RenQuant RETRAIN FALLBACK" \
-        -H "Priority: low" \
-        -d "$body" \
-        "https://ntfy.sh/$topic" >/dev/null 2>&1 || true
-}
-
 DATE=$(date +%Y-%m-%d)
 LOG="$LOG_DIR/$DATE.log"
 
@@ -90,15 +63,15 @@ run_umbrella() {
 }
 
 run_multirepo() {
-    # Transitional multirepo path: orchestrator owns the weekly workflow and
-    # delegates scorer training to renquant-model. The original umbrella module
-    # remains available via RQ_RETRAIN_RUNNER=umbrella.
+    # Orchestrator owns the scheduled workflow and delegates scorer training
+    # to renquant-model. The original umbrella module remains available only
+    # via explicit RQ_RETRAIN_RUNNER=umbrella rollback.
     cd "$REPO_DIR"
     "$PYTHON" -m renquant_orchestrator.retrain_alpha158_fund --repo-dir "$REPO_DIR" "$@"
 }
 
 # Delegate the actual work to a Python pipeline. Bash only handles lock, log
-# redirect, runner selection, and fallback if the multirepo module is missing.
+# redirect, runner selection, and fail-closed import validation.
 export RENQUANT_REPO_ROOT="$REPO_DIR"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
 # shellcheck disable=SC1091
@@ -109,23 +82,25 @@ export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator renquant-common renquant-base-data renquant-artifacts renquant-model renquant-pipeline renquant-execution renquant-strategy-104 renquant-backtesting):${PYTHONPATH:-}"
 RUNNER="${RQ_RETRAIN_RUNNER:-multirepo}"
 if [ "$RUNNER" = "umbrella" ]; then
+    echo "WARN: explicit RQ_RETRAIN_RUNNER=umbrella rollback selected."
     CMD=run_umbrella
-elif "$PYTHON" - <<'PY' >/dev/null 2>&1
+elif [ "$RUNNER" = "multirepo" ]; then
+    if "$PYTHON" - <<'PY' >/dev/null 2>&1
 import renquant_orchestrator.retrain_alpha158_fund  # noqa: F401
 PY
-then
-    "$PYTHON" - <<'PY' >&2
+    then
+        "$PYTHON" - <<'PY' >&2
 import renquant_orchestrator.retrain_alpha158_fund as m
 print(f"renquant_orchestrator.retrain_alpha158_fund={m.__file__}")
 PY
-    CMD=run_multirepo
-elif renquant_strict_enabled RQ_RETRAIN_STRICT; then
-    echo "ERROR: renquant_orchestrator.retrain_alpha158_fund unavailable and strict multirepo mode is enabled"
-    exit 1
+        CMD=run_multirepo
+    else
+        echo "ERROR: renquant_orchestrator.retrain_alpha158_fund unavailable; set RQ_RETRAIN_RUNNER=umbrella for explicit rollback."
+        exit 1
+    fi
 else
-    echo "WARN: renquant_orchestrator.retrain_alpha158_fund unavailable; falling back to umbrella retrain."
-    notify_retrain_fallback_once
-    CMD=run_umbrella
+    echo "ERROR: unknown RQ_RETRAIN_RUNNER=$RUNNER (expected multirepo or umbrella)"
+    exit 2
 fi
 
 if "$CMD" "$@"; then

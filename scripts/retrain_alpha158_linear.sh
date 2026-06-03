@@ -115,15 +115,15 @@ PY
         curl -s -H "Title: RENQUANT-104 retrain FAIL" -d "alpha158_linear multirepo retrain failed (rc=$RUN_RC)" \
              "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
         exit "$RUN_RC"
-    elif renquant_strict_enabled RQ_ALPHA158_LINEAR_STRICT; then
-        echo "ERROR: renquant_orchestrator.retrain_alpha158_linear unavailable and strict multirepo mode is enabled"
-        exit 1
     else
-        echo "WARN: renquant_orchestrator.retrain_alpha158_linear unavailable; falling back to umbrella retrain."
+        echo "ERROR: renquant_orchestrator.retrain_alpha158_linear unavailable; set RQ_ALPHA158_LINEAR_RUNNER=umbrella for explicit rollback."
+        exit 1
     fi
 elif [ "$RUNNER" != "umbrella" ]; then
     echo "ERROR: unknown RQ_ALPHA158_LINEAR_RUNNER=$RUNNER (expected multirepo or umbrella)"
     exit 2
+else
+    echo "WARN: explicit RQ_ALPHA158_LINEAR_RUNNER=umbrella rollback selected."
 fi
 
 # ── Phase 1: rebuild alpha158 dataset (unless skip) ────────────────────────

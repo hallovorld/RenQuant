@@ -32,11 +32,11 @@ def test_retrain_wrapper_defaults_to_orchestrator_with_rollback() -> None:
     assert "renquant-pipeline" in src
     assert "renquant-execution" in src
     assert "training_panel.daily_retrain_alpha158_fund" in src
-    assert "RQ_RETRAIN_STRICT" in src
     assert "renquant_orchestrator.retrain_alpha158_fund={m.__file__}" in src
-    assert "RETRAIN_FALLBACK" in src
-    assert "Priority: low" in src
-    assert ".subrepo_fallback_alert_stamp" in src
+    assert "set RQ_RETRAIN_RUNNER=umbrella for explicit rollback" in src
+    assert "falling back to umbrella" not in src
+    assert "RETRAIN_FALLBACK" not in src
+    assert ".subrepo_fallback_alert_stamp" not in src
     assert 'grep -q -- "--staged"' not in src
     assert "--staged is umbrella-only" not in src
 
@@ -49,9 +49,10 @@ def test_weekly_still_calls_wrapper_with_explicit_staging_paths() -> None:
     assert "bash scripts/daily_retrain_alpha158_fund.sh" in weekly
     assert "renquant_backtesting.wf_gate" in weekly
     assert 'RQ_WF_GATE_RUNNER:-multirepo' in weekly
-    assert "RQ_WF_GATE_STRICT" in weekly
     assert "scripts/run_wf_gate.py" in weekly
     assert "renquant_backtesting.forensics.model_acceptance" in weekly
+    assert "set RQ_WF_GATE_RUNNER=umbrella for explicit rollback" in weekly
+    assert "falling back to umbrella" not in weekly
     assert '--xgb-artifact-out "$STAGING_ART"' in weekly
     assert '--calibrator-out "$STAGING_CAL"' in weekly
     assert "--no-drop-sentiment" in weekly
