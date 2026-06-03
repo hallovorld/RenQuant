@@ -122,7 +122,7 @@ The parent memo's load-bearing claims, ranked by confidence:
 
 | Claim | Why I'm uncertain |
 |---|---|
-| "Practical apex for our regime is Level 0" | This is a strong empirical claim based on extrapolating DeMiguel/Michaud/Chopra-Ziemba from monthly equity-sector data to daily firm-level. I have NOT run a sim comparing Level 0 to Level 1 on our data. Codex's counter: it's possible that for THIS specific data + signal, Level 1 actually wins. The honest answer is "we don't know until we measure" — Step 4 (offline WF A/B replay in the revised §8 sequence) is what would tell us |
+| Earlier draft claim: "Practical apex for our regime is Level 0" | Extrapolation from DeMiguel / Michaud / Chopra-Ziemba mechanism to OUR data is not a measurement. Both codex (re-review) and gemini explicitly rejected pre-deciding Level 0 (or any other allocator) from this memo. The honest answer is "we don't know until we measure" — the §8 Step 4 offline WF A/B replay is what tells us. |
 | "QP is over-engineered for our problem class" | Subjective. A different team would say "we built the right infrastructure; the bugs are growing pains." Both framings are defensible. My framing reflects my own bias toward simplicity |
 | "<10% of bars need QP fallback under Hybrid" | A guess based on how often sector caps actually bind in production. I don't have logging for this; could be 1%, could be 30%. Step 4 (offline WF A/B replay) would tell us — and Step 5 live shadow would refine the rate empirically |
 | Cvxportfolio MultiPeriodOpt would be better than SinglePeriodOpt for us | Theoretically: yes, if signal-decay model is meaningful. Empirically: depends on label horizon vs decay rate. For fwd_60d_excess at our scale, marginal lift might be small |

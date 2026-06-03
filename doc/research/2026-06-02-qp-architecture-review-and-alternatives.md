@@ -1,113 +1,111 @@
 # Portfolio QP — architecture review + alternatives
 
-**Date**: 2026-06-02
-**Status (REVISED 2026-06-02 after codex re-review)**:
-**Research memo + corrections + open questions.** Does NOT request
-authorization to migrate to Option F (Hybrid). The decision-grade
-artifact is the offline A/B replay + `ConstraintSnapshot` contract
-PR sketched in revised §8 — NOT this memo.
-**Author**: Claude (mainline)
-**Reviewers**: codex + gemini (PR #125 reviews 2026-06-02)
+**Date**: 2026-06-02 · **Updated**: 2026-06-03 (final scope after two codex re-review rounds + gemini review)
+**Author**: Claude (mainline) · **Reviewers**: codex, gemini (PR #125, 2026-06-02 / 03)
+**Scope**: Research memo + open questions. **Does NOT request authorization
+to migrate to any specific allocator (Hybrid / MPO / hard-only QP / …).**
+The decision-grade artifact is the offline WF A/B replay + the
+`ConstraintSnapshot` contract PR sketched in §8 — NOT this memo.
 
-> **Re-review correction pass (2026-06-02)**: codex's PR #125 re-review
-> found 4 HIGH + 3 MED claims that were stale or unsupported. This file
-> has been corrected in place:
+> **Resolution log** (so the reader can see what claims were rejected and
+> why before reading the body):
 >
-> - HIGH-1: chronology no longer claims #123 v2 restored the hard-cap
->   contract — it didn't; v3 (currently awaiting re-review) does. See §3.
-> - HIGH-2: §2 inventory table rebuilt from current `strategy_config.json`
->   + regime overlays. Actual active count is **25 of 32**, not 8.
->   `qp_cost_kappa=0.002` (not 0.0001), BULL_CALM `qp_turnover_max=0.15`,
->   `qp_cash_drag_lambda=0.0` (inactive), `qp_min_invested_pct=0.0`
->   (inactive). Added `qp_conviction_cap_enabled`, `qp_admission_gate`,
->   `qp_soft_sell_guard`, strict horizon/μ contracts. The complexity-tax
->   argument is restated: 9 hard constraints + 3 objective terms (was
->   "3 + 3" — wrong), and the per-asset box bound is built by 4 composed
->   Tasks (exactly what the `ConstraintSnapshot` recommendation targets).
-> - HIGH-3: DeMiguel 2009 is **14 portfolio models across 7 empirical
->   datasets**. The paper does NOT provide an IC threshold; the
->   "RenQuant IC=0.039 puts us in DeMiguel's tested lower-half regime"
->   inference has been removed. Mechanism claim retained.
-> - HIGH-4: realized `label_autocorr_60` is NOT the right
->   signal-decay observable. Replaced with explicit measurement plan
->   in revised §8 Step 2 (`corr(μ̂_t, μ̂_{t+k})` on calibrator output,
->   top-K overlap, half-life).
-> - MED-5: §5 Option F Stage 4 fallback boundary now enumerates the
->   full hard execution constraint set. Warm-start is explicitly NOT
->   supported by `solve_portfolio_qp()` today.
-> - MED-6: §8 Phase 1/2/3 replaced with measurement-and-contract
->   sequence. Live shadow is operational telemetry, NOT a Sharpe gate.
-> - MED-7: Level-0/Kelly framing now requires μ-shrinkage, edge floors,
->   fractional sizing, per-regime caps. See the 3-questions addendum
->   updates.
+> 1. **First codex review** flagged 7 load-bearing claims as stale or
+>    unsupported. Param inventory was wrong (claimed "8 of 32 active"
+>    with stale numeric values), DeMiguel 2009 was miscited as "14
+>    datasets" (actual: 14 models × 7 datasets), `label_autocorr_60` was
+>    the wrong observable for signal-decay claims, the Option F
+>    fallback boundary enumerated only sector/correlation rather than
+>    the full hard-constraint set, 30-day live shadow was framed as a
+>    Sharpe gate (it isn't), and the Level-0 / Kelly framing missed the
+>    μ-error guardrails (shrinkage, edge floors, fractional sizing).
+>    All seven corrected in §2-§8 below.
+> 2. **Second codex re-review** flagged 4 MED contradictions where
+>    companion text still preserved the old recommendation. The
+>    executive summary still recommended the 3-phase Hybrid migration;
+>    §3 chronology still flagged #123 as in-flight; the thinking-log
+>    methodology section still cited the stale "8 of 32" count as if
+>    it had been the performed audit. All corrected in this revision.
+> 3. **PR #123 v4 status**: MERGED 2026-06-03 (commit on `main`). The
+>    immutable `_qp_w_upper_hard` snapshot is now stamped by
+>    `ComputeQPConstraintsTask` and the hard-cap-aware
+>    `_clamp_w_upper_at_w_current` restores the hard cap on over-cap
+>    rows. Cap-compliance fallback observably fires on the codex repro
+>    values (`tests/test_qp_soft_scaling_clamps.py::test_cap_compliance_
+>    fallback_sells_to_hard_cap_not_soft_cap`).
+>
+> This means **Step 0 of the §8 plan is DONE**. The remaining sequence is
+> Steps 1-5 (`ConstraintSnapshot` contract → μ̂ autocorr measurement →
+> offline WF A/B replay → optional live shadow for telemetry).
 
 ## Executive summary
 
 The current `solve_portfolio_qp` solves a 32-parameter convex Markowitz
-quadratic program with 5 objective terms (Markowitz risk + Garleanu-
-Pedersen linear cost + Almgren-Chriss 1.5-power impact + Brown-Smith
-tax + Rockafellar-Uryasev CVaR + Grossman-Zhou DD-Kelly + Garlappi-Uppal
-robust-μ) and 5 hard-constraint families (budget + box per-asset + per-bar
-slippage + wash-sale + turnover, plus optional sector + correlation + gross
-exposure). It runs through a CLARABEL → OSQP → SCS solver chain via cvxpy.
+quadratic program with up to 5 objective terms (Markowitz risk +
+Gârleanu-Pedersen linear cost + Almgren-Chriss 1.5-power impact + CVaR
++ soft cash-drag) and up to 5 hard-constraint families (budget + box
+per-asset + per-bar slippage + wash-sale + turnover, plus optional
+sector + correlation + gross-exposure). It runs through a
+CLARABEL → OSQP → SCS solver chain via cvxpy.
 
-The user's question is correct to ask: **is this complexity carrying its
-weight?**
+The user's question — **is this complexity carrying its weight?** — is
+correct to ask. This memo's findings (each load-bearing claim is
+expanded in the cited section):
 
-This memo's verdict:
+1. **The textbook machinery is partly inactive in our config (§2).**
+   Of 32 `qp_*` keys, 25 are active in some way, 7 are zero-weighted
+   (`qp_cash_drag_lambda`, `qp_cvar_lambda`, `qp_min_invested_pct`,
+   `qp_min_share_floor_pct`, `qp_robust_mu_kappa`, `qp_signal_decay`,
+   `qp_tax_aware`). We pay the complexity tax — 9 hard constraints +
+   3 objective terms + a 4-Task constraint-composition pipeline — for
+   a substantively smaller working set than the API suggests.
 
-1. **The QP is over-specified for our problem class.** It implements a
-   textbook industrial-grade single-period optimizer (cvxportfolio-style)
-   over a 142-stock universe with 10-20 active holdings + $11k account.
-   Most of the textbook machinery (CVaR, robust-μ, fixed-cost, sqrt-
-   impact) ships with zero or default-disabled weights in our config,
-   meaning we pay the complexity tax without the benefit.
+2. **The bugs of the last six weeks are constraint-composition bugs,
+   not solver-arithmetic bugs (§3).** Bug F (`delta_below_min_dw`
+   truncating top picks), today's daily-104 (`w_upper < w_current`
+   silently infeasible), and #123's three rejected revisions all
+   surfaced where the per-asset box bound is *built* by 4 composed
+   Tasks (`ComputeQPConstraintsTask → ApplyExposureScalingTask →
+   ApplyConvictionCapTask → sector/corr`), not in `cvxpy` itself.
+   v4 (merged 2026-06-03) closed the specific cap-compliance vector;
+   the *class* is still open and is what codex's `ConstraintSnapshot`
+   and gemini's `BuildQPConstraintsTask` recommendations target.
 
-2. **The bugs aren't QP bugs — they're constraint-composition bugs.**
-   Today's daily-104 failure was `w_upper < w_current` from soft-scaling
-   pushing below the held weight; my v1 fix masked the cap-compliance
-   contract (codex caught it); v2 moved the clamp to the soft-scaling
-   layer but kept the bug — `ApplyConvictionCapTask` could still raise
-   the hard cap up to an over-cap `w_current` (codex caught it AGAIN);
-   v3 (active, awaiting re-review) introduces a separate
-   `_qp_w_upper_hard` snapshot so soft scalers can never raise above
-   the hard cap. **#123 is still in-flight; do NOT cite v2 as the
-   restored state.** Bug F (delta_below_min_dw) was the trade-band
-   filter dropping good buys. None of these are QP arithmetic problems
-   — they're **architectural complexity** problems.
+3. **The published-literature *mechanism* for "simpler may compete
+   with MV" applies to us (§4); a quantitative IC-based ranking does
+   not.** DeMiguel-Garlappi-Uppal (2009) found that across **14
+   portfolio models on 7 empirical datasets**, none was consistently
+   better than naive 1/N in OOS Sharpe, certainty-equivalent return,
+   or turnover — because estimation error in μ̂ and Σ̂ dominates the
+   optimization gain. The paper does NOT publish an IC threshold at
+   which MV catches 1/N, so we cannot conclude RenQuant 104 (WF gate
+   +0.039 IC, rolling 60d Σ̂ on 142 stocks with Ledoit-Wolf λ=0.2)
+   sits below a known boundary. The mechanism is consistent with our
+   observed Sharpe degradation under turnover pressure; the
+   quantitative placement is unsupported.
 
-3. **Empirically, simpler methods can match or beat QP out-of-sample
-   under noisy μ̂.** DeMiguel, Garlappi & Uppal (2009) tested **14
-   portfolio models across 7 empirical datasets** and found that no
-   model consistently beat naive 1/N (equal-weight) in OOS Sharpe,
-   certainty-equivalent return, or turnover — because estimation error
-   in μ̂ and Σ̂ dominates the optimization gain. **The paper does NOT
-   provide an IC-threshold taxonomy**; we cannot conclude RenQuant sits
-   below a known MV-vs-1/N boundary from IC alone. What's defensible:
-   the mechanism (μ̂-error damage) is real and consistent with our
-   observed Sharpe degradation under turnover pressure. Our μ̂ is noisy
-   (WF gate +0.039 IC; classic momentum +0.04-0.06) and Σ̂ is rolling
-   60d on 142 stocks (high noise in 20k covariance cells, partly
-   mitigated by Ledoit-Wolf λ=0.2 shrinkage).
+4. **At least six candidate alternatives exist (§5).** Greedy +
+   Kelly (Option A), Hierarchical Risk Parity (B), LP with diagonal
+   Σ (C), soft-only QP (D), closed-form Markowitz + projection (E),
+   Hybrid greedy-select + Kelly-size + QP-fallback (F). Each has
+   distinct trade-offs against the active constraint set; **none is
+   pre-selected by this memo**.
 
-4. **The right move is decomposition, not replacement.** The QP
-   conflates three distinct decisions: SELECT (which names) + SIZE (how
-   much) + FILTER (which to actually trade given turnover budget).
-   Decomposing into 3 sequential stages (each closed-form or O(n)) lets
-   each stage be deterministic, debuggable, and individually testable.
-   The QP becomes a **fallback feasibility-projector** rather than the
-   primary decision engine.
+5. **The decision-grade artifact is offline measurement, not this
+   memo (§8).** Codex (MED-6) and gemini both rejected an earlier
+   "ship Hybrid shadow now, decide on 30-day Sharpe later" plan: 30
+   trading days does not separate a Sharpe delta of 0.1, and a shared
+   `ConstraintSnapshot` contract must be in place before any
+   allocator comparison is trustworthy. The corrected sequence is
+   Step 1 (`ConstraintSnapshot` refactor) → Step 2 (μ̂ autocorr per
+   regime — closes the misuse of `label_autocorr_60` that this memo
+   originally relied on) → Step 4 (offline WF A/B replay with 5
+   baselines + DSR/PBO multiple-comparison correction) → Step 5
+   (live shadow ONLY for operational telemetry).
 
-5. **Migration is incremental, not a rewrite.** We can ship Stage 1 +
-   Stage 2 as a shadow path TODAY (just compute alternative weights;
-   keep QP as the live decision), measure the divergence over 30 days,
-   and only flip the live decision after the shadow shows comparable or
-   better behaviour.
-
-**Recommended path**: Hybrid 2-stage architecture (described in §10),
-shipped as a sim/shadow track first, promoted only after empirical proof.
-Estimated effort: 2 days for shadow track, 1 week for sim verification,
-1 week for live cutover — total 2-3 weeks for full migration.
+**This PR's authorization request**: NONE. The next concrete
+authorization request will come with the `ConstraintSnapshot` contract
+PR (Step 1) and again with the offline A/B replay PR (Step 4).
 
 ---
 
@@ -136,8 +134,9 @@ subject to   Σw_p ≤ 1 - cash_reserve                  (budget)
 
 **Quantitative footprint**: 32 parameters, 5 objective sites, 5+3 optional
 constraint sites, ~1100 LOC across `qp_solver.py` + `tasks.py`. Test suite:
-456 tests. **The single function is in the top decile of complexity in
-the codebase.**
+459 tests (456 prior + 3 added in PR #123 v4 for the hard-cap contract).
+**The single function is in the top decile of complexity in the
+codebase.**
 
 ## 2. Which capabilities are actually active in prod
 
@@ -193,8 +192,9 @@ This replaces the earlier stale claim that "8 of 32 are active".
 
 **Constraints (hard) reaching the solver**:
 1. Per-asset box bound `w_lower ≤ w ≤ w_upper` (regime-scaled,
-   confidence-scaled, soft-scaled — and after v3, with `w_upper_hard`
-   snapshot for cap-compliance).
+   confidence-scaled, soft-scaled — and after PR #123 v4 [merged
+   2026-06-03], with an immutable `_qp_w_upper_hard` snapshot for
+   cap-compliance fallback).
 2. Cash budget `Σwᵢ + cash_reserve = 1` (regime cash_reserve).
 3. Turnover cap `‖Δw‖₁ ≤ qp_turnover_max` (BULL_CALM=0.15).
 4. Sector cap (per sector group, hard).
@@ -229,19 +229,27 @@ Chronological QP-related incidents:
 | 2026-06-01 | QP cap-compliance retry decoration (memory) | Existing fallback ran but every promote set `RQ_ALLOW_NO_WF=1` |
 | 2026-06-02 | **Today's daily-104**: QP infeasible despite trivially feasible state | Soft-scaling pushed `w_upper < w_current` → hold-flat infeasible |
 | 2026-06-02 | **PR #123 v1**: solver-level clamp masked cap-compliance | Codex caught: clamp made over-cap state silently `optimal_no_signal` |
-| 2026-06-02 | **PR #123 v2**: moved clamp to soft-scaling tasks | Codex caught AGAIN: `ApplyConvictionCapTask` still raised the hard cap up to over-cap `w_current`. Same bug, different layer. |
-| 2026-06-02 | **PR #123 v3** (current, awaiting re-review) | Separate `_qp_w_upper_hard` snapshot stamped by `ComputeQPConstraintsTask`; soft scalers can never raise above the hard cap. **Re-review pending — do NOT cite this as "restored" yet.** |
+| 2026-06-02 | **PR #123 v2**: moved clamp to soft-scaling tasks | Codex caught: `ApplyConvictionCapTask` still raised the hard cap up to over-cap `w_current`. Same bug, different layer. |
+| 2026-06-02 | **PR #123 v3**: separate `_qp_w_upper_hard` snapshot | Codex caught: over-cap branch returned soft-scaled `w_upper` (≈ 7.5% under low conviction) rather than the hard 15%. Cap-compliance fallback would have sold to the SOFT cap, not the RISK cap. |
+| 2026-06-03 | **PR #123 v4** (merged) | Over-cap branch now restores `w_hard_arr` (discards soft-scaled value). Cap-compliance fallback observably sells back to the hard cap at exactly 15% on codex's repro values. Regression guarded by `test_cap_compliance_fallback_sells_to_hard_cap_not_soft_cap`. |
 
-**Pattern**: every QP bug is a **constraint composition** bug. The QP
-arithmetic is correct; the way we BUILD the constraints around it from
-4 separate Tasks (Compute → ApplyExposureScaling → ApplyConviction →
-sector/corr) produces edge cases where the constraints contradict each
-other and the QP returns "infeasible" or worse, silently violates an
-expected invariant.
+**Pattern**: each of these bugs surfaced in **constraint composition**,
+not in `cvxpy` arithmetic. The way we BUILD the per-asset box bound
+from 4 separate Tasks (`ComputeQPConstraintsTask →
+ApplyExposureScalingTask → ApplyConvictionCapTask → sector/correlation`)
+produces edge cases where the composed constraints contradict each
+other and the QP either returns infeasible OR (worse) silently
+violates an expected invariant. PR #123 v4 closed one specific vector
+(over-cap holdings under low conviction); the *class* — multi-Task
+constraint composition with no shared contract — remains open.
 
-This is a property of **constraint-composition complexity**, not of QP
-itself. Replacing QP with another constrained solver (LP, SOCP, MILP)
-would inherit the same problem.
+This is a property of **constraint-composition complexity**, not
+specific to QP. Any constrained solver consuming the same composed
+state (LP, SOCP, MILP, or the Hybrid Stage-4 fallback in §5 Option F)
+would inherit it. That is why §8 Step 1 (a single `ConstraintSnapshot`
+contract shared by every candidate allocator) is the convergent
+recommendation from both codex and gemini, independent of which
+allocator eventually wins the §8 Step 4 offline A/B replay.
 
 ## 4. The theoretical critique (DeMiguel, Garlappi & Uppal 2009)
 
@@ -293,21 +301,24 @@ Why this matters for RenQuant 104:
    band is dominated by where the gates DROP names (admission, wash-
    sale, earnings), not how the QP weights the survivors.
 
-**Putting these together**: the marginal value of QP's optimization over
-a simpler method (greedy 1/N within selected, or 1/σ² inverse-variance
-weight) is small relative to the bug surface area.
+**Putting these together** (mechanism only, NOT a pre-decided ranking):
+the regime is consistent with simpler methods being competitive vs full
+MV. Whether they actually are — for THIS data, signal, cost structure —
+is what the §8 Step 4 offline A/B replay measures.
 
-A complementary critique:
+A complementary mechanism paper:
 
 > Brodie, J., Daubechies, I., De Mol, C., Giannone, D., & Loris, I.
 > (2009). "Sparse and stable Markowitz portfolios." *Proceedings of the
 > National Academy of Sciences* 106(30), 12267–12272.
 
 Brodie et al. show that adding an L1 regularizer to Markowitz produces
-SPARSE portfolios that hold 5-20 names equal-weight and outperform full
-mean-variance OOS — the regularizer effectively pushes the solution
-toward 1/N on the subset of names with strong signal. This is a
-half-step from full Markowitz toward DeMiguel's 1/N conclusion.
+sparse portfolios that hold 5-20 names equal-weight and outperform full
+mean-variance OOS in their tested cases. The regularizer pushes the
+solution toward 1/N on the subset of names with strong signal. This is
+ONE empirical demonstration of the DeMiguel mechanism, not an
+independent threshold result; the same caveat applies (no published IC
+threshold for RenQuant's regime).
 
 ## 5. Candidate alternatives
 
@@ -450,7 +461,7 @@ Then apply min_dw filter on `w - w_current`.
 **Cons**: doesn't respect L1 turnover (which is non-separable);
 sector cap is non-trivial post-projection; transaction cost not modeled.
 
-### Option F — Hybrid: greedy SELECT + per-name Kelly SIZE + QP feasibility check (recommended)
+### Option F — Hybrid: greedy SELECT + per-name Kelly SIZE + QP feasibility check
 
 ```
 Stage 1 (SELECT, rule-based, deterministic):
@@ -515,11 +526,12 @@ Stage 4 (FEASIBILITY CHECK, QP fallback):
   pruning OR an offline measurement of how often this matters.
 
 **Pros**:
-- Massively simpler than current path on the common case
+- Massively simpler than the current path on the common case
 - Preserves QP for the rare actual-hard-constraint case
-- Migration is incremental: ship Stages 1-3 as shadow path, measure
-  divergence from QP for 30 days, then cut over
-- DeMiguel 2009 / Brodie 2009 evidence supports the per-name closed-form
+- DeMiguel 2009 / Brodie 2009 supply the mechanism (μ̂-error damage)
+  that motivates a per-name closed-form sizer — they do NOT establish
+  a quantitative IC threshold at which Hybrid beats Level-1 QP for
+  RenQuant's data; that is what §8 Step 4 offline A/B measures.
 
 **Cons**:
 - Doesn't optimize cross-asset risk at portfolio level (HRP would)
@@ -577,9 +589,11 @@ The honest research conclusion:
   (456 tests passing, 4 weeks of production hardening). Migration costs
   real engineering time + introduces a new bug surface.
 
-- **The compromise is decomposition.** Use closed-form per-name sizing
-  for the 90%+ of bars where hard constraints don't bind; reserve QP for
-  the rare case where they do. Migration is incremental.
+- **The work order is decoupled from the allocator choice.** Even if
+  the §8 Step 4 offline A/B replay selects current QP (or hard-only QP,
+  or MPO) over Hybrid, the §8 Step 1 `ConstraintSnapshot` contract
+  refactor still lands first — it's the bug-class fix. Allocator
+  selection comes after measurement, not before.
 
 ## 8. Recommendation (REVISED 2026-06-02 after codex re-review)
 
@@ -592,12 +606,14 @@ The decision-grade artifact will be the offline A/B replay + the
 `ConstraintSnapshot` contract PR — NOT this memo. Authorization for
 Hybrid migration is NOT requested by this PR.
 
-### Step 0 (immediate) — PR #123 v3
+### Step 0 — PR #123 v4 (DONE, merged 2026-06-03)
 
-Land the separate hard-cap snapshot (`_qp_w_upper_hard`) so soft
-scalers cannot raise above the hard cap. Cap-compliance fallback must
-observably fire on over-cap holdings. Required before any allocator
-comparison can be trusted.
+The immutable `_qp_w_upper_hard` snapshot is stamped by
+`ComputeQPConstraintsTask` and the hard-cap-aware
+`_clamp_w_upper_at_w_current` restores the hard cap on over-cap rows.
+Cap-compliance fallback observably fires; the regression is guarded by
+`tests/test_qp_soft_scaling_clamps.py::test_cap_compliance_fallback_sells_to_hard_cap_not_soft_cap`.
+This pre-requisite for any allocator comparison is satisfied.
 
 ### Step 1 — Single `ConstraintSnapshot` / `BuildQPConstraintsTask`
 
@@ -700,10 +716,12 @@ pre-decided migration plan.
    weakest candidate in the saturated sector). Alternative: minimum-
    distance projection. Which is more defensible for our case?
 
-3. **Hybrid fallback frequency.** I estimate <10% of bars will need the
-   QP fallback (hard-constraint conflicts). If empirically >30%, the
-   migration logic gets noisier — should we set a "max fallback rate"
-   threshold and roll back if exceeded?
+3. **Hybrid fallback frequency is empirically unknown.** §5 Option F
+   notes any pre-measurement estimate is a guess. The §8 Step 4 offline
+   A/B replay measures the actual rate as one of its primary metrics.
+   Should we set a max-fallback-rate threshold above which we'd reject
+   Hybrid even if Sharpe is competitive (because two-path maintenance
+   cost dominates)?
 
 4. **Tax accounting under Step 5 live shadow.** §7.5 says one source of
    truth for tax. The Step 5 live-shadow logs (operational telemetry,
@@ -812,8 +830,8 @@ re-review (2026-06-02):
 The revised verdict is **authorize the measurement-and-contract
 sequence** in §8 (Steps 0–5):
 
-1. Land PR #123 v4 (hard-cap separation) so cap-compliance observably
-   fires on over-cap holdings.
+1. ~~Land PR #123 v4 (hard-cap separation).~~ **DONE — merged
+   2026-06-03.** Cap-compliance fallback observably fires.
 2. Build the single `ConstraintSnapshot` / `BuildQPConstraintsTask`
    contract that all candidate allocators consume.
 3. Measure μ̂ autocorrelation per regime (closes HIGH-4).
