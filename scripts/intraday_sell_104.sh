@@ -55,6 +55,7 @@ source "$REPO_DIR/scripts/subrepo_env.sh"
 renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator renquant-common renquant-base-data renquant-artifacts renquant-model renquant-pipeline renquant-execution renquant-strategy-104 renquant-backtesting):${PYTHONPATH:-}"
 
 exec >> "$LOG" 2>&1
 echo "=== intraday_sell started at $(date) (HHMM=$HHMM) ==="
@@ -84,7 +85,7 @@ cd "$REPO_DIR"
 if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
     RUNNER_ARGS=(-m live.runner)
 else
-    RUNNER_ARGS=("$REPO_DIR/scripts/live_multirepo.py")
+    RUNNER_ARGS=(-m renquant_orchestrator live-bridge --repo-dir "$REPO_DIR")
 fi
 
 if "$PYTHON" "${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once \
