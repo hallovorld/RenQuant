@@ -145,9 +145,16 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
-          # Universal stop
+          # Universal stops
           if echo "$LABELS" | grep -q '"agent:manual-hold"'; then
             echo "agent:manual-hold present; skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Phase D cost cap (§3.8): per-PR LLM spend exceeded threshold.
+          # Operator removes the label (or raises AGENT_COST_CAP_CENTS)
+          # to resume.
+          if echo "$LABELS" | grep -q '"agent:cost-cap"'; then
+            echo "agent:cost-cap present; skipping"
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
