@@ -203,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print("FAIL: stale or incomplete QP multirepo runtime.")
         print("Fix: merge required subrepo PRs, run `make subrepo-runtime-root`, then paper-smoke daily_104.")
+        print("Runbook: doc/ops/subrepo-runtime-refresh-runbook.md")
         return 1
     print(f"OK: {len(REQUIRED_SYMBOLS)} runtime symbols present.")
     return 0
