@@ -46,6 +46,12 @@ permissions:
   contents: read
   pull-requests: write   # for posting review comments
   issues: write          # fallback/sticky PR comments are issue comments
+  id-token: write        # claude-code-action@v1 + codex-action@v1 OIDC setup
+                         # (2026-06-03 incident: missing this caused "Could not
+                         # fetch an OIDC token" failure on both actions). Per-
+                         # repo wrapper MUST also grant this in its `permissions:`
+                         # block — reusable-workflow permissions are intersected,
+                         # not unioned, so caller's set is the upper bound.
 
 jobs:
   review:
