@@ -19,7 +19,7 @@
 #   launchctl load \
 #      ~/Library/LaunchAgents/com.renquant.daily-news-sentiment.plist
 
-set -e
+set -eo pipefail
 REPO_DIR="/Users/renhao/git/github/RenQuant"
 VENV_DIR="$REPO_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
@@ -36,17 +36,36 @@ mkdir -p logs/news_daily
 LOG="logs/news_daily/$(date +%Y-%m-%d).log"
 echo "=== $(date) — Daily news+sentiment refresh starting ===" > "$LOG"
 
+fail_missing_strategy_config() {
+    local strict_env="$1"
+    if renquant_strict_enabled "$strict_env"; then
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable and strict multirepo mode is enabled" \
+            | tee -a "$LOG"
+    else
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable; scheduled refresh defaults to fail-closed multirepo execution" \
+            | tee -a "$LOG"
+    fi
+}
+
+fail_multirepo_unavailable() {
+    local module="$1" strict_env="$2"
+    if renquant_strict_enabled "$strict_env"; then
+        echo "ERROR: $module unavailable and strict multirepo mode is enabled" \
+            | tee -a "$LOG"
+    else
+        echo "ERROR: $module unavailable; scheduled refresh defaults to fail-closed multirepo execution" \
+            | tee -a "$LOG"
+    fi
+    exit 1
+}
+
 set -a
 source .env
 set +a
 
 if ! STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if renquant_strict_enabled RQ_DAILY_NEWS_STRICT; then
-        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" \
-            | tee -a "$LOG"
-        exit 1
-    fi
-    STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+    fail_missing_strategy_config RQ_DAILY_NEWS_STRICT
+    exit 1
 fi
 
 # 1. Fetch yesterday's news (and weekend backlog on Mondays)
@@ -60,14 +79,8 @@ then
         --strategy-config "$STRATEGY_CONFIG" \
         --data-dir "$REPO_DIR/data" \
         --json 2>&1 | tee -a "$LOG"
-elif renquant_strict_enabled RQ_DAILY_NEWS_STRICT; then
-    echo "ERROR: renquant_base_data.alpaca_news_refresh unavailable and strict multirepo mode is enabled" \
-        | tee -a "$LOG"
-    exit 1
 else
-    echo "WARN: renquant_base_data.alpaca_news_refresh unavailable; falling back to umbrella script." \
-        | tee -a "$LOG"
-    "$PYTHON" -u scripts/fetch_news_alpaca.py 2>&1 | tee -a "$LOG"
+    fail_multirepo_unavailable "renquant_base_data.alpaca_news_refresh" RQ_DAILY_NEWS_STRICT
 fi
 
 # 2. Re-score with FinBERT (per-ticker parquet append; idempotent)
@@ -79,14 +92,8 @@ then
     "$PYTHON" -u -m renquant_model_common.news_sentiment_finbert \
         --data-dir "$REPO_DIR/data" \
         --json 2>&1 | tee -a "$LOG"
-elif renquant_strict_enabled RQ_DAILY_NEWS_SENTIMENT_STRICT; then
-    echo "ERROR: renquant_model_common.news_sentiment_finbert unavailable and strict multirepo mode is enabled" \
-        | tee -a "$LOG"
-    exit 1
 else
-    echo "WARN: renquant_model_common.news_sentiment_finbert unavailable; falling back to umbrella script." \
-        | tee -a "$LOG"
-    "$PYTHON" -u scripts/score_news_finbert.py 2>&1 | tee -a "$LOG"
+    fail_multirepo_unavailable "renquant_model_common.news_sentiment_finbert" RQ_DAILY_NEWS_SENTIMENT_STRICT
 fi
 
 echo "=== $(date) — Daily news+sentiment done ===" | tee -a "$LOG"
