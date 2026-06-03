@@ -73,29 +73,109 @@ def _build_result(
     selected: tuple[int, ...],
     status: str,
 ) -> AllocatorResult:
-    """Common output construction with hard-cap clipping + budget normalisation.
+    """Project the proposed target into the full snapshot feasible set.
 
-    Applies the per-asset hard cap (``w_upper_hard``), then if the
-    total invested exceeds ``1 - cash_reserve`` scales proportionally
-    down. Wash-sale-masked names with proposed Δw > 0 are forced back
-    to w_current.
+    Codex #130 review HIGH: an earlier version applied only
+    ``w_upper_hard`` clip + wash-sale + cash budget, ignoring
+    ``dw_max``, ``turnover_max``, sector caps, correlation-group
+    caps, and ``gross_max``. The replay harness then compared QP
+    against infeasible closed-form portfolios. This routine now
+    sequentially projects to satisfy every hard constraint family
+    advertised by :class:`ConstraintSnapshot`.
+
+    Order is intentional — earlier projections feed later ones, so
+    later projections never re-introduce a violation in the earlier
+    family. When a family cannot be satisfied without exiting all
+    positions, the returned ``status`` is
+    ``"infeasible:<family>"`` and the replay harness counts the
+    violation.
     """
     n = snap.n
-    target = np.clip(target_pct, 0.0, snap.w_upper_hard)
-    # Wash-sale: Δw ≤ 0 (cannot increase)
+    target = np.clip(np.asarray(target_pct, dtype=float), 0.0, snap.w_upper_hard)
+
+    # ── 1. Wash-sale: Δw ≤ 0 for masked names ─────────────────
     if snap.wash_sale_mask.any():
-        cap_at_current = np.where(
+        target = np.where(
             snap.wash_sale_mask,
             np.minimum(target, snap.w_current),
             target,
         )
-        target = cap_at_current
-    # Cash budget Σw ≤ 1 - cash_reserve
-    total = float(target.sum())
+
+    # ── 2. dw_max: |Δw| ≤ dw_max per asset ───────────────────
+    if snap.dw_max is not None:
+        target = np.clip(
+            target,
+            snap.w_current - snap.dw_max,
+            snap.w_current + snap.dw_max,
+        )
+        target = np.clip(target, 0.0, snap.w_upper_hard)
+
+    # ── 3. Cash budget Σw ≤ 1 - cash_reserve ──────────────────
     budget = max(0.0, 1.0 - float(snap.cash_reserve))
+    total = float(target.sum())
     if total > budget and total > 0.0:
         target = target * (budget / total)
+        target = np.clip(target, 0.0, snap.w_upper_hard)
+
+    # ── 4. Sector cap S @ w ≤ sector_cap_vec ──────────────────
+    if snap.sector_indicator is not None and snap.sector_cap_vec is not None:
+        S = snap.sector_indicator
+        cap = snap.sector_cap_vec
+        # Per-sector scaling: if S_s @ w > cap_s, scale all names in
+        # sector s by cap_s / (S_s @ w). Iterate (rarely > 1 round)
+        # until satisfied or a sector becomes infeasible.
+        for _ in range(5):  # bounded iterations
+            sector_loads = S @ target
+            over = sector_loads > cap + 1e-9
+            if not over.any():
+                break
+            for s in np.where(over)[0]:
+                load = float(sector_loads[s])
+                if load <= 0:
+                    continue
+                scale = float(cap[s]) / load
+                in_sector = S[s].astype(bool)
+                target[in_sector] *= scale
+            target = np.clip(target, 0.0, snap.w_upper_hard)
+        else:
+            return AllocatorResult(
+                delta_w=np.zeros(n), target_w=snap.w_current,
+                status="infeasible:sector_cap",
+                selected_indices=selected,
+            )
+
+    # ── 5. Correlation-group cap w_i + w_j ≤ corr_cap ─────────
+    for trip in snap.corr_group_pairs or ():
+        # trip is (i, j, cap) per ConstraintSnapshot docstring
+        try:
+            i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
+        except (TypeError, IndexError, ValueError):
+            continue
+        if i >= n or j >= n:
+            continue
+        pair_sum = float(target[i] + target[j])
+        if pair_sum > cap + 1e-9 and pair_sum > 0:
+            scale = cap / pair_sum
+            target[i] *= scale
+            target[j] *= scale
+
+    # ── 6. Turnover cap ‖Δw‖₁ ≤ turnover_max ──────────────────
+    if snap.turnover_max is not None:
+        delta = target - snap.w_current
+        l1 = float(np.sum(np.abs(delta)))
+        if l1 > float(snap.turnover_max) + 1e-9 and l1 > 0:
+            scale = float(snap.turnover_max) / l1
+            target = snap.w_current + delta * scale
+
+    # ── 7. Gross cap ‖w‖₁ ≤ gross_max ─────────────────────────
+    if snap.gross_max is not None:
+        gross = float(np.sum(np.abs(target)))
+        if gross > float(snap.gross_max) + 1e-9 and gross > 0:
+            scale = float(snap.gross_max) / gross
+            target = target * scale
+
     target = np.clip(target, 0.0, snap.w_upper_hard)
+
     return AllocatorResult(
         delta_w=target - snap.w_current,
         target_w=target,

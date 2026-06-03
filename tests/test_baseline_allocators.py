@@ -42,6 +42,13 @@ def _snap(
     w_upper=None,
     cash_reserve: float = 0.0,
     wash_sale_mask=None,
+    dw_max=None,
+    turnover_max=0.30,
+    gross_max=None,
+    sector_indicator=None,
+    sector_cap_vec=None,
+    sector_names=None,
+    corr_group_pairs=(),
 ) -> ConstraintSnapshot:
     return ConstraintSnapshot(
         n=n,
@@ -58,24 +65,32 @@ def _snap(
             dtype=float,
         ),
         w_lower=0.0,
-        dw_max=np.full(n, 0.5),
+        dw_max=np.asarray(
+            dw_max if dw_max is not None else np.full(n, 0.5),
+            dtype=float,
+        ),
         cash_reserve=cash_reserve,
-        turnover_max=0.30,
+        turnover_max=turnover_max,
         drawdown=0.0,
         drawdown_limit=0.20,
-        gross_max=None,
+        gross_max=gross_max,
         wash_sale_mask=np.asarray(
             wash_sale_mask if wash_sale_mask is not None else np.zeros(n, dtype=bool),
             dtype=bool,
         ),
+        sector_indicator=sector_indicator,
+        sector_cap_vec=sector_cap_vec,
+        sector_names=sector_names,
+        corr_group_pairs=corr_group_pairs,
     )
 
 
 class TestEqualWeightTopK:
     def test_basic_5_assets_K3(self):
         # Raise the hard cap so the cap doesn't bind; we want to see
-        # the equal-weight assignment cleanly.
-        snap = _snap(5, w_upper_hard=np.full(5, 0.40))
+        # the equal-weight assignment cleanly. Also disable turnover
+        # cap so the from-cash ‖Δw‖₁=1.0 is allowed.
+        snap = _snap(5, w_upper_hard=np.full(5, 0.40), turnover_max=None)
         mu = np.array([0.05, 0.03, 0.04, 0.01, 0.02])
         res = equal_weight_top_k(snap, mu=mu, K=3)
         assert isinstance(res, AllocatorResult)
@@ -92,8 +107,11 @@ class TestEqualWeightTopK:
         assert abs(res.target_w.sum() - 1.0) < 1e-9
 
     def test_cash_reserve_respected(self):
-        # Raise the hard cap so the cap doesn't bind first
-        snap = _snap(3, w_upper_hard=np.full(3, 0.50), cash_reserve=0.10)
+        # Raise hard cap + disable turnover cap so cash budget binds first
+        snap = _snap(
+            3, w_upper_hard=np.full(3, 0.50),
+            cash_reserve=0.10, turnover_max=None,
+        )
         mu = np.array([0.05, 0.04, 0.03])
         res = equal_weight_top_k(snap, mu=mu, K=3)
         assert abs(res.target_w.sum() - 0.90) < 1e-9
@@ -253,3 +271,118 @@ class TestAllAllocatorsSatisfyContract:
             fractional_kelly_top_k(snap, mu=mu, sigma=sigma, K=3),
         ):
             assert res.target_w.sum() <= budget + 1e-9
+
+
+class TestFullHardConstraintEnforcement:
+    """**Codex #130 review HIGH regression guard.** The baseline allocators
+    must respect every ``ConstraintSnapshot`` hard constraint family,
+    not just ``w_upper_hard`` + wash-sale + cash budget. Codex's exact
+    repro: snap.dw_max=[0.05]·2, turnover_max=0.05, sector cap 0.20,
+    corr-pair cap 0.20 — equal-weight returned target_w=[0.5,0.5]
+    violating all four.
+    """
+
+    def test_dw_max_respected(self):
+        # dw_max = 0.05 per asset. Without it equal-weight top-2 would
+        # be 0.50 each (Δw=0.50); with dw_max it must clip to ≤ 0.05.
+        snap = _snap(
+            2,
+            w_upper_hard=np.full(2, 1.0),
+            dw_max=np.array([0.05, 0.05]),
+            turnover_max=None,
+        )
+        mu = np.array([0.05, 0.04])
+        res = equal_weight_top_k(snap, mu=mu, K=2)
+        assert np.all(np.abs(res.delta_w) <= 0.05 + 1e-9), (
+            f"dw_max violated: |Δw|={np.abs(res.delta_w)}"
+        )
+
+    def test_turnover_max_respected(self):
+        # turnover cap 0.05 — equal-weight top-2 wants ‖Δw‖₁=1.0
+        snap = _snap(
+            2,
+            w_upper_hard=np.full(2, 1.0),
+            dw_max=np.full(2, 1.0),  # disable dw_max
+            turnover_max=0.05,
+        )
+        mu = np.array([0.05, 0.04])
+        res = equal_weight_top_k(snap, mu=mu, K=2)
+        l1 = float(np.sum(np.abs(res.delta_w)))
+        assert l1 <= 0.05 + 1e-9, f"turnover cap violated: ‖Δw‖₁={l1}"
+
+    def test_sector_cap_respected(self):
+        # 2 names in sector 0 with cap 0.20 — equal-weight top-2 wants
+        # 0.50 each = 1.00 sector load.
+        snap = _snap(
+            2,
+            w_upper_hard=np.full(2, 1.0),
+            dw_max=np.full(2, 1.0),
+            turnover_max=None,
+            sector_indicator=np.array([[1.0, 1.0]]),
+            sector_cap_vec=np.array([0.20]),
+            sector_names=("Tech",),
+        )
+        mu = np.array([0.05, 0.04])
+        res = equal_weight_top_k(snap, mu=mu, K=2)
+        sector_load = float(res.target_w[0] + res.target_w[1])
+        assert sector_load <= 0.20 + 1e-9, (
+            f"sector cap violated: load={sector_load}"
+        )
+
+    def test_correlation_pair_cap_respected(self):
+        # Pair (0, 1) capped at 0.20 — equal-weight top-2 wants 1.00
+        snap = _snap(
+            2,
+            w_upper_hard=np.full(2, 1.0),
+            dw_max=np.full(2, 1.0),
+            turnover_max=None,
+            corr_group_pairs=((0, 1, 0.20),),
+        )
+        mu = np.array([0.05, 0.04])
+        res = equal_weight_top_k(snap, mu=mu, K=2)
+        pair_sum = float(res.target_w[0] + res.target_w[1])
+        assert pair_sum <= 0.20 + 1e-9, (
+            f"corr-pair cap violated: sum={pair_sum}"
+        )
+
+    def test_gross_max_respected(self):
+        # gross cap 0.30 — equal-weight top-2 wants 1.00
+        snap = _snap(
+            2,
+            w_upper_hard=np.full(2, 1.0),
+            dw_max=np.full(2, 1.0),
+            turnover_max=None,
+            gross_max=0.30,
+        )
+        mu = np.array([0.05, 0.04])
+        res = equal_weight_top_k(snap, mu=mu, K=2)
+        gross = float(np.sum(np.abs(res.target_w)))
+        assert gross <= 0.30 + 1e-9, f"gross cap violated: ‖w‖₁={gross}"
+
+    def test_codex_exact_repro_all_four_constraints(self):
+        """Codex's #130 repro values — multiple constraints simultaneously."""
+        snap = _snap(
+            2,
+            w_upper_hard=np.full(2, 1.0),
+            dw_max=np.array([0.05, 0.05]),
+            turnover_max=0.05,
+            sector_indicator=np.array([[1.0, 1.0]]),
+            sector_cap_vec=np.array([0.20]),
+            sector_names=("Tech",),
+            corr_group_pairs=((0, 1, 0.20),),
+        )
+        mu = np.array([0.05, 0.04])
+        # All three baselines must respect every constraint
+        for name, res in [
+            ("equal_weight", equal_weight_top_k(snap, mu=mu, K=2)),
+            ("inverse_vol", inverse_vol_top_k(snap, mu=mu, sigma=np.full(2, 0.1), K=2)),
+            ("fractional_kelly", fractional_kelly_top_k(snap, mu=mu, sigma=np.full(2, 0.1), K=2)),
+        ]:
+            max_dw = float(np.max(np.abs(res.delta_w)))
+            l1 = float(np.sum(np.abs(res.delta_w)))
+            sector_load = float(res.target_w[0] + res.target_w[1])
+            pair_sum = sector_load  # same names in pair
+            assert max_dw <= 0.05 + 1e-9, f"{name}: dw_max violated ({max_dw})"
+            assert l1 <= 0.05 + 1e-9, f"{name}: turnover_max violated ({l1})"
+            assert sector_load <= 0.20 + 1e-9, f"{name}: sector cap violated ({sector_load})"
+            assert pair_sum <= 0.20 + 1e-9, f"{name}: corr-pair cap violated ({pair_sum})"
