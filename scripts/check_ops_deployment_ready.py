@@ -141,6 +141,42 @@ def _validate_runtime_pins(repo_root: Path, runtime_root: Path) -> dict[str, Any
     }
 
 
+def _run_runtime_qp_sanity(repo_root: Path, runtime_root: Path) -> dict[str, Any]:
+    """Run the QP runtime import sanity check in a subprocess."""
+    script = repo_root / "scripts" / "runtime_qp_sanity_check.py"
+    cmd = (
+        sys.executable,
+        str(script),
+        "--runtime-root",
+        str(runtime_root),
+    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=repo_root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "ok": False,
+            "command": list(cmd),
+            "returncode": None,
+            "stdout_tail": [],
+            "stderr_tail": [str(exc)],
+        }
+    return {
+        "ok": proc.returncode == 0,
+        "command": list(cmd),
+        "returncode": proc.returncode,
+        "stdout_tail": proc.stdout.splitlines()[-20:],
+        "stderr_tail": proc.stderr.splitlines()[-20:],
+    }
+
+
 def run_readiness(
     *,
     repo_root: Path = ROOT,
@@ -208,6 +244,7 @@ def run_readiness(
     env_path = repo_root / ".subrepo_assembly" / "current.env"
     exports = _read_exports(env_path)
     runtime_pins: dict[str, Any] = {"ok": None, "entries": [], "failures": []}
+    runtime_qp_sanity: dict[str, Any] = {"ok": None, "stdout_tail": [], "stderr_tail": []}
     details["subrepo_env"] = str(env_path)
     details["subrepo_root"] = exports.get("RENQUANT_SUBREPO_ROOT")
     details["strict_subrepo_paths"] = exports.get("RENQUANT_STRICT_SUBREPO_PATHS")
@@ -230,6 +267,13 @@ def run_readiness(
         details["runtime_pins_ok"] = bool(runtime_pins.get("ok"))
         if not runtime_pins.get("ok"):
             issues.append(Issue("error", "runtime_pins", json.dumps(runtime_pins.get("failures", []))))
+        else:
+            runtime_qp_sanity = _run_runtime_qp_sanity(repo_root, runtime_root)
+            details["runtime_qp_sanity_ok"] = bool(runtime_qp_sanity.get("ok"))
+            if not runtime_qp_sanity.get("ok"):
+                tail = runtime_qp_sanity.get("stderr_tail") or runtime_qp_sanity.get("stdout_tail") or []
+                reason = "; ".join(str(line) for line in tail[-5:]) or "runtime QP sanity check failed"
+                issues.append(Issue("error", "runtime_qp_sanity", reason))
     if exports.get("RENQUANT_SUBREPO_ROOT") and exports.get("RENQUANT_STRICT_SUBREPO_PATHS") != "1":
         issues.append(
             Issue(
@@ -248,6 +292,8 @@ def run_readiness(
         )
     if "runtime_pins_ok" not in details:
         details["runtime_pins_ok"] = None
+    if "runtime_qp_sanity_ok" not in details:
+        details["runtime_qp_sanity_ok"] = None
 
     contract = run_contract()
     details["subrepo_ops_contract_ok"] = bool(contract.get("ok"))
@@ -278,6 +324,7 @@ def run_readiness(
         "details": details,
         "issues": [issue.as_dict() for issue in issues],
         "runtime_pins": runtime_pins,
+        "runtime_qp_sanity": runtime_qp_sanity,
         "launchagents": launchagents,
     }
 
