@@ -257,6 +257,23 @@ def _finite_float(value: Any, *, default: float = float("nan")) -> float:
     return out if math.isfinite(out) else default
 
 
+def _finite_attr_values(items: list[Any], attr: str) -> list[float]:
+    vals: list[float] = []
+    for item in items:
+        value = _finite_float(getattr(item, attr, None), default=float("nan"))
+        if math.isfinite(value):
+            vals.append(value)
+    return vals
+
+
+def _mean_or_nan(vals: list[float]) -> float:
+    return float(np.mean(vals)) if vals else float("nan")
+
+
+def _quantile_or_nan(vals: list[float], q: float) -> float:
+    return float(np.quantile(vals, q)) if vals else float("nan")
+
+
 def _tax_cash_debit_mode(config: dict | None) -> str:
     """Return how estimated capital-gains tax should affect sim cash.
 
@@ -1465,8 +1482,39 @@ class SimAdapter:
 
         # ── Equity curve entry ──────────────────────────────────────────────
         pv = self._portfolio_value(ctx.prices, today_ts=today_ts)
+        settled_cash = float(self._cash)
+        pending_settle_cash = float(self._pending_settle_cash())
+        available_buying_power = float(self._available_buying_power())
+        active_holding_count = sum(
+            1
+            for shares in (_finite_float(value) for value in self._pos_shares.values())
+            if math.isfinite(shares) and abs(shares) > 1e-9
+        )
+        candidate_kelly = _finite_attr_values(
+            list(getattr(ctx, "candidates", []) or []),
+            "kelly_target_pct",
+        )
+        held_kelly = _finite_attr_values(
+            list((getattr(ctx, "holdings", {}) or {}).values()),
+            "kelly_target_pct",
+        )
         self._equity_curve.append({
-            "date": today_ts, "portfolio": pv, "regime": ctx.regime,
+            "date": today_ts,
+            "portfolio": pv,
+            "regime": ctx.regime,
+            "cash": settled_cash,
+            "pending_settle_cash": pending_settle_cash,
+            "available_buying_power": available_buying_power,
+            "cash_pct": settled_cash / pv if pv > 0 else float("nan"),
+            "n_holdings": active_holding_count,
+            "kelly_candidate_count": len(candidate_kelly),
+            "kelly_candidate_mean": _mean_or_nan(candidate_kelly),
+            "kelly_candidate_p50": _quantile_or_nan(candidate_kelly, 0.50),
+            "kelly_candidate_p90": _quantile_or_nan(candidate_kelly, 0.90),
+            "kelly_held_count": len(held_kelly),
+            "kelly_held_mean": _mean_or_nan(held_kelly),
+            "kelly_held_p50": _quantile_or_nan(held_kelly, 0.50),
+            "kelly_held_p90": _quantile_or_nan(held_kelly, 0.90),
         })
 
         # ── SQLite decision trace ───────────────────────────────────────────

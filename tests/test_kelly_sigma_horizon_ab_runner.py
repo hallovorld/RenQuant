@@ -5,6 +5,7 @@ import json
 import sys
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -270,6 +271,60 @@ def test_promotion_verdict_blocks_without_placebo() -> None:
 
     assert verdict["tier3_ready"] is False
     assert "shuffle/time-shift placebo evidence missing" in verdict["blocked_reasons"]
+
+
+def test_result_metrics_include_per_regime_cash_and_kelly() -> None:
+    import pandas as pd
+
+    mod = _load_module()
+    equity_df = pd.DataFrame({
+        "date": pd.to_datetime([
+            "2024-01-02",
+            "2024-01-03",
+            "2024-01-04",
+            "2024-01-05",
+        ]),
+        "portfolio": [100.0, 102.0, 101.0, 103.0],
+        "regime": ["BULL_CALM", "BULL_CALM", "CHOPPY", "CHOPPY"],
+        "cash_pct": [0.40, 0.30, 0.55, 0.50],
+        "n_holdings": [2, 3, 1, 1],
+        "kelly_candidate_count": [3, 2, 1, 0],
+        "kelly_candidate_mean": [0.08, 0.10, 0.04, None],
+        "kelly_candidate_p50": [0.07, 0.09, 0.04, None],
+        "kelly_candidate_p90": [0.12, 0.14, 0.05, None],
+        "kelly_held_count": [1, 2, 1, 1],
+        "kelly_held_mean": [0.06, 0.07, 0.03, 0.04],
+        "kelly_held_p50": [0.06, 0.07, 0.03, 0.04],
+        "kelly_held_p90": [0.06, 0.08, 0.03, 0.04],
+    }).set_index("date")
+    seed = SimpleNamespace(equity_df=equity_df)
+    result = SimpleNamespace(
+        seeds=[0],
+        n_seeds=1,
+        apy_mean=0.1,
+        apy_std=float("nan"),
+        sharpe_mean=1.0,
+        sharpe_std=float("nan"),
+        sortino_mean=1.0,
+        sortino_std=float("nan"),
+        calmar_mean=1.0,
+        calmar_std=float("nan"),
+        max_dd_mean=0.05,
+        max_dd_std=float("nan"),
+        dsr=float("nan"),
+        pbo=float("nan"),
+        majority_vote_action_consistency=float("nan"),
+        per_seed_results=[seed],
+    )
+
+    metrics = mod._result_metrics(result)
+
+    bull = metrics["per_regime"]["BULL_CALM"]
+    assert bull["n_days_mean"] == 2.0
+    assert abs(bull["cash_pct_mean"] - 0.35) < 1e-12
+    assert bull["kelly_candidate_count_total_mean"] == 5.0
+    assert abs(bull["kelly_candidate_mean_mean"] - 0.09) < 1e-12
+    assert "CHOPPY" in metrics["per_regime"]
 
 
 def test_promotion_verdict_passes_synthetic_tier3() -> None:

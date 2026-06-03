@@ -168,6 +168,97 @@ def _finite(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def _numeric_values(values: Any) -> list[float]:
+    out: list[float] = []
+    for value in values:
+        num = _finite(value)
+        if num is not None:
+            out.append(num)
+    return out
+
+
+def _mean(values: Any) -> float:
+    vals = _numeric_values(values)
+    return float(sum(vals) / len(vals)) if vals else float("nan")
+
+
+def _std(values: Any) -> float:
+    vals = _numeric_values(values)
+    if len(vals) < 2:
+        return float("nan")
+    mean = sum(vals) / len(vals)
+    var = sum((value - mean) ** 2 for value in vals) / (len(vals) - 1)
+    return float(math.sqrt(var))
+
+
+def _quantile(values: Any, q: float) -> float:
+    vals = sorted(_numeric_values(values))
+    if not vals:
+        return float("nan")
+    if len(vals) == 1:
+        return float(vals[0])
+    pos = (len(vals) - 1) * float(q)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return float(vals[lo])
+    weight = pos - lo
+    return float(vals[lo] * (1.0 - weight) + vals[hi] * weight)
+
+
+def _returns_metrics(returns: list[float]) -> dict[str, float]:
+    returns = _numeric_values(returns)
+    if not returns:
+        return {
+            "total_return": 0.0,
+            "apy": 0.0,
+            "sharpe": float("nan"),
+            "sortino": float("nan"),
+            "calmar": float("nan"),
+            "max_dd": float("nan"),
+        }
+    total = 1.0
+    equity = []
+    for ret in returns:
+        total *= 1.0 + ret
+        equity.append(total)
+    total_return = total - 1.0
+    apy = (
+        (1.0 + total_return) ** (252.0 / len(returns)) - 1.0
+        if total_return > -1.0
+        else float("nan")
+    )
+    ret_std = _std(returns)
+    ret_mean = _mean(returns)
+    sharpe = (
+        ret_mean / ret_std * math.sqrt(252.0)
+        if math.isfinite(ret_std) and ret_std > 0.0
+        else float("nan")
+    )
+    downside = [ret for ret in returns if ret < 0.0]
+    downside_std = _std(downside)
+    sortino = (
+        ret_mean / downside_std * math.sqrt(252.0)
+        if math.isfinite(downside_std) and downside_std > 0.0
+        else float("nan")
+    )
+    peak = -float("inf")
+    max_dd = 0.0
+    for value in equity:
+        peak = max(peak, value)
+        if peak > 0.0:
+            max_dd = max(max_dd, 1.0 - value / peak)
+    calmar = apy / max_dd if max_dd > 0.0 and math.isfinite(apy) else float("nan")
+    return {
+        "total_return": float(total_return),
+        "apy": float(apy),
+        "sharpe": float(sharpe),
+        "sortino": float(sortino),
+        "calmar": float(calmar),
+        "max_dd": float(max_dd),
+    }
+
+
 def load_placebo_evidence(paths: list[str]) -> dict[str, Any]:
     evidence: list[dict[str, Any]] = []
     for raw in paths:
@@ -585,6 +676,90 @@ def _json_float(value: Any) -> Any:
     return out if math.isfinite(out) else None
 
 
+def _series_values(frame: Any, column: str) -> list[float]:
+    if frame is None or not hasattr(frame, "columns") or column not in frame.columns:
+        return []
+    return _numeric_values(frame[column].tolist())
+
+
+def _seed_per_regime_metrics(seed_result: Any) -> dict[str, dict[str, Any]]:
+    eq = getattr(seed_result, "equity_df", None)
+    if eq is None or getattr(eq, "empty", True) or "portfolio" not in eq.columns:
+        return {}
+    if "regime" not in eq.columns:
+        return {}
+
+    portfolio = eq["portfolio"].astype(float)
+    returns = portfolio.pct_change()
+    out: dict[str, dict[str, Any]] = {}
+    for raw_regime, group in eq.groupby("regime"):
+        regime = str(raw_regime or "UNKNOWN")
+        group_returns = _numeric_values(returns.reindex(group.index).dropna().tolist())
+        perf = _returns_metrics(group_returns)
+        cash_pct = _series_values(group, "cash_pct")
+        holdings = _series_values(group, "n_holdings")
+        cand_counts = _series_values(group, "kelly_candidate_count")
+        held_counts = _series_values(group, "kelly_held_count")
+        out[regime] = {
+            "n_days": int(len(group)),
+            "n_return_days": int(len(group_returns)),
+            "total_return": perf["total_return"],
+            "apy": perf["apy"],
+            "sharpe": perf["sharpe"],
+            "sortino": perf["sortino"],
+            "calmar": perf["calmar"],
+            "max_dd": perf["max_dd"],
+            "cash_pct_mean": _mean(cash_pct),
+            "cash_pct_p50": _quantile(cash_pct, 0.50),
+            "n_holdings_mean": _mean(holdings),
+            "kelly_candidate_count_total": float(sum(cand_counts)),
+            "kelly_candidate_mean_bar": _mean(_series_values(group, "kelly_candidate_mean")),
+            "kelly_candidate_p50_bar": _quantile(_series_values(group, "kelly_candidate_p50"), 0.50),
+            "kelly_candidate_p90_bar": _quantile(_series_values(group, "kelly_candidate_p90"), 0.50),
+            "kelly_held_count_total": float(sum(held_counts)),
+            "kelly_held_mean_bar": _mean(_series_values(group, "kelly_held_mean")),
+            "kelly_held_p50_bar": _quantile(_series_values(group, "kelly_held_p50"), 0.50),
+            "kelly_held_p90_bar": _quantile(_series_values(group, "kelly_held_p90"), 0.50),
+        }
+    return out
+
+
+def _aggregate_per_regime_metrics(per_seed_results: list[Any]) -> dict[str, dict[str, Any]]:
+    per_seed = [_seed_per_regime_metrics(seed) for seed in per_seed_results]
+    regimes = sorted({regime for seed in per_seed for regime in seed})
+    metric_aliases = {
+        "n_days": "n_days",
+        "n_return_days": "n_return_days",
+        "total_return": "total_return",
+        "apy": "apy",
+        "sharpe": "sharpe",
+        "sortino": "sortino",
+        "calmar": "calmar",
+        "max_dd": "max_dd",
+        "cash_pct_mean": "cash_pct",
+        "cash_pct_p50": "cash_pct_p50",
+        "n_holdings_mean": "n_holdings",
+        "kelly_candidate_count_total": "kelly_candidate_count_total",
+        "kelly_candidate_mean_bar": "kelly_candidate_mean",
+        "kelly_candidate_p50_bar": "kelly_candidate_p50",
+        "kelly_candidate_p90_bar": "kelly_candidate_p90",
+        "kelly_held_count_total": "kelly_held_count_total",
+        "kelly_held_mean_bar": "kelly_held_mean",
+        "kelly_held_p50_bar": "kelly_held_p50",
+        "kelly_held_p90_bar": "kelly_held_p90",
+    }
+    out: dict[str, dict[str, Any]] = {}
+    for regime in regimes:
+        rows = [seed[regime] for seed in per_seed if regime in seed]
+        summary: dict[str, Any] = {"n_seed_observations": len(rows)}
+        for source_key, out_key in metric_aliases.items():
+            values = [row.get(source_key) for row in rows]
+            summary[f"{out_key}_mean"] = _json_float(_mean(values))
+            summary[f"{out_key}_std"] = _json_float(_std(values))
+        out[regime] = summary
+    return out
+
+
 def _result_metrics(result: Any) -> dict[str, Any]:
     return {
         "seeds": list(result.seeds),
@@ -603,6 +778,9 @@ def _result_metrics(result: Any) -> dict[str, Any]:
         "pbo": _json_float(result.pbo),
         "majority_vote_action_consistency": _json_float(
             result.majority_vote_action_consistency
+        ),
+        "per_regime": _aggregate_per_regime_metrics(
+            list(getattr(result, "per_seed_results", []) or [])
         ),
     }
 
