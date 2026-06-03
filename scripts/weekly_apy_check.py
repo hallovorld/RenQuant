@@ -245,20 +245,30 @@ def _strict_multirepo_enabled() -> bool:
 
 
 if __name__ == "__main__":
-    if os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo") != "legacy":
+    runner = os.environ.get("RQ_WEEKLY_APY_RUNNER", "multirepo")
+    if runner == "legacy":
+        sys.exit(main())
+    if runner != "multirepo":
+        print(
+            f"ERROR: unknown RQ_WEEKLY_APY_RUNNER={runner!r} "
+            "(expected multirepo or legacy)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if runner == "multirepo":
         rc = _run_multirepo_weekly_apy(sys.argv[1:])
         if rc != 127:
             sys.exit(rc)
-        if _strict_multirepo_enabled():
-            print(
-                "ERROR: renquant_orchestrator.weekly_apy_monitor unavailable "
-                "and strict multirepo mode is enabled",
-                file=sys.stderr,
-            )
-            sys.exit(2)
+        mode = (
+            "strict multirepo mode is enabled"
+            if _strict_multirepo_enabled()
+            else "weekly APY defaults to fail-closed multirepo mode"
+        )
         print(
-            "WARN: renquant_orchestrator.weekly_apy_monitor unavailable; "
-            "falling back to umbrella weekly APY check.",
+            "ERROR: renquant_orchestrator.weekly_apy_monitor unavailable; "
+            f"{mode}. Set RQ_WEEKLY_APY_RUNNER=legacy for explicit "
+            "umbrella rollback.",
             file=sys.stderr,
         )
-    sys.exit(main())
+        sys.exit(2)

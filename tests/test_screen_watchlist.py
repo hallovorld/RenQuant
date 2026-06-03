@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -73,6 +74,11 @@ class TestEndToEnd:
              "--cache-root", str(cache_root),
              "--lookback-days", "180"],
             capture_output=True, text=True, cwd=str(tmp_path),
+            env={
+                **os.environ,
+                "RENQUANT_NO_NOTIFY": "1",
+                "RQ_SCREEN_WATCHLIST_RUNNER": "legacy",
+            },
         )
         assert result.returncode == 0, result.stderr
 
@@ -129,6 +135,29 @@ def test_subrepo_delegate_uses_pinned_strategy_config(tmp_path, monkeypatch):
     assert str(cfg) in argv_text
     umbrella_config = repo_root / "backtesting" / "renquant_104" / "strategy_config.json"
     assert str(umbrella_config) not in argv_text
+
+
+def test_subrepo_delegate_default_fails_closed_on_missing_strategy_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "_screen", REPO_ROOT / "scripts" / "screen_watchlist.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    runtime = tmp_path / "runtime" / "repos"
+    runtime.mkdir(parents=True)
+    monkeypatch.setattr(mod, "resolve_subrepo_root", lambda _repo: runtime)
+    monkeypatch.setenv("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo")
+    monkeypatch.delenv("RENQUANT_OPS_FAIL_CLOSED", raising=False)
+    monkeypatch.delenv("RENQUANT_STRICT_SUBREPO_PATHS", raising=False)
+    monkeypatch.delenv("RQ_SCREEN_WATCHLIST_STRICT", raising=False)
+
+    with pytest.raises(RuntimeError, match="fail-closed multirepo mode"):
+        mod._try_subrepo_screen(["--strategy-dir-root", str(tmp_path / "RenQuant")])
 
 
 def test_subrepo_delegate_global_strict_blocks_missing_strategy_config(
