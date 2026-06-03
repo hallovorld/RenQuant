@@ -124,6 +124,7 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     ("ranking.kelly_sizing.rotation_target_floor",    "task_rotation.py:529"),
     ("ranking.kelly_sizing.trim_enabled",             "task_trim.py:60"),
     ("ranking.kelly_sizing.trim_threshold",           "task_trim.py:62"),
+    ("ranking.kelly_sizing.sigma_horizon_days",       "job_panel_scoring.py:_kelly_sigma_horizon_days"),
     # ── ranking blend knobs (task_ranking.py::_resolve_blend_weights) ─────
     ("ranking.regime_blend_weights.*.*",              "task_ranking.py:_resolve_blend_weights"),
     # ── tiered_thresholds (read in selection/joint_actions) ──────────────
