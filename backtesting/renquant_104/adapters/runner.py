@@ -852,6 +852,15 @@ class RunnerAdapter:
         # so they survive cron restarts. Local cache; broker.get_open_orders()
         # is the source of truth (we reconcile on every commit).
         stop_orders     = state.get("stop_orders",     {})
+        # Runner-submitted SELL order ids, persisted across invocations so a
+        # later reconciliation pass can tell its OWN exit fills apart from a
+        # genuinely external/manual disposition. Maps
+        # ``order_id -> {ticker, exit_type, qty, submitted_at}``. GC'd to a
+        # 5-day window in commit() (matches the STATE-EXT-SELL fill lookback).
+        # 2026-06-03 HON incident: a runner single_day_loss sell filled, then
+        # the next tick's reconciler mislabeled it source=external_or_manual
+        # because only Z9 stop order_ids were tracked.
+        recent_sell_orders = state.get("recent_sell_orders", {}) or {}
         hwm             = float(state.get("high_water_mark", 0.0))
         # Persisted RegimeState across live runs. Without this, each fresh
         # `daily_104.sh` invocation starts countdown=0 → CUSUM re-trips every
@@ -1302,6 +1311,7 @@ class RunnerAdapter:
         self._last_stop_exit_dates_str = dict(last_stop_exit_dates or {})
         self._position_hwm   = position_hwm
         self._stop_orders    = stop_orders     # Z9: per-ticker stop_order metadata
+        self._recent_sell_orders = recent_sell_orders  # runner-submitted SELL order_ids
         self._positions_cache = positions_cache
         self._account_value  = account_value
 
@@ -1738,6 +1748,32 @@ class RunnerAdapter:
                 latest[sym] = normalized
         return latest
 
+    def _gc_recent_sell_orders(self, ctx) -> dict:
+        """Drop runner-submitted SELL order_ids older than the fill lookback.
+
+        ``_collect_disappeared_fills`` only queries broker fills from the last
+        5 days, so order_ids older than that can never match a disappeared
+        position — keeping them would grow the state file unbounded. Prune to
+        a 6-day window (one day of slack over the 5-day fill lookback). Entries
+        with an unparseable ``submitted_at`` are kept (fail-open: never lose an
+        order_id we might still need to attribute).
+        """
+        import datetime as _dt  # noqa: PLC0415
+        today = ctx.today if isinstance(ctx.today, _dt.date) else _dt.date.today()
+        cutoff = today - _dt.timedelta(days=6)
+        kept: dict = {}
+        for oid, meta in (self._recent_sell_orders or {}).items():
+            stamp = str((meta or {}).get("submitted_at") or "")
+            try:
+                submitted = _dt.date.fromisoformat(stamp)
+            except ValueError:
+                kept[oid] = meta   # unparseable → keep (fail-open)
+                continue
+            if submitted >= cutoff:
+                kept[oid] = meta
+        self._recent_sell_orders = kept
+        return kept
+
     def _attribute_ext_sell(
         self,
         ticker: str,
@@ -1745,26 +1781,41 @@ class RunnerAdapter:
     ) -> str:
         """Produce a human-readable attribution string for a STATE-EXT-SELL.
 
-        Two-line decision:
+        Decision order:
           1. If the matching fill's ``order_id`` equals a Z9 stop we tracked
              for this ticker, attribute to ``z9_stop``.
-          2. Otherwise the fill is external — manual close, corporate action,
+          2. If the fill's ``order_id`` is one the runner submitted this
+             session (single_day_loss / trailing_stop / model_sell / rotation
+             / etc.), attribute to ``runner_<exit_type>`` — it is NOT external.
+          3. Otherwise the fill is external — manual close, corporate action,
              or out-of-band liquidation. Surface as ``external_or_manual``.
 
         Returns a short string suitable for inclusion in the WARNING log.
         Falls back to ``"no_broker_fill_record"`` when the broker didn't
         surface a fill we can match.
+
+        2026-06-03 (HON incident): step 2 added. Previously a runner
+        single_day_loss sell that filled would be mislabeled
+        ``external_or_manual`` on the next tick's reconciliation because only
+        Z9 stop order_ids were matched — polluting the decision-trace audit
+        surface with false "external" dispositions.
         """
         fill = fills.get(ticker)
         if not fill:
             return "no_broker_fill_record"
+        fill_oid = fill.get("order_id")
         z9_meta = self._stop_orders.get(ticker) or {}
         z9_order_id = z9_meta.get("order_id")
-        source = (
-            "z9_stop"
-            if z9_order_id and z9_order_id == fill.get("order_id")
-            else "external_or_manual"
-        )
+        runner_meta = (
+            self._recent_sell_orders.get(str(fill_oid)) if fill_oid else None
+        ) or {}
+        if z9_order_id and fill_oid and z9_order_id == fill_oid:
+            source = "z9_stop"
+        elif runner_meta:
+            _et = str(runner_meta.get("exit_type") or "").strip()
+            source = f"runner_{_et}" if _et else "runner_sell"
+        else:
+            source = "external_or_manual"
         # Codex #76: fill dict now carries the normalized keys produced by
         # ``_normalize_fill_record`` — ``price`` (not ``fill_price``),
         # ``qty`` (not ``fill_qty``). Compact single-line rendering.
@@ -1913,6 +1964,23 @@ class RunnerAdapter:
                     "error":      f"broker_status:{execution['status']}",
                 })
                 continue
+            # Record the runner-submitted SELL order_id (pending OR filled) so a
+            # later reconciliation pass attributes the fill to the runner, not
+            # external_or_manual (2026-06-03 HON single_day_loss incident).
+            _submitted_oid = execution.get("order_id")
+            if _submitted_oid:
+                import datetime as _dt2  # noqa: PLC0415
+                _now_iso = (
+                    ctx.today.isoformat()
+                    if isinstance(ctx.today, _dt2.date)
+                    else _dt2.date.today().isoformat()
+                )
+                self._recent_sell_orders[str(_submitted_oid)] = {
+                    "ticker":       ticker,
+                    "exit_type":    getattr(sig, "exit_type", "") or "",
+                    "qty":          float(sell_qty),
+                    "submitted_at": _now_iso,
+                }
             if execution["pending"]:
                 pending = {
                     "ticker":     ticker,
@@ -2499,6 +2567,7 @@ class RunnerAdapter:
             "last_stop_exit_dates": self._last_stop_exit_dates_str,
             "position_hwm":      self._position_hwm,
             "stop_orders":       self._stop_orders,    # Z9
+            "recent_sell_orders": self._gc_recent_sell_orders(ctx),
             "regime_state":      regime_state_out,
             # MonitorIdleStreakTask counters — persisted across scheduled runs
             "monitor_state":     dict(getattr(ctx, "monitor_state", {}) or {}),
