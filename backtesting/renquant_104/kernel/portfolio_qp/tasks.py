@@ -1700,6 +1700,8 @@ class BuildConstraintSnapshotTask(Task):
     """
 
     name = "BuildConstraintSnapshotTask"
+    FAILURE_STATUS = "infeasible:qp_constraint_snapshot_invalid"
+    FAILURE_REASON = "qp_constraint_snapshot_invalid"
 
     def run(self, ctx) -> bool | None:  # noqa: D401
         from kernel.portfolio_qp.constraint_snapshot import build_snapshot_from_ctx
@@ -1715,8 +1717,9 @@ class BuildConstraintSnapshotTask(Task):
         except ValueError as exc:
             # The snapshot's __post_init__ failed — one of the upstream
             # Tasks produced a contradictory or malformed constraint
-            # state. Stamp the diagnostic and short-circuit so the
-            # solver doesn't run on inconsistent input.
+            # state. Stamp this as a first-class QP failure path so
+            # ``live.runner._why_no_trade`` and downstream telemetry can
+            # see and attribute the failure (codex #129 review).
             log.error(
                 "BuildConstraintSnapshotTask: constraint state invalid "
                 "— %s",
@@ -1724,6 +1727,12 @@ class BuildConstraintSnapshotTask(Task):
             )
             ctx._qp_constraint_snapshot = None  # noqa: SLF001
             ctx._qp_constraint_snapshot_error = str(exc)  # noqa: SLF001
+            ctx._qp_status = self.FAILURE_STATUS  # noqa: SLF001
+            ctx._qp_failure_reason = self.FAILURE_REASON  # noqa: SLF001
+            ctx._qp_n_buys = 0  # noqa: SLF001
+            ctx._qp_n_sells = 0  # noqa: SLF001
+            _stamp_all_qp_blocks(ctx, self.FAILURE_REASON)
+            _stamp_qp_failure_counter(ctx, ctx._qp_status)  # noqa: SLF001
             return False
         ctx._qp_constraint_snapshot = snap  # noqa: SLF001
 

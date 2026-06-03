@@ -124,6 +124,57 @@ class TestBuildConstraintSnapshotTaskFailLoud:
         assert ctx._qp_constraint_snapshot is None
         assert "shape" in ctx._qp_constraint_snapshot_error
 
+    def test_failure_path_stamps_qp_attribution_fields(self):
+        """**Codex #129 review regression guard.** The fail-loud branch
+        is a first-class QP failure path — it MUST stamp the standard
+        QP attribution fields (``_qp_status``, ``_qp_failure_reason``,
+        zero buys/sells, the all-tickers-blocked map, the idempotent
+        failure counter) the way every other early-QP-failure path
+        does (e.g. ``ComputeFullSigmaTask._fail_full_sigma``).
+        Otherwise ``live.runner._why_no_trade`` can fall through to a
+        stale or missing reason on the snapshot-invalid path.
+        """
+        ctx = _ctx(
+            _qp_tickers=["A", "B"],
+            _qp_w_current=np.array([0.0, 0.0]),
+            _qp_w_upper_hard=np.array([0.15, 0.15]),
+            _qp_w_upper=np.array([0.22, 0.15]),  # row 0 violates soft<=hard
+            _qp_w_lower=0.0,
+            _qp_dw_max=np.array([0.5, 0.5]),
+            _qp_cash_reserve=0.0,
+            _qp_drawdown=0.0,
+            _qp_drawdown_limit=0.20,
+            _qp_wash_mask=np.array([False, False]),
+            # No prior _qp_status / _qp_failure_reason / counters —
+            # this is the failure-attribution gap codex flagged.
+            counters={},
+        )
+
+        rv = BuildConstraintSnapshotTask().run(ctx)
+
+        assert rv is False
+        # Standard QP failure attribution stamped
+        assert ctx._qp_status == "infeasible:qp_constraint_snapshot_invalid"
+        assert ctx._qp_failure_reason == "qp_constraint_snapshot_invalid"
+        assert ctx._qp_n_buys == 0
+        assert ctx._qp_n_sells == 0
+        # Every QP ticker blocked with the constraint-snapshot reason
+        blocked = getattr(ctx, "_blocked_by_ticker", {}) or {}
+        for t in ("A", "B"):
+            assert blocked.get(t) == "qp_constraint_snapshot_invalid", (
+                f"ticker {t} not blocked with the snapshot-invalid reason; "
+                f"blocked_map={blocked}"
+            )
+        # Failure counter incremented (idempotent). The shared helper
+        # maps any "infeasible*" status to the canonical ``qp_infeasible``
+        # key per its docstring, so live.runner._why_no_trade() can
+        # surface the constraint-snapshot failure via the same code
+        # path as ComputeFullSigmaTask / SolveMarkowitzQPTask failures.
+        counters = getattr(ctx, "counters", {}) or {}
+        assert counters.get("qp_infeasible", 0) >= 1, (
+            f"QP failure counter not stamped; counters={counters}"
+        )
+
 
 class TestBuildConstraintSnapshotTaskAdditivity:
     """Building the snapshot must NOT mutate any pre-existing ctx state."""
