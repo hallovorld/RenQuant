@@ -38,6 +38,25 @@ def _fake_runtime_root(tmp_path: Path) -> Path:
     root = tmp_path / "runtime" / "repos"
     pipeline_src = root / "renquant-pipeline" / "src"
     common_src = root / "renquant-common" / "src"
+    orchestrator_src = root / "renquant-orchestrator" / "src"
+
+    # Fake orchestrator CLI that exposes both live-bridge and
+    # daily-bridge subparsers — mirrors the post-fa448e1 cli.py
+    # registration. Sized to keep --help output deterministic for the
+    # subcommand-presence grep.
+    orchestrator_cli = (
+        "import argparse\n"
+        "def main(argv=None):\n"
+        "    p = argparse.ArgumentParser(prog='renquant-orchestrator')\n"
+        "    sub = p.add_subparsers(dest='command', required=True)\n"
+        "    sub.add_parser('live-bridge', help='live broker bridge')\n"
+        "    sub.add_parser('daily-bridge', help='daily multirepo bridge')\n"
+        "    p.parse_args(argv)\n"
+    )
+    orchestrator_main = (
+        "from .cli import main\n"
+        "raise SystemExit(main())\n"
+    )
 
     modules = {
         pipeline_src / "renquant_pipeline/kernel/portfolio_qp/davis_norman.py":
@@ -65,6 +84,8 @@ def _fake_runtime_root(tmp_path: Path) -> Path:
             "def probability_of_backtest_overfitting(): pass\n",
         common_src / "renquant_common/metrics/hac_se.py":
             "def hac_t_stat(): pass\n",
+        orchestrator_src / "renquant_orchestrator/cli.py": orchestrator_cli,
+        orchestrator_src / "renquant_orchestrator/__main__.py": orchestrator_main,
     }
     for path, body in modules.items():
         _write_module(path.parent.parent.parent.parent, str(path.relative_to(path.parent.parent.parent.parent)), body)
@@ -128,4 +149,51 @@ def test_daily_104_runs_runtime_qp_sanity_before_daily_runner():
     guard = '"$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"'
     assert guard in src
     assert "RUNTIME-SANITY-FAIL" in src
-    assert src.index(guard) < src.index('RUNNER_ARGS=("$REPO_DIR/scripts/daily_multirepo.py")')
+    # Track current daily_104.sh runner: -m renquant_orchestrator daily-bridge.
+    runner_marker = 'RUNNER_ARGS=(-m renquant_orchestrator daily-bridge'
+    assert runner_marker in src
+    assert src.index(guard) < src.index(runner_marker)
+
+
+def test_intraday_sell_runs_runtime_qp_sanity_before_runner():
+    """2026-06-03 incident regression guard: intraday_sell_104.sh must
+    gate the multirepo path with the sanity check, mirroring daily_104.sh
+    (PR #147), so vendored-runtime drift fails fast with a runbook
+    pointer instead of looping cron failures every 12 minutes.
+    """
+    src = (REPO / "scripts" / "intraday_sell_104.sh").read_text(encoding="utf-8")
+    guard = '"$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"'
+    assert guard in src
+    assert "RUNTIME-SANITY-FAIL" in src
+    runner_marker = 'RUNNER_ARGS=(-m renquant_orchestrator live-bridge'
+    assert runner_marker in src
+    assert src.index(guard) < src.index(runner_marker)
+
+
+def test_runtime_qp_sanity_fails_on_missing_orchestrator_subcommand(tmp_path, monkeypatch):
+    """2026-06-03 incident regression: a vendored orchestrator missing
+    `live-bridge` would let intraday_sell + daily fire and crash with
+    `argparse: invalid choice`. The sanity check must catch the gap
+    before the runner is invoked.
+    """
+    mod = _load_module()
+    root = _fake_runtime_root(tmp_path)
+    # Replace the orchestrator cli with a version lacking live-bridge.
+    cli_path = root / "renquant-orchestrator" / "src" / "renquant_orchestrator" / "cli.py"
+    cli_path.write_text(
+        "import argparse\n"
+        "def main(argv=None):\n"
+        "    p = argparse.ArgumentParser(prog='renquant-orchestrator')\n"
+        "    sub = p.add_subparsers(dest='command', required=True)\n"
+        "    sub.add_parser('daily-contract', help='legacy contract fixture')\n"
+        "    p.parse_args(argv)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    _clear_fake_modules()
+
+    failures = mod.check_runtime(root)
+
+    joined = " ".join(failures)
+    assert "live-bridge" in joined
+    assert "daily-bridge" in joined
