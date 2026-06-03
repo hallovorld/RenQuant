@@ -104,6 +104,83 @@ def _solve_cvx(
     return last_status
 
 
+def solve_portfolio_qp_from_snapshot(
+    snap,
+    *,
+    mu: Sequence[float],
+    sigma: Sequence[float] | None = None,
+    Sigma: np.ndarray | None = None,
+    risk_aversion: float = 3.0,
+    cost_kappa: float = 0.0001,
+    signal_decay: float = 0.0,
+    robust_mu_kappa: float = 0.0,
+    cvar_lambda: float = 0.0,
+    cvar_alpha: float = 0.05,
+    tax_cost_per_sell: Sequence[float] | None = None,
+    impact_coef: float = 0.0,
+    v_daily_dollar: Sequence[float] | None = None,
+    nav_dollar: float = 0.0,
+    fixed_cost_per_trade: float = 0.0,
+    fixed_cost_beta: float = 100.0,
+    budget_mode: str = "inequality",
+    min_invested_pct: float = 0.0,
+    cash_drag_lambda: float = 0.05,
+    allow_optimal_inaccurate: bool = False,
+) -> "QPSolution":
+    """Solve the QP from a :class:`ConstraintSnapshot` + forecast / cost kwargs.
+
+    This is the contract entry point introduced as Step 2 of the §8 plan
+    (PR #125). Strictly delegates to :func:`solve_portfolio_qp` by
+    unpacking the snapshot's hard-constraint fields into the matching
+    kwargs — no behaviour change. The pre-existing entry point stays
+    untouched; callers migrate one at a time.
+
+    Why this exists: the snapshot is the immutable contract every
+    candidate allocator (current QP, simplified-QP, Hybrid, MPO, …)
+    consumes. Routing the solver through it removes the kwargs-shaped
+    surface where #123 v1/v2/v3 hid their bug (the soft cap > hard cap
+    state never reaches this wrapper because the snapshot constructor
+    rejects it at build time).
+    """
+    return solve_portfolio_qp(
+        # Constraint fields from the snapshot — these are the kwargs
+        # the snapshot owns.
+        w_current=snap.w_current,
+        w_upper=snap.w_upper,
+        w_lower=snap.w_lower,
+        dw_max=snap.dw_max,
+        cash_reserve=snap.cash_reserve,
+        wash_sale_mask=snap.wash_sale_mask,
+        drawdown=snap.drawdown,
+        drawdown_limit=snap.drawdown_limit,
+        turnover_max=snap.turnover_max,
+        gross_max=snap.gross_max,
+        sector_indicator=snap.sector_indicator,
+        sector_cap_vec=snap.sector_cap_vec,
+        corr_group_pairs=tuple(snap.corr_group_pairs) or None,
+        # Forecast + cost kwargs the snapshot does NOT own.
+        mu=mu,
+        sigma=sigma,
+        Sigma=Sigma,
+        risk_aversion=risk_aversion,
+        cost_kappa=cost_kappa,
+        signal_decay=signal_decay,
+        robust_mu_kappa=robust_mu_kappa,
+        cvar_lambda=cvar_lambda,
+        cvar_alpha=cvar_alpha,
+        tax_cost_per_sell=tax_cost_per_sell,
+        impact_coef=impact_coef,
+        v_daily_dollar=v_daily_dollar,
+        nav_dollar=nav_dollar,
+        fixed_cost_per_trade=fixed_cost_per_trade,
+        fixed_cost_beta=fixed_cost_beta,
+        budget_mode=budget_mode,
+        min_invested_pct=min_invested_pct,
+        cash_drag_lambda=cash_drag_lambda,
+        allow_optimal_inaccurate=allow_optimal_inaccurate,
+    )
+
+
 def solve_portfolio_qp(
     *,
     w_current:      Sequence[float],
