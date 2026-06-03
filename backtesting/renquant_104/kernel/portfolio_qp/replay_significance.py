@@ -36,13 +36,17 @@ class SignificanceVerdict:
 
     DSR ≥ 0.95 = selection-bias-corrected significance at 5%.
     PBO < 0.5 = better-than-coin-flip out-of-sample.
-    Per CLAUDE.md §7.4 Tier 3, **both** are required for live promotion.
+
+    The §8 Step 4 A/B gate is deliberately stricter than CLAUDE.md
+    §7.4's literal disjunction because it selects among multiple
+    allocator candidates.
     """
 
     name: str
     sharpe_raw_annual: Optional[float]      # bare annualised SR (252-day)
     dsr: Optional[float]                     # ∈ [0, 1], higher = more robust
     pbo: Optional[float] = None              # ∈ [0, 1], lower = more robust (shared)
+    pbo_se: Optional[float] = None           # bootstrap SE when available
     n_returns: int = 0
     n_trials: int = 1                         # number of allocator candidates
 
@@ -122,6 +126,7 @@ def compute_significance_verdicts(
             sharpe_raw_annual=sr,
             dsr=dsr_value,
             pbo=pbo_value,
+            pbo_se=None,
             n_returns=int(n_returns),
             n_trials=int(n_trials),
         )
@@ -142,16 +147,27 @@ def verdicts_to_dict(
             "sharpe_raw_annual": v.sharpe_raw_annual,
             "dsr": v.dsr,
             "pbo": v.pbo,
+            "pbo_se": v.pbo_se,
             "n_returns": v.n_returns,
             "n_trials": v.n_trials,
-            "live_promotable_per_clause_7_4": (
-                v.dsr is not None
-                and v.dsr >= 0.95
-                and (v.pbo is None or v.pbo < 0.5)
-            ),
+            "live_promotable_per_section_8": _passes_section_8_gate(v),
+            # Back-compat alias for callers/tests that pre-date the PR #134
+            # schema correction. The semantics are the stricter §8 gate.
+            "live_promotable_per_clause_7_4": _passes_section_8_gate(v),
         }
         for name, v in verdicts.items()
     }
+
+
+def _passes_section_8_gate(v: SignificanceVerdict) -> bool:
+    """Strict §8 Step 4 significance gate for multi-candidate selection."""
+    if v.dsr is None or v.dsr < 0.95:
+        return False
+    if v.pbo is None:
+        return True
+    if v.pbo >= 0.5:
+        return False
+    return v.pbo_se is None or (v.pbo + v.pbo_se) < 0.55
 
 
 def _safe_skew(arr: np.ndarray) -> float:

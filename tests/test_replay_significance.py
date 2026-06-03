@@ -142,10 +142,11 @@ class TestComputeSignificanceVerdicts:
 
 
 class TestVerdictsToDictAndPromotionGate:
-    """The verdict block surfaces a `live_promotable_per_clause_7_4`
-    flag for each allocator — CLAUDE.md §7.4 Tier 3 says BOTH DSR > 0.5
-    AND PBO < 0.5 (we use the stronger DSR ≥ 0.95 here, the standard
-    selection-bias-corrected threshold)."""
+    """The verdict block surfaces the strict §8 promotion flag.
+
+    The old `live_promotable_per_clause_7_4` spelling remains as a
+    compatibility alias, but both fields carry the stricter §8 gate.
+    """
 
     def test_strong_signal_marked_promotable(self):
         # Strong positive Sharpe + low noise → DSR should be high and
@@ -175,8 +176,11 @@ class TestVerdictsToDictAndPromotionGate:
         d = verdicts_to_dict(verdicts)
         # Both should have a promotion flag computed
         for name in ("eq", "iv"):
+            assert "live_promotable_per_section_8" in d[name]
+            assert isinstance(d[name]["live_promotable_per_section_8"], bool)
             assert "live_promotable_per_clause_7_4" in d[name]
             assert isinstance(d[name]["live_promotable_per_clause_7_4"], bool)
+            assert "pbo_se" in d[name]
         # JSON-serialisable
         import json
         json.dumps(d)
