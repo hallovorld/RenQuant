@@ -30,6 +30,7 @@ DEFAULT_END = "2026-03-28"
 DEFAULT_SEEDS = (0, 1, 2, 3, 4)
 DEFAULT_AA_SEED_OFFSET = 1000
 DEFAULT_SIGMA_HORIZON_DAYS = 60
+REQUIRED_PROMOTION_REGIMES = ("BULL_CALM", "BULL_VOLATILE", "CHOPPY")
 PREFERRED_AUTO_BASE_CONFIGS = (
     "strategy_config.golden.json",
     "strategy_config.json",
@@ -632,11 +633,41 @@ def materialize_manifest_for_runner(
     return out
 
 
+def per_regime_sharpe_lifts(
+    control: dict[str, Any],
+    treatment: dict[str, Any],
+    required_regimes: tuple[str, ...] = REQUIRED_PROMOTION_REGIMES,
+) -> dict[str, dict[str, Any]]:
+    control_regimes = control.get("per_regime") or {}
+    treatment_regimes = treatment.get("per_regime") or {}
+    out: dict[str, dict[str, Any]] = {}
+    for regime in required_regimes:
+        control_sharpe = _finite(
+            (control_regimes.get(regime) or {}).get("sharpe_mean")
+        )
+        treatment_sharpe = _finite(
+            (treatment_regimes.get(regime) or {}).get("sharpe_mean")
+        )
+        lift = (
+            treatment_sharpe - control_sharpe
+            if treatment_sharpe is not None and control_sharpe is not None
+            else None
+        )
+        out[regime] = {
+            "control_sharpe": control_sharpe,
+            "treatment_sharpe": treatment_sharpe,
+            "sharpe_lift": lift,
+            "passed": bool(lift is not None and lift > 0.0),
+        }
+    return out
+
+
 def promotion_verdict(
     variant_metrics: dict[str, dict[str, Any]],
     placebo: dict[str, Any],
     *,
     aa_max_abs_sharpe_lift: float = 0.10,
+    required_regimes: tuple[str, ...] = REQUIRED_PROMOTION_REGIMES,
 ) -> dict[str, Any]:
     control = variant_metrics.get("A_golden") or {}
     treatment = variant_metrics.get("B_sigma_horizon_60") or {}
@@ -666,11 +697,25 @@ def promotion_verdict(
         if aa_sharpe is not None and control_sharpe is not None
         else None
     )
+    regime_lifts = per_regime_sharpe_lifts(
+        control,
+        treatment,
+        required_regimes=required_regimes,
+    )
 
     if sharpe_lift is None or sharpe_lift <= 0:
         reasons.append("treatment Sharpe did not improve over golden")
     if apy_lift is None or apy_lift <= 0:
         reasons.append("treatment APY did not improve over golden")
+    for regime, row in regime_lifts.items():
+        lift = row.get("sharpe_lift")
+        if lift is None:
+            reasons.append(f"per-regime Sharpe evidence missing for {regime}")
+        elif lift <= 0:
+            reasons.append(
+                f"per-regime Sharpe did not improve for {regime}: "
+                f"lift={lift:+.4f}"
+            )
     if aa_sharpe_lift is None:
         reasons.append("A/A resplit metrics missing")
     elif abs(aa_sharpe_lift) > aa_max_abs_sharpe_lift:
@@ -695,11 +740,13 @@ def promotion_verdict(
             "apy_lift": apy_lift,
             "sharpe_lift": sharpe_lift,
             "aa_sharpe_lift": aa_sharpe_lift,
+            "per_regime_sharpe_lifts": regime_lifts,
         },
         "thresholds": {
             "aa_max_abs_sharpe_lift": float(aa_max_abs_sharpe_lift),
             "tier3_dsr_min": 0.5,
             "tier3_pbo_max": 0.5,
+            "required_regimes": list(required_regimes),
         },
     }
 
@@ -967,6 +1014,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         "mandatory_checks": {
             "real_ab": ["A_golden", "B_sigma_horizon_60"],
             "aa_resplit": ["A_golden", "AA_golden_resplit"],
+            "per_regime": list(REQUIRED_PROMOTION_REGIMES),
             "placebo": "provide JSON from scripts/analyze_manifest_sanity_placebo.py "
                        "via --placebo-json before promotion",
             "multi_seed_floor": 5,
