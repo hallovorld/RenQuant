@@ -50,6 +50,7 @@ from .tasks import (
     AlignQPHorizonUnitsTask,
     ForceMuSourceTask,
     BuildADVVectorTask,
+    BuildConstraintSnapshotTask,
     BuildCorrelationGroupConstraintTask,
     BuildSectorConstraintMatrixTask,
     BuildWeightVectorTask,
@@ -481,6 +482,15 @@ class JointPortfolioQPJob(Job):
             # read ctx._qp_w_upper for cap anchoring.
             BuildSectorConstraintMatrixTask(),
             BuildCorrelationGroupConstraintTask(),
+
+            # ── Phase 3b: freeze the assembled constraint state ────────
+            # Step 1c of §8 plan (PR #125). The snapshot is the contract
+            # downstream allocators (current QP, simplified-QP, Hybrid,
+            # MPO, …) consume. Constructor failure short-circuits the
+            # Job before SolveMarkowitzQPTask runs — fail loud on a
+            # contradictory constraint state instead of feeding it to
+            # cvxpy.
+            BuildConstraintSnapshotTask(),
 
             # ── Phase 4: solve (domain) ────────────────────────────────
             SolveMarkowitzQPTask(),

@@ -1676,6 +1676,58 @@ class BuildADVVectorTask(Task):
         ctx._qp_v_daily_dollar = v  # noqa: SLF001
 
 
+# ── 5b. Snapshot the assembled constraint state ─────────────────────────────
+
+class BuildConstraintSnapshotTask(Task):
+    """Stamp ``ctx._qp_constraint_snapshot`` from the upstream Tasks' output.
+
+    Step 1c of the §8 plan (PR #125). Strictly additive — runs AFTER
+    the existing 4-Task constraint-composition pipeline
+    (``ComputeQPConstraintsTask → ApplyExposureScalingTask →
+    ApplyConvictionCapTask → sector/correlation``) and freezes the
+    assembled constraint state into an immutable
+    :class:`ConstraintSnapshot` that downstream allocators consume via
+    the contract instead of via free-form ``ctx._qp_*`` reads.
+
+    On invariant violation (snapshot constructor raises
+    ``ValueError`` — e.g. soft > hard cap, shape mismatch, non-finite
+    entries) this Task logs the failure and returns ``False`` so the
+    Job short-circuits before the solver runs. Better to fail loud
+    here than to feed contradictory constraints to ``cvxpy``.
+
+    Reads:  every ctx._qp_* field built by Tasks 1-5.
+    Writes: ctx._qp_constraint_snapshot (ConstraintSnapshot | None).
+    """
+
+    name = "BuildConstraintSnapshotTask"
+
+    def run(self, ctx) -> bool | None:  # noqa: D401
+        from kernel.portfolio_qp.constraint_snapshot import build_snapshot_from_ctx
+
+        # The Job has already short-circuited if there are no tickers
+        # to optimize over, but defend just in case.
+        tickers = _get_path(ctx, "_qp_tickers") or ()
+        if not tickers:
+            ctx._qp_constraint_snapshot = None  # noqa: SLF001
+            return None
+        try:
+            snap = build_snapshot_from_ctx(ctx)
+        except ValueError as exc:
+            # The snapshot's __post_init__ failed — one of the upstream
+            # Tasks produced a contradictory or malformed constraint
+            # state. Stamp the diagnostic and short-circuit so the
+            # solver doesn't run on inconsistent input.
+            log.error(
+                "BuildConstraintSnapshotTask: constraint state invalid "
+                "— %s",
+                exc,
+            )
+            ctx._qp_constraint_snapshot = None  # noqa: SLF001
+            ctx._qp_constraint_snapshot_error = str(exc)  # noqa: SLF001
+            return False
+        ctx._qp_constraint_snapshot = snap  # noqa: SLF001
+
+
 # ── 6. Solve the QP ─────────────────────────────────────────────────────────
 
 class SolveMarkowitzQPTask(Task):
