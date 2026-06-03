@@ -85,6 +85,17 @@ cd "$REPO_DIR"
 if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
     RUNNER_ARGS=(-m live.runner)
 else
+    # Sanity-gate the multirepo path (mirrors daily_104.sh PR #147 +
+    # PR #155 runbook). Fails fast with a runbook pointer instead of
+    # leaving the cron to surface a cryptic argparse error every 12
+    # minutes (the 2026-06-03 incident:
+    # doc/ops/2026-06-03-orchestrator-bridge-runtime-drift-incident.md).
+    if ! "$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"; then
+        echo "=== intraday_sell RUNTIME-SANITY-FAIL at $(date) ==="
+        notify "RenQuant 104 RUNTIME-SANITY-FAIL" \
+            "Stale or incomplete multirepo runtime; run make subrepo-runtime-root and paper-smoke daily_104. Runbook: doc/ops/subrepo-runtime-refresh-runbook.md"
+        exit 1
+    fi
     RUNNER_ARGS=(-m renquant_orchestrator live-bridge --repo-dir "$REPO_DIR")
 fi
 
