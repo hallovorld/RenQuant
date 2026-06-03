@@ -266,6 +266,24 @@ jobs:
 # §3.5). Cross-repo paired-PR coordination: manages
 # agent:manual-hold on paired-mirror PRs based on sister state.
 
+readonly WRAPPER_COST_TRACKER='name: agent-cost-tracker
+# Per-PR LLM cost cap (Phase D). Wraps RenQuant umbrella'\''s
+# reusable template.
+
+on:
+  workflow_run:
+    workflows: [agent-review, agent-autofix]
+    types: [completed]
+
+concurrency:
+  group: agent-cost-tracker-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  track:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-cost-tracker-template.yml@main
+'
+
 readonly WRAPPER_PAIRED_MERGE_GATE='name: agent-paired-merge-gate
 # Manages agent:manual-hold on paired-mirror PRs.
 # Wraps RenQuant umbrella'\''s reusable template.
@@ -331,6 +349,7 @@ for repo in "${REPOS[@]}"; do
                    .github/workflows/agent-pre-merge-rebase.yml       (v2 Phase B)
                    .github/workflows/agent-auto-merge.yml             (v2 Phase B)
                    .github/workflows/agent-paired-merge-gate.yml      (v2 Phase C)
+                   .github/workflows/agent-cost-tracker.yml           (v2 Phase D)
     fetch umbrella default prompts → .github/agent-{review,fix}-prompt.md
     git add .github/ && git commit
     git push -u origin $BRANCH
@@ -367,6 +386,8 @@ EOF
     printf '%s' "$WRAPPER_AUTO_MERGE"        > .github/workflows/agent-auto-merge.yml
     # v2 Phase C:
     printf '%s' "$WRAPPER_PAIRED_MERGE_GATE" > .github/workflows/agent-paired-merge-gate.yml
+    # v2 Phase D:
+    printf '%s' "$WRAPPER_COST_TRACKER"       > .github/workflows/agent-cost-tracker.yml
 
     # Fetch umbrella default prompts — generic across all renquant
     # repos. Per-repo customization (backtesting data-flow gotchas,

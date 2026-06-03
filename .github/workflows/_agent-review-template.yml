@@ -18,8 +18,8 @@ name: agent-review-template
 #
 # The wrapper owns: events (pull_request types), concurrency, changed_files
 # gate. This template owns: live-label routing, per-agent skip
-# (don't review own PR / manual-hold / draft), checkout, prompt assembly,
-# LLM dispatch, comment posting.
+# (don't review own PR / manual-hold / cost-cap / draft), checkout,
+# prompt assembly, LLM dispatch, comment posting.
 
 on:
   workflow_call:
@@ -83,6 +83,9 @@ jobs:
           elif echo "$LABELS_JSON" | grep -q '"agent:manual-hold"'; then
             should_review=false
             reason="manual-hold"
+          elif echo "$LABELS_JSON" | grep -q '"agent:cost-cap"'; then
+            should_review=false
+            reason="cost-cap"
           elif echo "$LABELS_JSON" | grep -q "\"agent:${AGENT}\"" &&
                ! echo "$LABELS_JSON" | grep -q '"agent:needs-review"'; then
             should_review=false
