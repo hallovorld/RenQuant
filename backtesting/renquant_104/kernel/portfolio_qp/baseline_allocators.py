@@ -45,6 +45,89 @@ class AllocatorResult:
     selected_indices: tuple[int, ...]  # indices that were sized (post top-K)
 
 
+_CONSTRAINT_FAMILIES = (
+    "w_upper_hard",
+    "w_lower",
+    "wash_sale",
+    "dw_max",
+    "cash_budget",
+    "turnover_max",
+    "sector_cap",
+    "corr_group_cap",
+    "gross_max",
+)
+
+
+def _constraint_violations(
+    snap: ConstraintSnapshot,
+    target: np.ndarray,
+    delta: np.ndarray,
+    *,
+    tol: float = 1e-9,
+) -> dict[str, bool]:
+    """Return hard-constraint violations for a proposed baseline result."""
+    out = {family: False for family in _CONSTRAINT_FAMILIES}
+    n = snap.n
+
+    if (target > snap.w_upper_hard + tol).any():
+        out["w_upper_hard"] = True
+    if (target < snap.w_lower - tol).any():
+        out["w_lower"] = True
+    if snap.wash_sale_mask.any():
+        if (delta[snap.wash_sale_mask.astype(bool)] > tol).any():
+            out["wash_sale"] = True
+    if snap.dw_max is not None:
+        if (np.abs(delta) > snap.dw_max + tol).any():
+            out["dw_max"] = True
+
+    budget = max(0.0, 1.0 - float(snap.cash_reserve))
+    if float(target.sum()) > budget + tol:
+        out["cash_budget"] = True
+
+    if snap.turnover_max is not None:
+        if float(np.sum(np.abs(delta))) > float(snap.turnover_max) + tol:
+            out["turnover_max"] = True
+
+    if snap.sector_indicator is not None and snap.sector_cap_vec is not None:
+        if (snap.sector_indicator @ target > snap.sector_cap_vec + tol).any():
+            out["sector_cap"] = True
+
+    for trip in snap.corr_group_pairs or ():
+        try:
+            i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
+        except (TypeError, IndexError, ValueError):
+            continue
+        if 0 <= i < n and 0 <= j < n:
+            if float(target[i] + target[j]) > cap + tol:
+                out["corr_group_cap"] = True
+
+    if snap.gross_max is not None:
+        if float(np.sum(np.abs(target))) > float(snap.gross_max) + tol:
+            out["gross_max"] = True
+
+    return out
+
+
+def _finalize_result(
+    snap: ConstraintSnapshot,
+    target: np.ndarray,
+    selected: tuple[int, ...],
+    status: str,
+) -> AllocatorResult:
+    delta = target - snap.w_current
+    violations = _constraint_violations(snap, target, delta)
+    for family in _CONSTRAINT_FAMILIES:
+        if violations[family]:
+            status = f"infeasible:{family}"
+            break
+    return AllocatorResult(
+        delta_w=delta,
+        target_w=target,
+        status=status,
+        selected_indices=selected,
+    )
+
+
 def _select_top_k(
     mu: np.ndarray,
     snap: ConstraintSnapshot,
@@ -90,7 +173,6 @@ def _build_result(
     ``"infeasible:<family>"`` and the replay harness counts the
     violation.
     """
-    n = snap.n
     target = np.clip(np.asarray(target_pct, dtype=float), 0.0, snap.w_upper_hard)
 
     # ── 1. Wash-sale: Δw ≤ 0 for masked names ─────────────────
@@ -138,10 +220,11 @@ def _build_result(
                 target[in_sector] *= scale
             target = np.clip(target, 0.0, snap.w_upper_hard)
         else:
-            return AllocatorResult(
-                delta_w=np.zeros(n), target_w=snap.w_current,
-                status="infeasible:sector_cap",
-                selected_indices=selected,
+            return _finalize_result(
+                snap,
+                snap.w_current.copy(),
+                selected,
+                "infeasible:sector_cap",
             )
 
     # ── 5. Correlation-group cap w_i + w_j ≤ corr_cap ─────────
@@ -151,7 +234,7 @@ def _build_result(
             i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
         except (TypeError, IndexError, ValueError):
             continue
-        if i >= n or j >= n:
+        if i >= snap.n or j >= snap.n:
             continue
         pair_sum = float(target[i] + target[j])
         if pair_sum > cap + 1e-9 and pair_sum > 0:
@@ -176,12 +259,7 @@ def _build_result(
 
     target = np.clip(target, 0.0, snap.w_upper_hard)
 
-    return AllocatorResult(
-        delta_w=target - snap.w_current,
-        target_w=target,
-        status=status,
-        selected_indices=selected,
-    )
+    return _finalize_result(snap, target, selected, status)
 
 
 def equal_weight_top_k(
