@@ -47,6 +47,28 @@ notify() {
     curl -s -H "Title: $title" -d "$body" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
 }
 
+fail_missing_strategy_config() {
+    local strict_env="$1"
+    if renquant_strict_enabled "$strict_env"; then
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable and strict multirepo mode is enabled" \
+            | tee -a "$LOG"
+    else
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable; scheduled refresh defaults to fail-closed multirepo execution" \
+            | tee -a "$LOG"
+    fi
+}
+
+mark_multirepo_unavailable() {
+    local module="$1" strict_env="$2"
+    if renquant_strict_enabled "$strict_env"; then
+        echo "ERROR: $module unavailable and strict multirepo mode is enabled" \
+            | tee -a "$LOG"
+    else
+        echo "ERROR: $module unavailable; scheduled refresh defaults to fail-closed multirepo execution" \
+            | tee -a "$LOG"
+    fi
+}
+
 cd "$REPO_DIR"
 source "$VENV_DIR/bin/activate"
 GITHUB_DIR="$(dirname "$REPO_DIR")"
@@ -59,12 +81,8 @@ export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-d
 echo "[$(date '+%H:%M:%S')] Weekly fundamental refresh — $DATE" | tee -a "$LOG"
 
 if ! STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if renquant_strict_enabled RQ_DATA_REFRESH_STRICT; then
-        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" \
-            | tee -a "$LOG"
-        exit 1
-    fi
-    STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
+    fail_missing_strategy_config RQ_DATA_REFRESH_STRICT
+    exit 1
 fi
 
 # ── Steps 1-2: SEC EDGAR fundamentals ───────────────────────────────
@@ -81,19 +99,10 @@ then
         --json >> "$LOG" 2>&1
     STEP1_RC=$?
     STEP2_RC=$STEP1_RC
-elif renquant_strict_enabled RQ_DATA_REFRESH_STRICT; then
-    echo "ERROR: renquant_base_data.sec_fundamentals unavailable and strict multirepo mode is enabled" \
-        >> "$LOG"
+else
+    mark_multirepo_unavailable "renquant_base_data.sec_fundamentals" RQ_DATA_REFRESH_STRICT
     STEP1_RC=1
     STEP2_RC=1
-else
-    echo "WARN: renquant_base_data.sec_fundamentals unavailable; falling back to umbrella scripts." \
-        >> "$LOG"
-    $PYTHON scripts/fetch_sec_fundamentals.py --end-year "$(date +%Y)" \
-        >> "$LOG" 2>&1
-    STEP1_RC=$?
-    $PYTHON scripts/build_extended_fundamentals.py >> "$LOG" 2>&1
-    STEP2_RC=$?
 fi
 
 # ── Step 3: PEAD/SUE earnings surprises ─────────────────────────────
@@ -107,16 +116,9 @@ then
         --data-dir "$REPO_DIR/data" \
         --json >> "$LOG" 2>&1
     STEP3_RC=$?
-elif renquant_strict_enabled RQ_DATA_REFRESH_STRICT; then
-    echo "ERROR: renquant_base_data.earnings_surprise_refresh unavailable and strict multirepo mode is enabled" \
-        >> "$LOG"
-    STEP3_RC=1
 else
-    echo "WARN: renquant_base_data.earnings_surprise_refresh unavailable; falling back to umbrella script." \
-        >> "$LOG"
-    $PYTHON scripts/fetch_earnings_surprise.py --strategy renquant_104 \
-        >> "$LOG" 2>&1
-    STEP3_RC=$?
+    mark_multirepo_unavailable "renquant_base_data.earnings_surprise_refresh" RQ_DATA_REFRESH_STRICT
+    STEP3_RC=1
 fi
 
 # ── Step 4: freshness gate (info-only — filings have inherent lag) ──

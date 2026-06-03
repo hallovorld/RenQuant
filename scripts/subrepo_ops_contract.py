@@ -256,9 +256,16 @@ CHECKS: tuple[Check, ...] = (
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common',
             'renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json',
             '--strategy-config "$STRATEGY_CONFIG"',
+            "scheduled refresh defaults to fail-closed multirepo execution",
+            "renquant_strict_enabled",
             "RQ_DATA_REFRESH_STRICT",
         ),
-        forbidden=('--strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json"',),
+        forbidden=(
+            '--strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json"',
+            'STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"',
+            "scripts/fetch_earnings_surprise.py",
+            "falling back to umbrella",
+        ),
     ),
     Check(
         name="weekly_fundamental_refresh_uses_base_data_sec",
@@ -271,7 +278,14 @@ CHECKS: tuple[Check, ...] = (
             'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"',
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common',
             'renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json',
+            "scheduled refresh defaults to fail-closed multirepo execution",
+            "renquant_strict_enabled",
             "RQ_DATA_REFRESH_STRICT",
+        ),
+        forbidden=(
+            "scripts/fetch_sec_fundamentals.py",
+            "scripts/build_extended_fundamentals.py",
+            "falling back to umbrella",
         ),
     ),
     Check(
@@ -299,9 +313,16 @@ CHECKS: tuple[Check, ...] = (
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-base-data renquant-common',
             'renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json',
             '--strategy-config "$STRATEGY_CONFIG"',
+            "scheduled refresh defaults to fail-closed multirepo execution",
+            "renquant_strict_enabled",
             "RQ_DAILY_IV_STRICT",
         ),
-        forbidden=('--strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json"',),
+        forbidden=(
+            '--strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json"',
+            'STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"',
+            "scripts/fetch_options_iv_alpaca.py",
+            "falling back to umbrella",
+        ),
     ),
     Check(
         name="daily_news_fetch_uses_base_data",
@@ -314,9 +335,16 @@ CHECKS: tuple[Check, ...] = (
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-base-data renquant-common',
             'renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json',
             '--strategy-config "$STRATEGY_CONFIG"',
+            "scheduled refresh defaults to fail-closed multirepo execution",
+            "renquant_strict_enabled",
             "RQ_DAILY_NEWS_STRICT",
         ),
-        forbidden=('--strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json"',),
+        forbidden=(
+            '--strategy-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json"',
+            'STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"',
+            "scripts/fetch_news_alpaca.py",
+            "falling back to umbrella",
+        ),
     ),
     Check(
         name="daily_news_sentiment_uses_model_repo",
@@ -324,7 +352,13 @@ CHECKS: tuple[Check, ...] = (
         required=(
             "renquant_model_common.news_sentiment_finbert",
             'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-base-data renquant-common',
+            "scheduled refresh defaults to fail-closed multirepo execution",
+            "renquant_strict_enabled",
             "RQ_DAILY_NEWS_SENTIMENT_STRICT",
+        ),
+        forbidden=(
+            "scripts/score_news_finbert.py",
+            "falling back to umbrella",
         ),
     ),
     Check(
