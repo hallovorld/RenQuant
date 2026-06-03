@@ -1,7 +1,6 @@
 name: agent-default-labels-template
-# Reusable workflow that auto-adds `agent:fix:<name>` executor-permission
-# labels when an authorship label (`agent:claude` / `agent:codex`) is
-# present on a PR.
+# Reusable workflow that auto-adds an `agent:fix:<name>` executor-permission
+# label that matches the PR's authorship.
 #
 # Why: per `doc/ops/agent-automation.md` §2.1, authorship and
 # fix-executor permission are intentionally split. Authorship is set by
@@ -11,12 +10,18 @@ name: agent-default-labels-template
 # `agent-automation-v2-design.md §3.2` calls out.
 #
 # Behavior:
-#   - On PR open / label / synchronize, inspect labels.
-#   - If `agent:claude` or `agent:codex` is present, ensure BOTH
-#     `agent:fix:claude` AND `agent:fix:codex` are present (cross-agent
-#     fix invitation is the default per the v2 design; operator removes
-#     one to opt out for a specific PR).
-#   - Idempotent: never replaces existing labels; only adds missing.
+#   - On PR open / label / synchronize, fetch the PR's current labels
+#     LIVE via `gh pr view --json labels` (NEVER trust the event payload,
+#     which is stale when labels arrive in a subsequent labeled event
+#     after `opened` — codex #168 HIGH-1).
+#   - If `agent:claude` or `agent:codex` is present, ensure ONLY the
+#     matching `agent:fix:<authorship>` label is auto-added. Cross-agent
+#     fix invitation is an EXPLICIT operator action (add the other
+#     `agent:fix:<peer>` label by hand) — automatic dual-labelling
+#     races two G3 workers on the same head force-push (codex #168
+#     HIGH-3).
+#   - Idempotent: never replaces existing labels; only adds the
+#     matching one if missing.
 #   - No-op for human PRs (no authorship label).
 #
 # Per-repo wrapper invokes:
@@ -28,14 +33,14 @@ name: agent-default-labels-template
 on:
   workflow_call:
     inputs:
-      # Future expansion: per-repo override of which fix-executor labels
-      # to ensure. Today the canonical pair is {claude, codex}; if a new
-      # agent joins the canon, update this default.
-      fix_executors:
+      # Map of authorship label → matching fix-executor name. Default
+      # is the canonical {claude, codex} pair. Override per-repo if a
+      # new agent joins the canon.
+      authorship_to_executor:
         type: string
         required: false
-        default: "claude,codex"
-        description: "Comma-separated list of agent names to ensure agent:fix:<name> labels for."
+        default: '{"agent:claude":"claude","agent:codex":"codex"}'
+        description: "JSON map from authorship label to its matching agent:fix:<name>."
 
 permissions:
   pull-requests: write   # label mutation
@@ -46,17 +51,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Ensure agent:fix:<name> labels match authorship
+      - name: Ensure agent:fix:<authorship> label matches authorship (live fetch)
         env:
           GH_TOKEN: ${{ github.token }}
           # All event fields go through env: per shell-injection-safe
           # convention from `_agent-fix-template.yml`.
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
-          FIX_EXECUTORS: ${{ inputs.fix_executors }}
           REPO: ${{ github.repository }}
+          MAPPING: ${{ inputs.authorship_to_executor }}
         run: |
           set -euo pipefail
+          # HIGH-1 (codex #168): fetch labels live. The opened/labeled
+          # event payload can be stale when a label arrives in a
+          # subsequent labeled event right after opened — the workflow
+          # then reads `labels: []` and skips. Live-fetch sidesteps
+          # the race entirely.
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json labels > pr.json
+          LABELS_JSON=$(jq -c '[.labels[].name]' pr.json)
+          echo "live labels: $LABELS_JSON"
+
           # Authorship gate: only act on PRs that carry an agent:* label.
           # Human PRs (no authorship) are out of scope — they go through
           # whatever review flow the repo has.
@@ -70,31 +83,36 @@ jobs:
             echo "agent:manual-hold present; skipping label management"
             exit 0
           fi
-          # Per-agent opt-out: a "no-fix:<name>" label tells us NOT to
-          # auto-add that executor's label. Operator escape valve when
-          # they want to ban a specific agent from G3 on this PR.
-          missing=()
-          IFS=',' read -ra EXECUTORS <<< "$FIX_EXECUTORS"
-          for agent in "${EXECUTORS[@]}"; do
-            agent="$(echo "$agent" | tr -d '[:space:]')"
-            [ -z "$agent" ] && continue
-            target_label="agent:fix:${agent}"
-            optout_label="no-fix:${agent}"
-            if echo "$LABELS_JSON" | grep -q "\"${target_label}\""; then
-              echo "$target_label already present"
-              continue
+          # HIGH-3 (codex #168): match the SINGLE authorship to its
+          # matching agent:fix:<name>. Cross-agent invitation
+          # (adding the peer's agent:fix:<peer> label) becomes an
+          # explicit operator action; dual-labelling at this layer
+          # automatically races two G3 workers on the same head
+          # force-push when a CHANGES_REQUESTED review fires.
+          executor=""
+          authorship=""
+          while IFS= read -r entry; do
+            label=$(jq -r '.key'   <<< "$entry")
+            exec_name=$(jq -r '.value' <<< "$entry")
+            if echo "$LABELS_JSON" | grep -q "\"${label}\""; then
+              executor="$exec_name"
+              authorship="$label"
+              break
             fi
-            if echo "$LABELS_JSON" | grep -q "\"${optout_label}\""; then
-              echo "$optout_label opt-out present; not adding $target_label"
-              continue
-            fi
-            missing+=("$target_label")
-          done
-          if [ "${#missing[@]}" -eq 0 ]; then
-            echo "all required agent:fix:* labels already present"
+          done < <(jq -c 'to_entries[]' <<< "$MAPPING")
+          if [ -z "$executor" ]; then
+            echo "authorship label present but not in mapping; skipping"
             exit 0
           fi
-          # gh pr edit --add-label accepts comma-separated names.
-          JOINED=$(IFS=','; echo "${missing[*]}")
-          echo "adding: $JOINED"
-          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "$JOINED"
+          target_label="agent:fix:${executor}"
+          optout_label="no-fix:${executor}"
+          if echo "$LABELS_JSON" | grep -q "\"${target_label}\""; then
+            echo "$target_label already present"
+            exit 0
+          fi
+          if echo "$LABELS_JSON" | grep -q "\"${optout_label}\""; then
+            echo "$optout_label opt-out present; not adding $target_label"
+            exit 0
+          fi
+          echo "authorship=$authorship -> adding $target_label"
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "$target_label"

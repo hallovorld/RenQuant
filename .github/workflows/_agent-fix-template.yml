@@ -160,11 +160,36 @@ jobs:
           # Trust check (§4.3.4): actor must have write access to the repo.
           # gh api returns 200 with permission level for collaborators,
           # 404 for non-collaborators.
-          PERMISSION=$(gh api "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
-            -q .permission 2>/dev/null || echo "none")
-          if [[ ! "$PERMISSION" =~ ^(admin|maintain|write)$ ]]; then
-            echo "actor ${ACTOR} has permission=${PERMISSION}; not in {admin,maintain,write} — skipping per §4.3.2 trust gate"
-            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          #
+          # HIGH-2 bridge (codex #168): when actor is github-actions[bot]
+          # — the classifier (`_agent-review-classify-template.yml`)
+          # synthesizes @<agent> fix comments on COMMENTED-with-findings
+          # reviews — re-verify the `Trusted-Bridge-Reviewer:` marker
+          # in the comment body. The classifier already checked that
+          # reviewer's permission, but we re-check here to defend
+          # against the bot identity being abused by any other workflow
+          # that knows the marker shape.
+          if [ "$ACTOR" = "github-actions[bot]" ]; then
+            BRIDGE_REVIEWER=$(grep -oE 'Trusted-Bridge-Reviewer:[[:space:]]*@[A-Za-z0-9_.-]+' <<< "$REVIEW_BODY" | head -1 | sed -E 's/.*@//')
+            BRIDGE_SOURCE=$(grep -oE 'Trusted-Bridge-Source:[[:space:]]*agent-review-classify' <<< "$REVIEW_BODY" | head -1)
+            if [ -z "$BRIDGE_REVIEWER" ] || [ -z "$BRIDGE_SOURCE" ]; then
+              echo "actor=github-actions[bot] but no Trusted-Bridge-Reviewer/Source marker — refusing per HIGH-2 trust gate"
+              echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            PERMISSION=$(gh api "repos/${{ github.repository }}/collaborators/${BRIDGE_REVIEWER}/permission" \
+              -q .permission 2>/dev/null || echo "none")
+            if [[ ! "$PERMISSION" =~ ^(admin|maintain|write)$ ]]; then
+              echo "bridge reviewer ${BRIDGE_REVIEWER} has permission=${PERMISSION}; refusing per HIGH-2"
+              echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "actor=github-actions[bot] via classifier bridge for reviewer=${BRIDGE_REVIEWER} (permission=${PERMISSION}); accepted"
+          else
+            PERMISSION=$(gh api "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
+              -q .permission 2>/dev/null || echo "none")
+            if [[ ! "$PERMISSION" =~ ^(admin|maintain|write)$ ]]; then
+              echo "actor ${ACTOR} has permission=${PERMISSION}; not in {admin,maintain,write} — skipping per §4.3.2 trust gate"
+              echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
           fi
 
           # Trigger conditions (§4.3.2):

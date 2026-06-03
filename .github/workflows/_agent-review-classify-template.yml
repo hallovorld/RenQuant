@@ -104,14 +104,18 @@ jobs:
           REVIEW_BODY: ${{ steps.ctx.outputs.review_body }}
         run: |
           set -euo pipefail
-          # Match the v2 review prompt's severity tags exactly. The
-          # regex is word-bounded so a sentence like "this is not
-          # blocker-level" doesn't false-positive.
-          # Note: `nit` is intentionally NOT a trigger — only operator-
-          # actionable severities promote.
-          if grep -Eq '\*\*BLOCKER\*\*|\bBLOCKER:\b|\*\*HIGH\*\*|\bHIGH:\b' <<< "$REVIEW_BODY"; then
+          # Match the actual severity tags agent reviews use. The v1
+          # regex only matched **BOLD** and \bSEV:\b forms and missed
+          # the [HIGH] / - [HIGH] / HIGH - bracketed forms that current
+          # codex/Claude reviews actually emit (codex #168 MED-4).
+          # Each alternative is anchored with explicit boundaries so
+          # incidental text like "high-throughput" can't false-positive.
+          # `nit` is intentionally NOT a trigger.
+          HI_PAT='\*\*BLOCKER\*\*|\*\*HIGH\*\*|\[BLOCKER\]|\[HIGH\]|(^|[[:space:]])-?[[:space:]]*\[BLOCKER\]|(^|[[:space:]])-?[[:space:]]*\[HIGH\]|(^|[[:space:]])BLOCKER[[:space:]]*:|(^|[[:space:]])HIGH[[:space:]]*:'
+          MED_PAT='\*\*MED\*\*|\[MED\]|(^|[[:space:]])-?[[:space:]]*\[MED\]|(^|[[:space:]])MED[[:space:]]*:'
+          if grep -Eq "$HI_PAT" <<< "$REVIEW_BODY"; then
             echo "max_severity=BLOCKER_OR_HIGH" >> "$GITHUB_OUTPUT"
-          elif grep -Eq '\*\*MED\*\*|\bMED:\b' <<< "$REVIEW_BODY"; then
+          elif grep -Eq "$MED_PAT" <<< "$REVIEW_BODY"; then
             echo "max_severity=MED" >> "$GITHUB_OUTPUT"
           else
             echo "max_severity=NONE" >> "$GITHUB_OUTPUT"
@@ -152,10 +156,44 @@ jobs:
           echo "executor=$executor"   >> "$GITHUB_OUTPUT"
           echo "authorship=$authorship" >> "$GITHUB_OUTPUT"
 
+      - name: Verify original reviewer permission (trust-bridge prerequisite)
+        id: trust
+        if: |
+          steps.ctx.outputs.skip != 'true' &&
+          steps.route.outputs.skip != 'true' &&
+          steps.ctx.outputs.review_state == 'COMMENTED' &&
+          steps.sev.outputs.max_severity != 'NONE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REVIEW_ACTOR: ${{ steps.ctx.outputs.review_actor }}
+        run: |
+          set -euo pipefail
+          # HIGH-2 (codex #168): the synthetic @<agent> fix comment is
+          # posted by github-actions[bot], which lacks collaborator
+          # write permission. The fix template's actor permission check
+          # would reject it. To bridge this without opening G3 to any
+          # bot-posted comment, the classifier first verifies the
+          # ORIGINAL reviewer's permission here, then embeds a
+          # Trusted-Bridge-Reviewer marker in the synthetic comment
+          # body. The fix template special-cases
+          # actor==github-actions[bot] to re-verify that marker — so
+          # only classifier-synthesized comments backed by a trusted
+          # human/agent reviewer can trigger a fix.
+          PERMISSION=$(gh api "repos/${REPO}/collaborators/${REVIEW_ACTOR}/permission" -q .permission 2>/dev/null || echo "none")
+          if [[ ! "$PERMISSION" =~ ^(admin|maintain|write)$ ]]; then
+            echo "reviewer $REVIEW_ACTOR has permission=$PERMISSION; not in {admin,maintain,write} — refusing to bridge per HIGH-2 trust gate"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reviewer $REVIEW_ACTOR permission=$PERMISSION; bridge authorized"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
       - name: Synthesize @<executor> fix comment (COMMENTED + findings)
         if: |
           steps.ctx.outputs.skip != 'true' &&
           steps.route.outputs.skip != 'true' &&
+          steps.trust.outputs.skip != 'true' &&
           steps.ctx.outputs.review_state == 'COMMENTED' &&
           steps.sev.outputs.max_severity != 'NONE'
         env:
@@ -170,8 +208,16 @@ jobs:
           set -euo pipefail
           # The G3 issue_comment trigger fires when the comment body
           # STARTS WITH `@<agent> fix`. See `_agent-fix-template.yml:177`.
+          # The `Trusted-Bridge-Reviewer:` line is the HIGH-2 trust
+          # bridge marker — the fix template parses it and re-verifies
+          # the named reviewer's permission before honoring the
+          # synthetic @fix when actor is github-actions[bot].
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(cat <<EOF
           @${EXECUTOR} fix
+
+          Trusted-Bridge-Reviewer: @${REVIEW_ACTOR}
+          Trusted-Bridge-Source: agent-review-classify
+          Trusted-Bridge-Review-Id: ${REVIEW_ID}
 
           Auto-promoted by \`agent-review-classify\`: review by @${REVIEW_ACTOR}
           (review id \`${REVIEW_ID}\`) is state \`COMMENTED\` but body contains
