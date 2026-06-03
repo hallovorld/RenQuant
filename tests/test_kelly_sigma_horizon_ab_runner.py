@@ -327,6 +327,52 @@ def test_result_metrics_include_per_regime_cash_and_kelly() -> None:
     assert "CHOPPY" in metrics["per_regime"]
 
 
+def test_validate_benchmark_coverage_rejects_late_cache_start() -> None:
+    import pandas as pd
+
+    mod = _load_module()
+    frame = pd.DataFrame(
+        {"close": [1.0, 1.1]},
+        index=pd.to_datetime(["2025-06-03", "2025-06-04"]),
+    )
+
+    try:
+        mod.validate_benchmark_coverage(
+            frame,
+            benchmark="SPY",
+            start="2024-01-02",
+            end="2025-06-04",
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert "coverage is insufficient" in message
+        assert "requested_start=2024-01-02" in message
+        assert "first_bar=2025-06-03" in message
+    else:
+        raise AssertionError("expected benchmark coverage preflight failure")
+
+
+def test_validate_benchmark_coverage_allows_small_calendar_gap() -> None:
+    import pandas as pd
+
+    mod = _load_module()
+    frame = pd.DataFrame(
+        {"close": [1.0, 1.1, 1.2]},
+        index=pd.to_datetime(["2025-06-03", "2025-06-04", "2025-06-05"]),
+    )
+
+    coverage = mod.validate_benchmark_coverage(
+        frame,
+        benchmark="SPY",
+        start="2025-06-01",
+        end="2025-06-07",
+    )
+
+    assert coverage["first_bar"] == "2025-06-03"
+    assert coverage["last_bar"] == "2025-06-05"
+    assert coverage["n_bars"] == 3
+
+
 def test_promotion_verdict_passes_synthetic_tier3() -> None:
     mod = _load_module()
     metrics = {
