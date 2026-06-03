@@ -452,6 +452,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--incumbent", type=str, default="fractional_kelly_top_k",
                    help="Incumbent allocator name for paired comparisons")
     p.add_argument("--pbo-n-slices", type=int, default=16)
+    p.add_argument(
+        "--fwd-horizon-days", type=int, default=60,
+        help="Forward-return horizon for realised returns in the replay "
+             "(must match a populated ticker_forward_returns column: "
+             "1, 5, 10, 20, or 60). Default 60 matches the prod label.",
+    )
     p.add_argument("--loader-module", type=str, default=None,
                    help="Optional module:function to load WF bars "
                         "(default uses wf_replay_loader.load_replay_bars_from_sim_db)")
@@ -466,6 +472,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     payload["as_of_date"] = "2026-06-03"
     payload["wf_artifact_root"] = args.wf_artifact_root
     payload["cut_range"] = [args.start_cut, args.end_cut]
+    payload["fwd_horizon_days"] = args.fwd_horizon_days
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -475,12 +482,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _load_bars(args) -> list[AllocatorReplayBar]:
-    """Resolve --loader-module if supplied, else use the real WF DB loader."""
+    """Resolve --loader-module if supplied, else use the real WF DB loader.
+
+    The `fwd_horizon_days` arg is recorded in the verdict JSON as the
+    horizon actually used, so it MUST plumb through to the custom loader
+    when one is supplied. Custom loaders that do not accept the kwarg
+    raise loudly here rather than silently emitting verdict evidence
+    against a different horizon than the CLI claims.
+    """
     if args.loader_module:
         mod_name, fn_name = args.loader_module.split(":")
         mod = importlib.import_module(mod_name)
         load_fn = getattr(mod, fn_name)
-        return list(load_fn(args.wf_artifact_root, args.start_cut, args.end_cut))
+        try:
+            return list(load_fn(
+                args.wf_artifact_root, args.start_cut, args.end_cut,
+                fwd_horizon_days=args.fwd_horizon_days,
+            ))
+        except TypeError as exc:
+            raise TypeError(
+                f"--loader-module {args.loader_module!r} does not accept "
+                f"`fwd_horizon_days` kwarg; the verdict JSON would claim "
+                f"horizon={args.fwd_horizon_days} while the loader emitted "
+                f"a different one. Add the kwarg to the loader signature, "
+                f"or omit --fwd-horizon-days when using a custom loader "
+                f"whose horizon is fixed."
+            ) from exc
 
     from kernel.portfolio_qp.wf_replay_loader import (
         load_replay_bars_from_sim_db,
@@ -490,6 +517,7 @@ def _load_bars(args) -> list[AllocatorReplayBar]:
         _default_sim_db_path(args.wf_artifact_root),
         args.start_cut,
         args.end_cut,
+        fwd_horizon_days=args.fwd_horizon_days,
     )
 
 
