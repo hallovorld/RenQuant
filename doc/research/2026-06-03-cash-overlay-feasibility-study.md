@@ -288,6 +288,102 @@ the per-regime overlay spec. No conflict with existing knobs.
 
 ---
 
+## 5.5 Stage 0 evidence — what the sim DB actually says (2026-06-03)
+
+Stage 0 was fired against `data/sim_runs.db::pipeline_runs` (the
+empirical sim-panel cash% distribution, 1,089 rows, 2024-01-02 →
+2026-03-27). **The result changes the targeting of the proposed
+overlay materially** — see the verdict JSON at
+[`artifacts/cash_overlay_stage0.json`](../../artifacts/cash_overlay_stage0.json).
+
+### 5.5.1 Per-regime cash% distribution
+
+| Regime | n | min | p25 | **median** | p75 | p90 | max | mean |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| BULL_CALM | 943 | −1.1% | 1.7% | **3.7%** | 6.9% | 11.8% | 100.0% | 8.9% |
+| BULL_VOLATILE | 62 | 3.1% | 9.0% | **44.6%** | 53.2% | 89.3% | 89.5% | 41.9% |
+| BEAR | 52 | 99.8% | 100.0% | **100.0%** | 100.0% | 100.0% | 100.0% | 100.0% |
+| CHOPPY | 32 | 0.8% | 13.0% | **15.4%** | 20.8% | 48.3% | 59.2% | 18.5% |
+
+Last 90 sim bars (2026-01-23 → 2026-03-27): BULL_CALM median 6.3% (n=70);
+BULL_VOLATILE median 44.6% (n=20).
+
+### 5.5.2 Three load-bearing findings
+
+**FINDING-1 — BULL_CALM is not the target regime.** The codex
+hypothesis was that BULL_CALM cash% is large enough to deploy
+profitably. The sim says median BULL_CALM cash% is **3.7% all-time
+and 6.3% in the last 90 bars** — well below the §6.1 acceptance
+threshold of 20%. **The overlay solves a non-problem in BULL_CALM at
+current sim cash levels.** A BULL_CALM-only overlay per the original
+codex spec is **DEFER** per §6.1.
+
+**FINDING-2 — BULL_VOLATILE is the real target.** Median cash% in
+BULL_VOLATILE is **44.6%**, more than 2× the §6.1 threshold. That
+regime carries the bulk of the failed-experiments-log line 1947
+"~30–40% cash drag" attestation. A BULL_VOLATILE overlay is **PROCEED**
+material.
+
+**FINDING-3 — BEAR cash% is ≈ 100%, not the 30% the BEAR sleeve
+implies.** Golden config has `bear_defensive_slots=2,
+bear_defensive_pct=0.15` which should deploy 30% into GLD/TLT/XLV/XLU.
+The sim shows **median 100.0% cash in BEAR (n=52)**. Either the BEAR
+sleeve is not firing in the sim path, or it fires but the trades
+abort before live_state captures them. **This is a §7.7-class dead-
+gate diagnostic** — the defensive sleeve looks active in config but
+empirically does nothing. Worth a separate audit memo.
+
+### 5.5.3 Reconciliation with failed-experiments-log line 1947
+
+The line-1947 attestation ("~30–40% cash drag, alpha vs SPY
+−15.62% ± 10.21% sign-consistent negative") is consistent with the
+Stage 0 finding IF the drag is dominated by BULL_VOLATILE periods
+and the unfired BEAR defensive sleeve, NOT by BULL_CALM. Net
+portfolio cash%:
+
+```
+weighted_avg = 0.866 · 0.037 + 0.057 · 0.446
+             + 0.048 · 1.000 + 0.029 · 0.154
+           ≈ 0.032 + 0.025 + 0.048 + 0.005
+           ≈ 11.0%  (sim panel, all-time)
+```
+
+11.0% pooled is well below the 30–40% line-1947 claim. Three
+candidate reconciliations: (a) the sim panel does not include the
+preflight-aborted bars that fail to take any positions (zero-trade
+days inflate the live cash%); (b) live ≠ sim — daily preflight gates
+abort bars where the sim simulator would have just held cash; (c)
+the line-1947 attestation pre-dates fixes that closed the BULL_CALM
+gap. All three deserve a follow-up audit; the rest of this memo's
+§6 plan still holds, with the regime target shifted from BULL_CALM
+to BULL_VOLATILE.
+
+### 5.5.4 Pivoted recommendation
+
+| Original codex proposal | Revised after Stage 0 |
+|---|---|
+| BULL_CALM overlay | BULL_VOLATILE overlay (primary), BULL_CALM deferred |
+| `bull_calm_overlay_pct=0.15` | `bull_volatile_overlay_pct=0.30` (per the BULL_VOLATILE median cash%) |
+| BEAR sleeve assumed working | BEAR-sleeve fires-or-not audit added as parallel work |
+
+The §6 experiment design carries over directly — only the regime
+gating and the default knob ranges change. The Box-Behnken DOE in
+§6.3 should sweep:
+
+| Knob | Low | Center | High |
+|---|--:|--:|--:|
+| `bull_volatile_overlay_pct` | 0.15 | 0.25 | 0.35 |
+| `overlay_threshold` (cash%) | 0.20 | 0.30 | 0.40 |
+| `overlay_split_qqq` | 0.0 | 0.5 | 1.0 |
+| `overlay_rebalance_band` (pp) | 0.02 | 0.05 | 0.10 |
+
+(The original §6.3 ranges for `bull_calm_overlay_pct` and
+`overlay_threshold` were calibrated assuming median cash% ≈ 25%;
+Stage 0 says BULL_VOLATILE median ≈ 45%, so all 4 knob ranges shift
+up accordingly.)
+
+---
+
 ## 6. Experiment design
 
 Per §7.2 + §7.4 + §9 DOE. **Range-finding first** (§7.11); fail-closed on
