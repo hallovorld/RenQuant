@@ -1744,6 +1744,28 @@ class SolveMarkowitzQPTask(Task):
 
     Reads:  every ctx._qp_* field built by upstream Tasks
     Writes: ctx._qp_solution (QPSolution dataclass)
+
+    **§8 Step 1e — snapshot fast-path.** When
+    ``ctx._qp_constraint_snapshot`` is populated by
+    :class:`BuildConstraintSnapshotTask` (the default in the production
+    Job) AND the cvxpy backend is selected, the initial solve is routed
+    through :func:`solve_portfolio_qp_from_snapshot`. The snapshot
+    contract owns every hard-constraint field (w_upper, w_lower, dw_max,
+    cash_reserve, wash_sale_mask, drawdown, turnover_max, gross_max,
+    sector cap, correlation-pair cap). The wrapper delegates straight to
+    :func:`solve_portfolio_qp` with byte-identical inputs — pinned by
+    ``tests/test_solver_via_snapshot.py`` (Step 2) and now end-to-end
+    by ``tests/test_solve_markowitz_qp_via_snapshot.py``.
+
+    The C2-relax and per-asset cap-compliance retries continue to operate
+    on the kwargs dict because they mutate hard-constraint inputs (e.g.,
+    relax ``sector_cap_vec`` by 1.5×). The immutable snapshot deliberately
+    does not expose those mutations, so the retries stay on the kwargs
+    path; only the **initial** solve migrates to the contract.
+
+    Fallback to the legacy kwargs path covers:
+      * snapshot missing (e.g., BuildConstraintSnapshotTask skipped)
+      * cvxportfolio backend (no wrapper variant exists yet)
     """
     name = "SolveMarkowitzQPTask"
 
@@ -1770,7 +1792,7 @@ class SolveMarkowitzQPTask(Task):
                 )
                 return False
             self._strip_kwargs_for_cvxportfolio(kwargs, ctx)
-        sol = _solve(**kwargs)
+        sol = self._initial_solve(ctx, backend, kwargs, _solve)
         sol = _retry_with_relaxed_c2_caps(
             sol,
             kwargs,
@@ -1820,6 +1842,55 @@ class SolveMarkowitzQPTask(Task):
                 solve_portfolio_qp as _solve,
             )
         return backend, _solve
+
+    # ── §8 Step 1e — snapshot fast-path helpers ──────────────────────────
+    #
+    # The set of kwargs the snapshot wrapper accepts is exactly the
+    # forecast / cost surface (μ, σ, Σ, γ, κ, … — anything the snapshot
+    # does NOT own). Listing them explicitly here prevents drift the
+    # moment someone adds a new constraint kwarg to `_build_solver_kwargs`
+    # without also adding a snapshot field; the corresponding kwarg
+    # would then be dropped on the snapshot path. The set is pinned by
+    # ``tests/test_solve_markowitz_qp_via_snapshot.py::TestSnapshotForecastKwargsCoverage``.
+    _SNAPSHOT_FORECAST_KWARGS: tuple[str, ...] = (
+        "mu", "sigma", "Sigma",
+        "risk_aversion", "cost_kappa", "signal_decay", "robust_mu_kappa",
+        "cvar_lambda", "cvar_alpha",
+        "tax_cost_per_sell",
+        "impact_coef", "v_daily_dollar", "nav_dollar",
+        "fixed_cost_per_trade", "fixed_cost_beta",
+        "budget_mode", "min_invested_pct", "cash_drag_lambda",
+        "allow_optimal_inaccurate",
+    )
+
+    def _initial_solve(self, ctx, backend: str, kwargs: dict, _solve):
+        """Initial QP solve — snapshot fast-path when available.
+
+        Routes through :func:`solve_portfolio_qp_from_snapshot` if (a) the
+        cvxpy backend is selected (the cvxportfolio backend has no
+        snapshot variant yet — Step 1e scope cap) and (b)
+        ``BuildConstraintSnapshotTask`` stamped
+        ``ctx._qp_constraint_snapshot``. The wrapper is a strict
+        delegate (PR #127) — byte-identical to the kwargs path on the
+        forecast-kwargs surface — so this is a behaviour-preserving
+        migration. Falls back to the legacy ``_solve(**kwargs)`` path on
+        anything else.
+        """
+        snap = _get_path(ctx, "_qp_constraint_snapshot")
+        if snap is None or backend != "cvxpy":
+            return _solve(**kwargs)
+        from kernel.portfolio_qp.qp_solver import (  # noqa: PLC0415
+            solve_portfolio_qp_from_snapshot,
+        )
+        forecast_kwargs = {
+            k: kwargs[k] for k in self._SNAPSHOT_FORECAST_KWARGS if k in kwargs
+        }
+        log.debug(
+            "SolveMarkowitzQPTask: routing initial solve via "
+            "ConstraintSnapshot contract (n=%d)",
+            snap.n,
+        )
+        return solve_portfolio_qp_from_snapshot(snap, **forecast_kwargs)
 
     @staticmethod
     def _build_solver_kwargs(ctx, cfg: dict) -> dict:
