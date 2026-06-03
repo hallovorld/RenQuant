@@ -30,6 +30,10 @@ from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot  # noqa: 
 
 
 def _snap(n: int, *, w_upper_hard=None) -> ConstraintSnapshot:
+    # Permissive defaults so the per-bar mechanic tests below isolate
+    # what they want to test (Sharpe / MDD / turnover accounting /
+    # no-candidate flow). Constraint-enforcement tests are in
+    # TestSnapshotFeasibilityValidator.
     return ConstraintSnapshot(
         n=n,
         tickers=tuple(f"T{i}" for i in range(n)),
@@ -43,9 +47,9 @@ def _snap(n: int, *, w_upper_hard=None) -> ConstraintSnapshot:
             dtype=float,
         ),
         w_lower=0.0,
-        dw_max=np.full(n, 0.5),
+        dw_max=np.full(n, 1.0),     # permissive
         cash_reserve=0.0,
-        turnover_max=0.30,
+        turnover_max=None,          # permissive
         drawdown=0.0,
         drawdown_limit=0.20,
         gross_max=None,
@@ -241,3 +245,176 @@ class TestReplayResultSerialisation:
         assert res.cumulative_return == 0.0
         assert res.max_drawdown == 0.0
         assert res.mean_turnover == 0.0
+
+
+class TestSnapshotFeasibilityValidator:
+    """**Codex #131 review HIGH-1 regression guard.** The replay
+    harness must validate every allocator output against the FULL
+    ConstraintSnapshot hard-constraint set and tally per-family
+    violations. Step 4's gate is zero hard-constraint regressions
+    vs the snapshot.
+    """
+
+    def test_check_detects_each_family(self):
+        from kernel.portfolio_qp.allocator_replay import check_snapshot_feasibility
+        from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot
+
+        snap = ConstraintSnapshot(
+            n=2,
+            tickers=("A", "B"),
+            w_current=np.array([0.0, 0.0]),
+            w_upper_hard=np.array([0.30, 0.30]),
+            w_upper=np.array([0.30, 0.30]),
+            w_lower=0.0,
+            dw_max=np.array([0.05, 0.05]),
+            cash_reserve=0.0,
+            turnover_max=0.05,
+            drawdown=0.0,
+            drawdown_limit=0.20,
+            gross_max=0.20,
+            wash_sale_mask=np.array([False, True]),
+            sector_indicator=np.array([[1.0, 1.0]]),
+            sector_cap_vec=np.array([0.20]),
+            sector_names=("Tech",),
+            corr_group_pairs=((0, 1, 0.20),),
+        )
+        target = np.array([0.50, 0.50])
+        delta = target - snap.w_current
+        fam = check_snapshot_feasibility(snap, target, delta)
+        # Every family violated by target=[0.5,0.5] must fire
+        assert fam["w_upper_hard"] == 1, fam
+        assert fam["wash_sale"] == 1, fam
+        assert fam["dw_max"] == 1, fam
+        assert fam["turnover_max"] == 1, fam
+        assert fam["sector_cap"] == 1, fam
+        assert fam["corr_group_cap"] == 1, fam
+        assert fam["gross_max"] == 1, fam
+
+    def test_replay_counts_per_family_violations(self):
+        """A deliberately-cheating allocator returns target=[0.5,0.5]
+        on a snap with hard cap 0.20; replay must count the violations
+        per family.
+        """
+        from kernel.portfolio_qp.baseline_allocators import AllocatorResult
+        from kernel.portfolio_qp.allocator_replay import replay_one_allocator
+        from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot
+
+        def cheating(snap, *, mu, sigma=None):
+            target = np.array([0.50, 0.50])
+            return AllocatorResult(
+                delta_w=target - snap.w_current,
+                target_w=target,
+                status="optimal",
+                selected_indices=(0, 1),
+            )
+
+        snap = ConstraintSnapshot(
+            n=2, tickers=("A", "B"),
+            w_current=np.zeros(2),
+            w_upper_hard=np.full(2, 0.20),
+            w_upper=np.full(2, 0.20),
+            w_lower=0.0,
+            dw_max=np.array([0.05, 0.05]),
+            cash_reserve=0.0,
+            turnover_max=0.05,
+            gross_max=None,
+            drawdown=0.0,
+            drawdown_limit=0.20,
+            wash_sale_mask=np.zeros(2, dtype=bool),
+        )
+        bar = AllocatorReplayBar(
+            bar_date="2026-01-01", snap=snap,
+            mu=np.array([0.05, 0.04]),
+            sigma=np.array([0.10, 0.10]),
+            fwd_return=np.array([0.01, 0.01]),
+            regime="BULL_CALM",
+            cost_per_trade_bps=0.0,
+        )
+        res = replay_one_allocator("cheating", cheating, [bar])
+        assert res.violations_per_family.get("w_upper_hard", 0) == 1
+        assert res.violations_per_family.get("dw_max", 0) == 1
+        assert res.violations_per_family.get("turnover_max", 0) == 1
+        assert res.total_violations() >= 3
+        assert res.cap_violations == 1
+
+    def test_feasible_allocator_zero_violations(self):
+        """An allocator that fully respects the snapshot must report
+        zero violations per family."""
+        from kernel.portfolio_qp.baseline_allocators import equal_weight_top_k
+        from kernel.portfolio_qp.allocator_replay import replay_one_allocator
+        from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot
+
+        snap = ConstraintSnapshot(
+            n=3, tickers=("A", "B", "C"),
+            w_current=np.zeros(3),
+            w_upper_hard=np.full(3, 0.50),
+            w_upper=np.full(3, 0.50),
+            w_lower=0.0,
+            dw_max=np.full(3, 0.50),
+            cash_reserve=0.0,
+            turnover_max=None,  # permissive
+            drawdown=0.0,
+            drawdown_limit=0.20,
+            gross_max=None,
+            wash_sale_mask=np.zeros(3, dtype=bool),
+        )
+        bar = AllocatorReplayBar(
+            bar_date="2026-01-01", snap=snap,
+            mu=np.array([0.05, 0.04, 0.03]),
+            sigma=np.array([0.10, 0.10, 0.10]),
+            fwd_return=np.array([0.01, 0.01, 0.01]),
+            regime="BULL_CALM",
+            cost_per_trade_bps=0.0,
+        )
+        res = replay_one_allocator("eq", equal_weight_top_k, [bar])
+        assert res.cap_violations == 0
+        assert res.total_violations() == 0
+
+
+class TestNoCandidatesAccountingFix:
+    """**Codex #131 review HIGH-2 regression guard.** The allocator's
+    returned ``target_w`` / ``delta_w`` ARE the action chosen; replay
+    must honour them. Previously ``no_candidates`` short-circuited to
+    zero return / zero turnover, silently discarding the liquidation
+    cost when going to cash from a non-zero book.
+    """
+
+    def test_no_candidates_from_held_book_counts_turnover_and_cost(self):
+        from kernel.portfolio_qp.baseline_allocators import equal_weight_top_k
+        from kernel.portfolio_qp.allocator_replay import replay_one_allocator
+        from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot
+
+        # Held book [0.4, 0.3], all μ̂ negative → allocator returns
+        # target=[0, 0] (liquidate). Replay must charge the 7bp cost.
+        snap = ConstraintSnapshot(
+            n=2, tickers=("A", "B"),
+            w_current=np.array([0.40, 0.30]),
+            w_upper_hard=np.full(2, 0.50),
+            w_upper=np.full(2, 0.50),
+            w_lower=0.0,
+            dw_max=np.full(2, 0.50),
+            cash_reserve=0.0,
+            turnover_max=None,
+            gross_max=None,
+            drawdown=0.0,
+            drawdown_limit=0.20,
+            wash_sale_mask=np.zeros(2, dtype=bool),
+        )
+        bar = AllocatorReplayBar(
+            bar_date="2026-01-01", snap=snap,
+            mu=np.array([-0.01, -0.02]),  # no positive μ̂
+            sigma=np.array([0.10, 0.10]),
+            fwd_return=np.array([0.01, 0.01]),
+            regime="BULL_CALM",
+            cost_per_trade_bps=10.0,
+        )
+        res = replay_one_allocator("eq", equal_weight_top_k, [bar])
+        assert res.fallback_to_no_candidates == 1
+        # Turnover IS the L1 of the actual delta_w (liquidate 0.7 book)
+        assert abs(res.turnover[0] - 0.7) < 1e-9, (
+            f"turnover did not account for liquidation: {res.turnover[0]}"
+        )
+        # Net return: target=[0,0] → gross=0; cost = 0.7 × 10bp = 0.0007
+        assert abs(res.daily_returns_net[0] - (-0.0007)) < 1e-9, (
+            f"liquidation cost not deducted: {res.daily_returns_net[0]}"
+        )
