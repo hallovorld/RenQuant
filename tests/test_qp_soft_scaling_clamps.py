@@ -150,13 +150,21 @@ class TestSoftScalingHoldFlatClamp:
             f"clamp raised w_upper above hard cap: w_upper={w_upper} > hard=0.15"
         )
 
-    def test_conviction_cap_over_cap_holding_keeps_hard_cap(self):
-        """**Codex #123 review regression guard.** Over-hard-cap held position
-        (w_current > w_upper_hard) — the clamp MUST NOT raise ``_qp_w_upper``
-        above the hard cap. Doing so would silently authorise the over-cap
-        weight at the solver and bypass ``_retry_for_per_asset_cap_compliance``.
+    def test_conviction_cap_over_cap_holding_restores_hard_cap_exactly(self):
+        """**Codex #123 v4 review regression guard.** Over-hard-cap held
+        position (w_current > w_upper_hard) — after a low-conviction
+        soft-scale, ``_qp_w_upper`` for the over-cap row MUST be exactly
+        the hard cap (NOT the soft-scaled value).
 
-        Repro values match codex's exact #123 v2 repro: hard=15%, current=22%.
+        Without this contract, cap-compliance fallback would force-sell
+        an over-cap ORCL from 22% straight to the conviction-shrunk soft
+        cap (e.g. 7.5%) rather than to the hard risk cap (15%). The
+        soft cap is a TARGET; the hard cap is the per-asset RISK CAP
+        that ``_retry_for_per_asset_cap_compliance`` claims to enforce.
+
+        Codex's exact #123 v3 repro: hard=15%, current=22%, panel_score=0,
+        conviction multiplier = 0.5 → post-conviction soft cap = 7.5%.
+        After the hard-cap restore: w_upper must be 15.0%, not 7.5%.
         """
         from types import SimpleNamespace as NS
         from kernel.portfolio_qp.tasks import ApplyConvictionCapTask
@@ -174,12 +182,76 @@ class TestSoftScalingHoldFlatClamp:
 
         ApplyConvictionCapTask().run(ctx)
 
-        # Critical assertion: w_upper must NOT have been raised to w_current.
-        # The hard-cap-aware clamp leaves w_upper at the hard 15%.
-        assert float(ctx._qp_w_upper[0]) <= float(ctx._qp_w_upper_hard[0]) + 1e-9, (
-            f"REGRESSION: conviction-cap clamp raised w_upper above hard cap "
-            f"(w_upper={ctx._qp_w_upper[0]} > hard={ctx._qp_w_upper_hard[0]}). "
-            f"This bypasses cap-compliance fallback — codex #123 v2 bug."
+        # Strict equality assertion (v4): w_upper must be exactly the hard
+        # cap for the over-cap row — NOT the soft-scaled value. The earlier
+        # v3 assertion (`<= hard`) would have silently passed on 7.5%
+        # (the conviction-shrunk soft cap), which is the bug codex caught.
+        assert float(ctx._qp_w_upper[0]) == float(ctx._qp_w_upper_hard[0]), (
+            f"REGRESSION: conviction-cap over-cap row not restored to hard. "
+            f"w_upper={ctx._qp_w_upper[0]} expected hard={ctx._qp_w_upper_hard[0]}. "
+            f"This would force-sell to the SOFT cap, not the RISK cap — "
+            f"codex #123 v3 bug."
+        )
+
+    def test_cap_compliance_fallback_sells_to_hard_cap_not_soft_cap(self):
+        """**Codex #123 v4 review regression guard — end-to-end.** Run the
+        over-cap conviction-cap path THROUGH ``_retry_for_per_asset_cap_compliance``
+        and assert the synthetic sell target is exactly the hard cap.
+
+        This is the test codex specifically asked for: cap-compliance
+        must sell back to the hard *risk* cap (15%), not the soft cap
+        (conviction × hard = 7.5% in this repro).
+        """
+        from types import SimpleNamespace as NS
+        from kernel.portfolio_qp.tasks import (
+            ApplyConvictionCapTask,
+            _retry_for_per_asset_cap_compliance,
+        )
+        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
+
+        ctx = _StubCtx()
+        ctx._qp_tickers = ["ORCL"]
+        ctx._qp_w_upper = np.array([0.15])
+        ctx._qp_w_upper_hard = np.array([0.15])
+        ctx._qp_w_current = np.array([0.22])
+        ctx._qp_mu_source_map = {"ORCL": NS(panel_score=0.0)}
+        ctx.config = {
+            "rotation": {"joint_actions": {"qp_conviction_cap_enabled": True}},
+            "ranking": {"panel_scoring": {"sizing": {"enabled": True}}},
+        }
+        ApplyConvictionCapTask().run(ctx)
+
+        # Build solver kwargs matching the codex repro
+        kwargs = dict(
+            w_current=ctx._qp_w_current,
+            mu=[0.0],
+            sigma=[0.10],
+            w_upper=ctx._qp_w_upper,
+            w_lower=0.0,
+            cash_reserve=0.0,
+            cost_kappa=10.0,
+            turnover_max=0.01,
+        )
+        sol = solve_portfolio_qp(**kwargs)
+        # Solver must be infeasible so the retry path actually runs
+        assert sol.status.startswith("infeasible"), sol.status
+
+        post = _retry_for_per_asset_cap_compliance(sol, kwargs, solve_portfolio_qp)
+
+        # Cap-compliance must have fired AND the synthetic target must be
+        # exactly the hard cap (0.15), NOT the conviction-shrunk soft cap.
+        assert post.status == "cap_compliance_fallback", (
+            f"cap-compliance fallback did not fire (status={post.status!r})"
+        )
+        # target_w[i] for the over-cap row should be the hard cap
+        np.testing.assert_allclose(
+            post.target_w[0], 0.15, atol=1e-9,
+            err_msg=(
+                f"REGRESSION: cap-compliance sold to SOFT cap, not hard. "
+                f"target_w={post.target_w[0]} expected hard=0.15. "
+                f"Codex #123 v3 caught this exact silent soft-cap "
+                f"force-liquidation."
+            ),
         )
 
     def test_conviction_cap_over_cap_solver_returns_infeasible(self):

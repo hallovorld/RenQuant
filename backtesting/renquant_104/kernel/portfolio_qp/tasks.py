@@ -359,12 +359,17 @@ def _clamp_w_upper_at_w_current(ctx) -> None:
       safe: it relaxes the SOFT target back to "hold". The hard cap
       is unchanged; cap-compliance retry still has the original ceiling.
     * ``w_current[i] >  w_upper_hard[i]`` — the holding is **over**
-      hard cap. Do NOT raise ``_qp_w_upper[i]`` above the hard cap;
-      that would silently authorise the over-cap weight at the solver
-      and bypass the deterministic ``cap_compliance_fallback``
-      sell-down path. Leave ``_qp_w_upper[i] = w_upper_hard[i]`` so
-      the solver returns ``infeasible`` for that asset and the
-      retry path runs.
+      hard cap. Set ``_qp_w_upper[i] = w_upper_hard[i]`` so the
+      solver returns ``infeasible`` for that asset and
+      ``_retry_for_per_asset_cap_compliance()`` fires, force-selling
+      back to the hard cap. The soft-scaled value is intentionally
+      DISCARDED on this branch: conviction × vol-target × drawdown
+      multipliers are ≤ 1, so the soft-scaled cap is below the hard
+      cap; cap-compliance docstring says we sell back to the
+      *risk* cap (hard), not the soft target. Keeping the soft value
+      would force-sell ORCL from 22% straight to 7.5% under a
+      low-conviction multiplier — codex #123 v4 review. (v3 kept the
+      soft value here, which had this bug.)
 
     Reads/writes ``ctx._qp_w_upper`` in place.
     """
@@ -385,12 +390,15 @@ def _clamp_w_upper_at_w_current(ctx) -> None:
         # degradation surface.
         return
     w_hard_arr = np.asarray(w_hard, dtype=float)
-    # Per-asset: clamp target up to w_current ONLY when w_current ≤ hard cap.
-    # Over-cap holdings keep w_upper at the hard cap; solver returns
-    # infeasible → cap-compliance fallback fires.
+    # Per-asset behaviour:
+    #   within hard cap (w_curr ≤ hard) → raise soft cap to max(soft, current)
+    #                                     so hold-flat is feasible.
+    #   over    hard cap (w_curr >  hard) → restore w_hard (DISCARD soft) so
+    #                                     cap-compliance retry sells back
+    #                                     to the hard cap, not the soft cap.
     safe_to_raise = w_curr_arr <= w_hard_arr
     raised = np.maximum(w_upper_arr, w_curr_arr)
-    ctx._qp_w_upper = np.where(safe_to_raise, raised, w_upper_arr)  # noqa: SLF001
+    ctx._qp_w_upper = np.where(safe_to_raise, raised, w_hard_arr)  # noqa: SLF001
 
 
 def _lookup_corr_explicit_none(corr: dict, left: str, right: str, *, default: float = 0.0):
