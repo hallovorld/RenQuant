@@ -27,6 +27,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot
+from kernel.portfolio_qp.qp_solver import solve_portfolio_qp_from_snapshot
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,89 @@ class AllocatorResult:
     target_w: np.ndarray             # post-trade weights w_current + Δw (n,)
     status: str                       # "optimal" / "all_cash" / "no_candidates"
     selected_indices: tuple[int, ...]  # indices that were sized (post top-K)
+
+
+_CONSTRAINT_FAMILIES = (
+    "w_upper_hard",
+    "w_lower",
+    "wash_sale",
+    "dw_max",
+    "cash_budget",
+    "turnover_max",
+    "sector_cap",
+    "corr_group_cap",
+    "gross_max",
+)
+
+
+def _constraint_violations(
+    snap: ConstraintSnapshot,
+    target: np.ndarray,
+    delta: np.ndarray,
+    *,
+    tol: float = 1e-9,
+) -> dict[str, bool]:
+    """Return hard-constraint violations for a proposed baseline result."""
+    out = {family: False for family in _CONSTRAINT_FAMILIES}
+    n = snap.n
+
+    if (target > snap.w_upper_hard + tol).any():
+        out["w_upper_hard"] = True
+    if (target < snap.w_lower - tol).any():
+        out["w_lower"] = True
+    if snap.wash_sale_mask.any():
+        if (delta[snap.wash_sale_mask.astype(bool)] > tol).any():
+            out["wash_sale"] = True
+    if snap.dw_max is not None:
+        if (np.abs(delta) > snap.dw_max + tol).any():
+            out["dw_max"] = True
+
+    budget = max(0.0, 1.0 - float(snap.cash_reserve))
+    if float(target.sum()) > budget + tol:
+        out["cash_budget"] = True
+
+    if snap.turnover_max is not None:
+        if float(np.sum(np.abs(delta))) > float(snap.turnover_max) + tol:
+            out["turnover_max"] = True
+
+    if snap.sector_indicator is not None and snap.sector_cap_vec is not None:
+        if (snap.sector_indicator @ target > snap.sector_cap_vec + tol).any():
+            out["sector_cap"] = True
+
+    for trip in snap.corr_group_pairs or ():
+        try:
+            i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
+        except (TypeError, IndexError, ValueError):
+            continue
+        if 0 <= i < n and 0 <= j < n:
+            if float(target[i] + target[j]) > cap + tol:
+                out["corr_group_cap"] = True
+
+    if snap.gross_max is not None:
+        if float(np.sum(np.abs(target))) > float(snap.gross_max) + tol:
+            out["gross_max"] = True
+
+    return out
+
+
+def _finalize_result(
+    snap: ConstraintSnapshot,
+    target: np.ndarray,
+    selected: tuple[int, ...],
+    status: str,
+) -> AllocatorResult:
+    delta = target - snap.w_current
+    violations = _constraint_violations(snap, target, delta)
+    for family in _CONSTRAINT_FAMILIES:
+        if violations[family]:
+            status = f"infeasible:{family}"
+            break
+    return AllocatorResult(
+        delta_w=delta,
+        target_w=target,
+        status=status,
+        selected_indices=selected,
+    )
 
 
 def _select_top_k(
@@ -90,7 +174,6 @@ def _build_result(
     ``"infeasible:<family>"`` and the replay harness counts the
     violation.
     """
-    n = snap.n
     target = np.clip(np.asarray(target_pct, dtype=float), 0.0, snap.w_upper_hard)
 
     # ── 1. Wash-sale: Δw ≤ 0 for masked names ─────────────────
@@ -138,10 +221,11 @@ def _build_result(
                 target[in_sector] *= scale
             target = np.clip(target, 0.0, snap.w_upper_hard)
         else:
-            return AllocatorResult(
-                delta_w=np.zeros(n), target_w=snap.w_current,
-                status="infeasible:sector_cap",
-                selected_indices=selected,
+            return _finalize_result(
+                snap,
+                snap.w_current.copy(),
+                selected,
+                "infeasible:sector_cap",
             )
 
     # ── 5. Correlation-group cap w_i + w_j ≤ corr_cap ─────────
@@ -151,7 +235,7 @@ def _build_result(
             i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
         except (TypeError, IndexError, ValueError):
             continue
-        if i >= n or j >= n:
+        if i >= snap.n or j >= snap.n:
             continue
         pair_sum = float(target[i] + target[j])
         if pair_sum > cap + 1e-9 and pair_sum > 0:
@@ -176,12 +260,7 @@ def _build_result(
 
     target = np.clip(target, 0.0, snap.w_upper_hard)
 
-    return AllocatorResult(
-        delta_w=target - snap.w_current,
-        target_w=target,
-        status=status,
-        selected_indices=selected,
-    )
+    return _finalize_result(snap, target, selected, status)
 
 
 def equal_weight_top_k(
@@ -302,3 +381,124 @@ def fractional_kelly_top_k(
         f_star = float(kelly_fraction) * max(float(shrunk_mu[i]), 0.0) / (s * s)
         target[i] = max(f_star, 0.0)
     return _build_result(snap, target, selected, "optimal")
+
+
+def hard_only_qp_allocator(
+    snap: ConstraintSnapshot,
+    *,
+    mu: Sequence[float],
+    sigma: Optional[Sequence[float]] = None,
+    Sigma: Optional[np.ndarray] = None,
+    risk_aversion: float = 3.0,
+    cost_kappa: float = 0.002,
+) -> AllocatorResult:
+    """5th §8 Step 4 baseline — QP with EVERY soft-penalty term zeroed.
+
+    Calls :func:`solve_portfolio_qp_from_snapshot` with the standard
+    Markowitz mean-variance core (μᵀw − γ wᵀΣw − κ‖Δw‖₁) but every
+    soft objective term disabled:
+
+    - ``cvar_lambda=0`` — no tail penalty (Rockafellar-Uryasev 2002)
+    - ``robust_mu_kappa=0`` — no μ̂ robust subtraction (Garlappi 2007)
+    - ``cash_drag_lambda=0`` — no SOFT cash-drag pull (Boyd 2017)
+    - ``signal_decay=0`` — no signal-half-life damping
+    - ``impact_coef=0`` — no Almgren-Chriss impact term
+    - ``tax_cost_per_sell=None`` — no Brown-Smith after-tax sells
+
+    The remaining hard-constraint set (budget, box bounds, dw_max,
+    wash-sale, turnover, sector caps, corr-pair caps, gross_max) is
+    fully respected by the solver itself — same projection logic the
+    cvxpy formulation already encodes.
+
+    Why this baseline (parent memo §2 + §8 Step 4): the current
+    production QP buries 6 soft-penalty knobs that the offline A/B
+    must isolate. If the hard-only QP matches the full QP's Sharpe
+    within DSR/PBO tolerance, the soft-penalty machinery is NOT
+    paying for alpha; it's paying for noise. If the full QP wins,
+    the offline A/B can credibly attribute the lift to the soft terms.
+
+    Parameters
+    ----------
+    snap : ConstraintSnapshot
+        The immutable hard-constraint contract.
+    mu : Sequence[float]
+        Per-asset μ̂ vector (shape ``(snap.n,)``).
+    sigma : Sequence[float], optional
+        Per-asset σ̂. If both ``sigma`` and ``Sigma`` are ``None``,
+        defaults to ``0.05`` per asset so the solver's risk term is
+        well-defined (the solver rejects σ=Σ=None).
+    Sigma : np.ndarray, optional
+        Full covariance matrix (shape ``(snap.n, snap.n)``). Takes
+        precedence over ``sigma`` if supplied.
+    risk_aversion : float, default 3.0
+        Markowitz γ. Mirrors the production QP default so the
+        hard-only vs full-QP A/B isolates ONLY the soft-penalty
+        contribution.
+    cost_kappa : float, default 0.002
+        Linear ‖Δw‖₁ transaction-cost coefficient. Cost is NOT a
+        soft penalty — it's a real cash outflow per the
+        cvxportfolio idiom — so we keep it. Default matches the
+        production QP's 20 bp round-trip cost assumption.
+
+    Returns
+    -------
+    AllocatorResult
+        ``status`` mirrors the QP convention:
+
+        - ``"optimal"`` ← QP ``"optimal"`` or ``"optimal_no_signal"``
+        - ``"infeasible:hard_only_qp:<solver_status>"`` ← any
+          ``"infeasible:..."`` solver status
+        - any other status passed through verbatim
+
+        ``selected_indices`` are the asset indices the allocator
+        actually traded (``|Δw_i| > 1e-9``).
+
+    References
+    ----------
+    - Boyd, Mueller, O'Donoghue & Wang (2017) *MPC for portfolio*
+      — soft-penalty objective formulation, only physics is hard
+    - DeMiguel-Garlappi-Uppal (2009) — closed-form baselines bound
+      the optimisation-gain measurement from below
+    - Parent memo PR #125 §8 Step 4 — A/B replay design
+    """
+    # Handle the σ=None ∧ Σ=None case so the solver doesn't raise.
+    # 5% per-asset is a small default that keeps the risk term
+    # well-defined without dominating the mean-variance trade-off.
+    sigma_eff = sigma
+    if sigma_eff is None and Sigma is None:
+        sigma_eff = np.full(snap.n, 0.05, dtype=float)
+
+    sol = solve_portfolio_qp_from_snapshot(
+        snap,
+        mu=mu,
+        sigma=sigma_eff,
+        Sigma=Sigma,
+        risk_aversion=risk_aversion,
+        cost_kappa=cost_kappa,
+        cvar_lambda=0.0,
+        robust_mu_kappa=0.0,
+        cash_drag_lambda=0.0,
+        signal_decay=0.0,
+        impact_coef=0.0,
+    )
+
+    # Status mapping per parent memo §8 Step 4f spec.
+    if sol.status == "optimal" or sol.status == "optimal_no_signal":
+        out_status = "optimal"
+    elif sol.status.startswith("infeasible"):
+        out_status = f"infeasible:hard_only_qp:{sol.status}"
+    else:
+        out_status = sol.status
+
+    delta_w = np.asarray(sol.delta_w, dtype=float)
+    target_w = np.asarray(sol.target_w, dtype=float)
+    selected = tuple(
+        int(i) for i in np.where(np.abs(delta_w) > 1e-9)[0]
+    )
+
+    return AllocatorResult(
+        delta_w=delta_w,
+        target_w=target_w,
+        status=out_status,
+        selected_indices=selected,
+    )

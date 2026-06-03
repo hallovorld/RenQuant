@@ -1,0 +1,334 @@
+{
+  "as_of_date": "2026-06-03",
+  "data_source": "data/sim_runs.db::score_distribution",
+  "date_range": [
+    "2024-01-02",
+    "2026-03-27"
+  ],
+  "interpretation_notes": [
+    "Lag is in GLOBAL TRADING DAYS (corrected after #128 review). An earlier version of this script used pd.Series.shift on each ticker's sparse in-regime series, which on this DB averaged 37 trading-day gaps at nominal L=20.",
+    "mean_autocorr is the mean Pearson corr(\u03bc\u0302_t, \u03bc\u0302_{t+k}) taken across tickers eligible at this lag. Values close to 1 mean the forecast barely changes (Level-2 MPO has little to optimize); near 0 means fast forecast decay (Level-2 has more to optimize).",
+    "topk_overlap measures rank-set persistence \u2014 useful for checking whether the top-K names cycle rapidly even when marginal \u03bc\u0302 values are stable.",
+    "n_eligible_tickers_by_lag tells you why a null autocorr is null (zero eligible tickers \u21d2 no per-ticker correlation could be computed). n_valid_pairs_by_lag is the total (t, t+k) pair count summed across eligible tickers.",
+    "'undersampled' (#128 review fix) is True when fewer than 3 tickers are eligible at the most-permissive lag, OR all lags yield null autocorr. n_rows alone is not the right criterion."
+  ],
+  "lags_measured_trading_days": [
+    1,
+    5,
+    10,
+    20,
+    60
+  ],
+  "min_ticker_dates_for_autocorr_inclusion": 30,
+  "n_global_trading_dates": 540,
+  "n_total_rows": 3052,
+  "n_unique_tickers": 65,
+  "regime_stratification": "by regime at t only. The persistence question is: given we are in regime R at t, how stable is \u03bc\u0302 k trading days later regardless of the regime at t+k. A 'regime stays R from t to t+k' alternative would shrink the sample and answer a different question.",
+  "regimes": {
+    "BEAR": {
+      "half_life_days": null,
+      "mean_autocorr": {
+        "1": null,
+        "10": null,
+        "20": null,
+        "5": null,
+        "60": null
+      },
+      "n_dates": 13,
+      "n_eligible_tickers_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "n_eligible_tickers_max": 0,
+      "n_rows": 24,
+      "n_tickers": 8,
+      "n_valid_pairs_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "topk_overlap": {
+        "10": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "20": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": 0.2
+        }
+      },
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "20": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 1
+        }
+      },
+      "undersampled": true
+    },
+    "BULL_CALM": {
+      "half_life_days": 10,
+      "mean_autocorr": {
+        "1": 0.8604569844379382,
+        "10": 0.3607810831121094,
+        "20": 0.16571941641173296,
+        "5": 0.5649506011100626,
+        "60": -0.1584423676192157
+      },
+      "n_dates": 480,
+      "n_eligible_tickers_by_lag": {
+        "1": 26,
+        "10": 25,
+        "20": 22,
+        "5": 26,
+        "60": 9
+      },
+      "n_eligible_tickers_max": 26,
+      "n_rows": 2699,
+      "n_tickers": 59,
+      "n_valid_pairs_by_lag": {
+        "1": 2039,
+        "10": 1356,
+        "20": 915,
+        "5": 1660,
+        "60": 416
+      },
+      "topk_overlap": {
+        "10": {
+          "1": 0.9637681159420289,
+          "10": 0.7470588235294118,
+          "20": 0.64,
+          "5": 0.8680851063829786,
+          "60": 0.18333333333333335
+        },
+        "20": {
+          "1": 0.95,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": 0.8272251308900522,
+          "10": 0.5051948051948053,
+          "20": 0.3737704918032788,
+          "5": 0.6253012048192772,
+          "60": 0.2657894736842106
+        }
+      },
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 69,
+          "10": 34,
+          "20": 20,
+          "5": 47,
+          "60": 12
+        },
+        "20": {
+          "1": 2,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 191,
+          "10": 154,
+          "20": 122,
+          "5": 166,
+          "60": 76
+        }
+      },
+      "undersampled": false
+    },
+    "BULL_VOLATILE": {
+      "half_life_days": null,
+      "mean_autocorr": {
+        "1": null,
+        "10": null,
+        "20": null,
+        "5": null,
+        "60": null
+      },
+      "n_dates": 31,
+      "n_eligible_tickers_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "n_eligible_tickers_max": 0,
+      "n_rows": 266,
+      "n_tickers": 47,
+      "n_valid_pairs_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "topk_overlap": {
+        "10": {
+          "1": 0.9333333333333335,
+          "10": 0.7333333333333334,
+          "20": 0.4,
+          "5": 0.8666666666666667,
+          "60": 0.3
+        },
+        "20": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": 0.7777777777777778,
+          "10": 0.3,
+          "20": 0.10000000000000002,
+          "5": 0.475,
+          "60": 0.2285714285714286
+        }
+      },
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 12,
+          "10": 3,
+          "20": 1,
+          "5": 6,
+          "60": 3
+        },
+        "20": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 18,
+          "10": 6,
+          "20": 6,
+          "5": 8,
+          "60": 7
+        }
+      },
+      "undersampled": true
+    },
+    "CHOPPY": {
+      "half_life_days": null,
+      "mean_autocorr": {
+        "1": null,
+        "10": null,
+        "20": null,
+        "5": null,
+        "60": null
+      },
+      "n_dates": 16,
+      "n_eligible_tickers_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "n_eligible_tickers_max": 0,
+      "n_rows": 63,
+      "n_tickers": 19,
+      "n_valid_pairs_by_lag": {
+        "1": 0,
+        "10": 0,
+        "20": 0,
+        "5": 0,
+        "60": 0
+      },
+      "topk_overlap": {
+        "10": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "20": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": 0.7333333333333334,
+          "10": 0.0,
+          "20": 0.13333333333333333,
+          "5": 0.6,
+          "60": null
+        }
+      },
+      "topk_valid_pairs_by_lag": {
+        "10": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "20": {
+          "1": 0,
+          "10": 0,
+          "20": 0,
+          "5": 0,
+          "60": 0
+        },
+        "5": {
+          "1": 3,
+          "10": 2,
+          "20": 3,
+          "5": 1,
+          "60": 0
+        }
+      },
+      "undersampled": true
+    }
+  },
+  "topk_values_measured": [
+    5,
+    10,
+    20
+  ]
+}
