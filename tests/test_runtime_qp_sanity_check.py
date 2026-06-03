@@ -108,6 +108,21 @@ def test_runtime_qp_sanity_fails_on_missing_step4g_module(tmp_path, monkeypatch)
     assert any("wf_replay_loader" in f for f in failures)
 
 
+def test_runtime_qp_sanity_fails_cleanly_on_missing_runtime_root(tmp_path, monkeypatch, capsys):
+    mod = _load_module()
+    missing_root = tmp_path / "missing" / "repos"
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    _clear_fake_modules()
+
+    rc = mod.main(["--runtime-root", str(missing_root)])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "runtime repo source missing" in out
+    assert "FAIL: stale or incomplete QP multirepo runtime." in out
+    assert "Traceback" not in out
+
+
 def test_daily_104_runs_runtime_qp_sanity_before_daily_runner():
     src = (REPO / "scripts" / "daily_104.sh").read_text(encoding="utf-8")
     guard = '"$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"'

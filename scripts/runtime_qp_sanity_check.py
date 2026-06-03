@@ -137,7 +137,10 @@ def _add_runtime_srcs(root: Path) -> None:
 
 
 def _origin_under_runtime(module: str, expected_src: Path) -> tuple[bool, str]:
-    spec = importlib.util.find_spec(module)
+    try:
+        spec = importlib.util.find_spec(module)
+    except ModuleNotFoundError as exc:
+        return False, f"module parent missing: {exc.name}"
     if spec is None or spec.origin is None:
         return False, "module spec not found"
     origin = Path(spec.origin).resolve()
@@ -165,6 +168,16 @@ def check_symbol(root: Path, symbol: RuntimeSymbol) -> tuple[bool, str]:
 def check_runtime(root: Path) -> list[str]:
     _add_runtime_srcs(root)
     failures: list[str] = []
+    required_repos = sorted({symbol.repo for symbol in REQUIRED_SYMBOLS})
+    for repo in required_repos:
+        src = _repo_src(root, repo)
+        if not src.is_dir():
+            message = f"FAIL runtime repo source missing: {src}"
+            print(message)
+            failures.append(message)
+    if failures:
+        return failures
+
     for symbol in REQUIRED_SYMBOLS:
         ok, message = check_symbol(root, symbol)
         print(message)
