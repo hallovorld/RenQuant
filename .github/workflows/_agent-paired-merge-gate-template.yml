@@ -115,6 +115,34 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ── HIGH-1 (codex #176) post-comment helper ──
+          # Multi-line markdown bodies for `gh pr comment` are built with
+          # `printf '%s\n'` + `--body-file` rather than `gh pr comment
+          # --body "$(cat <<EOF ... EOF)"`. The heredoc form fails inside
+          # this `run: |` block because YAML strips the leading-indent
+          # but the EOF terminator stays at that stripped column, so
+          # bash sees the EOF as content and dies with
+          # `here-document at line N delimited by end-of-file`.
+          # printf + body-file dodges the issue entirely and renders
+          # identical Markdown.
+          post_comment() {
+            local pr="$1"
+            shift
+            local body_file
+            body_file=$(mktemp)
+            printf '%s\n' "$@" > "$body_file"
+            gh pr comment "$pr" --repo "$REPO" --body-file "$body_file"
+            rm -f "$body_file"
+          }
+
+          # Has any prior comment on this PR contain a given marker?
+          has_marker() {
+            local pr="$1" marker="$2"
+            gh pr view "$pr" --repo "$REPO" --json comments \
+              --jq '.comments[].body' 2>/dev/null \
+              | grep -qF "$marker"
+          }
+
           # Hoisted helpers for readability.
           parse_sister_ref() {
             # From JSON labels array, find paired:<owner>/<repo>#<n>.
@@ -134,8 +162,11 @@ jobs:
             # Auto-create on first use (mirrors Phase A/B pattern).
             if ! gh label list --repo "$REPO" --search "$label" \
                   --json name --jq '.[].name' | grep -qx "$label"; then
-              local color="FBCA04" desc="Paired-PR coordination"
+              # Default palette: Phase C own label = paired (amber).
+              # agent:manual-hold = strong red (operator stop).
+              local color="FBCA04" desc="Paired-PR coordination (added by agent-paired-merge-gate)"
               [ "$label" = "agent:manual-hold" ] && { color="B60205"; desc="Universal stop for agent automation"; }
+              [ "$label" = "agent:paired-hold" ] && { color="FBCA04"; desc="Auto-merge hold owned by agent-paired-merge-gate (sister PR not yet merged)"; }
               gh label create "$label" --repo "$REPO" --color "$color" --description "$desc" --force
             fi
             gh pr edit "$pr" --repo "$REPO" --add-label "$label"
@@ -169,17 +200,35 @@ jobs:
               continue
             fi
 
+            # ── HIGH-2 (codex #176) ──
+            # Phase C owns `agent:paired-hold`, NOT `agent:manual-hold`.
+            # `agent:manual-hold` is the universal operator stop used
+            # across Phase A/B for any reason; unconditionally removing
+            # it when the sister merges could release a hold an operator
+            # added for an unrelated production concern. The auto-merge
+            # G-A3 gate treats `agent:paired-hold` as a stop label too
+            # (see paired companion patch to the auto-merge template
+            # in this PR).
+            HOLD_LABEL="agent:paired-hold"
+
             # Find sister ref.
             SISTER_REF=$(parse_sister_ref "$LABELS")
             if [ -z "$SISTER_REF" ]; then
               echo "paired-mirror present but no paired:<sister> label; ensuring hold + posting warning"
-              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
-              gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
-              🔒 \`agent-paired-merge-gate\`: PR is labeled \`paired-mirror\` but no \`paired:<owner>/<repo>#<n>\` companion label is set. Auto-merge held.
-
-              Add the sister-PR reference label to release. Format example: \`paired:hallovorld/renquant-pipeline#42\`.
-              EOF
-              )"
+              ensure_label "$pr_number" "$HOLD_LABEL" "$LABELS"
+              # ── MED-4 (codex #176) ──
+              # Marker the missing-sister warning too so the 15-min
+              # schedule poll does not re-post on every fire.
+              MISSING_MARKER="<!-- paired-merge-gate:missing-sister -->"
+              if has_marker "$pr_number" "$MISSING_MARKER"; then
+                echo "already posted missing-sister warning; skipping"
+              else
+                post_comment "$pr_number" \
+                  "$MISSING_MARKER" \
+                  "🔒 \`agent-paired-merge-gate\`: PR is labeled \`paired-mirror\` but no \`paired:<owner>/<repo>#<n>\` companion label is set. Auto-merge held via \`${HOLD_LABEL}\`." \
+                  "" \
+                  "Add the sister-PR reference label to release. Format example: \`paired:hallovorld/renquant-pipeline#42\`."
+              fi
               continue
             fi
 
@@ -195,13 +244,18 @@ jobs:
             SISTER=$(gh api "repos/${SISTER_OWNER_REPO}/pulls/${SISTER_NUM}" 2>/dev/null || echo "{}")
             if [ "$SISTER" = "{}" ]; then
               echo "could not fetch sister; keeping hold + posting warning"
-              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
-              gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
-              ⚠️ \`agent-paired-merge-gate\`: cannot read sister PR \`${SISTER_REF}\` (404 or permission). Auto-merge held.
-
-              Verify the sister PR exists and that \`AGENT_GIT_PUSH_TOKEN\` has cross-repo read scope.
-              EOF
-              )"
+              ensure_label "$pr_number" "$HOLD_LABEL" "$LABELS"
+              # ── MED-4 (codex #176) ──
+              UNREADABLE_MARKER="<!-- paired-merge-gate:unreadable:${SISTER_REF} -->"
+              if has_marker "$pr_number" "$UNREADABLE_MARKER"; then
+                echo "already posted unreadable-sister warning; skipping"
+              else
+                post_comment "$pr_number" \
+                  "$UNREADABLE_MARKER" \
+                  "⚠️ \`agent-paired-merge-gate\`: cannot read sister PR \`${SISTER_REF}\` (404 or permission). Auto-merge held via \`${HOLD_LABEL}\`." \
+                  "" \
+                  "Verify the sister PR exists and that \`AGENT_GIT_PUSH_TOKEN\` has cross-repo read scope."
+              fi
               continue
             fi
 
@@ -216,51 +270,42 @@ jobs:
             ABANDONED_MARKER="<!-- paired-merge-gate:abandoned:${SISTER_REF} -->"
 
             if [ "$SISTER_MERGED" = "true" ]; then
-              echo "sister merged; releasing hold and dispatching auto-merge"
-              remove_label_if_present "$pr_number" "agent:manual-hold" "$LABELS"
-              # Trigger auto-merge re-evaluation. Won't actually merge
-              # unless the other 7 gates pass — Phase C just releases
-              # the gate that was specifically waiting on the sister.
+              echo "sister merged; releasing paired hold and dispatching auto-merge"
+              remove_label_if_present "$pr_number" "$HOLD_LABEL" "$LABELS"
+              # ── HIGH-3 (codex #176) ──
+              # The paired companion patch in this PR adds a
+              # `workflow_dispatch` trigger + `pr_number` input to
+              # `_agent-auto-merge-template.yml`, so the dispatch
+              # actually fires the gate re-evaluation here.
               if gh workflow list --repo "$REPO" --json name --jq '.[].name' | grep -qx "agent-auto-merge"; then
-                gh workflow run agent-auto-merge.yml --repo "$REPO" -f pr_number="$pr_number" 2>/dev/null \
-                  || echo "(agent-auto-merge has no workflow_dispatch input; will re-fire on next review/check_suite)"
+                gh workflow run agent-auto-merge.yml --repo "$REPO" -f pr_number="$pr_number" \
+                  || echo "(agent-auto-merge dispatch failed; will re-fire on next review/check_suite)"
               fi
-              gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
-              ✅ \`agent-paired-merge-gate\`: sister PR ${SISTER_URL} merged. \`agent:manual-hold\` removed; the auto-merge gate will now evaluate the remaining 7 conditions.
-              EOF
-              )"
+              post_comment "$pr_number" \
+                "✅ \`agent-paired-merge-gate\`: sister PR ${SISTER_URL} merged. \`${HOLD_LABEL}\` removed; the auto-merge gate will now evaluate the remaining 7 conditions."
             elif [ "$SISTER_STATE" = "closed" ] && [ "$SISTER_MERGED" != "true" ]; then
-              echo "sister closed without merge; keeping hold; warning"
-              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
-              # Skip if we've already posted the abandoned marker.
-              if gh pr view "$pr_number" --repo "$REPO" --json comments \
-                   --jq '.comments[].body' | grep -qF "$ABANDONED_MARKER"; then
+              echo "sister closed without merge; keeping paired hold; warning"
+              ensure_label "$pr_number" "$HOLD_LABEL" "$LABELS"
+              if has_marker "$pr_number" "$ABANDONED_MARKER"; then
                 echo "already posted abandoned warning; skipping"
               else
-                gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
-                ${ABANDONED_MARKER}
-                ⚠️ \`agent-paired-merge-gate\`: sister PR ${SISTER_URL} was **closed without merging**. This mirror PR is likely also abandoned.
-
-                Recommended action: close this PR as well, OR remove the \`paired-mirror\` label to break the contract and merge standalone (only if the change is also valid standalone — typically it isn't, since mirrors are byte-equivalent of the canonical).
-                EOF
-                )"
+                post_comment "$pr_number" \
+                  "$ABANDONED_MARKER" \
+                  "⚠️ \`agent-paired-merge-gate\`: sister PR ${SISTER_URL} was **closed without merging**. This mirror PR is likely also abandoned." \
+                  "" \
+                  "Recommended action: close this PR as well, OR remove the \`paired-mirror\` label to break the contract and merge standalone (only if the change is also valid standalone — typically it isn't, since mirrors are byte-equivalent of the canonical)."
               fi
             else
-              echo "sister open; ensuring hold"
-              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
-              # Skip if we've already posted the waiting marker (the
-              # 15-min poll shouldn't spam comments).
-              if gh pr view "$pr_number" --repo "$REPO" --json comments \
-                   --jq '.comments[].body' | grep -qF "$WAITING_MARKER"; then
+              echo "sister open; ensuring paired hold"
+              ensure_label "$pr_number" "$HOLD_LABEL" "$LABELS"
+              if has_marker "$pr_number" "$WAITING_MARKER"; then
                 echo "already posted waiting comment; skipping"
               else
-                gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
-                ${WAITING_MARKER}
-                🔒 \`agent-paired-merge-gate\`: waiting on sister PR ${SISTER_URL} to merge first. \`agent:manual-hold\` ensured.
-
-                Once the sister merges, this PR's hold will release automatically and the auto-merge gate will re-evaluate.
-                EOF
-                )"
+                post_comment "$pr_number" \
+                  "$WAITING_MARKER" \
+                  "🔒 \`agent-paired-merge-gate\`: waiting on sister PR ${SISTER_URL} to merge first. \`${HOLD_LABEL}\` ensured." \
+                  "" \
+                  "Once the sister merges, this PR's hold will release automatically and the auto-merge gate will re-evaluate."
               fi
             fi
           done

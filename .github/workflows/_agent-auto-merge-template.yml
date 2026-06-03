@@ -10,6 +10,7 @@ name: agent-auto-merge-template
 #   G-A2  PR opt-in: `agent:auto-merge` label OR repo variable
 #         `AGENT_AUTO_MERGE_DEFAULT == "true"`
 #   G-A3  Universal stop labels absent: `agent:manual-hold`,
+#         `agent:paired-hold` (owned by Phase C paired-merge-gate),
 #         `agent:rebase-conflict`, `agent:cost-cap` (Phase D)
 #   G-A4  Latest head has at least one `APPROVED` review from a
 #         registered agent reviewer (Claude or Codex), AND zero
@@ -37,6 +38,12 @@ name: agent-auto-merge-template
 
 on:
   workflow_call:
+    inputs:
+      pr_number:
+        type: string
+        required: false
+        default: ""
+        description: "Explicit PR number to evaluate. Used by agent-paired-merge-gate (Phase C) when releasing a sister-PR hold. Empty = derive from the event (pull_request_review / check_suite)."
     secrets:
       git_push_token:
         required: false
@@ -53,11 +60,17 @@ jobs:
   evaluate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Two fire paths converge: review APPROVED + check_suite completed.
-    # Skip if neither — defense.
+    # Three fire paths converge:
+    #   - pull_request_review APPROVED (initial approval),
+    #   - check_suite completed (re-eval after CI),
+    #   - workflow_call with explicit pr_number (Phase C paired-PR
+    #     hold release dispatches here when the sister merges; see
+    #     `_agent-paired-merge-gate-template.yml` HIGH-3 fix).
+    # Skip if none — defense.
     if: |
       (github.event_name == 'pull_request_review' && github.event.review.state == 'APPROVED') ||
-      github.event_name == 'check_suite'
+      github.event_name == 'check_suite' ||
+      (github.event_name == 'workflow_call' && inputs.pr_number != '')
     steps:
       - name: Resolve PR context (handles both event shapes)
         id: ctx
@@ -67,11 +80,18 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           # pull_request_review: github.event.pull_request.number
           # check_suite: must look up PRs via pull_requests[]
+          # workflow_call: inputs.pr_number (Phase C dispatch)
           PR_NUMBER_REVIEW: ${{ github.event.pull_request.number }}
           CHECK_SUITE_PRS: ${{ toJson(github.event.check_suite.pull_requests) }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+          if [ -n "${INPUT_PR_NUMBER:-}" ]; then
+            # HIGH-3 (codex #176): Phase C paired-merge-gate releases
+            # the sister hold and invokes this workflow with an
+            # explicit PR number when the canonical lands.
+            PR_NUMBER="$INPUT_PR_NUMBER"
+          elif [ "$EVENT_NAME" = "pull_request_review" ]; then
             PR_NUMBER="$PR_NUMBER_REVIEW"
           elif [ "$EVENT_NAME" = "check_suite" ]; then
             # check_suite includes an array of attached PRs. Pick the
@@ -152,7 +172,7 @@ jobs:
           LABELS: ${{ steps.ctx.outputs.labels }}
         run: |
           set -euo pipefail
-          for stop in agent:manual-hold agent:rebase-conflict agent:cost-cap; do
+          for stop in agent:manual-hold agent:paired-hold agent:rebase-conflict agent:cost-cap; do
             if echo "$LABELS" | grep -q "\"${stop}\""; then
               echo "stop label present: $stop"
               echo "pass=false" >> "$GITHUB_OUTPUT"; exit 0
