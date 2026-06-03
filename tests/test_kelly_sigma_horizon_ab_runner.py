@@ -175,6 +175,18 @@ def test_materialize_manifest_rewrites_strategy_relative_uris(tmp_path: Path) ->
     assert mod.preflight_walkforward_manifest(resolved)["entries_with_calibrator"] == 1
 
 
+def test_select_base_config_matching_wf_v2_manifest_prefers_golden() -> None:
+    mod = _load_module()
+    manifest = mod.STRATEGY_DIR / "artifacts" / "sim" / "walkforward_manifest_v2_20260602.json"
+
+    match = mod.select_base_config_matching_manifest(manifest)
+
+    assert match["target_fingerprint"] == "sha256:14586756d4f67691"
+    assert match["selected_config_name"] == "strategy_config.golden.json"
+    assert match["artifact"]["watchlist_size"] == 142
+    assert any(row["name"] == "strategy_config.json" for row in match["matching_configs"])
+
+
 def test_walkforward_manifest_preflight_rejects_config_mismatch(tmp_path: Path) -> None:
     mod = _load_module()
     artifact = tmp_path / "panel-ltr.json"
