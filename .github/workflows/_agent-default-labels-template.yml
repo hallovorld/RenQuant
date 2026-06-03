@@ -115,4 +115,15 @@ jobs:
             exit 0
           fi
           echo "authorship=$authorship -> adding $target_label"
+          # Auto-create the label if the repo doesn't have it yet.
+          # `gh pr edit --add-label` errors when the label is unknown,
+          # which would falsely fail the workflow on a fresh repo.
+          # `gh label create --force` is idempotent.
+          if ! gh label list --repo "$REPO" --search "$target_label" --json name --jq '.[].name' | grep -qx "$target_label"; then
+            echo "label $target_label does not exist; creating"
+            gh label create "$target_label" --repo "$REPO" \
+              --color "C2E0C6" \
+              --description "Auto-fix executor permission for agent ${executor}" \
+              --force
+          fi
           gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "$target_label"
