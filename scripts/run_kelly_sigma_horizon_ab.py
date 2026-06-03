@@ -24,12 +24,23 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
 STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
-DEFAULT_BASE_CONFIG = "strategy_config.sim_baseline_hmm.json"
+DEFAULT_BASE_CONFIG = "strategy_config.sim_baseline.json"
 DEFAULT_START = "2024-01-02"
 DEFAULT_END = "2026-03-28"
 DEFAULT_SEEDS = (0, 1, 2, 3, 4)
 DEFAULT_AA_SEED_OFFSET = 1000
 DEFAULT_SIGMA_HORIZON_DAYS = 60
+SUBREPO_IMPORT_ORDER = (
+    "renquant-common",
+    "renquant-base-data",
+    "renquant-artifacts",
+    "renquant-model",
+    "renquant-pipeline",
+    "renquant-execution",
+    "renquant-strategy-104",
+    "renquant-backtesting",
+    "renquant-orchestrator",
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,20 @@ def offset_seeds(seeds: tuple[int, ...], offset: int) -> tuple[int, ...]:
 def resolve_strategy_path(raw: str | Path) -> Path:
     path = Path(raw)
     return path if path.is_absolute() else STRATEGY_DIR / path
+
+
+def bootstrap_subrepo_imports(repo_root: Path = REPO) -> Path:
+    scripts_dir = repo_root / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from subrepo_paths import resolve_subrepo_root  # noqa: PLC0415
+
+    subrepo_root = resolve_subrepo_root(repo_root).resolve()
+    for repo in reversed(SUBREPO_IMPORT_ORDER):
+        src = subrepo_root / repo / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+    return subrepo_root
 
 
 def default_output_dir() -> Path:
@@ -158,6 +183,200 @@ def load_placebo_evidence(paths: list[str]) -> dict[str, Any]:
         "passed": bool(evidence) and all(row["promotion_evidence"] for row in evidence),
         "items": evidence,
     }
+
+
+def apply_run_overrides(config: dict[str, Any], *, manifest_path: str = "") -> None:
+    if manifest_path:
+        wf = config.setdefault("walkforward", {})
+        wf["enabled"] = True
+        wf["manifest_path"] = manifest_path
+        wf.setdefault("fail_on_no_model", True)
+
+
+def validate_walkforward_manifest(config: dict[str, Any], strategy_dir: Path) -> None:
+    wf = config.get("walkforward") or {}
+    if not bool(wf.get("enabled", False)):
+        return
+    raw = wf.get("manifest_path")
+    if not raw:
+        raise FileNotFoundError("walkforward.enabled=true but manifest_path is missing")
+    path = Path(str(raw))
+    manifest = path if path.is_absolute() else strategy_dir / path
+    if not manifest.exists():
+        raise FileNotFoundError(f"walkforward manifest not found: {manifest}")
+    preflight_walkforward_manifest(manifest, config=config)
+
+
+def _resolve_manifest_uri(manifest: Path, raw: str) -> Path:
+    path = Path(str(raw))
+    return path if path.is_absolute() else manifest.parent / path
+
+
+def _compact_consistency_error(exc: Exception) -> str:
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    if not lines:
+        return exc.__class__.__name__
+    keep = [
+        line
+        for line in lines
+        if line.startswith("Config-consistency")
+        or line.startswith("Live config fingerprint")
+        or line.startswith("Artifact stored fingerprint")
+    ]
+    return "; ".join(keep[:3] or lines[:1])
+
+
+def _preflight_artifact_config_consistency(
+    *,
+    manifest: Path,
+    rows: list[Any],
+    config: dict[str, Any],
+    max_errors: int,
+) -> dict[str, Any]:
+    panel_cfg = ((config.get("ranking") or {}).get("panel_scoring") or {})
+    if not bool(panel_cfg.get("strict_config_consistency", True)):
+        return {"artifact_config_checked": 0, "strict_config_consistency": False}
+
+    strategy_dir = Path(config.get("_strategy_dir") or STRATEGY_DIR)
+    if str(strategy_dir) not in sys.path:
+        sys.path.insert(0, str(strategy_dir))
+    from kernel.config_consistency import (  # noqa: PLC0415
+        ConfigModelMismatch,
+        assert_consistent,
+    )
+
+    errors: list[str] = []
+    seen: set[Path] = set()
+    checked = 0
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        artifact_uri = row.get("artifact_uri")
+        if not artifact_uri:
+            continue
+        artifact_path = _resolve_manifest_uri(manifest, str(artifact_uri))
+        if not artifact_path.exists() or artifact_path in seen:
+            continue
+        seen.add(artifact_path)
+        try:
+            artifact = json.loads(artifact_path.read_text())
+            if not isinstance(artifact, dict):
+                raise ValueError("artifact JSON root is not a mapping")
+            assert_consistent(
+                config,
+                artifact,
+                artifact_label=artifact_path.name,
+                strict=True,
+            )
+            checked += 1
+        except ConfigModelMismatch as exc:
+            errors.append(
+                f"entry {idx}: {artifact_path}: {_compact_consistency_error(exc)}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"entry {idx}: {artifact_path}: {exc}")
+        if len(errors) >= max_errors:
+            break
+    if errors:
+        raise ValueError(
+            "walkforward artifact config preflight failed for "
+            f"{manifest}: " + "; ".join(errors)
+        )
+    return {
+        "artifact_config_checked": checked,
+        "strict_config_consistency": True,
+    }
+
+
+def preflight_walkforward_manifest(
+    manifest: Path,
+    *,
+    config: dict[str, Any] | None = None,
+    max_errors: int = 5,
+) -> dict[str, Any]:
+    payload = json.loads(manifest.read_text())
+    rows = payload.get("retrains", []) if isinstance(payload, dict) else payload
+    if not rows:
+        raise ValueError(f"walkforward manifest has no retrain entries: {manifest}")
+    errors: list[str] = []
+    n_calibrators = 0
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            errors.append(f"entry {idx}: not a mapping")
+            continue
+        artifact_uri = row.get("artifact_uri")
+        calibrator_uri = row.get("calibrator_uri") or row.get("calibration_uri")
+        if not artifact_uri:
+            errors.append(f"entry {idx}: artifact_uri missing")
+        else:
+            artifact_path = _resolve_manifest_uri(manifest, str(artifact_uri))
+            if not artifact_path.exists():
+                errors.append(f"entry {idx}: artifact missing at {artifact_path}")
+        if not calibrator_uri:
+            errors.append(f"entry {idx}: calibrator_uri missing")
+        else:
+            n_calibrators += 1
+            calibrator_path = _resolve_manifest_uri(manifest, str(calibrator_uri))
+            if not calibrator_path.exists():
+                errors.append(f"entry {idx}: calibrator missing at {calibrator_path}")
+        if len(errors) >= max_errors:
+            break
+    if errors:
+        raise FileNotFoundError(
+            "walkforward manifest preflight failed for "
+            f"{manifest}: " + "; ".join(errors)
+        )
+    result = {
+        "manifest": str(manifest),
+        "entries": len(rows),
+        "entries_with_calibrator": n_calibrators,
+    }
+    if config is not None:
+        result.update(_preflight_artifact_config_consistency(
+            manifest=manifest,
+            rows=rows,
+            config=config,
+            max_errors=max_errors,
+        ))
+    return result
+
+
+def materialize_manifest_for_runner(
+    manifest: Path,
+    *,
+    out_dir: Path,
+    strategy_dir: Path = STRATEGY_DIR,
+) -> Path:
+    """Write a manifest whose local artifact URIs resolve for this runner.
+
+    WalkForwardModelLoader resolves relative URIs against the manifest file's
+    directory. Some archived sim manifests store URIs relative to strategy_dir.
+    For diagnostics, write a resolved copy under out_dir rather than mutating
+    the archived manifest.
+    """
+    payload = json.loads(manifest.read_text())
+    rows = payload.get("retrains", []) if isinstance(payload, dict) else payload
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("artifact_uri", "calibrator_uri", "calibration_uri"):
+            raw = row.get(key)
+            if not raw or "://" in str(raw):
+                continue
+            path = Path(str(raw))
+            if path.is_absolute():
+                continue
+            manifest_relative = manifest.parent / path
+            strategy_relative = strategy_dir / path
+            if manifest_relative.exists():
+                row[key] = str(manifest_relative.resolve())
+            elif strategy_relative.exists():
+                row[key] = str(strategy_relative.resolve())
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{manifest.stem}.resolved.json"
+    out.write_text(json.dumps(payload, indent=2) + "\n")
+    preflight_walkforward_manifest(out)
+    return out
 
 
 def promotion_verdict(
@@ -273,10 +492,12 @@ def execute_variant(
     end: str,
     initial_cash: float,
     parallel_seeds: bool,
+    manifest_path: str = "",
 ) -> dict[str, Any]:
     strategy_dir = STRATEGY_DIR
     if str(strategy_dir) not in sys.path:
         sys.path.insert(0, str(strategy_dir))
+    bootstrap_subrepo_imports(REPO)
 
     config = json.loads(variant.config_path.read_text())
     config["_strategy_dir"] = str(strategy_dir)
@@ -286,6 +507,8 @@ def execute_variant(
     config["backtest_end"] = end
     config["persistence"] = {"enabled": False}
     config.setdefault("data_freshness", {})["enabled"] = False
+    apply_run_overrides(config, manifest_path=manifest_path)
+    validate_walkforward_manifest(config, strategy_dir)
 
     from kernel.data import fetch_ohlcv  # noqa: PLC0415
     from sim.runner import run_backtest_multi_seed  # noqa: PLC0415
@@ -342,6 +565,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         "base_config_path": str(base_config_path),
         "treatment_config_path": str(treatment_config_path),
         "sigma_horizon_days": int(args.sigma_horizon_days),
+        "run_overrides": {
+            "manifest_path": str(args.manifest_path or ""),
+        },
         "variants": [variant.as_json() for variant in variants],
         "placebo_json": list(args.placebo_json or []),
         "mandatory_checks": {
@@ -365,6 +591,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seeds", default=",".join(str(seed) for seed in DEFAULT_SEEDS))
     parser.add_argument("--aa-seed-offset", type=int, default=DEFAULT_AA_SEED_OFFSET)
     parser.add_argument("--output-dir", default="")
+    parser.add_argument(
+        "--manifest-path",
+        default="",
+        help="Optional walkforward manifest override applied at run time. "
+             "Relative paths resolve under backtesting/renquant_104.",
+    )
+    parser.add_argument(
+        "--no-materialize-manifest",
+        action="store_true",
+        help="Do not write a resolved manifest copy under output_dir before execute.",
+    )
     parser.add_argument("--placebo-json", action="append", default=[])
     parser.add_argument("--aa-max-abs-sharpe-lift", type=float, default=0.10)
     parser.add_argument("--execute", action="store_true")
@@ -383,7 +620,17 @@ def main() -> int:
         sigma_horizon_days=int(plan["sigma_horizon_days"]),
     )
     plan["treatment_config"] = treatment_meta
+    effective_manifest_path = str(args.manifest_path or "")
+    if effective_manifest_path and not args.no_materialize_manifest:
+        raw_manifest = resolve_strategy_path(effective_manifest_path).resolve()
+        effective_manifest_path = str(materialize_manifest_for_runner(
+            raw_manifest,
+            out_dir=out_dir,
+            strategy_dir=STRATEGY_DIR,
+        ))
+        plan["run_overrides"]["effective_manifest_path"] = effective_manifest_path
     variant_metrics: dict[str, dict[str, Any]] = {}
+    execution_error: dict[str, Any] | None = None
 
     if args.execute:
         variants = [
@@ -396,13 +643,22 @@ def main() -> int:
             for row in plan["variants"]
         ]
         for variant in variants:
-            variant_metrics[variant.name] = execute_variant(
-                variant,
-                start=str(args.start),
-                end=str(args.end),
-                initial_cash=float(args.initial_cash),
-                parallel_seeds=bool(args.parallel_seeds),
-            )
+            try:
+                variant_metrics[variant.name] = execute_variant(
+                    variant,
+                    start=str(args.start),
+                    end=str(args.end),
+                    initial_cash=float(args.initial_cash),
+                    parallel_seeds=bool(args.parallel_seeds),
+                    manifest_path=effective_manifest_path,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                execution_error = {
+                    "variant": variant.name,
+                    "type": exc.__class__.__name__,
+                    "message": str(exc),
+                }
+                break
 
     placebo = load_placebo_evidence(list(args.placebo_json or []))
     verdict = promotion_verdict(
@@ -416,9 +672,16 @@ def main() -> int:
         "placebo": placebo,
         "promotion_verdict": verdict,
     }
+    if execution_error is not None:
+        payload["execution_error"] = execution_error
     out_path = out_dir / "kelly_sigma_horizon_ab_plan.json"
     out_path.write_text(json.dumps(payload, indent=2, default=_json_float) + "\n")
-    print(json.dumps({"out": str(out_path), "tier3_ready": verdict["tier3_ready"]}, indent=2))
+    result = {"out": str(out_path), "tier3_ready": verdict["tier3_ready"]}
+    if execution_error is not None:
+        result["execution_error"] = execution_error
+    print(json.dumps(result, indent=2))
+    if execution_error is not None:
+        return 2
     return 0 if (not args.execute or variant_metrics) else 2
 
 
