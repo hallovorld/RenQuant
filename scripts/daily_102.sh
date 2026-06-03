@@ -3,6 +3,11 @@
 # Designed for launchd/cron on macOS. Runs unattended.
 set -uo pipefail
 
+if [ "${RQ_LEGACY_102_DAILY_ENABLED:-0}" != "1" ]; then
+    echo "ERROR: daily_102.sh is legacy rollback-only; set RQ_LEGACY_102_DAILY_ENABLED=1 to run."
+    exit 2
+fi
+
 REPO_DIR="/Users/renhao/git/github/RenQuant"
 CONDA_PREFIX="/Users/renhao/miniconda3/envs/renquant"
 PYTHON="$CONDA_PREFIX/bin/python"
