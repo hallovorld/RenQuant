@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +29,24 @@ from subrepo_paths import resolve_subrepo_root  # noqa: E402
 class RuntimeSymbol:
     module: str
     attr: str
+    repo: str
+    why: str
+
+
+@dataclass(frozen=True)
+class RuntimeCommand:
+    """A CLI subcommand that must be registered on a runtime package.
+
+    The check shells out ``python -m <module> --help`` and greps the
+    output for the subcommand name. Subprocess (not argparse
+    introspection) because we want the post-PYTHONPATH-mutation
+    behaviour: if the vendored package is stale, ``python -m`` resolves
+    to the stale entry point and the subparser is absent, exactly
+    mirroring what daily_104.sh / intraday_sell_104.sh see at runtime.
+    """
+
+    module: str
+    subcommand: str
     repo: str
     why: str
 
@@ -151,6 +171,104 @@ def _origin_under_runtime(module: str, expected_src: Path) -> tuple[bool, str]:
     return True, str(origin)
 
 
+REQUIRED_COMMANDS: tuple[RuntimeCommand, ...] = (
+    RuntimeCommand(
+        "renquant_orchestrator",
+        "live-bridge",
+        "renquant-orchestrator",
+        "intraday + daily live-broker entry (scripts/intraday_sell_104.sh:88, scripts/daily_104.sh:496)",
+    ),
+    RuntimeCommand(
+        "renquant_orchestrator",
+        "daily-bridge",
+        "renquant-orchestrator",
+        "daily multirepo runner entry (scripts/daily_104.sh:295)",
+    ),
+)
+
+
+def _assembled_pythonpath(root: Path) -> str:
+    """Mirror `_add_runtime_srcs` but for a subprocess PYTHONPATH.
+
+    The orchestrator's CLI module imports `renquant_execution`,
+    `renquant_pipeline`, etc. at module load (transitively via
+    `contract_fixture`). A bare ``-m renquant_orchestrator --help``
+    with only the orchestrator src on PYTHONPATH dies during import
+    before argparse runs — which would give us false-positive "missing
+    subcommand" failures. Reuse the same ordered repo list so the
+    subprocess sees what the cron sees.
+    """
+    ordered = (
+        "renquant-common",
+        "renquant-base-data",
+        "renquant-artifacts",
+        "renquant-model",
+        "renquant-pipeline",
+        "renquant-execution",
+        "renquant-strategy-104",
+        "renquant-backtesting",
+        "renquant-orchestrator",
+    )
+    parts: list[str] = []
+    for repo in ordered:
+        src = _repo_src(root, repo)
+        if src.is_dir():
+            parts.append(str(src))
+    return os.pathsep.join(parts)
+
+
+def check_command(root: Path, command: RuntimeCommand) -> tuple[bool, str]:
+    """Verify ``python -m <module> <subcommand>`` is registered.
+
+    Implementation detail: spawns a real subprocess with the full
+    multirepo PYTHONPATH (the orchestrator CLI imports
+    `renquant_execution` at module load, so a bare orchestrator-only
+    path dies during import). Treats import error and missing
+    subcommand the same — both block the cron from invoking the
+    bridge.
+    """
+    expected_src = _repo_src(root, command.repo)
+    if not expected_src.is_dir():
+        return False, (
+            f"FAIL {command.module} {command.subcommand}: runtime source "
+            f"missing at {expected_src} ({command.why})"
+        )
+    env = os.environ.copy()
+    assembled = _assembled_pythonpath(root)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{assembled}{os.pathsep}{existing}" if existing else assembled
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", command.module, "--help"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=20,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"FAIL {command.module} --help timed out ({command.why})"
+    except FileNotFoundError as exc:
+        return False, f"FAIL {command.module} --help failed: {exc} ({command.why})"
+    help_text = (proc.stdout or "") + (proc.stderr or "")
+    # Import error on the package's module load is the same failure
+    # mode the cron hit: cron sees argparse never gets a chance to
+    # register the subparser, so absence in --help is the right signal.
+    if command.subcommand not in help_text:
+        snippet = help_text.strip().splitlines()[:6]
+        snippet_text = " | ".join(snippet) if snippet else "(no output)"
+        return False, (
+            f"FAIL {command.module} subcommand {command.subcommand!r} "
+            f"not in --help output: {snippet_text} ({command.why})"
+        )
+    return True, (
+        f"ok   {command.module} {command.subcommand} "
+        f"[registered under {expected_src}]"
+    )
+
+
 def check_symbol(root: Path, symbol: RuntimeSymbol) -> tuple[bool, str]:
     expected_src = _repo_src(root, symbol.repo)
     ok, origin_msg = _origin_under_runtime(symbol.module, expected_src)
@@ -168,7 +286,10 @@ def check_symbol(root: Path, symbol: RuntimeSymbol) -> tuple[bool, str]:
 def check_runtime(root: Path) -> list[str]:
     _add_runtime_srcs(root)
     failures: list[str] = []
-    required_repos = sorted({symbol.repo for symbol in REQUIRED_SYMBOLS})
+    required_repos = sorted(
+        {symbol.repo for symbol in REQUIRED_SYMBOLS}
+        | {command.repo for command in REQUIRED_COMMANDS}
+    )
     for repo in required_repos:
         src = _repo_src(root, repo)
         if not src.is_dir():
@@ -180,6 +301,11 @@ def check_runtime(root: Path) -> list[str]:
 
     for symbol in REQUIRED_SYMBOLS:
         ok, message = check_symbol(root, symbol)
+        print(message)
+        if not ok:
+            failures.append(message)
+    for command in REQUIRED_COMMANDS:
+        ok, message = check_command(root, command)
         print(message)
         if not ok:
             failures.append(message)
@@ -205,7 +331,10 @@ def main(argv: list[str] | None = None) -> int:
         print("Fix: merge required subrepo PRs, run `make subrepo-runtime-root`, then paper-smoke daily_104.")
         print("Runbook: doc/ops/subrepo-runtime-refresh-runbook.md")
         return 1
-    print(f"OK: {len(REQUIRED_SYMBOLS)} runtime symbols present.")
+    print(
+        f"OK: {len(REQUIRED_SYMBOLS)} runtime symbols "
+        f"+ {len(REQUIRED_COMMANDS)} CLI subcommands present."
+    )
     return 0
 
 
