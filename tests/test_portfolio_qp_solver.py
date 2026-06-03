@@ -129,6 +129,59 @@ class TestConstraints:
         assert sol.delta_w[0] < 0.0   # selling permitted
 
 
+class TestSolverHardCapContract:
+    """2026-06-02 codex re-review regression guard for PR #123 v2.
+
+    The solver's `w_upper` is the HARD per-asset risk cap. When a held
+    position is already over the cap (w_current > w_upper), the solver
+    MUST keep the box-bound contract intact so that
+    `SolveMarkowitzQPTask._retry_for_per_asset_cap_compliance()` can
+    fire — that fallback only runs on `infeasible` solver statuses or
+    when target_w respects the box.
+
+    PR #123 v1 attempt added a solver-level clamp
+    `w_upper = max(w_upper, w_current)`, which silently elevated the
+    box bound and let the solver report `optimal_no_signal` at the
+    over-cap weight — bypassing cap-compliance remediation. Codex
+    correctly flagged this.
+
+    Fix moved to ApplyExposureScalingTask + ApplyConvictionCapTask
+    (the soft-scaling sites) where the hold-flat invariant lives. Hard
+    caps remain enforceable here. See:
+    `tests/test_qp_constraints_tasks.py::TestSoftScalingHoldFlatClamp`
+    for the hold-flat invariant tests (now at the proper layer).
+    """
+
+    def test_over_cap_w_current_respects_box_bound(self):
+        """w_current > w_upper at solver entry: solver MUST honour the box.
+
+        Codex's reproduction (PR #123 re-review): w_current=0.22,
+        w_upper=0.15, high cost, tight turnover. Pre-v2 the clamp made
+        the solver return `optimal_no_signal` at target≈0.22 — over
+        cap. v2 must either bring target down to the cap OR mark
+        infeasible so the caller's cap-compliance fallback can handle
+        it.
+        """
+        sol = solve_portfolio_qp(
+            w_current=[0.22],
+            mu=[0.0],
+            sigma=[0.10],
+            w_upper=[0.15],                     # below current — hard risk cap
+            w_lower=0.0,
+            cash_reserve=0.0,
+            cost_kappa=10.0,
+            turnover_max=0.01,
+        )
+        if "infeasible" in sol.status.lower():
+            # Caller's _retry_for_per_asset_cap_compliance handles this
+            return
+        # Otherwise the solver must have honoured the box bound
+        assert sol.target_w[0] <= 0.15 + 1e-3, (
+            f"hard cap violated: target_w={sol.target_w[0]:.4f} > w_upper=0.15, "
+            f"status={sol.status} — v1 solver-level clamp regression"
+        )
+
+
 class TestGarleanuPedersenIntuition:
     def test_higher_cost_smaller_trade(self):
         """As cost rises, trade size should shrink (G-P 2013 partial-move)."""

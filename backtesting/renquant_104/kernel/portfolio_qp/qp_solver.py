@@ -195,6 +195,16 @@ def solve_portfolio_qp(
             Sigma_mat += 1e-8 * np.eye(n)
 
     # ── Per-asset bound vectors ───────────────────────────────────────────
+    # NOTE: solver treats `w_upper` as a HARD risk cap (see solver
+    # contract docstring above). If `w_current > w_upper` (over-cap
+    # holding), the solver MUST keep this infeasible so
+    # `SolveMarkowitzQPTask._retry_for_per_asset_cap_compliance()` can
+    # remediate via the cap-compliance retry path. The hold-flat-
+    # feasibility clamp that addresses today's daily-104 bug lives in
+    # the SOFT-scaling tasks (ApplyExposureScalingTask +
+    # ApplyConvictionCapTask) — see CLAUDE.md daily-full memo. Hard caps
+    # (max_position_pct, sector cap, corr cap) stay as hard constraints
+    # here.
     w_upper_arr = (np.full(n, float(w_upper)) if np.isscalar(w_upper)
                     else np.asarray(w_upper, dtype=float))
     w_lower_arr = (np.full(n, float(w_lower)) if np.isscalar(w_lower)

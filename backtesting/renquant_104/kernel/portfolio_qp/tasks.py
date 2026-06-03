@@ -342,6 +342,65 @@ class ComputeFullSigmaTask(Task):
             return None
 
 
+def _clamp_w_upper_at_w_current(ctx) -> None:
+    """Hard-cap-aware hold-flat clamp (2026-06-02 v3 fix — codex #123 review).
+
+    Used at the SOFT-scaling sites (ApplyExposureScalingTask,
+    ApplyConvictionCapTask). Preserves the hold-flat invariant
+    Δw=0 feasible **for holdings already within the hard cap**, while
+    keeping over-cap holdings exposed to the solver as a hard-cap
+    violation so ``_retry_for_per_asset_cap_compliance()`` can fire.
+
+    The hard cap is ``ctx._qp_w_upper_hard``, stamped once by
+    ``ComputeQPConstraintsTask`` before any soft scaling runs. Two cases:
+
+    * ``w_current[i] <= w_upper_hard[i]`` — the holding is within hard
+      cap, so raising ``_qp_w_upper[i]`` up to ``w_current[i]`` is
+      safe: it relaxes the SOFT target back to "hold". The hard cap
+      is unchanged; cap-compliance retry still has the original ceiling.
+    * ``w_current[i] >  w_upper_hard[i]`` — the holding is **over**
+      hard cap. Set ``_qp_w_upper[i] = w_upper_hard[i]`` so the
+      solver returns ``infeasible`` for that asset and
+      ``_retry_for_per_asset_cap_compliance()`` fires, force-selling
+      back to the hard cap. The soft-scaled value is intentionally
+      DISCARDED on this branch: conviction × vol-target × drawdown
+      multipliers are ≤ 1, so the soft-scaled cap is below the hard
+      cap; cap-compliance docstring says we sell back to the
+      *risk* cap (hard), not the soft target. Keeping the soft value
+      would force-sell ORCL from 22% straight to 7.5% under a
+      low-conviction multiplier — codex #123 v4 review. (v3 kept the
+      soft value here, which had this bug.)
+
+    Reads/writes ``ctx._qp_w_upper`` in place.
+    """
+    w_upper = _get_path(ctx, "_qp_w_upper")
+    w_curr  = _get_path(ctx, "_qp_w_current")
+    w_hard  = _get_path(ctx, "_qp_w_upper_hard")
+    if w_upper is None or w_curr is None or len(w_upper) != len(w_curr):
+        return
+    w_upper_arr = np.asarray(w_upper, dtype=float)
+    w_curr_arr  = np.asarray(w_curr, dtype=float)
+    if w_hard is None or len(w_hard) != len(w_upper_arr):
+        # No hard-cap snapshot: skip the clamp entirely. v3 invariant —
+        # ComputeQPConstraintsTask must always stamp ``_qp_w_upper_hard``
+        # before any soft scaling runs. Silently widening to ``w_current``
+        # without the hard cap is the bug codex caught on #123 v2 (raising
+        # a 15% hard cap up to a 22% over-cap holding). Skip = strict
+        # behaviour; the missing stamp is a contract bug, not a soft
+        # degradation surface.
+        return
+    w_hard_arr = np.asarray(w_hard, dtype=float)
+    # Per-asset behaviour:
+    #   within hard cap (w_curr ≤ hard) → raise soft cap to max(soft, current)
+    #                                     so hold-flat is feasible.
+    #   over    hard cap (w_curr >  hard) → restore w_hard (DISCARD soft) so
+    #                                     cap-compliance retry sells back
+    #                                     to the hard cap, not the soft cap.
+    safe_to_raise = w_curr_arr <= w_hard_arr
+    raised = np.maximum(w_upper_arr, w_curr_arr)
+    ctx._qp_w_upper = np.where(safe_to_raise, raised, w_hard_arr)  # noqa: SLF001
+
+
 def _lookup_corr_explicit_none(corr: dict, left: str, right: str, *, default: float = 0.0):
     """Symmetric corr lookup that treats 0.0 as real data, not missing."""
     row = corr.get(left)
@@ -623,10 +682,19 @@ class ComputeQPConstraintsTask(Task):
 
     Reads:  ctx._qp_tickers, ctx.regime, ctx.confidence, ctx.regime_state,
              ctx.config (regime_params, regime, rotation.joint_actions)
-    Writes: ctx._qp_w_upper (np.ndarray), ctx._qp_w_lower (float),
+    Writes: ctx._qp_w_upper (np.ndarray), ctx._qp_w_upper_hard (np.ndarray),
+             ctx._qp_w_lower (float),
              ctx._qp_dw_max (np.ndarray), ctx._qp_cash_reserve (float),
              ctx._qp_drawdown (float), ctx._qp_drawdown_limit (float),
              ctx._qp_turnover_max (float | None)
+
+    ``_qp_w_upper_hard`` is the IMMUTABLE per-asset hard cap snapshot
+    (regime × confidence-scaled max_position_pct). Soft-scaling Tasks
+    (ApplyExposureScalingTask, ApplyConvictionCapTask) may lower or
+    re-raise ``_qp_w_upper`` for hold-flat purposes but MUST NOT raise
+    it above ``_qp_w_upper_hard``. The cap-compliance fallback path
+    (``_retry_for_per_asset_cap_compliance``) trusts the hard cap to
+    drive deterministic over-cap sell-downs. See codex #123 review.
     """
     name = "ComputeQPConstraintsTask"
 
@@ -640,7 +708,11 @@ class ComputeQPConstraintsTask(Task):
         max_pct = float(rp.get("max_position_pct",
                                 ctx.config.get("max_position_pct", 0.20)))
         scale = confidence_to_size_multiplier(getattr(ctx, "confidence", None))
-        ctx._qp_w_upper = np.full(n, max_pct * scale)  # noqa: SLF001
+        hard_cap = np.full(n, max_pct * scale)
+        # _qp_w_upper_hard is the immutable hard cap. Soft scalers can never
+        # raise _qp_w_upper above this; cap-compliance fallback keys off it.
+        ctx._qp_w_upper_hard = hard_cap.copy()  # noqa: SLF001
+        ctx._qp_w_upper = hard_cap  # noqa: SLF001
         self._resolve_short_constraints(ctx, scale)
         ctx._qp_dw_max = np.full(n, float(cfg.get("qp_dw_max", 0.50)))  # noqa: SLF001
         ctx._qp_cash_reserve = float(rp.get(  # noqa: SLF001
@@ -1192,8 +1264,9 @@ class ApplyExposureScalingTask(Task):
         combined = vt_scale * dd_scale
         if combined != 1.0:
             ctx._qp_w_upper = np.asarray(w_upper) * float(combined)  # noqa: SLF001
+            _clamp_w_upper_at_w_current(ctx)
             log.info(
-                "ApplyExposureScalingTask: w_upper scaled by vt=%.3f × dd=%.3f = %.3f",
+                "ApplyExposureScalingTask: w_upper scaled by vt=%.3f × dd=%.3f = %.3f (hold-flat-clamped)",
                 vt_scale, dd_scale, combined,
             )
 
@@ -1285,6 +1358,9 @@ class ApplyConvictionCapTask(Task):
             m = max(0.0, min(1.0, m))
             w_upper[i] = float(w_upper[i]) * m
             caps.append(m)
+
+        # 2026-06-02 fix: never shrink below w_current — see helper docstring.
+        _clamp_w_upper_at_w_current(ctx)
 
         ctx._qp_conviction_caps = caps  # noqa: SLF001
         return None
