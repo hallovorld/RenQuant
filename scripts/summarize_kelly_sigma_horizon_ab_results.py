@@ -35,6 +35,8 @@ SUMMARY_METRICS = (
     "dsr",
     "pbo",
 )
+DEFAULT_CONTROL_VARIANT = "A_golden"
+DEFAULT_TREATMENT_VARIANT = "B_sigma_horizon_60"
 METRIC_ALIASES = {
     "maxdd": ("maxdd", "max_dd", "max_drawdown", "max_drawdown_pct"),
     "kelly_target_pct": (
@@ -255,7 +257,94 @@ def _group_summary(
     }
 
 
-def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _metric_delta(
+    control_metric: dict[str, Any],
+    treatment_metric: dict[str, Any],
+) -> dict[str, Any]:
+    control_mean = _json_number(control_metric.get("mean"))
+    treatment_mean = _json_number(treatment_metric.get("mean"))
+    delta = (
+        treatment_mean - control_mean
+        if control_mean is not None and treatment_mean is not None
+        else None
+    )
+    return {
+        "control_mean": control_mean,
+        "treatment_mean": treatment_mean,
+        "delta": _json_number(delta),
+        "control_status": control_metric.get("status", "missing"),
+        "treatment_status": treatment_metric.get("status", "missing"),
+    }
+
+
+def _comparison_summary(
+    control: dict[str, Any] | None,
+    treatment: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if control is None or treatment is None:
+        if control is None and treatment is None:
+            status = "missing_control_and_treatment"
+        elif control is None:
+            status = "missing_control"
+        else:
+            status = "missing_treatment"
+        control = control or {"metrics": {}}
+        treatment = treatment or {"metrics": {}}
+    else:
+        status = "available"
+
+    control_metrics = control.get("metrics") or {}
+    treatment_metrics = treatment.get("metrics") or {}
+    metrics = {
+        metric: _metric_delta(
+            control_metrics.get(metric) or {"status": "missing"},
+            treatment_metrics.get(metric) or {"status": "missing"},
+        )
+        for metric in SUMMARY_METRICS
+    }
+    return {
+        "status": status,
+        "control_n_rows": control.get("n_rows", 0),
+        "treatment_n_rows": treatment.get("n_rows", 0),
+        "control_n_seeds": control.get("n_seeds", 0),
+        "treatment_n_seeds": treatment.get("n_seeds", 0),
+        "metrics": metrics,
+    }
+
+
+def build_comparisons(
+    *,
+    by_variant: dict[str, dict[str, Any]],
+    by_variant_regime: dict[str, dict[str, Any]],
+    control_variant: str = DEFAULT_CONTROL_VARIANT,
+    treatment_variant: str = DEFAULT_TREATMENT_VARIANT,
+) -> dict[str, Any]:
+    control_regimes = by_variant_regime.get(control_variant) or {}
+    treatment_regimes = by_variant_regime.get(treatment_variant) or {}
+    regimes = sorted(set(control_regimes) | set(treatment_regimes))
+    return {
+        "control_variant": control_variant,
+        "treatment_variant": treatment_variant,
+        "by_variant": _comparison_summary(
+            by_variant.get(control_variant),
+            by_variant.get(treatment_variant),
+        ),
+        "by_regime": {
+            regime: _comparison_summary(
+                control_regimes.get(regime),
+                treatment_regimes.get(regime),
+            )
+            for regime in regimes
+        },
+    }
+
+
+def summarize_rows(
+    rows: list[dict[str, Any]],
+    *,
+    control_variant: str = DEFAULT_CONTROL_VARIANT,
+    treatment_variant: str = DEFAULT_TREATMENT_VARIANT,
+) -> dict[str, Any]:
     """Build per-variant and per-variant/per-regime summaries."""
     if not rows:
         raise ValueError("no result rows provided")
@@ -287,16 +376,24 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             column_presence=column_presence,
         )
 
+    by_variant_regime = dict(by_variant_regime)
     return {
         "n_rows": len(rows),
         "schema": {
             "metrics": list(SUMMARY_METRICS),
             "std": "sample",
             "dsr_pbo": "passed-through only; not computed by this script",
+            "comparisons": "treatment mean minus control mean",
         },
         "by_variant": by_variant,
         "by_regime": by_regime,
-        "by_variant_regime": dict(by_variant_regime),
+        "by_variant_regime": by_variant_regime,
+        "comparisons": build_comparisons(
+            by_variant=by_variant,
+            by_variant_regime=by_variant_regime,
+            control_variant=control_variant,
+            treatment_variant=treatment_variant,
+        ),
     }
 
 
@@ -318,6 +415,19 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Input format override. Default: infer from extension.",
     )
+    parser.add_argument(
+        "--control-variant",
+        default=DEFAULT_CONTROL_VARIANT,
+        help=f"Control variant for comparison deltas. Default: {DEFAULT_CONTROL_VARIANT}.",
+    )
+    parser.add_argument(
+        "--treatment-variant",
+        default=DEFAULT_TREATMENT_VARIANT,
+        help=(
+            "Treatment variant for comparison deltas. "
+            f"Default: {DEFAULT_TREATMENT_VARIANT}."
+        ),
+    )
     return parser
 
 
@@ -326,7 +436,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         rows = load_rows(args.inputs, input_format=args.input_format)
-        summary = summarize_rows(rows)
+        summary = summarize_rows(
+            rows,
+            control_variant=args.control_variant,
+            treatment_variant=args.treatment_variant,
+        )
     except Exception as exc:
         parser.error(str(exc))
 
