@@ -16,8 +16,8 @@ name: agent-review-template
 #       secrets:
 #         api_key: ${{ secrets.OPENAI_API_KEY }}
 #
-# The wrapper owns: events (pull_request types), top-level paths-ignore,
-# concurrency, changed_files gate. This template owns: per-agent skip
+# The wrapper owns: events (pull_request types), concurrency, changed_files
+# gate. This template owns: per-agent skip
 # (don't review own PR / manual-hold / draft), checkout, prompt assembly,
 # LLM dispatch, comment posting.
 
@@ -72,9 +72,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${API_KEY:-}" ]; then
-            echo "::notice::${AGENT} API key secret is not configured; skipping ${AGENT} review without failing workflow startup"
+            echo "::error::${AGENT} API key secret is not configured; failing closed so PRs cannot merge as reviewed when no review was possible"
             echo "has_api_key=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           echo "has_api_key=true" >> "$GITHUB_OUTPUT"
 

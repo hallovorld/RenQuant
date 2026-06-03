@@ -2,19 +2,15 @@ name: agent-attribution-check-template
 # Reusable G1 (attribution check) workflow. Implementation of
 # `doc/ops/agent-automation.md` §4.1 Layer C.
 #
-# Per-repo wrapper invokes this via:
-#
-#   jobs:
-#     attribution:
-#       uses: hallovorld/RenQuant/.github/workflows/_agent-attribution-check-template.yml@main
-#
-# No `inputs:` — the check is identical for every agent (Claude, Codex,
-# future). What differs is the expected Agent-Origin + trailer pattern;
-# those are derived from the actual `agent:*` label on the PR.
+# This job intentionally runs on every PR. If any agent-authorship signal is
+# present (agent label, branch prefix, Agent-Origin footer, or commit trailer),
+# the PR must carry the matching `agent:<name>` label and the normal body /
+# commit attribution contract. This closes the gap where a `codex/...` PR could
+# merge with no agent label because the old template skipped unlabeled PRs.
 
 on:
   workflow_call:
-    # No inputs required — everything is read from event context.
+    # No inputs required; everything is read from the PR and git range.
 
 permissions:
   contents: read
@@ -24,80 +20,140 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Decide whether attribution enforcement applies
-        id: enforce
-        env:
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
-        run: |
-          set -euo pipefail
-          if echo "$LABELS" | grep -Eq '"agent:(claude|codex)"'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "no agent authorship label present; attribution check not applicable"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/checkout@v4
-        if: steps.enforce.outputs.run == 'true'
         with:
-          # MUST: full history so `git rev-list base..HEAD` returns real
-          # SHAs (default fetch-depth=1 makes the range empty).
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Derive expected agent identity from labels
-        if: steps.enforce.outputs.run == 'true'
+      - name: Resolve attribution signals
         id: agent
         env:
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          # ENFORCE §2.1 contract: exactly ONE authorship label.
-          # First-match-wins branching would silently resolve double-
-          # labelled PRs and hide the misconfig — count explicitly.
-          AUTHORSHIP_COUNT=0
-          AGENT_LABEL=""
-          EXPECTED_ORIGIN=""
-          EXPECTED_TRAILER_PATTERN=""
-          ALLOWED_TRAILER_PATTERN=""
+
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,body,headRefName > pr.json
+          LABELS=$(jq -c '[.labels[].name]' pr.json)
+          BODY=$(jq -r '.body // ""' pr.json)
+          HEAD_REF=$(jq -r '.headRefName // ""' pr.json)
+          git fetch --no-tags origin "$BASE_SHA"
+
+          signals=()
+          add_signal() {
+            signals+=("$1:$2")
+          }
+
+          # Strong authorship signals: labels, branch prefix, and PR body.
           if echo "$LABELS" | grep -q '"agent:claude"'; then
-            AUTHORSHIP_COUNT=$((AUTHORSHIP_COUNT + 1))
-            AGENT_LABEL="agent:claude"
-            EXPECTED_ORIGIN="Claude"
-            EXPECTED_TRAILER_PATTERN="Co-Authored-By: Claude .*<noreply@anthropic.com>"
+            add_signal "claude" "label:agent:claude"
           fi
           if echo "$LABELS" | grep -q '"agent:codex"'; then
-            AUTHORSHIP_COUNT=$((AUTHORSHIP_COUNT + 1))
-            AGENT_LABEL="agent:codex"
-            EXPECTED_ORIGIN="Codex"
-            EXPECTED_TRAILER_PATTERN="Co-Authored-By: Codex <noreply@openai.com>"
+            add_signal "codex" "label:agent:codex"
           fi
-          if [ "$AUTHORSHIP_COUNT" -eq 0 ]; then
-            echo "::error::no agent:* authorship label present; this job should not have fired"
-            exit 2
-          elif [ "$AUTHORSHIP_COUNT" -gt 1 ]; then
-            echo "::error::multiple authorship labels present (count=${AUTHORSHIP_COUNT}); §2.1 mandates exactly one — to invite a second agent's G3 use agent:fix:<name>, not authorship labels"
+          case "$HEAD_REF" in
+            claude/*) add_signal "claude" "branch:$HEAD_REF" ;;
+            codex/*) add_signal "codex" "branch:$HEAD_REF" ;;
+          esac
+          if grep -qx 'Agent-Origin: Claude' <<< "$BODY"; then
+            add_signal "claude" "body:Agent-Origin"
+          fi
+          if grep -qx 'Agent-Origin: Codex' <<< "$BODY"; then
+            add_signal "codex" "body:Agent-Origin"
+          fi
+
+          # If no strong signal exists, commit trailers still identify an
+          # agent-authored PR and must force the same label/body contract.
+          if [ "${#signals[@]}" -eq 0 ]; then
+            for sha in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
+              msg=$(git show -s --format='%B' "$sha")
+              if grep -Eq 'Co-Authored-By: Claude .*<noreply@anthropic.com>' <<< "$msg"; then
+                add_signal "claude" "commit:$sha"
+              fi
+              if grep -Eq 'Co-Authored-By: Codex <noreply@openai.com>' <<< "$msg"; then
+                add_signal "codex" "commit:$sha"
+              fi
+            done
+          fi
+
+          if [ "${#signals[@]}" -eq 0 ]; then
+            echo "no agent authorship signal found; attribution check not applicable"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          expected_agent=""
+          conflicts=()
+          for signal in "${signals[@]}"; do
+            agent="${signal%%:*}"
+            if [ -z "$expected_agent" ]; then
+              expected_agent="$agent"
+            elif [ "$expected_agent" != "$agent" ]; then
+              conflicts+=("$signal")
+            fi
+          done
+          if [ "${#conflicts[@]}" -gt 0 ]; then
+            echo "::error::conflicting agent authorship signals: ${signals[*]}"
             exit 1
           fi
 
-          # Authorship labels validate PR body/origin. Commit trailers may
-          # also come from explicitly authorized fix executors so cross-agent
-          # G3 fixes do not fail attribution.
-          ALLOWED_TRAILER_PATTERN="$EXPECTED_TRAILER_PATTERN"
+          label_count=0
+          label_agent=""
+          if echo "$LABELS" | grep -q '"agent:claude"'; then
+            label_count=$((label_count + 1))
+            label_agent="claude"
+          fi
+          if echo "$LABELS" | grep -q '"agent:codex"'; then
+            label_count=$((label_count + 1))
+            label_agent="codex"
+          fi
+          if [ "$label_count" -eq 0 ]; then
+            echo "::error::agent authorship signal detected (${signals[*]}) but matching agent:* label is missing"
+            exit 1
+          elif [ "$label_count" -gt 1 ]; then
+            echo "::error::multiple authorship labels present; use exactly one agent:<name> label"
+            exit 1
+          elif [ "$label_agent" != "$expected_agent" ]; then
+            echo "::error::agent label agent:${label_agent} does not match detected ${expected_agent} authorship (${signals[*]})"
+            exit 1
+          fi
+
+          expected_origin=""
+          allowed_trailer_pattern=""
+          case "$expected_agent" in
+            claude)
+              expected_origin="Claude"
+              allowed_trailer_pattern='Co-Authored-By: Claude .*<noreply@anthropic.com>'
+              ;;
+            codex)
+              expected_origin="Codex"
+              allowed_trailer_pattern='Co-Authored-By: Codex <noreply@openai.com>'
+              ;;
+            *)
+              echo "::error::unsupported agent $expected_agent"
+              exit 1
+              ;;
+          esac
+
+          # Cross-agent G3 fix commits are allowed only when explicitly opted in.
           if echo "$LABELS" | grep -q '"agent:fix:claude"'; then
-            ALLOWED_TRAILER_PATTERN="${ALLOWED_TRAILER_PATTERN}|Co-Authored-By: Claude .*<noreply@anthropic.com>"
+            allowed_trailer_pattern="${allowed_trailer_pattern}|Co-Authored-By: Claude .*<noreply@anthropic.com>"
           fi
           if echo "$LABELS" | grep -q '"agent:fix:codex"'; then
-            ALLOWED_TRAILER_PATTERN="${ALLOWED_TRAILER_PATTERN}|Co-Authored-By: Codex <noreply@openai.com>"
+            allowed_trailer_pattern="${allowed_trailer_pattern}|Co-Authored-By: Codex <noreply@openai.com>"
           fi
+
           {
-            echo "agent_label=${AGENT_LABEL}"
-            echo "expected_origin=${EXPECTED_ORIGIN}"
-            echo "allowed_trailer_pattern=${ALLOWED_TRAILER_PATTERN}"
+            echo "run=true"
+            echo "expected_origin=${expected_origin}"
+            echo "allowed_trailer_pattern=${allowed_trailer_pattern}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Validate PR body footer matches label
-        if: steps.enforce.outputs.run == 'true'
+      - name: Validate PR body footer matches detected agent
+        if: steps.agent.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_ORIGIN: ${{ steps.agent.outputs.expected_origin }}
@@ -105,27 +161,20 @@ jobs:
           set -euo pipefail
           BODY=$(gh pr view ${{ github.event.pull_request.number }} \
                     --repo "${{ github.repository }}" --json body -q .body)
-          # Cross-check: label is agent:X → body MUST contain
-          # "Agent-Origin: X". Mismatch = mislabeled PR.
           if ! grep -qx "Agent-Origin: ${EXPECTED_ORIGIN}" <<< "$BODY"; then
-            echo "::error::PR labeled ${{ steps.agent.outputs.agent_label }} but body missing 'Agent-Origin: ${EXPECTED_ORIGIN}' footer (see RenQuant doc/ops/agent-automation.md §2.2)"
+            echo "::error::agent-authored PR must include exact footer 'Agent-Origin: ${EXPECTED_ORIGIN}'"
             exit 1
           fi
 
-      - name: Validate every commit in PR range has matching trailer
-        if: steps.enforce.outputs.run == 'true'
+      - name: Validate every commit in PR range has an allowed agent trailer
+        if: steps.agent.outputs.run == 'true'
         env:
           ALLOWED_TRAILER_PATTERN: ${{ steps.agent.outputs.allowed_trailer_pattern }}
         run: |
           set -euo pipefail
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
-          # Fetch base ref explicitly — checkout@v4 fetched HEAD only.
           git fetch --no-tags origin "${BASE}"
-          # Enumerate EACH commit in the PR range, not "at least one has
-          # some trailer" — that loose form let unattributed commits pass.
-          # A trailer is valid if it matches the authorship agent OR an
-          # explicitly authorized agent:fix:<name> executor.
           missing=()
           for sha in $(git rev-list "${BASE}..${HEAD}"); do
             if ! git show -s --format='%B' "$sha" | grep -Eq "$ALLOWED_TRAILER_PATTERN"; then

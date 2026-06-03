@@ -86,10 +86,8 @@ readonly WRAPPER_REVIEW='name: agent-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # MANDATORY cost gate: skip project docs only.
-    # NB: do NOT add .github/** or **/*.md — both are control planes.
-    paths-ignore:
-      - '\''doc/**'\''
+    # No paths-ignore: branch protection requires review jobs to emit a
+    # status on every PR, including docs-only PRs.
 
 concurrency:
   group: agent-review-${{ github.event.pull_request.number }}
@@ -382,8 +380,8 @@ Required secrets (set under repo Settings → Secrets and variables):
   OPENAI_API_KEY          Codex review + fix
   AGENT_GIT_PUSH_TOKEN    G3 fix workflow's commit/push
 
-Until secrets are configured workflows fire but skip-or-error on
-the LLM dispatch — safe, no production behavior depends on them yet.
+Until secrets are configured, review workflows fail closed on missing API
+keys. Configure secrets before enabling required review status checks.
 
 Per-repo prompt customization (replacing the umbrella defaults with
 repo-specific framing — e.g. backtesting data-flow gotchas, model

@@ -6,13 +6,9 @@ name: agent-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # MANDATORY cost gate per §6: skip project docs only.
-    # NB: do NOT add '.github/**' OR '**/*.md' — both are control
-    # planes. `.github/**` houses workflows + CODEOWNERS;
-    # `.github/agent-*.md` is the automation's own prompt template
-    # (PR review of changes to that file is exactly what we want).
-    paths-ignore:
-      - 'doc/**'
+    # No paths-ignore here: branch protection requires the review jobs to
+    # emit a status on every PR. If this workflow is path-skipped, GitHub
+    # has no review status to require and PRs can merge without review.
 
 concurrency:
   # MANDATORY: only review the latest commit when a PR is pushed
