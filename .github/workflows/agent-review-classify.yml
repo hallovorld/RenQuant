@@ -1,0 +1,23 @@
+name: agent-review-classify
+# Bridges the v1 gap where a reviewer agent posts COMMENTED with
+# BLOCKER/HIGH/MED findings — the v1 G3 gate requires
+# CHANGES_REQUESTED. Wraps `_agent-review-classify-template.yml`
+# per `doc/ops/agent-automation-v2-design.md §3.1`.
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+# A flurry of reviews on the same PR (e.g. Claude then Codex within
+# seconds) should each fire — we are evaluating ONE review at a time,
+# not a debounced state.
+concurrency:
+  group: agent-review-classify-${{ github.event.pull_request.number }}-${{ github.event.review.id }}
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    uses: ./.github/workflows/_agent-review-classify-template.yml
+    permissions:
+      pull-requests: write
+      issues: write

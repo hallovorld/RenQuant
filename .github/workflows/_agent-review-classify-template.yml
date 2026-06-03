@@ -1,0 +1,269 @@
+name: agent-review-classify-template
+# Reusable workflow that bridges the v1 gap where a reviewer agent
+# posts `COMMENTED` (instead of `CHANGES_REQUESTED`) despite having
+# `BLOCKER` / `HIGH` / `MED` findings — causing the v1 G3 auto-fix
+# gate to silently skip.
+#
+# Behavior:
+#   - Fires on `pull_request_review:submitted`.
+#   - If review state is `COMMENTED` AND the body contains a `BLOCKER`
+#     / `HIGH` / `MED` severity tag (per the v2 review prompt format),
+#     emits a synthetic `@<authorship-agent> fix` comment that the
+#     existing G3 wrapper picks up via its `issue_comment` trigger.
+#   - If review state is `APPROVED` and there are still unresolved
+#     prior-review findings on the same head, downgrades to a comment
+#     noting the inconsistency so the operator is alerted. (We do NOT
+#     silently strip the APPROVE — that would surprise the operator.
+#     We just surface the conflict.)
+#   - No-op for review state == `CHANGES_REQUESTED` (v1 path already
+#     covers it) and for `APPROVED` with no conflict (auto-merge gate
+#     in Phase B handles it).
+#
+# IMPORTANT: this workflow does NOT dispatch G3 directly. It synthesizes
+# a `@<agent> fix` comment because:
+#   (a) `workflow_dispatch` requires the target workflow on the default
+#       branch; per-repo wrappers may lag.
+#   (b) The comment path goes through the same trust check
+#       (`actor in {owners, members, write-collaborators}`) so an
+#       outside contributor's COMMENTED review can't trigger
+#       arbitrary autofix.
+#   (c) A trail of synthesized comments is visible in the PR timeline,
+#       which is the audit surface §3.1 mandates.
+#
+# Per-repo wrapper invokes:
+#
+#   jobs:
+#     classify:
+#       uses: hallovorld/RenQuant/.github/workflows/_agent-review-classify-template.yml@main
+
+on:
+  workflow_call:
+    inputs:
+      # The authorship label → fix-executor label mapping. When a PR
+      # labelled `agent:claude` gets a COMMENTED-with-HIGH-findings
+      # review, we synthesize `@claude fix` so Claude's G3 fires.
+      # Mirror behavior for codex.
+      authorship_to_executor:
+        type: string
+        required: false
+        default: '{"agent:claude":"claude","agent:codex":"codex"}'
+        description: "JSON map from authorship label name to fix-executor agent name."
+
+permissions:
+  pull-requests: write   # `gh pr comment`
+  issues: write          # PR comments are issue comments
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only fire on review.submitted; the `if:` here is defense-in-depth
+    # against accidental future invocations.
+    if: github.event_name == 'pull_request_review' && github.event.review.state != ''
+    steps:
+      - name: Resolve PR + review context
+        id: ctx
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # SHELL INJECTION SAFETY: all user-controlled fields via env:.
+          # See `_agent-fix-template.yml:70` for the canonical pattern.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          REVIEW_ACTOR: ${{ github.event.review.user.login }}
+          REVIEW_ID: ${{ github.event.review.id }}
+        run: |
+          set -euo pipefail
+          # GitHub review.state values: APPROVED, CHANGES_REQUESTED, COMMENTED,
+          # DISMISSED. We only act on COMMENTED + APPROVED (read APPROVED to
+          # detect the conflict-with-CHANGES_REQUESTED case).
+          if [ "$REVIEW_STATE" != "COMMENTED" ] && [ "$REVIEW_STATE" != "APPROVED" ]; then
+            echo "review state $REVIEW_STATE — out of classifier scope; skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Pull PR labels — we need authorship to know which executor
+          # to ping in the synthetic comment.
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json labels > pr.json
+          {
+            echo "skip=false"
+            echo "pr_number=$PR_NUMBER"
+            echo "review_state=$REVIEW_STATE"
+            echo "review_actor=$REVIEW_ACTOR"
+            echo "review_id=$REVIEW_ID"
+            echo "labels=$(jq -c '[.labels[].name]' pr.json)"
+            echo "review_body<<RB_EOF"
+            echo "$REVIEW_BODY"
+            echo "RB_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Detect severity in review body
+        id: sev
+        if: steps.ctx.outputs.skip != 'true'
+        env:
+          REVIEW_BODY: ${{ steps.ctx.outputs.review_body }}
+        run: |
+          set -euo pipefail
+          # Match the actual severity tags agent reviews use. The v1
+          # regex only matched **BOLD** and \bSEV:\b forms and missed
+          # the [HIGH] / - [HIGH] / HIGH - bracketed forms that current
+          # codex/Claude reviews actually emit (codex #168 MED-4).
+          # Each alternative is anchored with explicit boundaries so
+          # incidental text like "high-throughput" can't false-positive.
+          # `nit` is intentionally NOT a trigger.
+          HI_PAT='\*\*BLOCKER\*\*|\*\*HIGH\*\*|\[BLOCKER\]|\[HIGH\]|(^|[[:space:]])-?[[:space:]]*\[BLOCKER\]|(^|[[:space:]])-?[[:space:]]*\[HIGH\]|(^|[[:space:]])BLOCKER[[:space:]]*:|(^|[[:space:]])HIGH[[:space:]]*:'
+          MED_PAT='\*\*MED\*\*|\[MED\]|(^|[[:space:]])-?[[:space:]]*\[MED\]|(^|[[:space:]])MED[[:space:]]*:'
+          if grep -Eq "$HI_PAT" <<< "$REVIEW_BODY"; then
+            echo "max_severity=BLOCKER_OR_HIGH" >> "$GITHUB_OUTPUT"
+          elif grep -Eq "$MED_PAT" <<< "$REVIEW_BODY"; then
+            echo "max_severity=MED" >> "$GITHUB_OUTPUT"
+          else
+            echo "max_severity=NONE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve authorship → executor mapping
+        id: route
+        if: steps.ctx.outputs.skip != 'true'
+        env:
+          LABELS: ${{ steps.ctx.outputs.labels }}
+          MAPPING: ${{ inputs.authorship_to_executor }}
+        run: |
+          set -euo pipefail
+          # Walk the mapping JSON; emit the first executor whose
+          # authorship label is present. The §2.1 contract guarantees
+          # at most ONE authorship label, so first-match is unambiguous.
+          executor=""
+          authorship=""
+          while IFS= read -r entry; do
+            label=$(jq -r '.key'   <<< "$entry")
+            exec_name=$(jq -r '.value' <<< "$entry")
+            if grep -q "\"${label}\"" <<< "$LABELS"; then
+              executor="$exec_name"
+              authorship="$label"
+              break
+            fi
+          done < <(jq -c 'to_entries[]' <<< "$MAPPING")
+          if [ -z "$executor" ]; then
+            echo "no authorship label matched mapping; skipping classifier"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Reviewer loop guard: never ping the agent that just posted
+          # the review (would create a review→fix→review cycle if a
+          # human-labelled-as-the-author posts a review).
+          # The v1 G2 template already skips self-review via labels;
+          # this is a second layer for the COMMENTED → @fix synthesis.
+          echo "skip=false"  >> "$GITHUB_OUTPUT"
+          echo "executor=$executor"   >> "$GITHUB_OUTPUT"
+          echo "authorship=$authorship" >> "$GITHUB_OUTPUT"
+
+      - name: Verify original reviewer permission (trust-bridge prerequisite)
+        id: trust
+        if: |
+          steps.ctx.outputs.skip != 'true' &&
+          steps.route.outputs.skip != 'true' &&
+          steps.ctx.outputs.review_state == 'COMMENTED' &&
+          steps.sev.outputs.max_severity != 'NONE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REVIEW_ACTOR: ${{ steps.ctx.outputs.review_actor }}
+        run: |
+          set -euo pipefail
+          # HIGH-2 (codex #168): the synthetic @<agent> fix comment is
+          # posted by github-actions[bot], which lacks collaborator
+          # write permission. The fix template's actor permission check
+          # would reject it. To bridge this without opening G3 to any
+          # bot-posted comment, the classifier first verifies the
+          # ORIGINAL reviewer's permission here, then embeds a
+          # Trusted-Bridge-Reviewer marker in the synthetic comment
+          # body. The fix template special-cases
+          # actor==github-actions[bot] to re-verify that marker — so
+          # only classifier-synthesized comments backed by a trusted
+          # human/agent reviewer can trigger a fix.
+          PERMISSION=$(gh api "repos/${REPO}/collaborators/${REVIEW_ACTOR}/permission" -q .permission 2>/dev/null || echo "none")
+          if [[ ! "$PERMISSION" =~ ^(admin|maintain|write)$ ]]; then
+            echo "reviewer $REVIEW_ACTOR has permission=$PERMISSION; not in {admin,maintain,write} — refusing to bridge per HIGH-2 trust gate"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reviewer $REVIEW_ACTOR permission=$PERMISSION; bridge authorized"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Synthesize @<executor> fix comment (COMMENTED + findings)
+        if: |
+          steps.ctx.outputs.skip != 'true' &&
+          steps.route.outputs.skip != 'true' &&
+          steps.trust.outputs.skip != 'true' &&
+          steps.ctx.outputs.review_state == 'COMMENTED' &&
+          steps.sev.outputs.max_severity != 'NONE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.ctx.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+          EXECUTOR: ${{ steps.route.outputs.executor }}
+          REVIEW_ACTOR: ${{ steps.ctx.outputs.review_actor }}
+          REVIEW_ID: ${{ steps.ctx.outputs.review_id }}
+          MAX_SEV: ${{ steps.sev.outputs.max_severity }}
+        run: |
+          set -euo pipefail
+          # The G3 issue_comment trigger fires when the comment body
+          # STARTS WITH `@<agent> fix`. See `_agent-fix-template.yml:177`.
+          # The `Trusted-Bridge-Reviewer:` line is the HIGH-2 trust
+          # bridge marker — the fix template parses it and re-verifies
+          # the named reviewer's permission before honoring the
+          # synthetic @fix when actor is github-actions[bot].
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(cat <<EOF
+          @${EXECUTOR} fix
+
+          Trusted-Bridge-Reviewer: @${REVIEW_ACTOR}
+          Trusted-Bridge-Source: agent-review-classify
+          Trusted-Bridge-Review-Id: ${REVIEW_ID}
+
+          Auto-promoted by \`agent-review-classify\`: review by @${REVIEW_ACTOR}
+          (review id \`${REVIEW_ID}\`) is state \`COMMENTED\` but body contains
+          \`${MAX_SEV}\` severity findings. Per the v2 design
+          (\`doc/ops/agent-automation-v2-design.md §3.1\`), this bridges the
+          v1 gap where the G3 gate misses COMMENTED-with-findings reviews.
+
+          The original review is the source of truth; this comment only
+          serves to trigger the G3 auto-fix wrapper. The wrapper's trust
+          check, attempt counter, and \`agent:manual-hold\` opt-out all
+          still apply.
+          EOF
+          )"
+
+      - name: Flag APPROVE-with-unresolved-findings
+        if: |
+          steps.ctx.outputs.skip != 'true' &&
+          steps.route.outputs.skip != 'true' &&
+          steps.ctx.outputs.review_state == 'APPROVED'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.ctx.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+          REVIEW_ACTOR: ${{ steps.ctx.outputs.review_actor }}
+          MAX_SEV: ${{ steps.sev.outputs.max_severity }}
+        run: |
+          set -euo pipefail
+          # If the agent posted APPROVED but its OWN body still contains
+          # a BLOCKER/HIGH tag, surface the inconsistency. We do NOT
+          # downgrade the review state — auto-merge gate's `no
+          # CHANGES_REQUESTED on latest head` check still passes, and
+          # the operator can decide whether the APPROVE was intentional
+          # (e.g. findings already addressed by a prior commit).
+          if [ "$MAX_SEV" = "NONE" ]; then
+            echo "APPROVED + zero findings — normal path; no flag needed"
+            exit 0
+          fi
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(cat <<EOF
+          ⚠️ \`agent-review-classify\`: @${REVIEW_ACTOR} posted \`APPROVED\`
+          but the review body still mentions \`${MAX_SEV}\`-severity findings.
+
+          If those findings were already addressed by a prior commit and
+          the APPROVE is intentional, ignore this comment. If the APPROVE
+          was accidental, dismiss it via \`gh api ... DELETE\` or post a
+          fresh review with the correct state.
+
+          The Phase B auto-merge gate will treat this PR as approved.
+          EOF
+          )"

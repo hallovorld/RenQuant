@@ -43,24 +43,51 @@ anti-decoration, audit discipline.
 
 ## Output format
 
-Post ONE PR review comment with findings ordered BLOCKER > HIGH > MED
-> LOW. For each finding:
+Post ONE PR review with findings ordered BLOCKER > HIGH > MED > LOW.
 
-- **Severity** (BLOCKER/HIGH/MED/LOW)
-- **Location**: `file:line` (clickable)
-- **Evidence**: cite the actual code or test output
-- **Fix**: smallest concrete change that resolves it; reference the
-  CLAUDE.md §N rule it violates if applicable
+Every finding MUST start with a **severity tag in plain text** so the
+downstream `agent-review-classify` workflow can grep it:
 
-If no findings, post a brief affirmative review summarizing what was
-verified (which CI ran, which invariants checked, what evidence the
-diff provides). Don't pad with "looks good" — be specific.
+```
+**BLOCKER** — <one-line summary>
+Location: `file:line`
+Evidence: <cite the actual code or test output>
+Fix: <smallest concrete change; reference CLAUDE.md §N if applicable>
+```
+
+Repeat the block for each finding. Severity values are EXACTLY one of:
+`BLOCKER`, `HIGH`, `MED`, `LOW`, `nit`. No other strings — the
+classifier matches `\b(BLOCKER|HIGH|MED|LOW|nit)\b`.
+
+## Choosing the review state — IMPORTANT
+
+The PR review state controls the downstream automation loop. Use
+exactly one of:
+
+| Findings present? | Severity present? | Command | Why |
+|---|---|---|---|
+| None | n/a | `gh pr review <PR> --approve --body "$BODY"` | Greenlight; G3 auto-fix won't fire; auto-merge gate (if enabled) can fire |
+| Some | Highest is `BLOCKER` or `HIGH` or `MED` | `gh pr review <PR> --request-changes --body "$BODY"` | Triggers G3 auto-fix (v1 gate); blocks auto-merge |
+| Some | Highest is only `LOW` or `nit` | `gh pr review <PR> --comment --body "$BODY"` | Author can address at their discretion; doesn't block merge |
+
+**Do not use `--comment` when you found a `BLOCKER` / `HIGH` / `MED`
+finding.** That's the v1 gap that left PR #154 and #155 with COMMENTED
+codex reviews despite HIGH/MED findings, requiring the operator to
+manually invoke autofix. The v2 `agent-review-classify` workflow is the
+bridge for any review that still slips through with the wrong state,
+but the prompt-side fix above is the root-cause cure.
+
+**Approval threshold for `--approve`**: zero open findings of any
+severity on the current HEAD. Do not approve when even one `LOW` is
+unresolved — use `--comment` instead. The auto-merge gate (Phase B)
+requires `APPROVE`, so `--approve` is meaningful: it means the diff is
+ready to merge without further review.
 
 ## Tools available
 
-`Bash(gh:*)` — for posting comments via `gh pr review` / `gh pr comment`.
+`Bash(gh:*)` — for `gh pr review --approve|--request-changes|--comment`.
 `Bash(git:*)` — for diff / log / blame inspection.
 
-Use `gh pr review --comment --body "$(cat <<EOF ... EOF)"` to post a
-single consolidated comment. Don't fire multiple comments per finding —
-operators read one summary, not a thread.
+Post the consolidated review with EXACTLY ONE invocation of
+`gh pr review`. Don't fire multiple comments per finding — operators
+read one summary, not a thread.

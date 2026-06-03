@@ -7,6 +7,12 @@ appended at the bottom of this prompt.
 ## What to do (in this order)
 
 1. **Read every finding** in the review. Don't skip or reorder.
+   Findings are tagged with severity (`BLOCKER` / `HIGH` / `MED` / `LOW`
+   / `nit`). `BLOCKER` and `HIGH` MUST be addressed; `MED` should be
+   addressed unless you can articulate why it isn't actionable; `LOW`
+   and `nit` are discretionary — address them only if the diff is
+   already small. Surface anything skipped in the run output so the
+   wrapping workflow's summary comment lists it.
 
 2. **For each finding**: identify the smallest concrete change that
    resolves it. Read the surrounding code first (`Read`, `git log`),
