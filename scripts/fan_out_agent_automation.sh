@@ -161,6 +161,46 @@ jobs:
     uses: hallovorld/RenQuant/.github/workflows/_agent-attribution-check-template.yml@main
 '
 
+# v2 Phase A wrappers (per doc/ops/agent-automation-v2-design.md
+# §3.1 + §3.2). Close the v1 gap where reviewer agents post COMMENTED
+# with HIGH/MED findings (G3 gate misses) and where agent:fix:<name>
+# executor-permission labels aren'\''t auto-added on PR open.
+
+readonly WRAPPER_DEFAULT_LABELS='name: agent-default-labels
+# Auto-adds agent:fix:<name> labels when authorship label is present.
+# Wraps RenQuant umbrella'\''s reusable default-labels template.
+
+on:
+  pull_request:
+    types: [opened, labeled, synchronize, reopened]
+
+concurrency:
+  group: agent-default-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ensure-fix-labels:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-default-labels-template.yml@main
+'
+
+readonly WRAPPER_REVIEW_CLASSIFY='name: agent-review-classify
+# Bridges COMMENTED-with-HIGH/MED-findings reviews into the G3
+# auto-fix loop. Wraps RenQuant umbrella'\''s reusable
+# review-classify template.
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: agent-review-classify-${{ github.event.pull_request.number }}-${{ github.event.review.id }}
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-review-classify-template.yml@main
+'
+
 # Generic review + fix prompts fetched from the umbrella's canon
 # copy at runtime so this script doesn't fork its own version of them.
 # Per-repo customization is a follow-up PR each maintainer opens.
@@ -192,6 +232,8 @@ for repo in "${REPOS[@]}"; do
     write inline:  .github/workflows/agent-review.yml
                    .github/workflows/agent-autofix.yml
                    .github/workflows/agent-attribution-check.yml
+                   .github/workflows/agent-default-labels.yml         (v2 Phase A)
+                   .github/workflows/agent-review-classify.yml        (v2 Phase A)
     fetch umbrella default prompts → .github/agent-{review,fix}-prompt.md
     git add .github/ && git commit
     git push -u origin $BRANCH
@@ -217,9 +259,12 @@ EOF
     git checkout -B "$BRANCH" "origin/${DEFAULT_BRANCH}"
 
     mkdir -p .github/workflows
-    printf '%s' "$WRAPPER_REVIEW"        > .github/workflows/agent-review.yml
-    printf '%s' "$WRAPPER_AUTOFIX"       > .github/workflows/agent-autofix.yml
-    printf '%s' "$WRAPPER_ATTRIBUTION"   > .github/workflows/agent-attribution-check.yml
+    printf '%s' "$WRAPPER_REVIEW"          > .github/workflows/agent-review.yml
+    printf '%s' "$WRAPPER_AUTOFIX"         > .github/workflows/agent-autofix.yml
+    printf '%s' "$WRAPPER_ATTRIBUTION"     > .github/workflows/agent-attribution-check.yml
+    # v2 Phase A:
+    printf '%s' "$WRAPPER_DEFAULT_LABELS"  > .github/workflows/agent-default-labels.yml
+    printf '%s' "$WRAPPER_REVIEW_CLASSIFY" > .github/workflows/agent-review-classify.yml
 
     # Fetch umbrella default prompts — generic across all renquant
     # repos. Per-repo customization (backtesting data-flow gotchas,
