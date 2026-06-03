@@ -189,12 +189,12 @@ class TestMetaLabelArtifactContractTaskParity:
         assert new.message == leg.message
 
 
-# ─── COMPLETE pipeline test: all 18 checks fire in order ─────────────────────
+# ─── COMPLETE pipeline test: all 19 checks fire in order ─────────────────────
 
 class TestFullPipeline:
     """The Track H goal: complete preflight via the new T/J/P pipeline."""
 
-    def test_full_pipeline_has_18_checks(self, tmp_path):
+    def test_full_pipeline_has_19_checks(self, tmp_path):
         ctx = PreflightContext(config={}, strategy_dir=tmp_path)
         pipeline = build_preflight_pipeline()
         results = pipeline.run(ctx, strict=False)
@@ -202,7 +202,8 @@ class TestFullPipeline:
         expected = {
             "P-MODEL-ARTIFACT", "P-PANEL-CONTRACT", "P-BEST-ITER",
             "P-WF-GATE", "P-REGIME-IC",
-            "P-CONFIG-FP", "P-WATCHLIST", "P-SECTOR-MAP", "P-CORR-METADATA",
+            "P-CONFIG-FP", "P-KELLY-SIGMA-HORIZON",
+            "P-WATCHLIST", "P-SECTOR-MAP", "P-CORR-METADATA",
             "P-NEWS-SENTIMENT-FRESHNESS",
             "P-CALIBRATOR-HEALTH", "P-CALIBRATOR-FLAT-REGION",
             "P-FEATURE-COVER", "P-RUN-ID",
@@ -211,7 +212,7 @@ class TestFullPipeline:
             "P-STATE-FILE", "P-BROKER-CONNECT", "P-BROKER-FILL-FRESHNESS",
         }
         assert names == expected
-        assert len(results) == 18
+        assert len(results) == 19
 
     def test_full_pipeline_order_mirrors_legacy(self, tmp_path):
         """Ordering should match kernel.preflight.run_preflight's ALL_CHECKS."""
@@ -225,15 +226,17 @@ class TestFullPipeline:
         # Identity group
         assert names[5:10] == ["P-CONFIG-FP", "P-WATCHLIST", "P-SECTOR-MAP",
                                "P-CORR-METADATA", "P-NEWS-SENTIMENT-FRESHNESS"]
+        # Risk config
+        assert names[10] == "P-KELLY-SIGMA-HORIZON"
         # Calibrator
-        assert names[10:12] == ["P-CALIBRATOR-HEALTH", "P-CALIBRATOR-FLAT-REGION"]
+        assert names[11:13] == ["P-CALIBRATOR-HEALTH", "P-CALIBRATOR-FLAT-REGION"]
         # NGBoost-aux
-        assert names[12:14] == ["P-FEATURE-COVER", "P-RUN-ID"]
+        assert names[13:15] == ["P-FEATURE-COVER", "P-RUN-ID"]
         # Meta-label
-        assert names[14] == "P-META-LABEL"
+        assert names[15] == "P-META-LABEL"
         # State + broker last (P-BROKER-FILL-FRESHNESS added 2026-06-02
         # audit finding 9; runs after BROKER-CONNECT so the connection is
         # up before the freshness query).
-        assert names[15:18] == [
+        assert names[16:19] == [
             "P-STATE-FILE", "P-BROKER-CONNECT", "P-BROKER-FILL-FRESHNESS",
         ]
