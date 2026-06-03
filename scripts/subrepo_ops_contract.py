@@ -341,6 +341,13 @@ CHECKS: tuple[Check, ...] = (
             "RENQUANT_OPS_FAIL_CLOSED",
             "_strict_multirepo_enabled",
             "RQ_SCREEN_WATCHLIST_STRICT",
+            "RQ_SCREEN_WATCHLIST_RUNNER",
+            "fail-closed multirepo mode",
+            "explicit umbrella rollback",
+        ),
+        forbidden=(
+            'strategy_config = root / "backtesting"',
+            "using umbrella implementation",
         ),
     ),
     Check(
@@ -515,6 +522,12 @@ CHECKS: tuple[Check, ...] = (
             "RQ_WEEKLY_APY_STRICT",
             "_strict_multirepo_enabled",
             "RENQUANT_OPS_FAIL_CLOSED",
+            "fail-closed multirepo mode",
+            "Set RQ_WEEKLY_APY_RUNNER=legacy",
+        ),
+        forbidden=(
+            "falling back to umbrella weekly APY check",
+            "WARN: renquant_orchestrator.weekly_apy_monitor unavailable",
         ),
     ),
     Check(

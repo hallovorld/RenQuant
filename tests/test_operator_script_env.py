@@ -1,6 +1,9 @@
 """Operator scripts should use the project venv, not stale conda paths."""
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -59,3 +62,32 @@ def test_multirepo_shell_wrappers_use_shared_strict_helper() -> None:
     weekly_apy = (REPO / "scripts" / "weekly_apy_check.py").read_text(encoding="utf-8")
     assert "_strict_multirepo_enabled" in weekly_apy
     assert "RENQUANT_OPS_FAIL_CLOSED" in weekly_apy
+
+
+def test_weekly_apy_default_fails_closed_without_orchestrator(tmp_path) -> None:
+    missing_runtime = tmp_path / "repos"
+    missing_runtime.mkdir()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(REPO / "scripts" / "weekly_apy_check.py"),
+            "--quiet",
+        ],
+        cwd=REPO,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "RENQUANT_NO_NOTIFY": "1",
+            "RENQUANT_OPS_FAIL_CLOSED": "0",
+            "RENQUANT_STRICT_SUBREPO_PATHS": "0",
+            "RENQUANT_SUBREPO_ROOT": str(missing_runtime),
+            "RQ_WEEKLY_APY_STRICT": "0",
+            "RQ_WEEKLY_APY_RUNNER": "multirepo",
+        },
+    )
+
+    assert proc.returncode == 2
+    assert "weekly APY defaults to fail-closed multirepo mode" in proc.stderr
+    assert "falling back" not in proc.stderr

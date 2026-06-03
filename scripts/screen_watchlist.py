@@ -64,10 +64,29 @@ def _strict_multirepo_enabled(strict_env: str) -> bool:
     )
 
 
+def _multirepo_failure(reason: str, strict_env: str) -> RuntimeError:
+    mode = (
+        "strict multirepo mode is enabled"
+        if _strict_multirepo_enabled(strict_env)
+        else "screen_watchlist defaults to fail-closed multirepo mode"
+    )
+    return RuntimeError(
+        f"{reason}; {mode}. Set RQ_SCREEN_WATCHLIST_RUNNER=legacy for "
+        "explicit umbrella rollback."
+    )
+
+
 def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     """Delegate to renquant-base-data when the subrepo runtime is available."""
-    if os.environ.get("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo") != "multirepo":
+    runner = os.environ.get("RQ_SCREEN_WATCHLIST_RUNNER", "multirepo")
+    if runner == "legacy":
         return False
+    if runner != "multirepo":
+        raise RuntimeError(
+            f"unknown RQ_SCREEN_WATCHLIST_RUNNER={runner!r} "
+            "(expected multirepo or legacy)"
+        )
+
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--strategy", default="renquant_104")
     parser.add_argument("--strategy-dir-root", default=None)
@@ -77,25 +96,33 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     parser.add_argument("--spy-symbol", default="SPY")
     args, unknown = parser.parse_known_args(argv)
     if unknown:
-        return False
+        raise _multirepo_failure(
+            f"unsupported screen_watchlist arguments for subrepo runner: {unknown}",
+            "RQ_SCREEN_WATCHLIST_STRICT",
+        )
 
     root = Path(args.strategy_dir_root) if args.strategy_dir_root else REPO_ROOT
     cache_root = Path(args.cache_root)
     if cache_root.is_absolute():
         # The subrepo CLI owns the canonical RenQuant data-dir contract
-        # (data/ohlcv). Keep legacy behavior for one-off custom cache roots.
-        return False
+        # (data/ohlcv). Custom cache roots require explicit legacy rollback.
+        raise _multirepo_failure(
+            "absolute --cache-root is legacy-only for screen_watchlist",
+            "RQ_SCREEN_WATCHLIST_STRICT",
+        )
     if cache_root.as_posix().rstrip("/") != "data/ohlcv":
-        return False
+        raise _multirepo_failure(
+            f"non-canonical --cache-root={args.cache_root!r} is legacy-only",
+            "RQ_SCREEN_WATCHLIST_STRICT",
+        )
 
     subrepo_root = resolve_subrepo_root(REPO_ROOT)
     strategy_config = subrepo_root / "renquant-strategy-104" / "configs" / "strategy_config.json"
     if not strategy_config.exists():
-        if _strict_multirepo_enabled("RQ_SCREEN_WATCHLIST_STRICT"):
-            raise RuntimeError(
-                "pinned renquant-strategy-104 strategy_config.json unavailable"
-            )
-        strategy_config = root / "backtesting" / args.strategy / "strategy_config.json"
+        raise _multirepo_failure(
+            "pinned renquant-strategy-104 strategy_config.json unavailable",
+            "RQ_SCREEN_WATCHLIST_STRICT",
+        )
     for rel in ("renquant-base-data/src", "renquant-common/src"):
         path = str(subrepo_root / rel)
         if path not in sys.path:
@@ -103,13 +130,10 @@ def _try_subrepo_screen(argv: list[str] | None = None) -> bool:
     try:
         from renquant_base_data.watchlist_screen import main as subrepo_main
     except Exception as exc:  # noqa: BLE001
-        if _strict_multirepo_enabled("RQ_SCREEN_WATCHLIST_STRICT"):
-            raise RuntimeError(
-                "renquant_base_data.watchlist_screen unavailable and "
-                "strict multirepo mode is enabled"
-            ) from exc
-        log.warning("base-data watchlist screen unavailable; using umbrella implementation: %s", exc)
-        return False
+        raise _multirepo_failure(
+            "renquant_base_data.watchlist_screen unavailable",
+            "RQ_SCREEN_WATCHLIST_STRICT",
+        ) from exc
 
     subrepo_main([
         "--strategy-config", str(strategy_config),
@@ -191,8 +215,12 @@ def _notify(title: str, body: str) -> None:
 
 
 def main() -> None:
-    if _try_subrepo_screen(sys.argv[1:]):
-        return
+    try:
+        if _try_subrepo_screen(sys.argv[1:]):
+            return
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        sys.exit(2)
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--strategy", default="renquant_104")
