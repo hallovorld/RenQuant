@@ -284,12 +284,17 @@ def test_walkforward_manifest_preflight_respects_non_strict_config(tmp_path: Pat
 def test_promotion_verdict_blocks_without_placebo() -> None:
     mod = _load_module()
     metrics = {
-        "A_golden": {"apy_mean": 0.10, "sharpe_mean": 1.0},
+        "A_golden": {
+            "apy_mean": 0.10,
+            "sharpe_mean": 1.0,
+            "per_regime": _per_regime_sharpes(1.0, 0.8, 0.6),
+        },
         "B_sigma_horizon_60": {
             "apy_mean": 0.12,
             "sharpe_mean": 1.2,
             "dsr": 0.7,
             "pbo": 0.4,
+            "per_regime": _per_regime_sharpes(1.2, 0.9, 0.7),
         },
         "AA_golden_resplit": {"apy_mean": 0.101, "sharpe_mean": 1.01},
     }
@@ -403,12 +408,17 @@ def test_validate_benchmark_coverage_allows_small_calendar_gap() -> None:
 def test_promotion_verdict_passes_synthetic_tier3() -> None:
     mod = _load_module()
     metrics = {
-        "A_golden": {"apy_mean": 0.10, "sharpe_mean": 1.0},
+        "A_golden": {
+            "apy_mean": 0.10,
+            "sharpe_mean": 1.0,
+            "per_regime": _per_regime_sharpes(1.0, 0.8, 0.6),
+        },
         "B_sigma_horizon_60": {
             "apy_mean": 0.12,
             "sharpe_mean": 1.2,
             "dsr": 0.7,
             "pbo": 0.4,
+            "per_regime": _per_regime_sharpes(1.2, 0.9, 0.7),
         },
         "AA_golden_resplit": {"apy_mean": 0.101, "sharpe_mean": 1.01},
     }
@@ -419,6 +429,41 @@ def test_promotion_verdict_passes_synthetic_tier3() -> None:
     assert verdict["tier3_ready"] is True
     assert verdict["blocked_reasons"] == []
     assert verdict["deltas"]["sharpe_lift"] == 0.19999999999999996
+    assert verdict["deltas"]["per_regime_sharpe_lifts"]["CHOPPY"]["passed"] is True
+
+
+def _per_regime_sharpes(bull_calm: float, bull_volatile: float, choppy: float) -> dict:
+    return {
+        "BULL_CALM": {"sharpe_mean": bull_calm},
+        "BULL_VOLATILE": {"sharpe_mean": bull_volatile},
+        "CHOPPY": {"sharpe_mean": choppy},
+    }
+
+
+def test_promotion_verdict_blocks_per_regime_sharpe_regression() -> None:
+    mod = _load_module()
+    metrics = {
+        "A_golden": {
+            "apy_mean": 0.10,
+            "sharpe_mean": 1.0,
+            "per_regime": _per_regime_sharpes(1.0, 0.8, 0.6),
+        },
+        "B_sigma_horizon_60": {
+            "apy_mean": 0.12,
+            "sharpe_mean": 1.2,
+            "dsr": 0.7,
+            "pbo": 0.4,
+            "per_regime": _per_regime_sharpes(1.2, 0.9, 0.5),
+        },
+        "AA_golden_resplit": {"apy_mean": 0.101, "sharpe_mean": 1.01},
+    }
+    placebo = {"provided": True, "passed": True, "items": []}
+
+    verdict = mod.promotion_verdict(metrics, placebo)
+
+    assert verdict["tier3_ready"] is False
+    assert any("CHOPPY" in reason for reason in verdict["blocked_reasons"])
+    assert verdict["deltas"]["per_regime_sharpe_lifts"]["CHOPPY"]["passed"] is False
 
 
 def test_load_placebo_evidence_reads_manifest_diagnostic(tmp_path: Path) -> None:
