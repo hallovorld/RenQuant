@@ -364,6 +364,40 @@ class TestAssembleVerdict:
         assert verdict["promotion_candidate"] == "challenger"
         assert verdict["next_action"] == "promote_to_shadow"
 
+    def test_unrelated_allocator_violation_does_not_flip_promoted_candidate_gate(self):
+        significance = {
+            "incumbent_qp": {"live_promotable_per_section_8": True},
+            "challenger": {
+                "live_promotable_per_section_8": True,
+                "dsr": 0.99,
+                "pbo": 0.2,
+                "pbo_se": None,
+            },
+            "bad_other": {"live_promotable_per_section_8": False},
+        }
+        paired = {
+            "incumbent_qp_vs_challenger": {
+                "delta_sharpe_annual": -0.5,
+                "win_rate_a_beats_b": 0.10,
+                "n_bars": 30,
+            },
+        }
+        violations = {
+            "any_allocator_violated_any_family": True,
+            "by_allocator": {
+                "incumbent_qp": {"rejected_for_promotion": False},
+                "challenger": {"rejected_for_promotion": False},
+                "bad_other": {"rejected_for_promotion": True},
+            },
+        }
+        verdict = assemble_verdict(
+            significance, paired, violations, incumbent="incumbent_qp",
+        )
+
+        assert verdict["promotion_candidate"] == "challenger"
+        assert verdict["next_action"] == "promote_to_shadow"
+        assert verdict["non_negotiable_gate_passed"]["zero_hard_constraint_regressions"] is True
+
     def test_incomplete_constraints_block_promotion(self):
         significance = {
             "incumbent_qp": {"live_promotable_per_section_8": True},

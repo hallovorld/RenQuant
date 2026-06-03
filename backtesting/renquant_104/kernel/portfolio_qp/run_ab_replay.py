@@ -231,10 +231,11 @@ def assemble_verdict(
     ]
     promotion_candidate = None
     rationale = "no allocator beat the incumbent on all gates"
+    incumbent_violated = violations["by_allocator"].get(incumbent, {}).get(
+        "rejected_for_promotion", True,
+    )
     gate_bits = {
-        "zero_hard_constraint_regressions": not violations[
-            "any_allocator_violated_any_family"
-        ],
+        "zero_hard_constraint_regressions": not incumbent_violated,
         "pbo_below_0_5": False,
         "pbo_plus_se_below_0_55": False,
         "dsr_above_0_95": False,
@@ -285,9 +286,7 @@ def assemble_verdict(
         pbo = sig.get("pbo")
         pbo_se = sig.get("pbo_se")
         candidate_gate_bits = {
-            "zero_hard_constraint_regressions": gate_bits[
-                "zero_hard_constraint_regressions"
-            ],
+            "zero_hard_constraint_regressions": not violated,
             "pbo_below_0_5": pbo is None or pbo < 0.5,
             "pbo_plus_se_below_0_55": (
                 pbo is None or pbo_se is None or (pbo + pbo_se) < 0.55
