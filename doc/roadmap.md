@@ -92,15 +92,18 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 
 ## 🎯 ACTIVE — next P0 items (ROI ranked)
 
-### 0. 🧱 Portfolio QP architecture refactor — `ConstraintSnapshot` contract + offline A/B replay (§8 plan, IN FLIGHT)
+### 0. 🧱 Portfolio QP architecture refactor — `ConstraintSnapshot` contract + offline A/B replay (§8 plan, OPS GATE)
 
-**Status (2026-06-02)** — measurement-and-contract sequence from
+**Status (2026-06-03)** — measurement-and-contract sequence from
 [`doc/research/2026-06-02-qp-architecture-review-and-alternatives.md`](research/2026-06-02-qp-architecture-review-and-alternatives.md)
 §8 (codex + gemini convergent recommendation on PR #125). Fixes the
 constraint-composition bug class behind every May-June 2026 QP
 incident (Bug F, daily-104 infeasibility, PR #123 v1/v2/v3). Component
 detail: [`doc/components/portfolio-qp.md`](components/portfolio-qp.md)
-"ConstraintSnapshot contract" section.
+"ConstraintSnapshot contract" section. The code/harness layers have
+landed through Hybrid Option F; current blocker is operational
+deployment: refresh `.subrepo_runtime/repos/renquant-pipeline/`, run
+paper smoke, then collect the decision-grade A/B evidence artifact.
 
 | Step | Description | Status |
 |---|---|---|
@@ -108,18 +111,18 @@ detail: [`doc/components/portfolio-qp.md`](components/portfolio-qp.md)
 | 1a | `ConstraintSnapshot` contract + builder + validation | **DONE** — PR #126 merged |
 | 1b | `solve_portfolio_qp_from_snapshot` wrapper | **DONE** — PR #127 merged |
 | 1c | `BuildConstraintSnapshotTask` wired into `JointPortfolioQPJob` | **DONE** — PR #129 merged |
-| 1d | Collapse 4 composed Tasks into one `BuildQPConstraintsTask` | PENDING |
-| 1e | Migrate `SolveMarkowitzQPTask` to consume snapshot via wrapper | PR #140 open |
+| 1d | Collapse 4 composed Tasks into one `BuildQPConstraintsTask` | PENDING cleanup after runtime smoke |
+| 1e | Migrate `SolveMarkowitzQPTask` to consume snapshot via wrapper | **DONE** — PR #140 merged |
 | 2 | μ̂ autocorrelation per regime (closes HIGH-4) | **DONE** — PR #128 merged |
 | 3 | Param inventory rebuilt against committed config | **DONE** — in PR #125 §2.1 |
 | 4a | 3 baseline allocators (equal-weight, inverse-vol, fractional Kelly top-K) | **DONE** — PR #130 + PR #137 (fail-closed) merged |
-| 4b | Replay harness math (paired daily returns, regime buckets) | PR #131 open |
-| 4c | DSR / PBO multiple-comparison correction wired into harness | PR #132 open |
-| 4d | Hybrid Option F allocator (§5 / §8 Step 4 candidate) | PR #135 open |
-| 4e | WF cut loader for real data (replay against §1.4 detector) | PR #142 open |
-| 4f | Hard-only QP allocator (§5 Option D variant) | PR #135 open (combined with 4d) |
-| 4g | Run 5-baseline A/B + commit evidence JSON | PR #138 open (CLI driver) — depends on 4d / 4e / 4f / schema PR #134 |
-| 5 | Live shadow telemetry for operational parity (NOT a Sharpe gate) | PENDING — depends on 4g |
+| 4b | Replay harness math (paired daily returns, regime buckets) | **DONE** — PR #131 merged |
+| 4c | DSR / PBO multiple-comparison correction wired into harness | **DONE** — PR #132 merged |
+| 4d | Hybrid Option F allocator (§5 / §8 Step 4 candidate) | **DONE** — PR #146 merged |
+| 4e | WF cut loader for real data (replay against §1.4 detector) | **DONE** — PR #142 merged |
+| 4f | Hard-only QP allocator (§5 Option D variant) | **DONE** — PR #135 merged |
+| 4g | Run 5-baseline A/B + commit evidence JSON | IMPLEMENTATION READY — CLI/verdict driver PR #138 and schema PR #134 merged; evidence run pending |
+| 5 | Live shadow telemetry for operational parity (NOT a Sharpe gate) | SCHEMA DONE — PR #144 merged; implementation depends on 4g verdict |
 
 **Pass gate (per §8 + codex MED-6 + PRIME DIRECTIVE)**:
 - Zero hard-constraint regressions vs Step 1's `ConstraintSnapshot`

@@ -146,14 +146,14 @@ allocator swap.
 | Step 1a | `ConstraintSnapshot` contract + builder + validation | DONE (PR #126, merged) |
 | Step 1b | `solve_portfolio_qp_from_snapshot` wrapper | DONE (PR #127, merged) |
 | Step 1c | `BuildConstraintSnapshotTask` wired into `JointPortfolioQPJob` | DONE (PR #129, merged) |
-| Step 1d | Collapse 4 composed Tasks into one `BuildQPConstraintsTask` | PENDING |
-| Step 1e | Migrate `SolveMarkowitzQPTask` to consume snapshot via wrapper | IN PROGRESS |
+| Step 1d | Collapse 4 composed Tasks into one `BuildQPConstraintsTask` | PENDING cleanup |
+| Step 1e | Migrate `SolveMarkowitzQPTask` to consume snapshot via wrapper | DONE (PR #140, merged) |
 
-The intermediate state (sub-step 1c done, 1d/1e remaining) is strictly
-additive: the four composed Tasks still run and still stamp the same
-`ctx._qp_*` fields, plus `BuildConstraintSnapshotTask` *also* assembles
-the frozen view. Step 1d collapses the four into one once Step 1e proves
-the snapshot is sufficient on the live path.
+The intermediate state is still intentionally additive: the four
+composed Tasks run and stamp the same `ctx._qp_*` fields, and
+`BuildConstraintSnapshotTask` assembles the frozen view consumed by the
+solver wrapper. Step 1d remains a cleanup/refactor step after runtime
+deployment proves the snapshot path in daily operations.
 
 ### Pointers
 
