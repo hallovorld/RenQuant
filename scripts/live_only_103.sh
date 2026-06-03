@@ -16,6 +16,11 @@
 # based on the current hour (before 10 AM = "open", otherwise "preclose").
 set -uo pipefail
 
+if [ "${RQ_LEGACY_103_LIVE_ONLY_ENABLED:-0}" != "1" ]; then
+    echo "ERROR: live_only_103.sh is legacy rollback-only; set RQ_LEGACY_103_LIVE_ONLY_ENABLED=1 to run."
+    exit 2
+fi
+
 REPO_DIR="/Users/renhao/git/github/RenQuant"
 CONDA_PREFIX="/Users/renhao/miniconda3/envs/renquant"
 PYTHON="$CONDA_PREFIX/bin/python"
