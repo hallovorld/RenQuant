@@ -31,6 +31,18 @@ DEFAULT_SEEDS = (0, 1, 2, 3, 4)
 DEFAULT_AA_SEED_OFFSET = 1000
 DEFAULT_SIGMA_HORIZON_DAYS = 60
 REQUIRED_PROMOTION_REGIMES = ("BULL_CALM", "BULL_VOLATILE", "CHOPPY")
+PER_REGIME_OBSERVATION_DELTA_FIELDS = (
+    "cash_pct_mean",
+    "n_holdings_mean",
+    "kelly_candidate_count_total_mean",
+    "kelly_candidate_mean_mean",
+    "kelly_candidate_p50_mean",
+    "kelly_candidate_p90_mean",
+    "kelly_held_count_total_mean",
+    "kelly_held_mean_mean",
+    "kelly_held_p50_mean",
+    "kelly_held_p90_mean",
+)
 PREFERRED_AUTO_BASE_CONFIGS = (
     "strategy_config.golden.json",
     "strategy_config.json",
@@ -662,6 +674,35 @@ def per_regime_sharpe_lifts(
     return out
 
 
+def per_regime_observation_deltas(
+    control: dict[str, Any],
+    treatment: dict[str, Any],
+    required_regimes: tuple[str, ...] = REQUIRED_PROMOTION_REGIMES,
+    fields: tuple[str, ...] = PER_REGIME_OBSERVATION_DELTA_FIELDS,
+) -> dict[str, dict[str, dict[str, float | None]]]:
+    control_regimes = control.get("per_regime") or {}
+    treatment_regimes = treatment.get("per_regime") or {}
+    out: dict[str, dict[str, dict[str, float | None]]] = {}
+    for regime in required_regimes:
+        control_row = control_regimes.get(regime) or {}
+        treatment_row = treatment_regimes.get(regime) or {}
+        out[regime] = {}
+        for field in fields:
+            control_value = _finite(control_row.get(field))
+            treatment_value = _finite(treatment_row.get(field))
+            delta = (
+                treatment_value - control_value
+                if treatment_value is not None and control_value is not None
+                else None
+            )
+            out[regime][field] = {
+                "control": control_value,
+                "treatment": treatment_value,
+                "delta": delta,
+            }
+    return out
+
+
 def promotion_verdict(
     variant_metrics: dict[str, dict[str, Any]],
     placebo: dict[str, Any],
@@ -698,6 +739,11 @@ def promotion_verdict(
         else None
     )
     regime_lifts = per_regime_sharpe_lifts(
+        control,
+        treatment,
+        required_regimes=required_regimes,
+    )
+    regime_observation_deltas = per_regime_observation_deltas(
         control,
         treatment,
         required_regimes=required_regimes,
@@ -741,6 +787,7 @@ def promotion_verdict(
             "sharpe_lift": sharpe_lift,
             "aa_sharpe_lift": aa_sharpe_lift,
             "per_regime_sharpe_lifts": regime_lifts,
+            "per_regime_observation_deltas": regime_observation_deltas,
         },
         "thresholds": {
             "aa_max_abs_sharpe_lift": float(aa_max_abs_sharpe_lift),
