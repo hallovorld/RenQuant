@@ -381,17 +381,49 @@ limitation in the verdict JSON).** Rationale:
 - Option 3 is reserved for if RenQuant ever takes a vendor sector
   feed for production (an unrelated, larger decision).
 
-**The §4e loader (PR #142) consumes today's snapshot as the lower
-bound from `657950e`.** Cuts before that commit fall back to today's
-snapshot AND get tagged in their verdict JSON with
-`sector_snapshot_source = "today_fallback_pre_657950e"`. Cuts on or
-after that commit get `sector_snapshot_source = "today_snapshot"` —
-indistinguishable from the live config because today's map IS the
-live map at this audit's commit, and the per-cut snapshot frozen at
-loader-run time pins reproducibility going forward. The Step 4 verdict
-JSON MUST surface this field per-cut so a reviewer can immediately
-distinguish "the sector cap binding here is the cap the live system
-saw at this bar" from "we approximated with today's cap".
+**Status (2026-06-03 — read carefully).** Option 2 is the recommended
+target. It is NOT what the merged §4e loader does today. PR #142
+(`backtesting/renquant_104/kernel/portfolio_qp/wf_replay_loader.py`,
+commit `4d2d198`) explicitly omits sector / correlation caps from the
+replay snapshot ("Sector / correlation caps deliberately omitted —
+those are a follow-up…" in `_build_snapshot`), and the Step 4g driver
+(`run_ab_replay.py::constraint_fidelity_block`) only emits a fail-
+closed `constraint_fidelity` block when `sector_indicator` /
+`sector_cap_vec` are missing. **There is no `sector_snapshot_source`
+field on disk today; the snapshot-loading + verdict-JSON tagging
+described below is the pending follow-up this audit prescribes for
+the next §8 Step 4 sector-snapshot PR (call it Step 4h).**
+
+When that follow-up PR lands, the verdict JSON MUST tag each cut
+with one of three provenance values so a reviewer can distinguish
+"the sector cap binding here is exactly the cap the live system saw
+at this bar" from "we approximated with today's cap":
+
+- `git_history_snapshot` — Option 1 path. The cut's `sector_map` was
+  reconstructed from `git log -p backtesting/renquant_104/strategy_config.json`
+  at the cut date. Exact historical config. **Not implemented in
+  Option 2; reserved as the upgrade path** if Step 4 verdicts reveal
+  sector-cap-driven baseline differences.
+- `today_snapshot_post_657950e` — Option 2 path for cuts on or after
+  `657950e` (2026-04-21). Uses today's `sector_map`. **Still an
+  approximation.** `657950e` introduced a 38-name map (e.g. `XLK:
+  tech`, no `MSFT`); current `main` has a 156-name map (`XLK / MSFT
+  / AAPL: giant_tech`) plus intervening `strategy_config.json` edits.
+  Today's map ≠ the live map at the cut bar; the approximation is
+  bounded by config evolution between `657950e` and snapshot time
+  but is not zero.
+- `today_snapshot_pre_657950e` — Option 2 fallback for cuts before
+  `657950e`. The live system enforced **no** sector cap at all here,
+  so today-snapshot is strictly more conservative than what live ran.
+  This is the §8 Step 4 gate's preferred direction (false-positive
+  caps possible; false-negative caps impossible).
+
+Operationally for the follow-up PR: the loader writes the chosen
+enum into the per-cut verdict JSON; reviewers grep for the enum
+when reading any sector-cap-sensitive A/B verdict; any future Option
+1 upgrade flips matching cuts from `today_snapshot_post_657950e`
+to `git_history_snapshot` and the verdict-JSON consumer must accept
+both.
 
 ### What "verbatim live" is acceptable for
 
@@ -425,24 +457,33 @@ silently regenerated against a newer live config.
 
 ---
 
-## 6. Open items for the Step 4 loader PR
+## 6. Open items for the Step 4 sector-snapshot follow-up
 
-**Loader implementation: PR #142 (merged 2026-06-03, commit
+**Loader skeleton already merged: PR #142 (2026-06-03, commit
 `4d2d198`) — §8 Step 4e WF cut loader for A/B replay (sim DB →
-`AllocatorReplayBar`).** This audit memo is the source of truth for
-the loader's sector-cap contract; the cross-reference should be
-bidirectional (PR #142 description points back to this memo, and any
-future loader patch first re-reads this memo's §3 / §4 / §5 rules
-before editing the sector path).
+`AllocatorReplayBar`).** That PR landed the data path (bars,
+per-regime defaults, fail-closed `constraint_fidelity` gate) but
+**deliberately left the sector / correlation cap snapshot for a
+follow-up PR** ("Sector / correlation caps deliberately omitted —
+those are a follow-up…" in `_build_snapshot`). This audit memo is
+the source of truth for that follow-up's sector-cap contract; the
+cross-reference is bidirectional (PR #142 description points back
+to this memo, and the follow-up PR re-reads this memo's §3 / §4 /
+§5 rules before editing the sector path).
 
-These are not asks of this audit PR — they are the implementation
-items the loader PR will pick up:
+These are the implementation items the sector-snapshot follow-up
+PR ("Step 4h") will pick up:
 
 1. **Snapshot generator**: a one-shot script that walks the existing
    WF cuts under `artifacts/prod/wf_cuts/` and emits
-   `sector_snapshot.json` for each. For pre-snapshot cuts (no live
-   config history), document the policy: use today's map but flag the
-   cut in the manifest as `sector_snapshot_source = "today_fallback"`.
+   `sector_snapshot.json` for each. Per §5's three-enum provenance
+   contract, the manifest flags each cut with
+   `sector_snapshot_source ∈ { "git_history_snapshot",
+   "today_snapshot_post_657950e", "today_snapshot_pre_657950e" }`.
+   Option 2 (today-snapshot) is the default; cuts with
+   `cut_date < 2026-04-21` get the `_pre_657950e` variant; cuts on
+   or after get `_post_657950e`. The `git_history_snapshot` value is
+   reserved for the Option 1 upgrade.
 
 2. **Loader function** in the replay tooling: signature
    `load_sector_constraint(cut_dir, tickers, regime) -> (S, cap_vec, names, missing)`.
