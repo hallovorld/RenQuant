@@ -149,6 +149,98 @@ class TestSnapshotImmutability:
                 arr[0] = 99.0
 
 
+class TestSnapshotDoesNotMutateSourceArrays:
+    """**Codex #126 review regression guard.** The snapshot must own its
+    own arrays; constructing one must NOT freeze (or otherwise mutate)
+    the caller's arrays.
+
+    Bug codex caught: ``__post_init__`` was calling
+    ``arr.flags.writeable = False`` on the *passed-in* arrays, so
+    after a snapshot was built the caller's ``ctx._qp_w_*`` arrays
+    became read-only. That violated the "does not mutate ctx"
+    contract and broke the additive premise of this PR.
+    """
+
+    def test_direct_constructor_leaves_caller_arrays_writable(self):
+        kw = _valid_kwargs()
+        # Hold references to the caller-owned arrays
+        caller_w_current = kw["w_current"]
+        caller_w_upper = kw["w_upper"]
+        caller_w_upper_hard = kw["w_upper_hard"]
+        caller_dw_max = kw["dw_max"]
+        caller_wash = kw["wash_sale_mask"]
+
+        snap = ConstraintSnapshot(**kw)
+
+        # The caller's arrays must remain writable AFTER construction
+        for name, arr in [
+            ("w_current", caller_w_current),
+            ("w_upper", caller_w_upper),
+            ("w_upper_hard", caller_w_upper_hard),
+            ("dw_max", caller_dw_max),
+            ("wash_sale_mask", caller_wash),
+        ]:
+            assert arr.flags.writeable, (
+                f"caller's {name} got frozen by snapshot construction "
+                f"(codex #126 bug)"
+            )
+
+        # The snapshot's arrays must be DISTINCT objects (defensive copy)
+        for attr in ("w_current", "w_upper", "w_upper_hard",
+                     "dw_max", "wash_sale_mask"):
+            snap_arr = getattr(snap, attr)
+            caller_arr = kw[attr]
+            assert snap_arr is not caller_arr, (
+                f"snapshot {attr} is the same object as the caller's — "
+                "no defensive copy was made"
+            )
+
+    def test_build_from_ctx_leaves_ctx_arrays_writable(self):
+        """The codex repro, exactly as posted on #126."""
+        from types import SimpleNamespace
+        ctx = SimpleNamespace()
+        ctx._qp_tickers = ["A", "B"]
+        ctx._qp_w_current = np.array([0.10, 0.05])
+        ctx._qp_w_upper_hard = np.array([0.20, 0.20])
+        ctx._qp_w_upper = np.array([0.20, 0.20])
+        ctx._qp_dw_max = np.array([0.50, 0.50])
+        ctx._qp_wash_mask = np.array([False, False])
+
+        _ = build_snapshot_from_ctx(ctx)
+
+        # The codex repro: this assignment must succeed
+        ctx._qp_w_upper[0] = 0.1
+        assert ctx._qp_w_upper[0] == 0.1, (
+            "ctx._qp_w_upper was frozen by build_snapshot_from_ctx"
+        )
+        # All other ctx arrays remain writable
+        ctx._qp_w_current[1] = 0.99
+        ctx._qp_w_upper_hard[0] = 0.30
+        ctx._qp_dw_max[0] = 0.40
+        ctx._qp_wash_mask[1] = True
+
+    def test_caller_mutation_does_not_leak_into_snapshot(self):
+        """The dual direction: the snapshot's contents are independent
+        of the caller's subsequent mutations."""
+        from types import SimpleNamespace
+        ctx = SimpleNamespace()
+        ctx._qp_tickers = ["A"]
+        ctx._qp_w_current = np.array([0.10])
+        ctx._qp_w_upper_hard = np.array([0.20])
+        ctx._qp_w_upper = np.array([0.15])
+
+        snap = build_snapshot_from_ctx(ctx)
+
+        # Caller mutates their own array
+        ctx._qp_w_upper[0] = 0.05
+
+        # The snapshot's value is unchanged (defensive copy worked)
+        assert float(snap.w_upper[0]) == 0.15, (
+            f"snapshot w_upper={snap.w_upper[0]} leaked from caller's "
+            f"mutation (expected 0.15)"
+        )
+
+
 class TestSnapshotMatchesKwargs:
     """``build_snapshot_from_ctx`` must produce a snapshot whose fields
     match what ``solve_portfolio_qp`` consumes via kwargs today.

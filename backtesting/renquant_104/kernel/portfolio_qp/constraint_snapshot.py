@@ -92,9 +92,17 @@ class ConstraintSnapshot:
     contract_version: str = "v1-2026-06-03"
 
     def __post_init__(self) -> None:
-        # Run shape/dtype/finiteness validation. Frozen dataclasses
-        # require object.__setattr__ for any normalisation.
+        # Validate first (shape / dtype / finiteness / soft<=hard).
         _validate(self)
+        # **Defensive copy** every ndarray BEFORE freezing it. Codex
+        # #126 review caught the bug where constructing a snapshot
+        # marked the caller's array read-only via ``flags.writeable``,
+        # mutating their ctx and breaking the "snapshot does not
+        # mutate ctx" contract. The snapshot owns its own arrays; the
+        # caller keeps theirs writable.
+        #
+        # Frozen dataclasses require ``object.__setattr__`` for the
+        # in-place attribute replacement.
         for attr in (
             "w_current", "w_upper_hard", "w_upper",
             "dw_max", "wash_sale_mask",
@@ -102,7 +110,9 @@ class ConstraintSnapshot:
         ):
             arr = getattr(self, attr)
             if isinstance(arr, np.ndarray):
-                arr.flags.writeable = False
+                owned = arr.copy()
+                owned.flags.writeable = False
+                object.__setattr__(self, attr, owned)
 
 
 def _validate(snap: "ConstraintSnapshot") -> None:
