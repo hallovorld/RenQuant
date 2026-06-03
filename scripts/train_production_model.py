@@ -76,10 +76,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--train-start-date", type=str, default=None,
         help=(
-            "ISO date (e.g. 2022-01-01); only rows where panel.date >= start are "
-            "used. Defaults to None (use full panel history). Useful for Track D "
-            "regime-drift retraining where only recent data is gradient-relevant. "
-            "Combined with --train-cutoff: rows with start <= date < cutoff."
+            "RESEARCH-ONLY. ISO date (e.g. 2022-01-01); only rows where "
+            "panel.date >= start are used. Defaults to None (use full panel "
+            "history). NOT wired to any production training cron / scheduler "
+            "/ default driver. Setting this flag produces a NON-PROMOTABLE "
+            "artifact per the 2026-06-03 Track D negative finding "
+            "(doc/research/2026-06-03-track-d-declare-done-negative.md): "
+            "shortening the window lost 0.44 Sharpe vs full-history baseline "
+            "because pooled-mean training under-uses high-dispersion BEAR / "
+            "CHOPPY rows when the recent slice is BULL_CALM-dominated. The "
+            "flag stays in-tree for replication of that negative result and "
+            "for future per-regime gradient-weighting experiments. Combined "
+            "with --train-cutoff: rows with start <= date < cutoff."
         ),
     )
     p.add_argument(
