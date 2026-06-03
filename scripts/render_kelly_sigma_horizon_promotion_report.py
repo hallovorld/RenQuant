@@ -63,6 +63,22 @@ def _metric_summary_text(metrics: dict[str, Any], metric: str) -> str:
     return str(row.get("mean_pm_std") or _fmt_value(row.get("mean")))
 
 
+def _metric_delta_text(metrics: dict[str, Any], metric: str) -> str:
+    row = metrics.get(metric)
+    if not isinstance(row, dict):
+        return "not provided"
+    delta = row.get("delta")
+    if delta is None:
+        control_status = row.get("control_status", "missing")
+        treatment_status = row.get("treatment_status", "missing")
+        status = f"{control_status}/{treatment_status}"
+        return f"not provided ({status})"
+    return (
+        f"{_fmt_value(delta)} "
+        f"({_fmt_value(row.get('control_mean'))} -> {_fmt_value(row.get('treatment_mean'))})"
+    )
+
+
 def _variant_seed_count(variants: list[Any]) -> int | None:
     counts = {
         len(variant.get("seeds") or [])
@@ -200,6 +216,41 @@ def _append_placebo_lines(lines: list[str], status: str, items: list[dict[str, A
         )
 
 
+def _append_comparison_lines(lines: list[str], summary: dict[str, Any]) -> None:
+    comparisons = summary.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return
+    by_variant = comparisons.get("by_variant")
+    by_regime = comparisons.get("by_regime")
+    if not isinstance(by_variant, dict) and not isinstance(by_regime, dict):
+        return
+
+    control = _fmt_value(comparisons.get("control_variant"))
+    treatment = _fmt_value(comparisons.get("treatment_variant"))
+    lines.append("## A/B comparison deltas")
+    lines.append(f"- Comparison: {control} -> {treatment}")
+    if isinstance(by_variant, dict):
+        metrics = by_variant.get("metrics") if isinstance(by_variant.get("metrics"), dict) else {}
+        metric_text = "; ".join(
+            f"{metric}_delta={_metric_delta_text(metrics, metric)}"
+            for metric in CORE_METRICS
+        )
+        lines.append(f"- ALL: status={_fmt_value(by_variant.get('status'))}; {metric_text}")
+    if isinstance(by_regime, dict):
+        for regime in PROMOTION_REGIMES:
+            row = by_regime.get(regime)
+            if not isinstance(row, dict):
+                continue
+            metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+            metric_text = "; ".join(
+                f"{metric}_delta={_metric_delta_text(metrics, metric)}"
+                for metric in CORE_METRICS
+            )
+            lines.append(
+                f"- {regime}: status={_fmt_value(row.get('status'))}; {metric_text}"
+            )
+
+
 def _append_regime_sections(lines: list[str], summary: dict[str, Any]) -> None:
     by_variant_regime = summary.get("by_variant_regime")
     if not isinstance(by_variant_regime, dict):
@@ -253,6 +304,9 @@ def render_report(
         lines.append("")
     _append_placebo_lines(lines, placebo_state, placebo_items)
     lines.append("")
+    _append_comparison_lines(lines, summary)
+    if lines[-1] != "":
+        lines.append("")
     _append_regime_sections(lines, summary)
     return "\n".join(lines).rstrip() + "\n"
 

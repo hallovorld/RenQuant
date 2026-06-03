@@ -53,6 +53,13 @@ def _summary_payload() -> dict:
         "mean_pm_std": f"{mean} +/- null",
         "status": status,
     }
+    delta = lambda control, treatment: {  # noqa: E731
+        "control_mean": control,
+        "treatment_mean": treatment,
+        "delta": treatment - control,
+        "control_status": "available",
+        "treatment_status": "available",
+    }
     return {
         "by_variant": {
             "B_sigma_horizon_60": {
@@ -100,6 +107,44 @@ def _summary_payload() -> dict:
                 },
             },
         },
+        "comparisons": {
+            "control_variant": "A_golden",
+            "treatment_variant": "B_sigma_horizon_60",
+            "by_variant": {
+                "status": "available",
+                "metrics": {
+                    "apy": delta(0.1, 0.2),
+                    "sharpe": delta(0.5, 0.9),
+                    "maxdd": delta(-0.08, -0.06),
+                    "cash_pct": delta(0.5, 0.3),
+                    "kelly_target_pct": delta(0.03, 0.08),
+                },
+            },
+            "by_regime": {
+                "BULL_CALM": {
+                    "status": "available",
+                    "metrics": {
+                        "apy": delta(0.1, 0.2),
+                        "sharpe": delta(0.5, 0.9),
+                        "maxdd": delta(-0.08, -0.06),
+                        "cash_pct": delta(0.5, 0.3),
+                        "kelly_target_pct": delta(0.03, 0.08),
+                    },
+                },
+                "BULL_VOLATILE": {
+                    "status": "missing_control",
+                    "metrics": {
+                        "sharpe": {
+                            "control_mean": None,
+                            "treatment_mean": 0.4,
+                            "delta": None,
+                            "control_status": "missing",
+                            "treatment_status": "available",
+                        },
+                    },
+                },
+            },
+        },
     }
 
 
@@ -130,6 +175,10 @@ def test_render_report_includes_promotion_checklist_phrases(tmp_path: Path) -> N
     assert "placebo evidence did not pass" in report
     assert "DSR/PBO status" in report
     assert "Placebo evidence status: passed" in report
+    assert "A/B comparison deltas" in report
+    assert "Comparison: A_golden -> B_sigma_horizon_60" in report
+    assert "BULL_CALM: status=available" in report
+    assert "cash_pct_delta=-0.2 (0.5 -> 0.3)" in report
     assert "BULL_CALM metrics" in report
     assert "BULL_VOLATILE metrics" in report
     assert "CHOPPY metrics" in report
