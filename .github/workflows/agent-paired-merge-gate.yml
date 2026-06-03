@@ -1,0 +1,38 @@
+name: agent-paired-merge-gate
+# Manages agent:manual-hold on paired-mirror PRs in this repo.
+# Wraps `_agent-paired-merge-gate-template.yml` per
+# `doc/ops/agent-automation-v2-design.md §3.5`.
+
+on:
+  pull_request:
+    types: [opened, labeled, unlabeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to evaluate (defaults to all open paired-mirror PRs)"
+        required: false
+        type: string
+  # Schedule poll: catches the case where the sister PR merged in a
+  # different repo (no event fires here). 15 min cadence — paired PRs
+  # are not time-critical, and this keeps the gate snappy without
+  # burning Actions minutes.
+  schedule:
+    - cron: '*/15 * * * *'
+
+# Multiple concurrent evaluations of the same PR could race on label
+# add/remove. Queue per PR.
+concurrency:
+  group: agent-paired-merge-gate-${{ github.event.pull_request.number || inputs.pr_number || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    uses: ./.github/workflows/_agent-paired-merge-gate-template.yml
+    permissions:
+      pull-requests: write
+      issues: write
+      actions: write
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}

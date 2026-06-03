@@ -1,0 +1,266 @@
+name: agent-paired-merge-gate-template
+# Cross-repo paired-PR coordination per
+# `doc/ops/agent-automation-v2-design.md §3.5`.
+#
+# Use case: an umbrella PR (RenQuant) and a subrepo PR (e.g.
+# renquant-pipeline) carry the same byte-equivalent change. They must
+# merge in a deterministic order (canonical first, mirror after) so
+# the umbrella's byte-equivalence tests don't transiently fail
+# between the two merges.
+#
+# The label contract (operator wires by hand at PR open time):
+#
+#   On the CANONICAL PR (the source of truth):
+#     paired-canonical
+#     paired:<owner>/<mirror-repo>#<mirror-pr-number>
+#
+#   On the MIRROR PR (waits for canonical to merge):
+#     paired-mirror
+#     paired:<owner>/<canonical-repo>#<canonical-pr-number>
+#     agent:manual-hold              ← THIS workflow manages this label
+#
+# Behavior of THIS workflow (it owns the mirror side):
+#
+#   1. On `pull_request:opened/labeled/unlabeled/synchronize` for SELF,
+#      OR on every 15-minute schedule poll for all open paired-mirror
+#      PRs in this repo, OR on `workflow_dispatch` for a specific PR:
+#      look up the sister PR named by `paired:<sister>` label and act
+#      on its state:
+#
+#      sister state    | action on self
+#      ----------------+------------------------------------------------
+#      OPEN            | ensure self has agent:manual-hold; post (or
+#                      |   refresh) a "🔒 waiting on <sister>" comment
+#      MERGED          | remove agent:manual-hold; dispatch
+#                      |   agent-auto-merge so self re-evaluates the
+#                      |   8-gate workflow
+#      CLOSED          | keep agent:manual-hold; post a warning
+#                      |   "sister abandoned — consider closing self"
+#
+#   2. The CANONICAL PR is NOT held by this workflow — canonical merges
+#      normally via the standard Phase B auto-merge or manual path. The
+#      mirror's `agent:manual-hold` releases automatically once canonical
+#      has merged, then mirror's own auto-merge gate fires.
+#
+# Symmetric pair edge case: if BOTH PRs in a pair carry `paired-mirror`
+# (no canonical designation), both will have `agent:manual-hold` and
+# the auto-merge gate will deadlock. Operator breaks the deadlock by
+# removing `agent:manual-hold` from one — that one becomes the de-facto
+# canonical, merges, and the other unblocks automatically. The
+# canonical-mirror split is the recommended pattern; symmetric is
+# supported but requires one manual unhold.
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        type: string
+        required: false
+        default: ""
+        description: "Explicit PR number to evaluate. Empty = derive from event (pull_request) or scan all open paired-mirror PRs (schedule)."
+    secrets:
+      git_push_token:
+        required: false
+        description: "PAT or App token with pull-requests:write + cross-repo read for the sister repo. Falls back to github.token (won't see sister state across repos)."
+
+permissions:
+  pull-requests: write
+  issues: write
+  actions: write          # workflow_dispatch agent-auto-merge
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build PR worklist
+        id: list
+        env:
+          GH_TOKEN: ${{ secrets.git_push_token || github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          EXPLICIT_PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          # Three sources of PR numbers to evaluate:
+          #   - workflow_dispatch / explicit input
+          #   - pull_request event (single PR)
+          #   - schedule (scan all open paired-mirror PRs)
+          if [ -n "$EXPLICIT_PR" ]; then
+            echo "[$EXPLICIT_PR]" > worklist.json
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "[$EVENT_PR]" > worklist.json
+          else
+            # schedule: list all open PRs labeled paired-mirror
+            gh pr list --repo "$REPO" --state open --label paired-mirror \
+              --json number --limit 50 \
+              | jq '[.[].number]' > worklist.json
+          fi
+          COUNT=$(jq length worklist.json)
+          echo "evaluating $COUNT PR(s)"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          {
+            echo "worklist<<WORKLIST_EOF"
+            cat worklist.json
+            echo "WORKLIST_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate each PR
+        if: steps.list.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.git_push_token || github.token }}
+          REPO: ${{ github.repository }}
+          WORKLIST: ${{ steps.list.outputs.worklist }}
+        run: |
+          set -euo pipefail
+
+          # Hoisted helpers for readability.
+          parse_sister_ref() {
+            # From JSON labels array, find paired:<owner>/<repo>#<n>.
+            # Returns "" if not found.
+            local labels_json="$1"
+            echo "$labels_json" | jq -r '.[]' \
+              | grep -E '^paired:[^/]+/[^#]+#[0-9]+$' \
+              | head -1 || true
+          }
+
+          ensure_label() {
+            local pr="$1" label="$2"
+            local labels="$3"
+            if echo "$labels" | grep -q "\"${label}\""; then
+              return 0
+            fi
+            # Auto-create on first use (mirrors Phase A/B pattern).
+            if ! gh label list --repo "$REPO" --search "$label" \
+                  --json name --jq '.[].name' | grep -qx "$label"; then
+              local color="FBCA04" desc="Paired-PR coordination"
+              [ "$label" = "agent:manual-hold" ] && { color="B60205"; desc="Universal stop for agent automation"; }
+              gh label create "$label" --repo "$REPO" --color "$color" --description "$desc" --force
+            fi
+            gh pr edit "$pr" --repo "$REPO" --add-label "$label"
+          }
+
+          remove_label_if_present() {
+            local pr="$1" label="$2" labels="$3"
+            if echo "$labels" | grep -q "\"${label}\""; then
+              gh pr edit "$pr" --repo "$REPO" --remove-label "$label"
+            fi
+          }
+
+          for pr_number in $(echo "$WORKLIST" | jq '.[]'); do
+            echo ""
+            echo "── evaluating PR #${pr_number} ──"
+
+            # Pull current state.
+            gh pr view "$pr_number" --repo "$REPO" --json \
+              labels,state,headRefOid > pr.json
+            LABELS=$(jq -c '[.labels[].name]' pr.json)
+            STATE=$(jq -r .state pr.json)
+
+            if [ "$STATE" != "OPEN" ]; then
+              echo "PR not open (state=$STATE); skipping"
+              continue
+            fi
+
+            # Phase C only manages the mirror side.
+            if ! echo "$LABELS" | grep -q '"paired-mirror"'; then
+              echo "no paired-mirror label; not a mirror; skipping"
+              continue
+            fi
+
+            # Find sister ref.
+            SISTER_REF=$(parse_sister_ref "$LABELS")
+            if [ -z "$SISTER_REF" ]; then
+              echo "paired-mirror present but no paired:<sister> label; ensuring hold + posting warning"
+              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
+              gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
+              🔒 \`agent-paired-merge-gate\`: PR is labeled \`paired-mirror\` but no \`paired:<owner>/<repo>#<n>\` companion label is set. Auto-merge held.
+
+              Add the sister-PR reference label to release. Format example: \`paired:hallovorld/renquant-pipeline#42\`.
+              EOF
+              )"
+              continue
+            fi
+
+            # Parse paired:owner/repo#N.
+            REF=${SISTER_REF#paired:}
+            SISTER_OWNER_REPO=${REF%#*}
+            SISTER_NUM=${REF#*#}
+            echo "sister: $SISTER_OWNER_REPO #$SISTER_NUM"
+
+            # Cross-repo lookup. With github.token this fails on
+            # private sisters; AGENT_GIT_PUSH_TOKEN should have the
+            # cross-repo read scope.
+            SISTER=$(gh api "repos/${SISTER_OWNER_REPO}/pulls/${SISTER_NUM}" 2>/dev/null || echo "{}")
+            if [ "$SISTER" = "{}" ]; then
+              echo "could not fetch sister; keeping hold + posting warning"
+              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
+              gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
+              ⚠️ \`agent-paired-merge-gate\`: cannot read sister PR \`${SISTER_REF}\` (404 or permission). Auto-merge held.
+
+              Verify the sister PR exists and that \`AGENT_GIT_PUSH_TOKEN\` has cross-repo read scope.
+              EOF
+              )"
+              continue
+            fi
+
+            SISTER_STATE=$(jq -r '.state' <<< "$SISTER")
+            SISTER_MERGED=$(jq -r '.merged' <<< "$SISTER")
+            SISTER_URL=$(jq -r '.html_url' <<< "$SISTER")
+            echo "sister state=$SISTER_STATE merged=$SISTER_MERGED"
+
+            # Marker so we don't double-post the "waiting" comment on
+            # every schedule fire.
+            WAITING_MARKER="<!-- paired-merge-gate:waiting:${SISTER_REF} -->"
+            ABANDONED_MARKER="<!-- paired-merge-gate:abandoned:${SISTER_REF} -->"
+
+            if [ "$SISTER_MERGED" = "true" ]; then
+              echo "sister merged; releasing hold and dispatching auto-merge"
+              remove_label_if_present "$pr_number" "agent:manual-hold" "$LABELS"
+              # Trigger auto-merge re-evaluation. Won't actually merge
+              # unless the other 7 gates pass — Phase C just releases
+              # the gate that was specifically waiting on the sister.
+              if gh workflow list --repo "$REPO" --json name --jq '.[].name' | grep -qx "agent-auto-merge"; then
+                gh workflow run agent-auto-merge.yml --repo "$REPO" -f pr_number="$pr_number" 2>/dev/null \
+                  || echo "(agent-auto-merge has no workflow_dispatch input; will re-fire on next review/check_suite)"
+              fi
+              gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
+              ✅ \`agent-paired-merge-gate\`: sister PR ${SISTER_URL} merged. \`agent:manual-hold\` removed; the auto-merge gate will now evaluate the remaining 7 conditions.
+              EOF
+              )"
+            elif [ "$SISTER_STATE" = "closed" ] && [ "$SISTER_MERGED" != "true" ]; then
+              echo "sister closed without merge; keeping hold; warning"
+              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
+              # Skip if we've already posted the abandoned marker.
+              if gh pr view "$pr_number" --repo "$REPO" --json comments \
+                   --jq '.comments[].body' | grep -qF "$ABANDONED_MARKER"; then
+                echo "already posted abandoned warning; skipping"
+              else
+                gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
+                ${ABANDONED_MARKER}
+                ⚠️ \`agent-paired-merge-gate\`: sister PR ${SISTER_URL} was **closed without merging**. This mirror PR is likely also abandoned.
+
+                Recommended action: close this PR as well, OR remove the \`paired-mirror\` label to break the contract and merge standalone (only if the change is also valid standalone — typically it isn't, since mirrors are byte-equivalent of the canonical).
+                EOF
+                )"
+              fi
+            else
+              echo "sister open; ensuring hold"
+              ensure_label "$pr_number" "agent:manual-hold" "$LABELS"
+              # Skip if we've already posted the waiting marker (the
+              # 15-min poll shouldn't spam comments).
+              if gh pr view "$pr_number" --repo "$REPO" --json comments \
+                   --jq '.comments[].body' | grep -qF "$WAITING_MARKER"; then
+                echo "already posted waiting comment; skipping"
+              else
+                gh pr comment "$pr_number" --repo "$REPO" --body "$(cat <<EOF
+                ${WAITING_MARKER}
+                🔒 \`agent-paired-merge-gate\`: waiting on sister PR ${SISTER_URL} to merge first. \`agent:manual-hold\` ensured.
+
+                Once the sister merges, this PR's hold will release automatically and the auto-merge gate will re-evaluate.
+                EOF
+                )"
+              fi
+            fi
+          done

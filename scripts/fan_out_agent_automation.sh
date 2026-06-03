@@ -254,6 +254,39 @@ jobs:
       git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
 '
 
+# v2 Phase C wrapper (per doc/ops/agent-automation-v2-design.md
+# §3.5). Cross-repo paired-PR coordination: manages
+# agent:manual-hold on paired-mirror PRs based on sister state.
+
+readonly WRAPPER_PAIRED_MERGE_GATE='name: agent-paired-merge-gate
+# Manages agent:manual-hold on paired-mirror PRs.
+# Wraps RenQuant umbrella'\''s reusable template.
+
+on:
+  pull_request:
+    types: [opened, labeled, unlabeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to evaluate (defaults to all open paired-mirror PRs)"
+        required: false
+        type: string
+  schedule:
+    - cron: '\''*/15 * * * *'\''
+
+concurrency:
+  group: agent-paired-merge-gate-${{ github.event.pull_request.number || inputs.pr_number || '\''scheduled'\'' }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-paired-merge-gate-template.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number || '\'''\'' }}
+    secrets:
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
+'
+
 # Generic review + fix prompts fetched from the umbrella's canon
 # copy at runtime so this script doesn't fork its own version of them.
 # Per-repo customization is a follow-up PR each maintainer opens.
@@ -289,6 +322,7 @@ for repo in "${REPOS[@]}"; do
                    .github/workflows/agent-review-classify.yml        (v2 Phase A)
                    .github/workflows/agent-pre-merge-rebase.yml       (v2 Phase B)
                    .github/workflows/agent-auto-merge.yml             (v2 Phase B)
+                   .github/workflows/agent-paired-merge-gate.yml      (v2 Phase C)
     fetch umbrella default prompts → .github/agent-{review,fix}-prompt.md
     git add .github/ && git commit
     git push -u origin $BRANCH
@@ -323,6 +357,8 @@ EOF
     # v2 Phase B:
     printf '%s' "$WRAPPER_PRE_MERGE_REBASE"  > .github/workflows/agent-pre-merge-rebase.yml
     printf '%s' "$WRAPPER_AUTO_MERGE"        > .github/workflows/agent-auto-merge.yml
+    # v2 Phase C:
+    printf '%s' "$WRAPPER_PAIRED_MERGE_GATE" > .github/workflows/agent-paired-merge-gate.yml
 
     # Fetch umbrella default prompts — generic across all renquant
     # repos. Per-repo customization (backtesting data-flow gotchas,
