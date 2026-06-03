@@ -29,6 +29,7 @@ from kernel.portfolio_qp.baseline_allocators import (  # noqa: E402
     AllocatorResult,
     equal_weight_top_k,
     fractional_kelly_top_k,
+    hard_only_qp_allocator,
     inverse_vol_top_k,
 )
 from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot  # noqa: E402
@@ -386,3 +387,148 @@ class TestFullHardConstraintEnforcement:
             assert l1 <= 0.05 + 1e-9, f"{name}: turnover_max violated ({l1})"
             assert sector_load <= 0.20 + 1e-9, f"{name}: sector cap violated ({sector_load})"
             assert pair_sum <= 0.20 + 1e-9, f"{name}: corr-pair cap violated ({pair_sum})"
+
+
+
+class TestHardOnlyQPAllocator:
+    """§8 Step 4f — 5th baseline. The QP solver with EVERY soft-penalty
+    objective term zeroed (cvar=0, robust=0, cash_drag=0, signal_decay=0,
+    tax=0, impact=0). Isolates the mean-variance core + hard constraints
+    so the offline A/B can attribute lift between the soft-penalty stack
+    and the optimisation gain.
+    """
+
+    def test_basic_feasible_solve(self):
+        """Healthy 4-asset snapshot → optimal status, valid allocator output.
+
+        μ̂ all positive, σ̂ uniform, no binding caps → solver should
+        invest non-trivially in the highest-μ̂ names, hard caps respected.
+        """
+        snap = _snap(4, w_upper_hard=np.full(4, 0.40), turnover_max=None)
+        mu = np.array([0.05, 0.04, 0.03, 0.02])
+        sigma = np.array([0.10, 0.10, 0.10, 0.10])
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+        assert isinstance(res, AllocatorResult)
+        assert res.status == "optimal"
+        # Hard cap respected per-asset
+        assert (res.target_w <= snap.w_upper_hard + 1e-6).all()
+        assert (res.target_w >= -1e-6).all()
+        # Cash budget respected
+        assert res.target_w.sum() <= 1.0 - snap.cash_reserve + 1e-6
+        # delta_w + w_current == target_w (math sanity)
+        np.testing.assert_allclose(
+            res.target_w, snap.w_current + res.delta_w, atol=1e-9,
+        )
+        # selected_indices match |Δw| > 1e-9
+        expected_sel = tuple(
+            int(i) for i in np.where(np.abs(res.delta_w) > 1e-9)[0]
+        )
+        assert res.selected_indices == expected_sel
+        # At least one name was actually sized (μ̂ > 0 everywhere)
+        assert len(res.selected_indices) > 0
+
+    def test_over_cap_holding_infeasible(self):
+        """Contradictory hard constraints → ``infeasible:hard_only_qp:...``.
+
+        High cash_reserve (0.95) + dw_max=0 (can't sell) + existing
+        holdings totalling 0.50 → solver cannot satisfy
+        Σwp ≤ 0.05 because wp is locked to w_current. The allocator
+        must surface this as ``infeasible:hard_only_qp:<solver_status>``
+        per the §8 Step 4f spec.
+        """
+        snap = _snap(
+            3,
+            w_current=np.array([0.20, 0.20, 0.10]),
+            w_upper_hard=np.full(3, 0.30),
+            w_upper=np.full(3, 0.30),
+            cash_reserve=0.95,
+            dw_max=np.zeros(3),  # locked — no trade possible
+            turnover_max=None,
+        )
+        mu = np.array([0.05, 0.04, 0.03])
+        sigma = np.array([0.10, 0.10, 0.10])
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+        assert isinstance(res, AllocatorResult)
+        assert res.status.startswith("infeasible:hard_only_qp:"), (
+            f"expected infeasible:hard_only_qp:* prefix, got {res.status!r}"
+        )
+        # Infeasible fallback per solver convention: Δw=0, target=w_current
+        np.testing.assert_allclose(res.delta_w, np.zeros(3), atol=1e-9)
+        np.testing.assert_allclose(res.target_w, snap.w_current, atol=1e-9)
+
+    def test_sector_cap_respected(self):
+        """Hard sector cap binds — solver output must respect it.
+
+        3 assets all in sector 0 with cap 0.15; the unconstrained
+        QP would push allocation toward the 0.40 per-asset cap. After
+        the sector cap the sector load must be ≤ 0.15.
+        """
+        snap = _snap(
+            3,
+            w_upper_hard=np.full(3, 0.40),
+            w_upper=np.full(3, 0.40),
+            turnover_max=None,
+            sector_indicator=np.array([[1.0, 1.0, 1.0]]),
+            sector_cap_vec=np.array([0.15]),
+            sector_names=("Tech",),
+        )
+        mu = np.array([0.05, 0.04, 0.03])
+        sigma = np.array([0.10, 0.10, 0.10])
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+        assert res.status == "optimal"
+        sector_load = float(res.target_w.sum())
+        assert sector_load <= 0.15 + 1e-6, (
+            f"sector cap violated: load={sector_load}"
+        )
+
+    def test_replay_harness_shape_contract(self):
+        """Integration with the §8 Step 4b replay harness contract.
+
+        The harness expects ``AllocatorResult`` with:
+          - ``delta_w``: np.ndarray, shape (snap.n,), float
+          - ``target_w``: np.ndarray, shape (snap.n,), float
+          - ``status``: str
+          - ``selected_indices``: tuple of int
+        AND ``allocator(snap, mu=..., sigma=...)`` must be callable
+        with that exact kwargs shape (the
+        ``AllocatorFn = Callable[..., AllocatorResult]`` contract
+        documented in ``allocator_replay.py``).
+
+        We replay one synthetic bar end-to-end against the harness
+        contract — fwd_return → daily P&L → turnover cost — without
+        importing the (not-yet-merged) replay harness module. Shape +
+        dtype + cost-math sanity is what the harness keys off.
+        """
+        n = 4
+        snap = _snap(n, w_upper_hard=np.full(n, 0.40), turnover_max=None)
+        mu = np.array([0.05, 0.04, 0.03, 0.02])
+        sigma = np.array([0.10, 0.10, 0.10, 0.10])
+        fwd_return = np.array([0.01, -0.005, 0.003, 0.002])
+        cost_per_trade_bps = 5.0
+
+        # Call signature must accept (snap, mu=, sigma=) per AllocatorFn
+        res = hard_only_qp_allocator(snap, mu=mu, sigma=sigma)
+
+        # Replay-harness shape contract — these are the EXACT
+        # access patterns in allocator_replay.replay_one_allocator.
+        assert isinstance(res, AllocatorResult)
+        assert isinstance(res.delta_w, np.ndarray)
+        assert isinstance(res.target_w, np.ndarray)
+        assert res.delta_w.shape == (n,)
+        assert res.target_w.shape == (n,)
+        assert res.delta_w.dtype == np.float64
+        assert res.target_w.dtype == np.float64
+        assert isinstance(res.status, str)
+        assert isinstance(res.selected_indices, tuple)
+        for i in res.selected_indices:
+            assert isinstance(i, int)
+
+        # Reproduce the replay-harness daily-return math on this bar
+        # (gross P&L − turnover cost) — proves the harness can compute
+        # well-defined floats from the allocator's outputs.
+        gross = float(np.sum(res.target_w * fwd_return))
+        turn = float(np.sum(np.abs(res.delta_w)))
+        cost = turn * cost_per_trade_bps * 1e-4
+        daily = gross - cost
+        assert np.isfinite(daily), "daily P&L must be finite"
+        assert turn >= 0.0
