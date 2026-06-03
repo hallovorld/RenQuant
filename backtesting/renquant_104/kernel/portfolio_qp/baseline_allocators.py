@@ -46,6 +46,89 @@ class AllocatorResult:
     selected_indices: tuple[int, ...]  # indices that were sized (post top-K)
 
 
+_CONSTRAINT_FAMILIES = (
+    "w_upper_hard",
+    "w_lower",
+    "wash_sale",
+    "dw_max",
+    "cash_budget",
+    "turnover_max",
+    "sector_cap",
+    "corr_group_cap",
+    "gross_max",
+)
+
+
+def _constraint_violations(
+    snap: ConstraintSnapshot,
+    target: np.ndarray,
+    delta: np.ndarray,
+    *,
+    tol: float = 1e-9,
+) -> dict[str, bool]:
+    """Return hard-constraint violations for a proposed baseline result."""
+    out = {family: False for family in _CONSTRAINT_FAMILIES}
+    n = snap.n
+
+    if (target > snap.w_upper_hard + tol).any():
+        out["w_upper_hard"] = True
+    if (target < snap.w_lower - tol).any():
+        out["w_lower"] = True
+    if snap.wash_sale_mask.any():
+        if (delta[snap.wash_sale_mask.astype(bool)] > tol).any():
+            out["wash_sale"] = True
+    if snap.dw_max is not None:
+        if (np.abs(delta) > snap.dw_max + tol).any():
+            out["dw_max"] = True
+
+    budget = max(0.0, 1.0 - float(snap.cash_reserve))
+    if float(target.sum()) > budget + tol:
+        out["cash_budget"] = True
+
+    if snap.turnover_max is not None:
+        if float(np.sum(np.abs(delta))) > float(snap.turnover_max) + tol:
+            out["turnover_max"] = True
+
+    if snap.sector_indicator is not None and snap.sector_cap_vec is not None:
+        if (snap.sector_indicator @ target > snap.sector_cap_vec + tol).any():
+            out["sector_cap"] = True
+
+    for trip in snap.corr_group_pairs or ():
+        try:
+            i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
+        except (TypeError, IndexError, ValueError):
+            continue
+        if 0 <= i < n and 0 <= j < n:
+            if float(target[i] + target[j]) > cap + tol:
+                out["corr_group_cap"] = True
+
+    if snap.gross_max is not None:
+        if float(np.sum(np.abs(target))) > float(snap.gross_max) + tol:
+            out["gross_max"] = True
+
+    return out
+
+
+def _finalize_result(
+    snap: ConstraintSnapshot,
+    target: np.ndarray,
+    selected: tuple[int, ...],
+    status: str,
+) -> AllocatorResult:
+    delta = target - snap.w_current
+    violations = _constraint_violations(snap, target, delta)
+    for family in _CONSTRAINT_FAMILIES:
+        if violations[family]:
+            status = f"infeasible:{family}"
+            break
+    return AllocatorResult(
+        delta_w=delta,
+        target_w=target,
+        status=status,
+        selected_indices=selected,
+    )
+
+
 def _select_top_k(
     mu: np.ndarray,
     snap: ConstraintSnapshot,
@@ -91,7 +174,6 @@ def _build_result(
     ``"infeasible:<family>"`` and the replay harness counts the
     violation.
     """
-    n = snap.n
     target = np.clip(np.asarray(target_pct, dtype=float), 0.0, snap.w_upper_hard)
 
     # ── 1. Wash-sale: Δw ≤ 0 for masked names ─────────────────
@@ -139,10 +221,11 @@ def _build_result(
                 target[in_sector] *= scale
             target = np.clip(target, 0.0, snap.w_upper_hard)
         else:
-            return AllocatorResult(
-                delta_w=np.zeros(n), target_w=snap.w_current,
-                status="infeasible:sector_cap",
-                selected_indices=selected,
+            return _finalize_result(
+                snap,
+                snap.w_current.copy(),
+                selected,
+                "infeasible:sector_cap",
             )
 
     # ── 5. Correlation-group cap w_i + w_j ≤ corr_cap ─────────
@@ -152,7 +235,7 @@ def _build_result(
             i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
         except (TypeError, IndexError, ValueError):
             continue
-        if i >= n or j >= n:
+        if i >= snap.n or j >= snap.n:
             continue
         pair_sum = float(target[i] + target[j])
         if pair_sum > cap + 1e-9 and pair_sum > 0:
@@ -177,95 +260,7 @@ def _build_result(
 
     target = np.clip(target, 0.0, snap.w_upper_hard)
 
-    # ── 8. Final feasibility validation — codex #130 review HIGH ──
-    # Per-step projections can leave residual violations when:
-    #   - w_current itself violates a hard family (hard cap, sector,
-    #     correlation) and dw_max/turnover prevent fully unwinding it
-    #     in one bar — projection step 6 rebuilds target as
-    #     w_current + scaled_delta, which inherits w_current's
-    #     violations.
-    #   - Earlier projection caps over-shrink the post-trade target
-    #     so that turnover/dw_max constraints would have to be
-    #     violated to even reach the projected target.
-    # The replay harness must distinguish "feasible baseline output"
-    # from "projected approximation". Report violations deterministically
-    # via ``status="infeasible:<family>[+<family>...]"`` so the harness
-    # excludes the row from the comparison.
-    violations = _validate_against_snapshot(target, snap)
-    if violations:
-        return AllocatorResult(
-            delta_w=target - snap.w_current,
-            target_w=target,
-            status="infeasible:" + "+".join(violations),
-            selected_indices=selected,
-        )
-
-    return AllocatorResult(
-        delta_w=target - snap.w_current,
-        target_w=target,
-        status=status,
-        selected_indices=selected,
-    )
-
-
-def _validate_against_snapshot(
-    target: np.ndarray, snap: ConstraintSnapshot,
-) -> list[str]:
-    """Return list of hard-constraint families violated by ``target``.
-
-    Used as the final-pass feasibility check after the projection
-    sequence. Tolerance matches the per-projection thresholds
-    (``1e-9``) so numerically-clean projections never trigger false
-    positives.
-    """
-    eps = 1e-9
-    violations: list[str] = []
-
-    # hard upper cap per asset
-    if np.any(target > snap.w_upper_hard + eps):
-        violations.append("hard_cap")
-
-    # dw_max (per-asset trade size)
-    if snap.dw_max is not None:
-        delta = target - snap.w_current
-        if np.any(np.abs(delta) > snap.dw_max + eps):
-            violations.append("dw_max")
-
-    # turnover (L1 of delta)
-    if snap.turnover_max is not None:
-        l1 = float(np.sum(np.abs(target - snap.w_current)))
-        if l1 > float(snap.turnover_max) + eps:
-            violations.append("turnover")
-
-    # sector cap
-    if snap.sector_indicator is not None and snap.sector_cap_vec is not None:
-        sector_loads = snap.sector_indicator @ target
-        if np.any(sector_loads > snap.sector_cap_vec + eps):
-            violations.append("sector_cap")
-
-    # correlation-pair cap
-    for trip in snap.corr_group_pairs or ():
-        try:
-            i, j, cap = int(trip[0]), int(trip[1]), float(trip[2])
-        except (TypeError, IndexError, ValueError):
-            continue
-        if i >= snap.n or j >= snap.n:
-            continue
-        if float(target[i] + target[j]) > cap + eps:
-            violations.append("corr_pair")
-            break  # one corr_pair label suffices
-
-    # gross cap
-    if snap.gross_max is not None:
-        if float(np.sum(np.abs(target))) > float(snap.gross_max) + eps:
-            violations.append("gross")
-
-    # cash budget
-    budget_cap = 1.0 - float(snap.cash_reserve)
-    if float(target.sum()) > budget_cap + eps:
-        violations.append("cash_budget")
-
-    return violations
+    return _finalize_result(snap, target, selected, status)
 
 
 def equal_weight_top_k(
