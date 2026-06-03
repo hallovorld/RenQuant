@@ -18,9 +18,9 @@ Three workflows, agent-agnostic — one mechanism, multiple agent identities.
 | **G3** | When a reviewer leaves findings on agent-owned PRs, the agent fixes them | Operator pastes comment URL into chat; agent reads, fixes, pushes | On `pull_request_review:CHANGES_REQUESTED` (or `@<agent> fix` mention), the agent auto-fixes addressable findings with safety gates |
 
 **Non-goals**:
-- Replacing human approval. Auto-merge stays manual per [`CLAUDE.md §3.1`](../../CLAUDE.md#31--pr-based-workflow--strict).
+- ~~Replacing human approval. Auto-merge stays manual per `CLAUDE.md §3.1`.~~ **Superseded 2026-06-03**: v2 Phase B introduced gated auto-merge for agent-authored PRs (8-gate `agent-auto-merge` workflow + `agent:auto-merge` opt-in label). See [`agent-automation-v2-design.md`](agent-automation-v2-design.md) and [`CLAUDE.md §3.1`](../../CLAUDE.md#31--pr-based-workflow--strict) point 5. Human-authored PRs still merge manually; opt-in is required per-PR or per-repo.
 - Auto-actioning on every event — §6 safety gates throttle.
-- Cross-repo coordination (this doc is per-repo wiring; multi-agent collaboration mandate [`CLAUDE.md §3.2`](../../CLAUDE.md#32--sync-from-remote-before-every-task--strict) remains the source of truth for sync discipline).
+- Cross-repo coordination (this doc is per-repo wiring; multi-agent collaboration mandate [`CLAUDE.md §3.2`](../../CLAUDE.md#32--sync-from-remote-before-every-task--strict) remains the source of truth for sync discipline). v2 Phase C adds `agent-paired-merge-gate` for the umbrella+subrepo pairing case specifically.
 
 ---
 

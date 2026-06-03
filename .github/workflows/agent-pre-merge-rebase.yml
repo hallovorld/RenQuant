@@ -1,0 +1,34 @@
+name: agent-pre-merge-rebase
+# Server-side §3.2 sync enforcement. Wraps reusable template per
+# `doc/ops/agent-automation-v2-design.md §3.6`.
+
+on:
+  # Fires on each push to the PR head (synchronize) AND when explicitly
+  # dispatched by the auto-merge gate just before evaluating the 8 gates.
+  pull_request:
+    types: [synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to rebase"
+        required: true
+        type: string
+
+# A second rebase invocation should not race the first — they could
+# both force-push different roots and lose work. Queue rather than
+# cancel.
+concurrency:
+  group: agent-pre-merge-rebase-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    uses: ./.github/workflows/_agent-pre-merge-rebase-template.yml
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}

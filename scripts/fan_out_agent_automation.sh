@@ -201,6 +201,59 @@ jobs:
     uses: hallovorld/RenQuant/.github/workflows/_agent-review-classify-template.yml@main
 '
 
+# v2 Phase B wrappers (per doc/ops/agent-automation-v2-design.md
+# §3.4 + §3.6). 8-gate auto-merge + server-side §3.2 rebase.
+
+readonly WRAPPER_PRE_MERGE_REBASE='name: agent-pre-merge-rebase
+# Server-side §3.2 sync enforcement. Wraps RenQuant umbrella'\''s
+# reusable template.
+
+on:
+  pull_request:
+    types: [synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to rebase"
+        required: true
+        type: string
+
+concurrency:
+  group: agent-pre-merge-rebase-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-pre-merge-rebase-template.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number || '\'''\'' }}
+    secrets:
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
+'
+
+readonly WRAPPER_AUTO_MERGE='name: agent-auto-merge
+# 8-gate auto-merge per agent-automation-v2-design §3.4.
+# Default OFF (requires agent:auto-merge label OR repo variable
+# AGENT_AUTO_MERGE_DEFAULT=true). Wraps RenQuant umbrella'\''s reusable
+# template.
+
+on:
+  pull_request_review:
+    types: [submitted]
+  check_suite:
+    types: [completed]
+
+concurrency:
+  group: agent-auto-merge-${{ github.event.pull_request.number || (github.event.check_suite.pull_requests[0].number) }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    uses: hallovorld/RenQuant/.github/workflows/_agent-auto-merge-template.yml@main
+    secrets:
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
+'
+
 # Generic review + fix prompts fetched from the umbrella's canon
 # copy at runtime so this script doesn't fork its own version of them.
 # Per-repo customization is a follow-up PR each maintainer opens.
@@ -234,6 +287,8 @@ for repo in "${REPOS[@]}"; do
                    .github/workflows/agent-attribution-check.yml
                    .github/workflows/agent-default-labels.yml         (v2 Phase A)
                    .github/workflows/agent-review-classify.yml        (v2 Phase A)
+                   .github/workflows/agent-pre-merge-rebase.yml       (v2 Phase B)
+                   .github/workflows/agent-auto-merge.yml             (v2 Phase B)
     fetch umbrella default prompts → .github/agent-{review,fix}-prompt.md
     git add .github/ && git commit
     git push -u origin $BRANCH
@@ -259,12 +314,15 @@ EOF
     git checkout -B "$BRANCH" "origin/${DEFAULT_BRANCH}"
 
     mkdir -p .github/workflows
-    printf '%s' "$WRAPPER_REVIEW"          > .github/workflows/agent-review.yml
-    printf '%s' "$WRAPPER_AUTOFIX"         > .github/workflows/agent-autofix.yml
-    printf '%s' "$WRAPPER_ATTRIBUTION"     > .github/workflows/agent-attribution-check.yml
+    printf '%s' "$WRAPPER_REVIEW"            > .github/workflows/agent-review.yml
+    printf '%s' "$WRAPPER_AUTOFIX"           > .github/workflows/agent-autofix.yml
+    printf '%s' "$WRAPPER_ATTRIBUTION"       > .github/workflows/agent-attribution-check.yml
     # v2 Phase A:
-    printf '%s' "$WRAPPER_DEFAULT_LABELS"  > .github/workflows/agent-default-labels.yml
-    printf '%s' "$WRAPPER_REVIEW_CLASSIFY" > .github/workflows/agent-review-classify.yml
+    printf '%s' "$WRAPPER_DEFAULT_LABELS"    > .github/workflows/agent-default-labels.yml
+    printf '%s' "$WRAPPER_REVIEW_CLASSIFY"   > .github/workflows/agent-review-classify.yml
+    # v2 Phase B:
+    printf '%s' "$WRAPPER_PRE_MERGE_REBASE"  > .github/workflows/agent-pre-merge-rebase.yml
+    printf '%s' "$WRAPPER_AUTO_MERGE"        > .github/workflows/agent-auto-merge.yml
 
     # Fetch umbrella default prompts — generic across all renquant
     # repos. Per-repo customization (backtesting data-flow gotchas,

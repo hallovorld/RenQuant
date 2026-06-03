@@ -128,6 +128,7 @@ be protected from now!"*
 2. Open a PR via `gh pr create --base main --head <branch>`. Body must include: change summary, test evidence, rollback notes if production-touching.
 3. Self-merge allowed (solo dev) but the PR IS the audit surface. Use `gh pr merge --merge|--squash <PR#>`.
 4. NEVER `git push origin main` from a branch checkout. Server-side blocks public repos; agent rule + pre-push hook block private.
+5. **Auto-merge (v2 Phase B, 2026-06-03)**: agent-authored PRs (`agent:claude` / `agent:codex` label) MAY auto-merge via the `agent-auto-merge` workflow if EITHER the PR carries the `agent:auto-merge` label OR the repo variable `AGENT_AUTO_MERGE_DEFAULT=true`. The workflow gates on 8 conditions (per [`doc/ops/agent-automation-v2-design.md §3.4`](doc/ops/agent-automation-v2-design.md#34--gap-4--no-auto-approve-no-auto-merge)) — `APPROVED` review on latest head, zero `CHANGES_REQUESTED`, all required checks green, branch up to date with base (auto-rebased), no stop labels (`agent:manual-hold` / `agent:rebase-conflict` / `agent:cost-cap`), no `agent:fix:*:attempt-3` retry exhaustion, paired-mirror sister merged if applicable. PR still exists; reviews still happen; `APPROVED` is the audit trail replacement for "verbal approval". Human-authored PRs and any PR without the opt-in label still merge manually.
 
 **Server-side protection settings** (applied 2026-05-30 to 11 public repos):
 `enforce_admins=true`, `required_pull_request_reviews.required_approving_review_count=0`,
@@ -158,11 +159,16 @@ gh pr create --base main --head feat/foo-bar --title "..." --body "..."
 
 # 4. BEFORE declaring merge-ready, re-sync in case another agent merged
 #    while the PR was being reviewed (§3.2).
+#    NOTE: the `agent-pre-merge-rebase` workflow now enforces this
+#    server-side for any agent-authored PR; manual rebase is still
+#    recommended but no longer load-bearing for the auto-merge path.
 git fetch origin
 git rebase origin/main && git push --force-with-lease
 
-# 5. After verbal approval:
-gh pr merge --merge --delete-branch
+# 5. Merge — either path:
+#    (a) Auto: APPROVED review + 8-gate workflow merges (per §3.1 point 5).
+#        Add the `agent:auto-merge` label for per-PR opt-in.
+#    (b) Manual: `gh pr merge --merge --delete-branch` after verbal approval.
 ```
 
 The two rebase steps (before-PR, before-merge-ready) are NOT optional —

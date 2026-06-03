@@ -1,0 +1,32 @@
+name: agent-auto-merge
+# 8-gate auto-merge per `doc/ops/agent-automation-v2-design.md §3.4`.
+# Wraps the reusable template. Triggers:
+#   - review APPROVED → start gate evaluation
+#   - check_suite completed → re-evaluate when CI finishes after an
+#     already-approved review (covers the "approve happened first,
+#     then CI turned green" ordering).
+
+on:
+  pull_request_review:
+    types: [submitted]
+  check_suite:
+    types: [completed]
+
+# Queue, don't cancel — two concurrent gate evaluations on the same
+# PR could both decide to merge if they each see all gates pass at
+# different moments. Serialize.
+concurrency:
+  group: agent-auto-merge-${{ github.event.pull_request.number || (github.event.check_suite.pull_requests[0].number) }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    uses: ./.github/workflows/_agent-auto-merge-template.yml
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: read
+      actions: write
+    secrets:
+      git_push_token: ${{ secrets.AGENT_GIT_PUSH_TOKEN }}
