@@ -1,0 +1,180 @@
+{
+  "as_of_date": "2026-06-03",
+  "data_source": "data/sim_runs.db::score_distribution",
+  "date_range": [
+    "2024-01-02",
+    "2026-03-27"
+  ],
+  "interpretation_notes": [
+    "mean_autocorr is the mean Pearson corr(\u03bc\u0302_t, \u03bc\u0302_{t+k}) taken across tickers that appear on at least min_ticker_dates dates in the regime. Values close to 1.0 mean the forecast barely changes from bar to bar (Level-2 MultiPeriodOpt has little to optimize); values near 0 mean fast forecast decay (Level-2 has more to optimize).",
+    "topk_overlap measures rank-set persistence \u2014 useful for checking whether the TOP K names cycle rapidly even if the marginal \u03bc\u0302 value is stable.",
+    "half_life_days is the smallest lag at which mean autocorr first crosses 0.5; null means the autocorr never crosses 0.5 within the measured lag range.",
+    "BULL_CALM dominates the row count (\u224878% of bars) per the current 2024-2025 market regime mix. BEAR and CHOPPY may be undersampled; the 'undersampled' flag highlights regimes with < 50 rows where autocorr estimates are unreliable."
+  ],
+  "lags_measured_trading_days": [
+    1,
+    5,
+    10,
+    20,
+    60
+  ],
+  "min_ticker_dates_for_autocorr_inclusion": 30,
+  "n_total_rows": 3052,
+  "n_unique_dates": 540,
+  "n_unique_tickers": 65,
+  "regimes": {
+    "BEAR": {
+      "half_life_days": null,
+      "mean_autocorr": {
+        "1": null,
+        "10": null,
+        "20": null,
+        "5": null,
+        "60": null
+      },
+      "n_dates": 13,
+      "n_rows": 24,
+      "n_tickers": 8,
+      "topk_overlap": {
+        "10": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "20": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        }
+      },
+      "undersampled": true
+    },
+    "BULL_CALM": {
+      "half_life_days": 5,
+      "mean_autocorr": {
+        "1": 0.7826502377026878,
+        "10": 0.1445893958643169,
+        "20": -0.04630226185935842,
+        "5": 0.35209301101685575,
+        "60": -0.07838504982193252
+      },
+      "n_dates": 480,
+      "n_rows": 2699,
+      "n_tickers": 59,
+      "topk_overlap": {
+        "10": {
+          "1": 0.9597014925373134,
+          "10": 0.7607142857142858,
+          "20": 0.5789473684210528,
+          "5": 0.861904761904762,
+          "60": 0.38000000000000006
+        },
+        "20": {
+          "1": 0.95,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": 0.8253968253968254,
+          "10": 0.5267605633802818,
+          "20": 0.37000000000000005,
+          "5": 0.630379746835443,
+          "60": 0.2835443037974683
+        }
+      },
+      "undersampled": false
+    },
+    "BULL_VOLATILE": {
+      "half_life_days": null,
+      "mean_autocorr": {
+        "1": null,
+        "10": null,
+        "20": null,
+        "5": null,
+        "60": null
+      },
+      "n_dates": 31,
+      "n_rows": 266,
+      "n_tickers": 47,
+      "topk_overlap": {
+        "10": {
+          "1": 0.875,
+          "10": 0.2,
+          "20": 0.1,
+          "5": 0.575,
+          "60": null
+        },
+        "20": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": 0.7333333333333333,
+          "10": 0.044444444444444446,
+          "20": 0.05714285714285715,
+          "5": 0.36,
+          "60": null
+        }
+      },
+      "undersampled": false
+    },
+    "CHOPPY": {
+      "half_life_days": null,
+      "mean_autocorr": {
+        "1": null,
+        "10": null,
+        "20": null,
+        "5": null,
+        "60": null
+      },
+      "n_dates": 16,
+      "n_rows": 63,
+      "n_tickers": 19,
+      "topk_overlap": {
+        "10": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "20": {
+          "1": null,
+          "10": null,
+          "20": null,
+          "5": null,
+          "60": null
+        },
+        "5": {
+          "1": 0.7,
+          "10": 0.0,
+          "20": null,
+          "5": 0.6,
+          "60": null
+        }
+      },
+      "undersampled": false
+    }
+  },
+  "topk_values_measured": [
+    5,
+    10,
+    20
+  ]
+}
