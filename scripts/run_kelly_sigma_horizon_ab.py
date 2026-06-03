@@ -785,6 +785,53 @@ def _result_metrics(result: Any) -> dict[str, Any]:
     }
 
 
+def validate_benchmark_coverage(
+    frame: Any,
+    *,
+    benchmark: str,
+    start: str,
+    end: str,
+    max_edge_gap_days: int = 7,
+) -> dict[str, Any]:
+    import pandas as pd  # noqa: PLC0415
+
+    if frame is None or getattr(frame, "empty", True):
+        raise ValueError(f"{benchmark} OHLCV is empty; cannot run requested A/B window")
+    if not hasattr(frame, "index"):
+        raise ValueError(f"{benchmark} OHLCV has no date index")
+    requested_start = pd.Timestamp(start).normalize()
+    requested_end = pd.Timestamp(end).normalize()
+    available_start = pd.Timestamp(frame.index.min()).normalize()
+    available_end = pd.Timestamp(frame.index.max()).normalize()
+    window = frame.loc[start:end]
+    if window.empty:
+        raise ValueError(
+            f"{benchmark} OHLCV has no bars inside requested window "
+            f"requested_start={requested_start.date()} requested_end={requested_end.date()} "
+            f"available_start={available_start.date()} available_end={available_end.date()}"
+        )
+    first_bar = pd.Timestamp(window.index.min()).normalize()
+    last_bar = pd.Timestamp(window.index.max()).normalize()
+    start_gap = int((first_bar - requested_start).days)
+    end_gap = int((requested_end - last_bar).days)
+    if start_gap > max_edge_gap_days or end_gap > max_edge_gap_days:
+        raise ValueError(
+            f"{benchmark} OHLCV coverage is insufficient for requested A/B window: "
+            f"requested_start={requested_start.date()} requested_end={requested_end.date()} "
+            f"first_bar={first_bar.date()} last_bar={last_bar.date()} "
+            f"available_start={available_start.date()} available_end={available_end.date()} "
+            f"max_edge_gap_days={max_edge_gap_days}"
+        )
+    return {
+        "benchmark": benchmark,
+        "requested_start": str(requested_start.date()),
+        "requested_end": str(requested_end.date()),
+        "first_bar": str(first_bar.date()),
+        "last_bar": str(last_bar.date()),
+        "n_bars": int(len(window)),
+    }
+
+
 def execute_variant(
     variant: VariantSpec,
     *,
@@ -815,6 +862,12 @@ def execute_variant(
 
     benchmark = config.get("benchmark", "SPY")
     spy_df = fetch_ohlcv(benchmark)
+    validate_benchmark_coverage(
+        spy_df,
+        benchmark=str(benchmark),
+        start=start,
+        end=end,
+    )
     etf_map = config.get("sector_etf_map", {})
     symbols = sorted(set(config.get("watchlist", [])) | set(etf_map.values()))
     ohlcv = {benchmark: spy_df}
