@@ -27,6 +27,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from kernel.portfolio_qp.constraint_snapshot import ConstraintSnapshot
+from kernel.portfolio_qp.qp_solver import solve_portfolio_qp_from_snapshot
 
 
 @dataclass(frozen=True)
@@ -380,3 +381,159 @@ def fractional_kelly_top_k(
         f_star = float(kelly_fraction) * max(float(shrunk_mu[i]), 0.0) / (s * s)
         target[i] = max(f_star, 0.0)
     return _build_result(snap, target, selected, "optimal")
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Hybrid Option F — greedy SELECT + Kelly SIZE + QP feasibility check
+# ════════════════════════════════════════════════════════════════════
+
+
+def _apply_min_dw_band(
+    snap: ConstraintSnapshot,
+    target: np.ndarray,
+    *,
+    min_dw: float,
+) -> np.ndarray:
+    """Stage-3 trade-band filter: snap small trades back to ``w_current``.
+
+    For each name, if the intended ``|Δw|`` is below ``min_dw`` the
+    target collapses to ``w_current`` (no-trade). This is the closed-
+    form Davis-Norman no-trade band invoked by parent memo §5 Option F
+    Stage 3. Names already at ``w_current`` are untouched.
+    """
+    delta = target - snap.w_current
+    small = np.abs(delta) < float(min_dw)
+    if small.any():
+        target = np.where(small, snap.w_current, target)
+    return target
+
+
+def hybrid_option_f_allocator(
+    snap: ConstraintSnapshot,
+    *,
+    mu: Sequence[float],
+    sigma: Sequence[float],
+    Sigma: Optional[np.ndarray] = None,
+    K: int = 8,
+    kelly_fraction: float = 0.25,
+    mu_shrinkage: float = 0.1,
+    edge_floor: float = 0.001,
+    min_dw: float = 0.02,
+) -> AllocatorResult:
+    """5th §8 Step 4 baseline — Hybrid Option F (parent memo §5).
+
+    Four-stage allocator that aims to use the QP solver *only* when a
+    closed-form proposal violates a hard constraint. The expected
+    common case is Stages 1-3 produce a feasible portfolio that needs
+    no optimization. The QP runs only on the rare actual-hard-
+    constraint case (sector saturation, dw_max binding under high
+    conviction, correlation-pair binding, turnover-cap binding under
+    aggressive trades).
+
+    Stage 1 — SELECT (greedy, deterministic)
+        Top-K names by shrinkage-adjusted μ̂. Reuses
+        :func:`_select_top_k` so the candidate set is byte-identical
+        to :func:`fractional_kelly_top_k`.
+
+    Stage 2 — SIZE (closed-form, per-name)
+        Per-name fractional Kelly with μ̂ shrinkage + edge floor.
+        Same formula as :func:`fractional_kelly_top_k`:
+        ``f*_i = kelly_fraction · max(μ̂_i − shrinkage·σ_i, 0) / σ²_i``.
+
+    Stage 3 — TRADE FILTER (deterministic)
+        Apply the min_dw band and the per-asset hard cap. Trades with
+        ``|Δw| < min_dw`` snap back to ``w_current``. Other cap
+        families (sector / turnover / corr / gross) are *not* projected
+        here — Stage 4 routes those to the QP so the joint constrained
+        trade-off is solved by the optimizer, not by sequential
+        clipping that would deviate from the QP baseline.
+
+    Stage 4 — FEASIBILITY CHECK (QP fallback)
+        Inspect the Stage-3 raw target against every snapshot hard-
+        constraint family via :func:`_constraint_violations`. If ANY
+        family is violated, hand the snapshot + forecast to
+        :func:`solve_portfolio_qp_from_snapshot` (Step 2 wrapper PR
+        #127). The QP solves the joint constrained problem; its target
+        is then routed through :func:`_build_result` so the returned
+        ``AllocatorResult`` satisfies the same contract as the closed-
+        form baselines.
+
+    Status semantics
+    ----------------
+    * ``"optimal"`` — Stages 1-3 produced a feasible portfolio; no
+      QP fallback was needed.
+    * ``"optimal:qp_fallback"`` — Stage 4 fired and the QP returned
+      ``optimal`` (or ``optimal_no_signal``); the returned target_w
+      is the QP solution routed through :func:`_build_result`.
+    * ``"infeasible:hybrid_qp_fallback"`` — Stage 4 fired and the QP
+      itself returned ``infeasible:*``. Caller MUST hold position;
+      ``target_w == w_current`` and ``delta_w == 0``.
+    * ``"no_candidates"`` — Stage 1 produced no positive μ̂ after
+      shrinkage / edge floor.
+
+    Parameters mirror :func:`fractional_kelly_top_k` for Stages 1-2
+    so the §8 Step 4 A/B can isolate the Hybrid's marginal effect
+    (Stage 3 band + Stage 4 fallback) against the per-name-Kelly
+    baseline.
+    """
+    mu_arr = np.asarray(mu, dtype=float)
+    sigma_arr = np.asarray(sigma, dtype=float)
+    if mu_arr.shape != (snap.n,) or sigma_arr.shape != (snap.n,):
+        raise ValueError(
+            f"mu/sigma shape mismatch with snap.n={snap.n}: "
+            f"mu={mu_arr.shape} sigma={sigma_arr.shape}"
+        )
+
+    # ── Stage 1: SELECT — top-K by shrinkage-adjusted μ̂ ──────────
+    shrunk_mu = mu_arr - float(mu_shrinkage) * sigma_arr
+    if edge_floor is not None:
+        shrunk_mu = np.where(shrunk_mu >= float(edge_floor), shrunk_mu, 0.0)
+    selected = _select_top_k(shrunk_mu, snap, K)
+    if not selected:
+        return _build_result(snap, np.zeros(snap.n), (), "no_candidates")
+
+    # ── Stage 2: SIZE — per-name fractional Kelly ─────────────────
+    target = np.zeros(snap.n)
+    for i in selected:
+        s = max(float(sigma_arr[i]), 1e-6)
+        f_star = float(kelly_fraction) * max(float(shrunk_mu[i]), 0.0) / (s * s)
+        target[i] = max(f_star, 0.0)
+
+    # ── Stage 3: TRADE FILTER — per-asset hard cap then min_dw band
+    target = np.clip(target, 0.0, snap.w_upper_hard)
+    target = _apply_min_dw_band(snap, target, min_dw=min_dw)
+
+    # ── Stage 4: FEASIBILITY CHECK — QP fallback on violation ─────
+    delta = target - snap.w_current
+    violations = _constraint_violations(snap, target, delta)
+    if not any(violations.values()):
+        # Common path: Stages 1-3 are feasible. Route through
+        # _build_result for the AllocatorResult contract (idempotent
+        # on an already-feasible target).
+        return _build_result(snap, target, selected, "optimal")
+
+    # Fallback: hand the joint constrained problem to the QP. We pass
+    # the ORIGINAL (non-shrunk) μ̂ so the QP can do its own μ̂
+    # robustness via robust_mu_kappa if configured; for the §8 Step 4
+    # A/B the soft-penalty knobs are left at wrapper defaults so the
+    # QP behaviour matches the Step 2 wrapper call site (PR #127).
+    qp = solve_portfolio_qp_from_snapshot(
+        snap,
+        mu=mu_arr,
+        sigma=sigma_arr,
+        Sigma=Sigma,
+    )
+    if not qp.status.startswith("optimal"):
+        # QP itself is infeasible — hold position; the AllocatorResult
+        # status field surfaces the joint-violation pair (Stage-3
+        # families + QP status) via diagnostics in higher layers.
+        return AllocatorResult(
+            delta_w=np.zeros(snap.n),
+            target_w=snap.w_current.copy(),
+            status="infeasible:hybrid_qp_fallback",
+            selected_indices=selected,
+        )
+    # QP returned a feasible target. Route through _build_result so
+    # the returned AllocatorResult satisfies the same contract as the
+    # closed-form baselines (defensive idempotent projection).
+    return _build_result(snap, qp.target_w, selected, "optimal:qp_fallback")
