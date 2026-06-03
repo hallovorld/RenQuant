@@ -386,3 +386,33 @@ class TestFullHardConstraintEnforcement:
             assert l1 <= 0.05 + 1e-9, f"{name}: turnover_max violated ({l1})"
             assert sector_load <= 0.20 + 1e-9, f"{name}: sector cap violated ({sector_load})"
             assert pair_sum <= 0.20 + 1e-9, f"{name}: corr-pair cap violated ({pair_sum})"
+
+    def test_current_holding_above_cap_reports_infeasible_not_optimal(self):
+        """If current book cannot be repaired within movement limits, fail loud."""
+        snap = _snap(
+            1,
+            w_current=np.array([1.0]),
+            w_upper_hard=np.array([0.20]),
+            dw_max=np.array([0.05]),
+            turnover_max=0.05,
+        )
+        res = equal_weight_top_k(snap, mu=np.array([0.05]), K=1)
+        assert res.status.startswith("infeasible:"), res
+        assert res.status in {"infeasible:dw_max", "infeasible:turnover_max"}
+        assert np.abs(res.delta_w[0]) > snap.dw_max[0] + 1e-9
+
+    def test_current_sector_over_cap_reports_infeasible_not_optimal(self):
+        """Turnover scaling must not hide a sector cap violation."""
+        snap = _snap(
+            2,
+            w_current=np.array([0.60, 0.60]),
+            w_upper_hard=np.full(2, 1.0),
+            dw_max=np.full(2, 1.0),
+            turnover_max=0.05,
+            sector_indicator=np.array([[1.0, 1.0]]),
+            sector_cap_vec=np.array([0.20]),
+            sector_names=("Tech",),
+        )
+        res = equal_weight_top_k(snap, mu=np.array([0.05, 0.04]), K=2)
+        assert res.status.startswith("infeasible:"), res
+        assert float(res.target_w.sum()) > 0.20 + 1e-9
