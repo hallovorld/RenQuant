@@ -175,6 +175,15 @@ def test_intraday_sell_only_defaults_to_shared_multirepo_bridge() -> None:
     assert "--sell-only --intraday" in src
 
 
+def test_live_only_104_delegates_to_intraday_wrapper() -> None:
+    src = (REPO / "scripts" / "live_only_104.sh").read_text()
+    assert "compatibility entrypoint" in src
+    assert 'exec bash "$REPO_DIR/scripts/intraday_sell_104.sh"' in src
+    assert "-m live.runner" not in src
+    assert "--broker alpaca" not in src
+    assert "--no-sell-only" in src
+
+
 def test_live_multirepo_aliases_critical_lifted_modules() -> None:
     mod = _load_bridge_module()
     mod._bootstrap_multirepo()
