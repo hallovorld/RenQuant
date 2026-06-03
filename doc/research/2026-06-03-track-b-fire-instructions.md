@@ -98,22 +98,40 @@ per-cutoff `panel-ltr.json` artifacts under
 # 0. Sync (§3.2).
 git fetch origin && git checkout main && git pull --ff-only origin main
 
-# 1. Full WF retrain with Track B features.
+# 1. Full WF retrain with Track B features. train_walkforward_panel.py
+#    requires --start-date / --end-date; cadence defaults to 21 days
+#    per scripts/train_walkforward_panel.py:308. The Track B variant
+#    lands per-cutoff panel-ltr.json under
+#    backtesting/renquant_104/artifacts/walkforward_track_b/<cut>/.
 OMP_NUM_THREADS=14 MKL_NUM_THREADS=14 \\
 nohup .venv/bin/python scripts/train_walkforward_panel.py \\
+    --start-date 2024-01-01 --end-date 2026-03-26 \\
     --include-features mom_carry_12_1,beta_dm,rvar_total,idio_vol_market \\
+    --artifact-root walkforward_track_b \\
+    --manifest-output artifacts/walkforward_manifest_track_b.json \\
     > logs/track_b_wf_$(date +%Y%m%d-%H%M%S).log 2>&1 &
 echo $! > /tmp/track_b_wf.pid
 
 # 2. Tail progress.
 tail -f logs/track_b_wf_*.log
 
-# 3. When complete, run the gate-aware analyzer to produce per-regime
-#    IC + DSR + PBO numbers (consumes the per-cutoff manifests).
-.venv/bin/python scripts/analyze_panels_rigorous.py \\
-    --variant walkforward_addendum \\
-    --baseline walkforward_v2_20260602 \\
-    --out artifacts/track_b_verdict.json
+# 3. Assemble the verdict JSON. There is NO existing WF-manifest
+#    analyzer that emits the schema below — scripts/analyze_panels_rigorous.py
+#    consumes sim equity panels (not WF model manifests) and writes a
+#    Markdown report, so it cannot produce artifacts/track_b_verdict.json.
+#
+#    Until a dedicated WF-manifest analyzer lands (tracked separately as
+#    "Track B verdict-assembler" follow-up), assemble the verdict JSON
+#    by hand from:
+#      - artifacts/walkforward_manifest_track_b.json (per-cutoff IC)
+#      - the path-A triad output (placebo_block — caveat: 60d shift,
+#        not the 120d the R2 contract requires)
+#      - a separate per-regime IC slice from
+#        scripts/analyze_regime_stratified.py (verify input args
+#        before firing).
+#
+#    DO NOT quote any IC / Sharpe number publicly until the
+#    placebo_block is filled with the R2-compliant 120d-shift run.
 ```
 
 ## Sanity verdict JSON contract

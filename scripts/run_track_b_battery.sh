@@ -13,7 +13,15 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
 PYTHON="${PYTHON:-$REPO_DIR/.venv/bin/python}"
-PANEL_PATH="${PANEL_PATH:-data/alpha158_291_fund_regime_dataset.parquet}"
+# NOTE: scripts/wf_sanity_paired.py hardcodes both the baseline and
+# candidate panel paths in main() (alpha158_291_fundamental_dataset.parquet
+# and alpha158_291_fund_regime_dataset.parquet). The precheck below
+# only confirms the candidate panel exists and carries the 4 Track B
+# columns; if you need a different candidate panel, edit
+# scripts/wf_sanity_paired.py main() directly (PANEL_PATH override is
+# not threaded into the battery — that is intentional, do not add a
+# misleading override here).
+PANEL_PATH="data/alpha158_291_fund_regime_dataset.parquet"
 LOG_DIR="${LOG_DIR:-logs}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/track_b_triad_${STAMP}.log"
@@ -53,7 +61,14 @@ echo "track_b_battery: launching wf_sanity_paired.py (OMP=$OMP_NUM_THREADS)" \
 # 3. Surface the verdict in a single readable block.
 if [ -f "$VERDICT_JSON" ]; then
     echo "" | tee -a "$LOG"
-    echo "track_b_battery: triad complete — verdict:" | tee -a "$LOG"
+    echo "track_b_battery: SMOKE-ONLY triad complete." | tee -a "$LOG"
+    echo "track_b_battery: This is NOT an R2-compliant verdict block —" | tee -a "$LOG"
+    echo "  wf_sanity_paired.py uses shift+60d (1× horizon); R2 requires" | tee -a "$LOG"
+    echo "  120d (2× horizon). Treat the block below as a smoke/shape" | tee -a "$LOG"
+    echo "  check, NOT a promotion gate." | tee -a "$LOG"
+    echo "  See doc/research/2026-06-03-track-b-fire-instructions.md §0" | tee -a "$LOG"
+    echo "  for the R2 contract." | tee -a "$LOG"
+    echo "" | tee -a "$LOG"
     "$PYTHON" - <<PY 2>&1 | tee -a "$LOG"
 import json
 v = json.load(open("$VERDICT_JSON"))
