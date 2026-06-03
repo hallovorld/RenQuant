@@ -16,7 +16,13 @@ Related documents:
 
 ## TL;DR
 
-Today was not quiet because data failed or because the daily full pipeline never found names. The primary run found and scored 74 buy candidates, then blocked all 74 at runtime because `regime_admission` rejected BULL_CALM. After that, QP only had the four existing holdings in exit-only mode and became infeasible under the strict C2 policy.
+Three operator-actionable findings on 2026-06-02:
+
+1. Primary buy silence is correct: BULL_CALM admission rejected all scored buy candidates because the artifact has known-weak BULL_CALM evidence. The historical fixture value is 74 blocked candidates.
+2. Primary failed to trim overweight ORCL because cap-compliance fallback was disabled in prod policy. This is a config/safety-path miss, not a model miss.
+3. The day had live sell-pending activity for META/GILD that the run bundle did not attribute cleanly. "Quiet" means "daily full emitted no final orders", not "the system did nothing".
+
+Today was not quiet because data failed or because the daily full pipeline never found names. The primary run found and scored buy candidates, then blocked them at runtime because `regime_admission` rejected BULL_CALM. After that, QP only had the four existing holdings in exit-only mode and became infeasible under the strict C2 policy.
 
 The shadow run was different by design. It used the PatchTST shadow artifact, disabled runtime regime admission, continued despite hard preflight evidence failures, and generated one hypothetical ORCL trim. That action was readonly and not promotable evidence for live trading.
 
@@ -248,15 +254,29 @@ Optional shared-contract PR:
 |---|---|
 | `renquant-common` | If more than one repo needs the same schema, define a small `RuntimeAdmissionStatus`, `DecisionBlockerSummary`, or `OrderLifecycleRecord` contract in common first. Keep it minimal. Do not move pipeline behavior into common. |
 
+## Priority Triage
+
+The table above spans many repos, so this campaign must be staged. P0 closes the 2026-06-02 safety and operator-readability defects. P1 hardens manifests and notifications once P0 behavior is stable. P2 is valuable but separable from the BULL_CALM/QP incident.
+
+| Priority | PR | Why |
+|---|---|---|
+| P0 | B: `renquant-pipeline` cap-compliance fallback | Direct safety fix for the silent risk-reduction failure. |
+| P0 | A: `renquant-pipeline` runtime admission status | Makes the binding buy blocker visible before final alerting and gives tests a stable trace field. |
+| P0 | C: `renquant-strategy-104` enable cap-compliance fallback | Closes the F3 config root cause, but only after B is green. |
+| P1 | D/E: `renquant-artifacts` + `renquant-model` manifest stamping | Prevents ambiguous artifact status from recurring; important but not required before P0 risk trims. |
+| P1 | G: `renquant-orchestrator` notification/run-bundle surfacing | Fixes the hidden secondary blocker and improves operator ergonomics. |
+| P2 | F: `renquant-execution` broker order lifecycle | Fixes META/GILD attribution quality, but it predates and is separable from the BULL_CALM admission incident. |
+| P2 | H/I: `renquant-backtesting` forensic fixture + umbrella pin | Lands after subrepo behavior settles and pins the final integrated assembly. |
+
 ## Proposed Merge Order
 
 1. `renquant-common`, only if shared contracts are needed.
 2. `renquant-pipeline` PR A: runtime admission status in decision trace.
 3. `renquant-pipeline` PR B: sell-only cap-compliance fallback hardening.
-4. `renquant-execution` PR F: durable broker order lifecycle records.
+4. `renquant-strategy-104` PR C: enable cap-compliance fallback in prod policy after B is green.
 5. `renquant-artifacts` PR D and `renquant-model` PR E: manifest validation and model publish stamping.
-6. `renquant-strategy-104` PR C: enable cap-compliance fallback in prod policy after B is green.
-7. `renquant-orchestrator` PR G: daily bundle and notification wiring.
+6. `renquant-orchestrator` PR G: daily bundle and notification wiring.
+7. `renquant-execution` PR F: durable broker order lifecycle records.
 8. `renquant-backtesting` PR H: forensic replay/regression fixture.
 9. `RenQuant` umbrella PR I: pin updates and integration assertions.
 
@@ -264,7 +284,7 @@ Optional shared-contract PR:
 
 Minimum review gates before merging the behavioral changes:
 
-1. A replay of the 2026-06-02 primary run reports fresh data, `74` scored buy candidates, `74` `regime_admission:failed:BULL_CALM` blocks, and `qp_infeasible(1)` as a secondary blocker.
+1. A replay of the 2026-06-02 primary run reports fresh data, `N` scored buy candidates, `N` `regime_admission:failed:BULL_CALM` blocks, and `qp_infeasible(1)` as a secondary blocker. The historical fixture value is `N=74`, but tests should assert `blocked == scored` rather than hard-code the magic number.
 2. With cap-compliance fallback disabled, the same primary fixture emits no orders and the final summary still includes the QP infeasibility context.
 3. With cap-compliance fallback enabled, an ORCL-like overweight holding under BULL_CALM admission block emits only a cap-reducing sell intent, no buys, and no top-up.
 4. Cap-compliance fallback either bypasses ordinary soft-sell horizon/tax/no-trade gates by explicit policy, or fail-closes with a named hard blocker. This must be tested directly.
@@ -275,9 +295,9 @@ Minimum review gates before merging the behavioral changes:
 
 ## Claude Review Questions
 
-1. Should cap-compliance sells bypass BULL_CALM `min_holding_days` and other soft-exit gates, or should a hard tax/holding policy be allowed to block even risk-reduction trims?
+1. Recommendation: cap-compliance sells should bypass BULL_CALM `min_holding_days`, ordinary tax gates, and no-trade bands because the holding is already known to violate a hard cap. The only allowed block should be an explicit hard policy such as `tax_policy.block_cap_compliance_sells=true`.
 2. Should `promotion_status=gated_buys` permit full daily runs, or should it force an explicit sell-only mode until a runtime-admitted regime appears?
-3. Should shadow hard preflight failures remain HARD and require a named diagnostic override, or should shadow mode downgrade them to SOFT while making `non_promotable=true` mandatory?
+3. Recommendation: shadow WF/regime preflight failures should remain HARD and require a named diagnostic override, for example `SHADOW_PREFLIGHT_OVERRIDE=true`. They should not be silently downgraded to SOFT by default; every shadow action must still stamp `non_promotable=true`.
 4. Should live runner reconciliation be lifted primarily into `renquant-execution`, `renquant-orchestrator`, or split as execution owns order lifecycle and orchestrator owns run-bundle attribution?
 5. Should final notifications always show the top two blockers by stage, or should they show all non-zero blocker counters for daily full runs?
 
