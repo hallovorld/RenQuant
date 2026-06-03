@@ -61,20 +61,32 @@ make subrepo-runtime-sanity
 #    inside RENQUANT_SUBREPO_ROOT, plus path / strict-mode env checks).
 make ops-deployment-ready
 
-# 5. Paper-broker smoke before re-arming prod cron.
+# 5. Paper-broker smoke through the multirepo bridge before re-arming
+#    prod cron.
 #
 # scripts/daily_104.sh hardcodes --broker alpaca (lines 299 / 319 on
 # current main) and does NOT parse a --broker override — passing
 # --broker alpaca-paper to the wrapper is silently ignored and the
-# script still calls the LIVE Alpaca account. Until the wrapper
-# learns a broker override, smoke the post-refresh runtime through
-# live.runner directly with --broker alpaca-paper (CLAUDE.md §4.3):
+# script still calls the LIVE Alpaca account. The naive workaround
+# `.venv/bin/python -m live.runner --broker alpaca-paper --once`
+# would bypass the pinned-subrepo bootstrap (scripts/daily_104.sh
+# sources scripts/subrepo_env.sh, exports RENQUANT_SUBREPO_ROOT, and
+# delegates through scripts/daily_multirepo.py / live_multirepo.py so
+# the lifted kernel.* imports resolve from the vendored snapshot —
+# umbrella `live.runner` does NOT walk that bridge and would smoke
+# umbrella imports while claiming the vendored runtime was exercised).
+#
+# Smoke through scripts/live_multirepo.py with --broker alpaca-paper,
+# preceded by the same env-setup the daily wrapper does:
 set -a; source .env; set +a
-.venv/bin/python -m live.runner \
+source scripts/subrepo_env.sh
+renquant_load_subrepo_env "$(pwd)"
+export RENQUANT_SUBREPO_ROOT="$(renquant_subrepo_root "$(pwd)" "$(dirname "$(pwd)")")"
+.venv/bin/python scripts/live_multirepo.py \
     --strategy renquant_104 --broker alpaca-paper --once
-# This still exercises the refreshed runtime's import path (the
-# Davis-Norman-band log line remains the canary) without risking a
-# live order during a recovery flow.
+# This now imports renquant_pipeline.kernel.portfolio_qp.* from the
+# refreshed vendored runtime (the Davis-Norman-band log line remains
+# the canary) without risking a live order during a recovery flow.
 
 # 6. Commit the refreshed lock (the assembly env is intentionally
 #    untracked — .subrepo_assembly/ is gitignored and current.env
