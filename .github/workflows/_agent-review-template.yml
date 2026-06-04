@@ -246,3 +246,68 @@ jobs:
           BODY=$(printf '%s\n\n%s\n\n_Posted by codex agent-review workflow on commit %s._' \
             "$MARKER" "$CODEX_RESULT" "$HEAD_SHA")
           gh pr comment "$PR_NUMBER" --body "$BODY"
+
+      # ── Severity gate: the CHECK must reflect the VERDICT ────────────────
+      # 2026-06-04 (#199 incident): codex found 2 BLOCKER/HIGH issues but the
+      # codex-review check went GREEN — because the action couldn't submit a
+      # CHANGES_REQUESTED review (no token) and fell back to a plain comment,
+      # and nothing translated "found a blocker" into a failing check. A green
+      # review check was therefore readable as "approved" when it only meant
+      # "the review job ran". This step closes that gap: it reads what the
+      # agent actually concluded for THIS head SHA and FAILS the job (red
+      # check) when a BLOCKER or HIGH finding is present, so branch protection
+      # blocks merge until the author fixes and a re-review comes back clean.
+      #
+      # Verdict sources (union, for robustness across both agents):
+      #   - codex: the action's final-message output (authoritative)
+      #   - either: PR reviews whose commit_id == head SHA (state +
+      #     body), and issue comments carrying this run's head SHA marker
+      - name: Gate review check on verdict severity
+        if: steps.route.outputs.should_review == 'true' && steps.secret_gate.outputs.has_api_key == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AGENT: ${{ inputs.agent }}
+          CODEX_RESULT: ${{ steps.codex.outputs.final-message }}
+        run: |
+          set -euo pipefail
+          verdict_file="$(mktemp)"
+          # 1. codex direct output (if this is the codex job).
+          if [ -n "${CODEX_RESULT:-}" ]; then
+            printf '%s\n' "$CODEX_RESULT" >> "$verdict_file"
+          fi
+          # 2. PR reviews submitted against THIS head SHA (both agents).
+          #    A CHANGES_REQUESTED review is an unconditional fail.
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq ".[] | select(.commit_id == \"${HEAD_SHA}\") | \"STATE:\(.state)\n\(.body)\"" \
+            >> "$verdict_file" 2>/dev/null || true
+          # 3. Issue comments carrying this run's head-SHA marker (covers the
+          #    comment-fallback path that bit #199).
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.body | contains(\"${HEAD_SHA}\")) | .body" \
+            >> "$verdict_file" 2>/dev/null || true
+
+          if [ ! -s "$verdict_file" ]; then
+            echo "::warning::no verdict text found for ${AGENT} at ${HEAD_SHA}; cannot confirm clean review. Treating as PASS (review ran, posted via a path this gate can't read) — but see #199: prefer agents that submit CHANGES_REQUESTED reviews."
+            exit 0
+          fi
+
+          # Unconditional fail on an explicit changes-requested review.
+          if grep -q 'STATE:CHANGES_REQUESTED' "$verdict_file"; then
+            echo "::error::${AGENT} review submitted CHANGES_REQUESTED on ${HEAD_SHA} — failing the review check so merge is blocked until addressed."
+            exit 1
+          fi
+
+          # Severity tags per the review-prompt format: **BLOCKER**,
+          # [HIGH], 'BLOCKER —', 'HIGH:'. Word-bounded so 'high-throughput'
+          # / 'blocking' (lowercase prose) don't false-positive. MED/LOW/nit
+          # are NOT merge-blockers (author addresses at discretion).
+          SEV='(\*\*(BLOCKER|HIGH)\*\*|\[(BLOCKER|HIGH)\]|(^|[[:space:]])(BLOCKER|HIGH)[[:space:]]*[:—-])'
+          if grep -Eq "$SEV" "$verdict_file"; then
+            hit="$(grep -Eo "$SEV" "$verdict_file" | sort -u | tr '\n' ' ')"
+            echo "::error::${AGENT} review flagged blocking severity (${hit}) on ${HEAD_SHA}. Failing the review check — a green check must mean no BLOCKER/HIGH. Author fixes, then re-review must come back clean."
+            exit 1
+          fi
+          echo "${AGENT} review clean at ${HEAD_SHA} (no CHANGES_REQUESTED, no BLOCKER/HIGH) — check passes."
