@@ -1236,6 +1236,7 @@ def main() -> int:
                 }
                 verdict["tier3_ready"] = False
                 verdict["invalid_no_trade"] = True
+                verdict.setdefault("blocked_reasons", []).append("control_arm_no_trades")
                 (out_dir / "invalid_experiment.json").write_text(
                     json.dumps(no_trade_guard, indent=2, default=_json_float) + "\n"
                 )
@@ -1253,11 +1254,20 @@ def main() -> int:
     out_path = out_dir / "kelly_sigma_horizon_ab_plan.json"
     out_path.write_text(json.dumps(payload, indent=2, default=_json_float) + "\n")
     result = {"out": str(out_path), "tier3_ready": verdict["tier3_ready"]}
+    if no_trade_guard is not None:
+        result.update({
+            "invalid_experiment": True,
+            "reason": no_trade_guard["reason"],
+            "control_variant": no_trade_guard["control_variant"],
+            "invalid_experiment_path": str(out_dir / "invalid_experiment.json"),
+        })
     if execution_error is not None:
         result["execution_error"] = execution_error
     print(json.dumps(result, indent=2))
     if execution_error is not None:
         return 2
+    if no_trade_guard is not None:
+        return 3
     return 0 if (not args.execute or variant_metrics) else 2
 
 
