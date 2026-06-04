@@ -6,18 +6,18 @@
     "end": "2026-03-28",
     "initial_cash": 100000.0,
     "output_dir": "/Users/renhao/git/github/RenQuant/doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff",
-    "base_config_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
-    "treatment_config_path": "/Users/renhao/git/github/RenQuant/doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/strategy_config.sim_kelly_sigma_horizon60.json",
+    "base_config_path": "backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
+    "treatment_config_path": "doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/strategy_config.sim_kelly_sigma_horizon60.json",
     "sigma_horizon_days": 60,
     "run_overrides": {
       "manifest_path": "artifacts/sim/walkforward_manifest_v2_20260602.json",
-      "effective_manifest_path": "/Users/renhao/git/github/RenQuant/doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/walkforward_manifest_v2_20260602.resolved.json"
+      "effective_manifest_path": "doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/walkforward_manifest_v2_20260602.resolved.json"
     },
     "variants": [
       {
         "name": "A_golden",
         "role": "real_control",
-        "config_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
+        "config_path": "backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
         "seeds": [
           0,
           1
@@ -26,7 +26,7 @@
       {
         "name": "B_sigma_horizon_60",
         "role": "real_treatment",
-        "config_path": "/Users/renhao/git/github/RenQuant/doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/strategy_config.sim_kelly_sigma_horizon60.json",
+        "config_path": "doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/strategy_config.sim_kelly_sigma_horizon60.json",
         "seeds": [
           0,
           1
@@ -35,7 +35,7 @@
       {
         "name": "AA_golden_resplit",
         "role": "aa_resplit",
-        "config_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
+        "config_path": "backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
         "seeds": [
           1000,
           1001
@@ -88,8 +88,8 @@
       "multi_seed_floor": 5
     },
     "treatment_config": {
-      "base_config_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
-      "treatment_config_path": "/Users/renhao/git/github/RenQuant/doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/strategy_config.sim_kelly_sigma_horizon60.json",
+      "base_config_path": "backtesting/renquant_104/strategy_config.sim_kelly_ab_admoff.json",
+      "treatment_config_path": "doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/strategy_config.sim_kelly_sigma_horizon60.json",
       "changed_paths": [
         "ranking.kelly_sizing.sigma_horizon_days"
       ],

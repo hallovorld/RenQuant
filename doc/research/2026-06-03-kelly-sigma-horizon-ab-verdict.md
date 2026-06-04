@@ -32,6 +32,9 @@ scripts/run_kelly_sigma_horizon_ab.py --execute \
 - `AA_golden_resplit` = control with offset seeds.
 - 27-month OOS WF window (2024-01-02 → 2026-03-28).
 - Evidence: `doc/research/evidence/2026-06-03-kelly-sigma-horizon-ab-admoff/`.
+  The committed bundle includes the admission-off base config, generated
+  treatment config, resolved manifest copy, and result plan JSON so the
+  "only sigma_horizon_days changed" claim is auditable from the repo tree.
 
 ## 2 · Result — the treatment moved Kelly targets, nothing else
 
