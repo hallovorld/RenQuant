@@ -30,6 +30,9 @@ scripts/run_kelly_sigma_horizon_ab.py --execute --parallel-seeds \
 - 5 seeds each + A/A resplit, window 2024-01-02 → 2026-03-28 (27-month OOS).
 - Killed after ~1h once the null cause was confirmed (§6.4 — no point
   burning compute on a guaranteed-null run).
+- Evidence status: the WF-artifact key audit in §3 is reproducible from the
+  committed tree; the run-log excerpt below is copied from the aborted local
+  execution and no separate log artifact was retained.
 
 ## 2 · Symptom
 
@@ -101,8 +104,8 @@ ONLY difference between arms. Three options, preferred order:
    of the sizing question under test. It is identical in both arms, so
    removing it for the A/B isolates the Kelly effect without biasing
    control vs treatment. Add to the A/B base+treatment configs:
-   `ranking.regime_model_admission.enabled = false` (verify exact key) OR
-   point the run at a sim config that doesn't gate admission. **Cheapest,
+   `ranking.panel_scoring.regime_admission.enabled = false` OR point the
+   run at a sim config that doesn't gate admission. **Cheapest,
    methodologically clean.**
 
 2. **Use WF artifacts that carry `wf_gate_metadata.trade_monotonicity`.**
