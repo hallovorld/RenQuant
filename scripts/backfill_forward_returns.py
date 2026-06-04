@@ -110,21 +110,53 @@ def _rows_needing_backfill(
     (e.g. fwd_20d needs 20 trading days in the future) — those show up
     tomorrow and get picked up by the next run.
     """
-    missing_predicate = _missing_forward_return_predicate(conn, "tfr")
+    missing_cs = _missing_forward_return_predicate(conn, "tfr")
+    # B2 fix (#204): mu/sigma live in `score_distribution`, NOT
+    # `candidate_scores`. The QP Step-4 A/B replay loader joins
+    # score_distribution.(date, ticker) to ticker_forward_returns; if the
+    # backfill only covers candidate_scores' (run_date, ticker) it leaves the
+    # score_distribution mu/sigma rows with no matching forward return, and
+    # the loader returns 0 bars (measured: 0/3052 mu-rows had a fwd match —
+    # NVDA had mu on sim-run dates the backfill never visited). UNION the
+    # score_distribution (date, ticker) set where mu is populated so the
+    # backfill covers exactly the rows the replay needs. Guarded: only
+    # UNION when the table + mu column exist (older DBs may lack them).
+    union_sd = ""
+    if _has_score_distribution_mu(conn):
+        missing_sd = _missing_forward_return_predicate(conn, "tfr2")
+        since_sd = " AND sd.date >= ?" if since is not None else ""
+        union_sd = f"""
+        UNION
+        SELECT DISTINCT sd.date AS run_date, sd.ticker AS ticker
+          FROM score_distribution sd
+     LEFT JOIN ticker_forward_returns tfr2
+            ON tfr2.as_of_date = sd.date AND tfr2.ticker = sd.ticker
+         WHERE sd.mu IS NOT NULL AND {missing_sd}{since_sd}"""
+    since_cs = " AND ps.run_date >= ?" if since is not None else ""
     q = f"""
-        SELECT DISTINCT ps.run_date, cs.ticker
+        SELECT DISTINCT ps.run_date AS run_date, cs.ticker AS ticker
           FROM candidate_scores cs
           JOIN pipeline_runs    ps ON ps.run_id = cs.run_id
      LEFT JOIN ticker_forward_returns tfr
             ON tfr.as_of_date = ps.run_date AND tfr.ticker = cs.ticker
-         WHERE {missing_predicate}
+         WHERE {missing_cs}{since_cs}{union_sd}
+         ORDER BY run_date, ticker
     """
     params: list = []
     if since is not None:
-        q += " AND ps.run_date >= ?"
-        params.append(since.isoformat())
-    q += " ORDER BY ps.run_date, cs.ticker"
+        params.append(since.isoformat())            # candidate_scores branch
+        if union_sd:
+            params.append(since.isoformat())         # score_distribution branch
     return conn.execute(q, params).fetchall()
+
+
+def _has_score_distribution_mu(conn) -> bool:
+    """True when score_distribution exists with the columns the UNION needs."""
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(score_distribution)")}
+    except Exception:  # noqa: BLE001 - missing table / bad handle
+        return False
+    return {"date", "ticker", "mu"}.issubset(cols)
 
 
 def _benchmark_pairs(
