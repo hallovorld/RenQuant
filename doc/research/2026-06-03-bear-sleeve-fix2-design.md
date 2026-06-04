@@ -48,8 +48,14 @@ class ApplyBearDefensiveSleeveTask(Task):
         defensive_set = list(ctx.config.get("defensive_tickers", []))
         pct_total = float(ctx.config.get("bear_defensive_pct", 0.15))
         slots     = int(ctx.config.get("bear_defensive_slots", 2))
+        if slots <= 0 or pct_total <= 0:
+            return None
+        pct_per_slot = pct_total / slots
 
-        # 已持有的 defensive 不重复买；已有 order 的不重复
+        # 已持有的 defensive 不重复买；已有 order 的不重复。
+        # Sizing uses the fixed per-slot cap, not pct_total / remaining
+        # targets: if one of two 15% slots is already held, the one new order
+        # is still capped at 15%, not the full 30% sleeve budget.
         held = set(ctx.holdings.keys())
         already_ordered = {o["ticker"] for o in ctx.orders}
         already_def_held = sum(1 for t in held if t in set(defensive_set))
@@ -65,7 +71,6 @@ class ApplyBearDefensiveSleeveTask(Task):
         if not targets:
             return None
 
-        pct_each = pct_total / len(targets)        # 等权分配总 pct
         reserve  = float(ctx.config.get("regime_params", {})
                           .get(ctx.regime, {}).get("cash_reserve_pct", 0.0))
         remaining = float(getattr(ctx, "cash", 0.0) or 0.0) \
@@ -76,7 +81,7 @@ class ApplyBearDefensiveSleeveTask(Task):
             price = ctx.prices.get(t)
             if price is None or not math.isfinite(price) or price <= 0:
                 continue
-            invest = min(pct_each * float(ctx.portfolio_value or 0.0), remaining)
+            invest = min(pct_per_slot * float(ctx.portfolio_value or 0.0), remaining)
             shares = int(invest / price)
             if shares <= 0:
                 continue
@@ -180,8 +185,9 @@ Tier 3 才翻 golden `enabled=true`。BEAR 期间 ΔSharpe ≥ 0 且 ΔMaxDD ≤
 | `test_sleeve_skips_when_not_bear` | bear_only=False → should_skip True，零 order |
 | `test_sleeve_skips_when_disabled` | enabled=false → should_skip True |
 | `test_sleeve_no_model_required` | TLT/XLV 无完整 model 也能 fire（只需 ohlcv）|
-| `test_sleeve_equal_weight_split` | N 个 target → 各 pct_total/N |
+| `test_sleeve_uses_fixed_slot_cap` | 每个新 target ≤ `bear_defensive_pct / bear_defensive_slots` |
 | `test_sleeve_excludes_held_defensives` | 已持有 GLD → 不重复买，slots 递减 |
+| `test_sleeve_does_not_overallocate_when_partially_held` | 已持有 1/2 defensive slot 时，新 order 仍只吃 1 个 slot cap，总 sleeve 不超过配置 |
 | `test_sleeve_respects_remaining_cash` | invest 累计 ≤ cash − reserve |
 | `test_sleeve_respects_slots` | open_slots = bear_defensive_slots − 已持有 defensive |
 | `test_sleeve_order_attribution` | order_source == "BEAR_DEFENSIVE_SLEEVE"，可审计 |
