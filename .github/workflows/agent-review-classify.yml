@@ -7,12 +7,20 @@ name: agent-review-classify
 on:
   pull_request_review:
     types: [submitted]
+  # 2026-06-04 (#199): agents that can't submit a CHANGES_REQUESTED
+  # review (no token) fall back to posting their findings as an ISSUE
+  # COMMENT carrying an `<!-- agent-review:<agent>:<sha> -->` marker.
+  # Listen here too so a BLOCKER/HIGH that lands as a comment still
+  # reaches the autofix bridge — otherwise the loop silently never
+  # closes (the exact #199 failure).
+  issue_comment:
+    types: [created]
 
 # A flurry of reviews on the same PR (e.g. Claude then Codex within
 # seconds) should each fire — we are evaluating ONE review at a time,
 # not a debounced state.
 concurrency:
-  group: agent-review-classify-${{ github.event.pull_request.number }}-${{ github.event.review.id }}
+  group: agent-review-classify-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event.review.id || github.event.comment.id }}
   cancel-in-progress: false
 
 jobs:

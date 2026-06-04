@@ -57,9 +57,11 @@ jobs:
   classify:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Only fire on review.submitted; the `if:` here is defense-in-depth
-    # against accidental future invocations.
-    if: github.event_name == 'pull_request_review' && github.event.review.state != ''
+    # Fire on a submitted review OR on a review-bot issue comment that
+    # carries the agent-review marker (the #199 comment-fallback path).
+    if: |
+      (github.event_name == 'pull_request_review' && github.event.review.state != '') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
     steps:
       - name: Resolve PR + review context
         id: ctx
@@ -67,20 +69,61 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # SHELL INJECTION SAFETY: all user-controlled fields via env:.
           # See `_agent-fix-template.yml:70` for the canonical pattern.
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
           REPO: ${{ github.repository }}
-          REVIEW_STATE: ${{ github.event.review.state }}
-          REVIEW_BODY: ${{ github.event.review.body }}
-          REVIEW_ACTOR: ${{ github.event.review.user.login }}
-          REVIEW_ID: ${{ github.event.review.id }}
+          OWNER: ${{ github.repository_owner }}
+          # pull_request_review shape:
+          PR_NUMBER_REVIEW: ${{ github.event.pull_request.number }}
+          REVIEW_STATE_RAW: ${{ github.event.review.state }}
+          REVIEW_BODY_REVIEW: ${{ github.event.review.body }}
+          REVIEW_ACTOR_REVIEW: ${{ github.event.review.user.login }}
+          REVIEW_ID_REVIEW: ${{ github.event.review.id }}
+          # issue_comment shape:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           set -euo pipefail
-          # GitHub review.state values: APPROVED, CHANGES_REQUESTED, COMMENTED,
-          # DISMISSED. We only act on COMMENTED + APPROVED (read APPROVED to
-          # detect the conflict-with-CHANGES_REQUESTED case).
-          if [ "$REVIEW_STATE" != "COMMENTED" ] && [ "$REVIEW_STATE" != "APPROVED" ]; then
-            echo "review state $REVIEW_STATE — out of classifier scope; skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            PR_NUMBER="$PR_NUMBER_REVIEW"
+            REVIEW_STATE="$REVIEW_STATE_RAW"
+            REVIEW_BODY="$REVIEW_BODY_REVIEW"
+            REVIEW_ACTOR="$REVIEW_ACTOR_REVIEW"
+            REVIEW_ID="$REVIEW_ID_REVIEW"
+            # GitHub review.state: APPROVED, CHANGES_REQUESTED, COMMENTED,
+            # DISMISSED. Act on COMMENTED/APPROVED only (CHANGES_REQUESTED
+            # already triggers G3 directly; DISMISSED is moot).
+            if [ "$REVIEW_STATE" != "COMMENTED" ] && [ "$REVIEW_STATE" != "APPROVED" ]; then
+              echo "review state $REVIEW_STATE — out of classifier scope; skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          else
+            # issue_comment path (#199 fallback). Only act on a comment
+            # that carries the authentic agent-review marker — that marker
+            # is emitted ONLY by the review workflow, so it is the security
+            # anchor distinguishing a real review-bot finding from an
+            # arbitrary user comment.
+            PR_NUMBER="$ISSUE_NUMBER"
+            REVIEW_BODY="$COMMENT_BODY"
+            REVIEW_ID="$COMMENT_ID"
+            REVIEW_STATE="COMMENTED"   # treat a marked review comment as COMMENTED
+            if ! grep -qE '<!-- agent-review:(claude|codex):[0-9a-f]+ -->' <<< "$REVIEW_BODY"; then
+              echo "issue_comment lacks an agent-review marker — not a review-bot finding; skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            # Loop guard: never act on the classifier's OWN synthesized
+            # @fix comment, nor on a fix-bot summary.
+            if grep -q 'Trusted-Bridge-Source: agent-review-classify' <<< "$REVIEW_BODY" \
+               || [ "${REVIEW_BODY:0:1}" = "@" ]; then
+              echo "comment is a synthesized bridge/@fix comment — skipping (loop guard)"
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            # Trust anchor for the bot-posted review comment is the repo
+            # OWNER (who enabled this autonomous review→fix automation and
+            # holds admin), not the bot that posted it. Downstream trust +
+            # the fix template's HIGH-2 bridge re-verify the named login.
+            REVIEW_ACTOR="$OWNER"
           fi
           # Pull PR labels — we need authorship to know which executor
           # to ping in the synthetic comment.
