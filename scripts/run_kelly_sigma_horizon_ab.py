@@ -919,6 +919,40 @@ def _result_metrics(result: Any) -> dict[str, Any]:
     }
 
 
+def _control_trade_activity(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    """Summarize whether a variant actually traded.
+
+    A Kelly-sizing A/B is only meaningful if the control arm opens
+    positions — the σ-horizon change acts on sizing, so a backtest that
+    never trades zeroes out BOTH arms for the wrong reason (2026-06-03
+    admission-gate incident, doc/research/2026-06-03-kelly-sigma-ab-
+    blocked-by-admission-gate.md). This summarizes the per-regime
+    holdings so the caller can fail loud before the verdict is trusted.
+
+    Returns ``{traded: bool, total_holdings_mean: float, regimes: int,
+    min_cash_pct_mean: float}``. ``traded`` is False when no regime shows
+    any held names (sum of ``n_holdings_mean`` ≈ 0).
+    """
+    per_regime = (metrics or {}).get("per_regime") or {}
+    total_holdings = 0.0
+    cash_values: list[float] = []
+    for stats in per_regime.values():
+        if not isinstance(stats, dict):
+            continue
+        hv = stats.get("n_holdings_mean")
+        if isinstance(hv, (int, float)) and math.isfinite(hv):
+            total_holdings += float(hv)
+        cv = stats.get("cash_pct_mean")
+        if isinstance(cv, (int, float)) and math.isfinite(cv):
+            cash_values.append(float(cv))
+    return {
+        "traded": total_holdings > 1e-9,
+        "total_holdings_mean": total_holdings,
+        "regimes": len(per_regime),
+        "min_cash_pct_mean": min(cash_values) if cash_values else None,
+    }
+
+
 def validate_benchmark_coverage(
     frame: Any,
     *,
@@ -1172,22 +1206,68 @@ def main() -> int:
         placebo,
         aa_max_abs_sharpe_lift=float(args.aa_max_abs_sharpe_lift),
     )
+
+    # No-trade guard (2026-06-03 admission-gate incident): if the real
+    # control arm executed but never opened a position, the A/B cannot
+    # measure the Kelly sizing change — both arms are flat-cash and any
+    # "verdict" is over a degenerate backtest. Fail loud: force
+    # tier3_ready=False and surface an invalid-experiment marker so the
+    # promotion gate can never read a no-trade run as a real result.
+    no_trade_guard: dict[str, Any] | None = None
+    if args.execute and variant_metrics:
+        control_name = next(
+            (v["name"] for v in plan["variants"] if v.get("role") == "real_control"),
+            None,
+        )
+        if control_name and control_name in variant_metrics:
+            activity = _control_trade_activity(variant_metrics[control_name])
+            if not activity["traded"]:
+                no_trade_guard = {
+                    "invalid_experiment": True,
+                    "reason": "control_arm_no_trades",
+                    "control_variant": control_name,
+                    "control_activity": activity,
+                    "explanation": (
+                        "Control arm opened zero positions across the window; "
+                        "the Kelly sigma-horizon change cannot be measured on a "
+                        "no-trade backtest. See doc/research/"
+                        "2026-06-03-kelly-sigma-ab-blocked-by-admission-gate.md."
+                    ),
+                }
+                verdict["tier3_ready"] = False
+                verdict["invalid_no_trade"] = True
+                verdict.setdefault("blocked_reasons", []).append("control_arm_no_trades")
+                (out_dir / "invalid_experiment.json").write_text(
+                    json.dumps(no_trade_guard, indent=2, default=_json_float) + "\n"
+                )
+
     payload = {
         "plan": plan,
         "variant_metrics": variant_metrics,
         "placebo": placebo,
         "promotion_verdict": verdict,
     }
+    if no_trade_guard is not None:
+        payload["no_trade_guard"] = no_trade_guard
     if execution_error is not None:
         payload["execution_error"] = execution_error
     out_path = out_dir / "kelly_sigma_horizon_ab_plan.json"
     out_path.write_text(json.dumps(payload, indent=2, default=_json_float) + "\n")
     result = {"out": str(out_path), "tier3_ready": verdict["tier3_ready"]}
+    if no_trade_guard is not None:
+        result.update({
+            "invalid_experiment": True,
+            "reason": no_trade_guard["reason"],
+            "control_variant": no_trade_guard["control_variant"],
+            "invalid_experiment_path": str(out_dir / "invalid_experiment.json"),
+        })
     if execution_error is not None:
         result["execution_error"] = execution_error
     print(json.dumps(result, indent=2))
     if execution_error is not None:
         return 2
+    if no_trade_guard is not None:
+        return 3
     return 0 if (not args.execute or variant_metrics) else 2
 
 

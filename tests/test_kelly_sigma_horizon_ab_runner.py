@@ -575,3 +575,134 @@ def test_bootstrap_subrepo_imports_adds_runtime_srcs(tmp_path: Path, monkeypatch
     assert root == runtime.resolve()
     assert str(runtime / "renquant-pipeline" / "src") in sys.path
     assert str(runtime / "renquant-common" / "src") in sys.path
+
+
+# ── no-trade guard (2026-06-03 admission-gate incident) ──────────────────────
+
+def test_control_trade_activity_detects_trades() -> None:
+    mod = _load_module()
+    metrics = {
+        "per_regime": {
+            "BULL_CALM": {"n_holdings_mean": 3.2, "cash_pct_mean": 18.0},
+            "CHOPPY": {"n_holdings_mean": 1.0, "cash_pct_mean": 40.0},
+        }
+    }
+    act = mod._control_trade_activity(metrics)
+    assert act["traded"] is True
+    assert abs(act["total_holdings_mean"] - 4.2) < 1e-9
+    assert act["regimes"] == 2
+    assert act["min_cash_pct_mean"] == 18.0
+
+
+def test_control_trade_activity_detects_no_trade() -> None:
+    mod = _load_module()
+    metrics = {
+        "per_regime": {
+            "BULL_CALM": {"n_holdings_mean": 0.0, "cash_pct_mean": 100.0},
+            "CHOPPY": {"n_holdings_mean": 0.0, "cash_pct_mean": 100.0},
+        }
+    }
+    act = mod._control_trade_activity(metrics)
+    assert act["traded"] is False
+    assert act["total_holdings_mean"] == 0.0
+
+
+def test_control_trade_activity_handles_empty_and_nonfinite() -> None:
+    mod = _load_module()
+    assert mod._control_trade_activity(None)["traded"] is False
+    assert mod._control_trade_activity({})["traded"] is False
+    # NaN holdings must not count as trading
+    metrics = {"per_regime": {"X": {"n_holdings_mean": float("nan")}}}
+    assert mod._control_trade_activity(metrics)["traded"] is False
+
+
+def test_main_no_trade_guard_returns_nonzero_and_writes_marker(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    mod = _load_module()
+    out_dir = tmp_path / "ab"
+    args = Namespace(
+        match_base_config_to_manifest=False,
+        manifest_path="",
+        no_materialize_manifest=True,
+        execute=True,
+        start="2024-01-02",
+        end="2024-01-05",
+        initial_cash=100_000.0,
+        parallel_seeds=False,
+        placebo_json=[],
+        aa_max_abs_sharpe_lift=0.10,
+    )
+    plan = {
+        "output_dir": str(out_dir),
+        "base_config_path": str(tmp_path / "base.json"),
+        "treatment_config_path": str(tmp_path / "treatment.json"),
+        "sigma_horizon_days": 60,
+        "run_overrides": {},
+        "variants": [
+            {
+                "name": "A_golden",
+                "role": "real_control",
+                "config_path": str(tmp_path / "base.json"),
+                "seeds": [0],
+            },
+            {
+                "name": "B_sigma_horizon_60",
+                "role": "real_treatment",
+                "config_path": str(tmp_path / "treatment.json"),
+                "seeds": [0],
+            },
+            {
+                "name": "AA_golden_resplit",
+                "role": "aa_control",
+                "config_path": str(tmp_path / "base.json"),
+                "seeds": [1000],
+            },
+        ],
+    }
+
+    def fake_execute_variant(variant, **_kwargs):
+        return {
+            "apy_mean": 0.0,
+            "sharpe_mean": 0.0,
+            "per_regime": {
+                "BULL_CALM": {
+                    "n_holdings_mean": 0.0,
+                    "cash_pct_mean": 100.0,
+                    "sharpe_mean": 0.0,
+                }
+            },
+        }
+
+    monkeypatch.setattr(mod, "parse_args", lambda: args)
+    monkeypatch.setattr(mod, "build_plan", lambda _args: plan)
+    monkeypatch.setattr(mod, "build_treatment_config", lambda **_kwargs: {})
+    monkeypatch.setattr(mod, "execute_variant", fake_execute_variant)
+    monkeypatch.setattr(
+        mod,
+        "load_placebo_evidence",
+        lambda _paths: {"provided": False, "passed": False, "items": []},
+    )
+
+    rc = mod.main()
+
+    assert rc == 3
+    stdout = json.loads(capsys.readouterr().out)
+    assert stdout["invalid_experiment"] is True
+    assert stdout["reason"] == "control_arm_no_trades"
+    invalid_path = Path(stdout["invalid_experiment_path"])
+    assert invalid_path.exists()
+
+    invalid = json.loads(invalid_path.read_text())
+    assert invalid["control_variant"] == "A_golden"
+    assert invalid["control_activity"]["traded"] is False
+
+    payload_path = Path(stdout["out"])
+    payload = json.loads(payload_path.read_text())
+    assert payload["no_trade_guard"]["reason"] == "control_arm_no_trades"
+    verdict = payload["promotion_verdict"]
+    assert verdict["tier3_ready"] is False
+    assert verdict["invalid_no_trade"] is True
+    assert "control_arm_no_trades" in verdict["blocked_reasons"]
