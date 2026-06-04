@@ -35,6 +35,8 @@ from kernel.portfolio_qp.baseline_allocators import (
     AllocatorResult,
     equal_weight_top_k,
     fractional_kelly_top_k,
+    hard_only_qp_allocator,
+    hybrid_option_f_allocator,
     inverse_vol_top_k,
 )
 from kernel.portfolio_qp.replay_significance import (
@@ -55,6 +57,12 @@ _ALLOCATOR_REGISTRY: dict[str, Callable] = {
     "equal_weight_top_k": equal_weight_top_k,
     "inverse_vol_top_k": inverse_vol_top_k,
     "fractional_kelly_top_k": fractional_kelly_top_k,
+    # Step 4d/4f allocators — built but previously unregistered (#204 B3),
+    # so they could never be named in --allocators. Registered here so the
+    # full 5-baseline A/B (current QP / hard-only QP / Hybrid F / inverse-vol
+    # / equal-weight) can actually be compared.
+    "hybrid_option_f_allocator": hybrid_option_f_allocator,
+    "hard_only_qp_allocator": hard_only_qp_allocator,
 }
 
 
@@ -464,6 +472,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = p.parse_args(argv)
 
     bars = _load_bars(args)
+    # Fail loud on zero bars (#204 Task 4): the loader returns 0 bars when
+    # the sim DB lacks the mu/sigma <-> forward-return overlap on the same
+    # (date, ticker), or when --fwd-horizon-days points at an all-NULL
+    # column. Previously this crashed deep in np.max() on an empty paired-
+    # returns array; now we emit a structured invalid_experiment artifact
+    # (mirrors the Kelly-AB no-trade guard, PR #202) and exit non-zero so
+    # no consumer mistakes "no data" for "no difference".
+    if not bars:
+        invalid = {
+            "invalid_experiment": True,
+            "reason": "no_bars_loaded",
+            "detail": (
+                "loader returned 0 bars — the sim DB has no (date, ticker) row "
+                "with score_distribution.mu+sigma AND "
+                "ticker_forward_returns.fwd_<horizon> all non-NULL. Backfill the "
+                "forward-return column and co-populate mu/sigma for watchlist "
+                "tickers, or pass --fwd-horizon-days to a populated column. See "
+                "doc/research/2026-06-04-qp-step4-replay-blocked-no-verdict.md."
+            ),
+            "wf_artifact_root": args.wf_artifact_root,
+            "cut_range": [args.start_cut, args.end_cut],
+            "fwd_horizon_days": args.fwd_horizon_days,
+            "allocators": args.allocators.split(","),
+        }
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(invalid, indent=2, sort_keys=True))
+        log.error(
+            "no bars loaded for %s..%s @ fwd_%dd — wrote invalid_experiment to "
+            "%s (NO verdict produced)",
+            args.start_cut, args.end_cut, args.fwd_horizon_days, out_path,
+        )
+        return 2
+
     payload = run_replay(
         bars, args.allocators.split(","),
         incumbent=args.incumbent,

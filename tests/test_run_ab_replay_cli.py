@@ -153,6 +153,16 @@ class TestRegistry:
         with pytest.raises(KeyError, match="not in registry"):
             get_allocator("does_not_exist")
 
+    def test_step4_allocators_registered(self):
+        # #204 B3 fix: the Step 4d/4f allocators must be nameable in
+        # --allocators so the full 5-baseline A/B can run.
+        from kernel.portfolio_qp.baseline_allocators import (
+            hard_only_qp_allocator,
+            hybrid_option_f_allocator,
+        )
+        assert get_allocator("hybrid_option_f_allocator") is hybrid_option_f_allocator
+        assert get_allocator("hard_only_qp_allocator") is hard_only_qp_allocator
+
     def test_register_overrides(self):
         def fake(snap, *, mu, sigma=None):  # noqa: ARG001
             return None
@@ -589,4 +599,40 @@ class TestCLISmoke:
         finally:
             sys.path.remove(str(tmp_path))
             for m in [k for k in list(sys.modules) if k.startswith("badloader")]:
+                del sys.modules[m]
+
+
+class TestZeroBarsGuard:
+    def test_zero_bars_emits_invalid_experiment_not_crash(self, tmp_path):
+        """#204 Task 4: 0 bars -> structured invalid_experiment + rc=2,
+        not a crash deep in np.max() on an empty array."""
+        loader_dir = tmp_path / "emptyloader"
+        loader_dir.mkdir()
+        (loader_dir / "__init__.py").write_text("")
+        (loader_dir / "loader.py").write_text(
+            "def load(root, start, end, *, fwd_horizon_days):\n"
+            "    return []\n"
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            out = tmp_path / "verdict.json"
+            rc = main([
+                "--wf-artifact-root", str(tmp_path),
+                "--start-cut", "2024-01-01",
+                "--end-cut", "2024-12-31",
+                "--out", str(out),
+                "--fwd-horizon-days", "60",
+                "--loader-module", "emptyloader.loader:load",
+            ])
+            assert rc == 2  # non-zero: experiment invalid
+            payload = json.loads(out.read_text())
+            assert payload["invalid_experiment"] is True
+            assert payload["reason"] == "no_bars_loaded"
+            assert payload["fwd_horizon_days"] == 60
+            # NOT a verdict
+            assert "verdict" not in payload
+            assert "per_allocator" not in payload
+        finally:
+            sys.path.remove(str(tmp_path))
+            for m in [k for k in list(sys.modules) if k.startswith("emptyloader")]:
                 del sys.modules[m]
