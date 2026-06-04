@@ -362,3 +362,38 @@ def test_gc_boundary_keeps_exactly_six_days():
     }
     kept = ra._gc_recent_sell_orders(_fake_ctx(today=_dt.date(2026, 6, 1)))
     assert "edge" in kept
+
+
+# ── codex #199 review regressions: datetime ctx.today + timestamped stamp ────
+
+def test_gc_handles_datetime_ctx_today_without_typeerror():
+    """codex #199 finding 2: ctx.today is a datetime in tests/crash-recovery
+    paths. datetime is a subclass of date, so the old isinstance(.,date) kept
+    it as a datetime and `date >= datetime` raised TypeError. _bar_date must
+    normalize to a pure date so GC works."""
+    ra = _adapter_skeleton()
+    ra._recent_sell_orders = {
+        "fresh": {"ticker": "A", "exit_type": "x", "qty": 1, "submitted_at": "2026-06-01"},
+        "stale": {"ticker": "B", "exit_type": "x", "qty": 1, "submitted_at": "2026-05-20"},
+    }
+    ctx = types.SimpleNamespace(today=_dt.datetime(2026, 6, 1, 14, 30, 0))
+    kept = ra._gc_recent_sell_orders(ctx)   # must not raise TypeError
+    assert "fresh" in kept and "stale" not in kept
+
+
+def test_gc_parses_timestamped_submitted_at():
+    """codex #199 finding 1: a stamp with a time component must still parse
+    via the leading YYYY-MM-DD, not be dropped as unparseable."""
+    ra = _adapter_skeleton()
+    ra._recent_sell_orders = {
+        "ts": {"ticker": "A", "exit_type": "x", "qty": 1,
+               "submitted_at": "2026-06-01T14:30:00+00:00"},
+    }
+    kept = ra._gc_recent_sell_orders(_fake_ctx(today=_dt.date(2026, 6, 2)))
+    assert "ts" in kept   # 1 day old, parsed from the date prefix
+
+
+def test_bar_date_normalizes_datetime_and_date():
+    ra = _adapter_skeleton()
+    assert ra._bar_date(types.SimpleNamespace(today=_dt.datetime(2026, 6, 1, 9, 0))) == _dt.date(2026, 6, 1)
+    assert ra._bar_date(types.SimpleNamespace(today=_dt.date(2026, 6, 1))) == _dt.date(2026, 6, 1)

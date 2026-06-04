@@ -1748,6 +1748,25 @@ class RunnerAdapter:
                 latest[sym] = normalized
         return latest
 
+    @staticmethod
+    def _bar_date(ctx) -> "datetime.date":
+        """Return the bar date as a pure ``date``.
+
+        ``ctx.today`` is a ``date`` in live runs but a ``datetime`` in
+        several tests / crash-recovery paths (and ``datetime`` is a
+        subclass of ``date``, so a naive ``isinstance(x, date)`` does NOT
+        distinguish them). Normalize with ``.date()`` so downstream
+        date-granularity arithmetic and ``date.fromisoformat`` parsing
+        never see a stray time component (codex #199 review, finding 2).
+        """
+        import datetime as _dt  # noqa: PLC0415
+        t = getattr(ctx, "today", None)
+        if isinstance(t, _dt.datetime):
+            return t.date()
+        if isinstance(t, _dt.date):
+            return t
+        return _dt.date.today()
+
     def _gc_recent_sell_orders(self, ctx) -> dict:
         """Drop runner-submitted SELL order_ids older than the fill lookback.
 
@@ -1757,15 +1776,22 @@ class RunnerAdapter:
         a 6-day window (one day of slack over the 5-day fill lookback). Entries
         with an unparseable ``submitted_at`` are kept (fail-open: never lose an
         order_id we might still need to attribute).
+
+        Date granularity throughout: ``ctx.today`` is normalized to a pure
+        date via ``_bar_date`` (handles the datetime-subclass-of-date case),
+        and stamps are parsed from their leading ``YYYY-MM-DD`` so a stored
+        timestamp that happens to carry a time component still compares
+        cleanly (codex #199 review, findings 1+2).
         """
         import datetime as _dt  # noqa: PLC0415
-        today = ctx.today if isinstance(ctx.today, _dt.date) else _dt.date.today()
-        cutoff = today - _dt.timedelta(days=6)
+        cutoff = self._bar_date(ctx) - _dt.timedelta(days=6)
         kept: dict = {}
         for oid, meta in (self._recent_sell_orders or {}).items():
             stamp = str((meta or {}).get("submitted_at") or "")
             try:
-                submitted = _dt.date.fromisoformat(stamp)
+                # Parse only the date portion — robust to both 'YYYY-MM-DD'
+                # and full-ISO 'YYYY-MM-DDTHH:MM:SS[+tz]' stamps.
+                submitted = _dt.date.fromisoformat(stamp[:10])
             except ValueError:
                 kept[oid] = meta   # unparseable → keep (fail-open)
                 continue
@@ -1969,12 +1995,16 @@ class RunnerAdapter:
             # external_or_manual (2026-06-03 HON single_day_loss incident).
             _submitted_oid = execution.get("order_id")
             if _submitted_oid:
-                import datetime as _dt2  # noqa: PLC0415
-                _now_iso = (
-                    ctx.today.isoformat()
-                    if isinstance(ctx.today, _dt2.date)
-                    else _dt2.date.today().isoformat()
-                )
+                # Store the BAR DATE (date granularity) as a plain
+                # YYYY-MM-DD string. ctx.today may be a datetime (datetime
+                # is a subclass of date), so normalize to .date() first —
+                # otherwise the stamp carries a time component that the
+                # date-granularity GC can't parse on py3.10. Date
+                # granularity is intentional: the GC's 6-day window vs the
+                # 5-day fill lookback already carries 1 day of slack to
+                # absorb any session that crosses midnight (codex #199
+                # review).
+                _now_iso = self._bar_date(ctx).isoformat()
                 self._recent_sell_orders[str(_submitted_oid)] = {
                     "ticker":       ticker,
                     "exit_type":    getattr(sig, "exit_type", "") or "",
