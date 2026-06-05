@@ -482,3 +482,47 @@ Transform tasks into verifiable goals before implementing:
 - "Fix the bug" → "Write a test that reproduces it, then make it pass"
 
 For multi-step tasks, state a brief plan with verify steps before starting.
+
+---
+
+## PR control plane — Codex workflows (review / fix / merge)
+
+Codex's equivalent of Claude's `.claude/skills/rq-*`. Same three workflows,
+`--as codex`. Codex reviews **Claude's** PRs, fixes **its own**, merges
+**its own**. The orchestrator owns the queue + deterministic merge; you
+(Codex) do the review/fix judgment. Run with Codex's token in env
+(`RENQUANT_CODEX_GH_TOKEN`):
+
+```bash
+ORCH="PYTHONPATH=/Users/renhao/git/github/renquant-orchestrator/src python3 -m renquant_orchestrator"
+```
+
+**review** — review Claude's open PRs:
+```bash
+$ORCH repos agent --as codex --workflow review --repo all
+```
+For each queued PR: read `gh pr diff`, judge per CLAUDE.md §7, post ONE
+consolidated review with visible **`reviewed by codex`** + severity tags.
+`--request-changes` for BLOCKER/HIGH/MED; `--comment` for LOW/nit;
+`--approve` for none (self-approve blocked when operating the author
+account → `--comment` "VERDICT: APPROVE").
+
+**fix** — address findings on your own (`agent:codex`) PRs:
+```bash
+$ORCH repos agent --as codex --workflow fix --repo all
+```
+Per PR: read findings, §3.2 rebase, smallest fix, run focused tests, post
+**`fixed by codex`**, commit `Co-Authored-By: Codex <noreply@openai.com>`,
+`git push --force-with-lease`.
+
+**merge** — merge your own approved + green PRs:
+```bash
+$ORCH repos agent --as codex --workflow merge --repo hallovorld/RenQuant --execute
+```
+Deterministic; cross-repo (`--repo all --execute`) needs `--allow-all
+--max-merges N`. Dry-run by omitting `--execute`.
+
+Rules: never review/merge your own PR (queue excludes self-authored;
+GitHub blocks self-approve). Author fixes its own PRs; the reviewer never
+fixes findings it raised. Design:
+`renquant-orchestrator/doc/cross-repo-control-plane-design.md`.
