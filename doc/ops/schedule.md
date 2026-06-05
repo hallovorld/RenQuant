@@ -26,7 +26,7 @@ Every job below documents: **what it does, what files it touches, what alerts on
 |---|---|
 | **Script** | `scripts/daily_104.sh` |
 | **Plist** | `~/Library/LaunchAgents/com.renquant.daily104.plist` (separate from `conditional-retrain104.plist`) |
-| **Trigger** | Mon-Fri 14:00 PT |
+| **Trigger** | Mon-Fri 13:55 PT |
 | **Wallclock** | ~5-15 min on M4 Pro 14c (was 5-15 min on M2 Pro 10c too — daily is I/O-bound not CPU) |
 | **Touches (mutates)** | `live_state.alpaca.json`, broker positions (Alpaca), `runs.alpaca.db`, `doc/dashboard.md`, `data/portfolio_daily_metrics` rows |
 | **Touches (read-only)** | `panel-ltr.alpha158_fund.json`, `panel-rank-calibration.json`, OHLCV cache |
@@ -39,7 +39,7 @@ Every job below documents: **what it does, what files it touches, what alerts on
 3. Active-model age check (alert if > 14 days — weekly cron may be failing)
 4. Export LEAN watchlist data
 5. Backfill forward returns + recompute portfolio metrics (broker-tagged DB)
-6. Run `scripts/daily_multirepo.py --strategy renquant_104 --broker alpaca --once`; the bridge routes lifted modules through pinned subrepos, then hands off to `live.runner`. If P-WF-GATE blocks full mode, rerun `--sell-only` so exits/risk controls still execute while new buys remain blocked
+6. Run `python -m renquant_orchestrator daily-bridge --repo-dir "$REPO_DIR" --strategy renquant_104 --broker alpaca --once`; the bridge routes lifted modules through pinned subrepos, then hands off to `live.runner`. If P-WF-GATE blocks full mode, rerun `--sell-only` so exits/risk controls still execute while new buys remain blocked
 7. Refresh `doc/dashboard.md`
 8. Run PatchTST shadow read-only e2e with a wall-clock timeout (`RENQUANT_SHADOW_TIMEOUT_SEC`, default 1800s); timeout/failure is non-fatal after the primary path has completed
 
