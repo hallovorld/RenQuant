@@ -43,12 +43,14 @@ the token**, not on the token string. So:
   renquant repos. Codex commits/pushes as one; Claude reviews/approves as the
   other. Only then does the merge flow through the genuine two-identity path.
 
-**Until both accounts exist**, agent-authored PRs can only be landed by the
-owner via the emergency override in §4 (temporarily relax `enforce_admins`,
-admin-merge, restore) — which bypasses the review gate and so is a stopgap,
-not the steady state. Observed live on 2026-06-05: codex's #216/#217 were
-verified correct by Claude but could not be approved (single `hallovorld`
-identity), so they were merged by owner override.
+**Until both accounts exist**, agent-authored PRs cannot complete the normal
+review-gated merge path. They either remain queued for a real second account,
+or the owner performs the emergency override in §4. That override bypasses the
+review gate, so it must be rare, explicitly audited, and never treated as the
+steady state. Observed live on 2026-06-05: codex's #216/#217 were verified
+correct by Claude comments but could not receive formal approvals under the
+single `hallovorld` identity, then landed by owner override with audit
+comments.
 
 ## 2 · Invocation surfaces
 
@@ -102,14 +104,25 @@ cadences.
   bare `gh pr merge --admin` is refused. This is not the normal merge path; use
   it only when the owner has independently verified the PR and the missing
   second account is the only blocker. Before the merge, post an audit comment
-  that names the reviewer evidence, links the review/comment used as the
-  second-opinion basis, and states that `enforce_admins` will be restored
+  that must name/link the reviewer evidence and the review/comment used as the
+  second-opinion basis, and states that the review requirement will be restored
   immediately. Then force-land the verified PR:
   ```bash
-  gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/enforce_admins
+  gh api repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews
+  gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews \
+    -F dismiss_stale_reviews=false \
+    -F require_code_owner_reviews=false \
+    -F require_last_push_approval=false \
+    -F required_approving_review_count=0
   gh pr merge <PR#> --repo <owner>/<repo> --merge --admin
-  gh api -X POST   repos/<owner>/<repo>/branches/main/protection/enforce_admins  # restore
+  gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews \
+    -F dismiss_stale_reviews=false \
+    -F require_code_owner_reviews=false \
+    -F require_last_push_approval=false \
+    -F required_approving_review_count=1
+  gh api repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews
   ```
-  Always restore `enforce_admins` in the same shell/trap-backed step and verify
-  branch protection afterward. This bypasses the review gate — use only for
-  owner-verified PRs while §1.1's two accounts are pending.
+  Always restore the review requirement in the same shell/trap-backed step and
+  verify `required_approving_review_count: 1` afterward. If restore fails, stop
+  all merges until branch protection is back in place. This bypasses the review
+  gate — use only for owner-verified PRs while §1.1's two accounts are pending.
