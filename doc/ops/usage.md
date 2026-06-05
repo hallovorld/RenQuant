@@ -182,8 +182,8 @@ Daily 104 cron family (highlights):
 | Market open | 6:32 AM | `live_only_104.sh --sell-only` (DISABLED `.disabled.20260513`) | Sell-side only at open |
 | Pre-close | 12:44 PM | `live_only_104.sh --sell-only` (DISABLED `.disabled.20260513`) | Sell-side at pre-close |
 | Intraday | 1:30 PM | `intraday104.sh` | Mid-day intraday check |
-| After close | 1:55 PM | `daily_104.sh` | Daily ops through `daily_multirepo.py` → trade; no model promote |
-| Conditional | 1:10 PM | `conditional_retrain_104.sh` | SPY/VIX anomaly → force retrain (Mon-Fri) |
+| After close | 1:55 PM | `daily_104.sh` | Daily ops through `renquant_orchestrator daily-bridge` -> trade; no model promote |
+| Conditional | 1:10 PM | `conditional_retrain_104.sh` | SPY/VIX anomaly -> gated `weekly_wf_promote.sh` chain (Mon-Fri) |
 | Weekly WF promote | Sat 04:00 AM | `weekly_wf_promote.sh` | Walk-forward gate + sanity → actual promote (post 2026-05-17 enforcement) |
 | Monthly calibrator | 1st-of-month | `monthly_calibrator_refresh.sh` | Calibrator refit + H2a/H2b hard gates |
 | Sun screen | 12:05 PM | `screen_watchlist.py` | Weekly DROP/ADD candidate report |
