@@ -110,19 +110,63 @@ def _max_position_pct_for_regime(regime: Optional[str]) -> float:
     return _MAX_POSITION_PCT_BY_REGIME.get(regime, _DEFAULT_MAX_POSITION_PCT)
 
 
+def _build_sector_matrix(
+    tickers: Sequence[str],
+    sector_map: dict,
+    max_per_sector: int,
+    per_name_cap: float,
+):
+    """Mirror BuildSectorConstraintMatrixTask (tasks.py): build the per-cut
+    sector indicator + cap vector from today's sector_map (#136 / #154
+    Step-4h, Option 2 — snapshot today's map). Returns
+    (S (m,n) 0/1, cap_vec (m,), names) or (None, None, None) when no
+    sector is mapped (replay then runs sector-blind for that bar, and
+    constraint_fidelity flags it).
+
+    Algorithm matches prod: sector cap = max_per_sector * per_name_cap.
+    """
+    sector_to_idx: dict[str, list[int]] = {}
+    for j, t in enumerate(tickers):
+        sec = sector_map.get(t)
+        if sec and isinstance(sec, str):
+            sector_to_idx.setdefault(sec, []).append(j)
+    if not sector_to_idx:
+        return None, None, None
+    names = sorted(sector_to_idx)
+    m, n = len(names), len(tickers)
+    S = np.zeros((m, n), dtype=float)
+    for row, name in enumerate(names):
+        for j in sector_to_idx[name]:
+            S[row, j] = 1.0
+    cap_vec = np.full(m, float(max_per_sector) * float(per_name_cap), dtype=float)
+    return S, cap_vec, tuple(names)
+
+
 def _build_snapshot(
     tickers: Sequence[str],
     regime: Optional[str],
+    *,
+    sector_map: Optional[dict] = None,
+    max_per_sector: int = 0,
 ) -> ConstraintSnapshot:
     """Build a long-only :class:`ConstraintSnapshot` with replay defaults.
 
-    Sector / correlation caps deliberately omitted — those are a
-    follow-up (the prod QP gets them from a sector_map artifact that
-    is not yet wired through to the offline A/B replay path).
+    Sector caps (#136 / #154 Step-4h): when a ``sector_map`` + positive
+    ``max_per_sector`` are supplied, populate ``sector_indicator`` /
+    ``sector_cap_vec`` from today's map (Option 2 — snapshot today's
+    sector_map). This makes the replay sector-cap-aware so
+    ``constraint_fidelity.decision_grade`` can be True. When omitted the
+    snapshot stays sector-blind and constraint_fidelity flags it (the
+    pre-Step-4h behavior, preserved for callers that pass nothing).
     """
     n = len(tickers)
     cap = _max_position_pct_for_regime(regime)
     w_upper = np.full(n, cap, dtype=float)
+    sector_indicator = sector_cap_vec = sector_names = None
+    if sector_map and max_per_sector > 0:
+        sector_indicator, sector_cap_vec, sector_names = _build_sector_matrix(
+            tickers, sector_map, max_per_sector, cap,
+        )
     return ConstraintSnapshot(
         n=n,
         tickers=tuple(tickers),
@@ -138,6 +182,9 @@ def _build_snapshot(
         gross_max=None,
         wash_sale_mask=np.zeros(n, dtype=bool),
         regime=regime,
+        sector_indicator=sector_indicator,
+        sector_cap_vec=sector_cap_vec,
+        sector_names=sector_names,
     )
 
 
@@ -161,6 +208,8 @@ def load_replay_bars_from_sim_db(
     *,
     fwd_horizon_days: int = 60,
     cost_per_trade_bps: float = 5.0,
+    sector_map: Optional[dict] = None,
+    max_per_sector: int = 0,
 ) -> list[AllocatorReplayBar]:
     """Build a list of :class:`AllocatorReplayBar` from the sim decision trace.
 
@@ -255,7 +304,10 @@ def load_replay_bars_from_sim_db(
         # well-defined.
         if current_date is None or len(tickers) < 2:
             return
-        snap = _build_snapshot(tickers, regime_at_date)
+        snap = _build_snapshot(
+            tickers, regime_at_date,
+            sector_map=sector_map, max_per_sector=max_per_sector,
+        )
         bars.append(
             AllocatorReplayBar(
                 bar_date=current_date,

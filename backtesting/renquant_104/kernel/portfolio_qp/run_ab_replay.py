@@ -469,6 +469,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--loader-module", type=str, default=None,
                    help="Optional module:function to load WF bars "
                         "(default uses wf_replay_loader.load_replay_bars_from_sim_db)")
+    p.add_argument("--strategy-config", type=str, default=None,
+                   help="Path to strategy_config.json for the Step-4h "
+                        "sector-cap snapshot (today's sector_map + "
+                        "max_positions_per_sector). When set, the replay "
+                        "ConstraintSnapshot carries sector caps so the "
+                        "verdict can be decision-grade (#136 / #154 Option 2).")
     args = p.parse_args(argv)
 
     bars = _load_bars(args)
@@ -515,6 +521,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     payload["wf_artifact_root"] = args.wf_artifact_root
     payload["cut_range"] = [args.start_cut, args.end_cut]
     payload["fwd_horizon_days"] = args.fwd_horizon_days
+    # Step-4h provenance (#154 contract): record where the sector caps
+    # came from so reviewers can distinguish "cap matches the bar" from
+    # "today's-map approximation". Option 2 snapshots today's map for all
+    # cuts, so the tag is uniform; sub-657950e historical fidelity is the
+    # documented limitation.
+    payload["sector_snapshot_source"] = (
+        "today_snapshot" if args.strategy_config else "none_sector_blind"
+    )
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -555,12 +569,33 @@ def _load_bars(args) -> list[AllocatorReplayBar]:
         load_replay_bars_from_sim_db,
     )
 
+    sector_map, max_per_sector = _load_sector_config(args)
     return load_replay_bars_from_sim_db(
         _default_sim_db_path(args.wf_artifact_root),
         args.start_cut,
         args.end_cut,
         fwd_horizon_days=args.fwd_horizon_days,
+        sector_map=sector_map,
+        max_per_sector=max_per_sector,
     )
+
+
+def _load_sector_config(args) -> tuple[dict, int]:
+    """Read today's sector_map + max_positions_per_sector for Step-4h
+    (#136 / #154 Option 2 — snapshot today's map). Returns ({}, 0) when
+    no config is given, which keeps the replay sector-blind (constraint
+    fidelity then flags it, the pre-Step-4h behavior)."""
+    import json as _json
+    cfg_path = getattr(args, "strategy_config", None)
+    if not cfg_path:
+        return {}, 0
+    try:
+        cfg = _json.loads(Path(cfg_path).read_text())
+    except (OSError, ValueError):
+        return {}, 0
+    sector_map = cfg.get("sector_map", {}) or {}
+    max_per_sector = int(cfg.get("max_positions_per_sector", 0) or 0)
+    return sector_map, max_per_sector
 
 
 def _default_sim_db_path(wf_artifact_root: str) -> Path:
