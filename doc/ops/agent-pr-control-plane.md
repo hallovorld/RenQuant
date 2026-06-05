@@ -26,6 +26,30 @@ The orchestrator's `--as <agent>` resolves the matching var (falls back to
 configure that server with the same per-agent token; `--token` is the
 single override point either way.
 
+### 1.1 · The two tokens must belong to DISTINCT GitHub accounts
+
+GitHub's "cannot approve your own PR" rule — the thing that makes an
+`APPROVED` review a genuine second opinion — keys on the **account that owns
+the token**, not on the token string. So:
+
+- A second PAT minted from the *same* account (e.g. two `hallovorld` PATs)
+  does **not** separate the agents. The author and the reviewer are still the
+  same login; `gh pr review --approve` fails with
+  `Can not approve your own pull request`, and `gh pr merge --admin` is then
+  blocked by `required_approving_review_count: 1`.
+- `RENQUANT_CLAUDE_GH_TOKEN` and `RENQUANT_CODEX_GH_TOKEN` must therefore come
+  from **two different GitHub accounts** (e.g. a `…-claude-bot` and a
+  `…-codex-bot` machine user), each with write access (collaborator) on the
+  renquant repos. Codex commits/pushes as one; Claude reviews/approves as the
+  other. Only then does the merge flow through the genuine two-identity path.
+
+**Until both accounts exist**, agent-authored PRs can only be landed by the
+owner via the override in §4 (temporarily relax `enforce_admins`, admin-merge,
+restore) — which bypasses the review gate and so is a stopgap, not the
+steady state. Observed live on 2026-06-05: codex's #216/#217 were verified
+correct by Claude but could not be approved (single `hallovorld` identity), so
+they were merged by owner override.
+
 ## 2 · Invocation surfaces
 
 | | Claude | Codex |
@@ -73,5 +97,13 @@ cadences.
   and fails closed if it can't.
 - `sync` only fast-forwards a clean `main`; feature/dirty trees are
   fetch-only (never auto-pulled).
-- You retain `gh pr merge --admin` for manual override (branch protection
-  has `enforce_admins=false`).
+- Owner override path (when no second account exists yet, per §1.1):
+  `main` has `enforce_admins=true` + `required_approving_review_count=1`, so a
+  bare `gh pr merge --admin` is refused. To force-land a verified PR:
+  ```bash
+  gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/enforce_admins
+  gh pr merge <PR#> --repo <owner>/<repo> --merge --admin
+  gh api -X POST   repos/<owner>/<repo>/branches/main/protection/enforce_admins  # restore
+  ```
+  Always restore `enforce_admins` in the same step. This bypasses the review
+  gate — use only for owner-verified PRs while §1.1's two accounts are pending.
