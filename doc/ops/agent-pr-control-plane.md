@@ -44,11 +44,11 @@ the token**, not on the token string. So:
   other. Only then does the merge flow through the genuine two-identity path.
 
 **Until both accounts exist**, agent-authored PRs can only be landed by the
-owner via the override in §4 (temporarily relax `enforce_admins`, admin-merge,
-restore) — which bypasses the review gate and so is a stopgap, not the
-steady state. Observed live on 2026-06-05: codex's #216/#217 were verified
-correct by Claude but could not be approved (single `hallovorld` identity), so
-they were merged by owner override.
+owner via the emergency override in §4 (temporarily relax `enforce_admins`,
+admin-merge, restore) — which bypasses the review gate and so is a stopgap,
+not the steady state. Observed live on 2026-06-05: codex's #216/#217 were
+verified correct by Claude but could not be approved (single `hallovorld`
+identity), so they were merged by owner override.
 
 ## 2 · Invocation surfaces
 
@@ -97,13 +97,19 @@ cadences.
   and fails closed if it can't.
 - `sync` only fast-forwards a clean `main`; feature/dirty trees are
   fetch-only (never auto-pulled).
-- Owner override path (when no second account exists yet, per §1.1):
+- Emergency owner override path (when no second account exists yet, per §1.1):
   `main` has `enforce_admins=true` + `required_approving_review_count=1`, so a
-  bare `gh pr merge --admin` is refused. To force-land a verified PR:
+  bare `gh pr merge --admin` is refused. This is not the normal merge path; use
+  it only when the owner has independently verified the PR and the missing
+  second account is the only blocker. Before the merge, post an audit comment
+  that names the reviewer evidence, links the review/comment used as the
+  second-opinion basis, and states that `enforce_admins` will be restored
+  immediately. Then force-land the verified PR:
   ```bash
   gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/enforce_admins
   gh pr merge <PR#> --repo <owner>/<repo> --merge --admin
   gh api -X POST   repos/<owner>/<repo>/branches/main/protection/enforce_admins  # restore
   ```
-  Always restore `enforce_admins` in the same step. This bypasses the review
-  gate — use only for owner-verified PRs while §1.1's two accounts are pending.
+  Always restore `enforce_admins` in the same shell/trap-backed step and verify
+  branch protection afterward. This bypasses the review gate — use only for
+  owner-verified PRs while §1.1's two accounts are pending.
