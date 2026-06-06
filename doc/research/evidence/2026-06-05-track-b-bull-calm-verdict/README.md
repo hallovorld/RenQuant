@@ -59,7 +59,8 @@ BULL_CALM is ~78% of trading days. Track B made it **negative**.
 The baseline above (39 cuts, through 2026-03-09) had **fresher point-in-time
 models on the val tail** than Track B (34 cuts, through 2025-11-24) — exactly
 caveat §5.1. Re-running the baseline on a manifest **truncated to Track B's
-34-cut range** (2024-01-01 → 2025-11-24) makes the comparison like-for-like:
+34-cut range** (2024-01-01 → 2025-11-24) gives the promotion decision a matched
+baseline/Track-B comparison:
 
 | BULL_CALM | mean_ic | n_dates | vs Track B |
 |---|--:|--:|--:|
@@ -67,11 +68,16 @@ caveat §5.1. Re-running the baseline on a manifest **truncated to Track B's
 | **truncated baseline (34 cuts, MATCHED)** | **+0.0039** | 399 | — |
 | Track B (34 cuts) | −0.0049 | 399 | **like-for-like Δ = −0.0088** |
 
-**The honest like-for-like effect of Track B is −0.0088, not −0.0155** — the
-model-freshness asymmetry inflated the reported damage by ~1.8×. The pooled IC
-also dropped on truncation (+0.039 → **+0.028**), and BEAR +0.307→+0.258,
-CHOPPY +0.017→+0.009 — i.e. **model recency materially lifts IC on the recent
-val window across regimes**, an independent finding worth noting.
+**The honest matched-run effect of Track B is −0.0088, not −0.0155**. The old
+headline mixed the full-baseline diagnostic with a shorter Track-B run and
+overstated the damage by ~1.8× relative to the matched comparison.
+
+Do **not** treat the full-baseline → truncated-baseline drop as a pure
+model-recency estimate: the archived full baseline diagnostic used a narrower
+142-ticker transformer-panel merge, while the corrected truncated baseline and
+Track-B diagnostics use the current 292-ticker rawlabel/training-panel supplement
+path. Pooled/regime moves on truncation are context, not a standalone model
+recency finding. Compact evidence is archived in `matched_freshness_summary.json`.
 
 **The do-not-promote verdict is unchanged**: even matched-freshness, Track B
 (−0.0049) is still negative and still below the matched baseline (+0.0039);
@@ -112,7 +118,8 @@ The §7.2.1 R2 contract for Track B requires a 120-day time shift (2x the
 Pooled Track B also fails the placebo sanity check: aligned_real_ic +0.0451,
 model_placebo_ic +0.0667, ratio 1.48x over 388 dates. In the target
 BULL_CALM regime, the fake 120d-shift signal dwarfs the aligned real signal.
-This closes the earlier 120d gap and makes the reject R2-compliant.
+This closes the earlier 120d gap and makes the reject R2-compliant. Compact
+machine-readable evidence is archived in `matched_freshness_summary.json`.
 
 ## 5 · Verdict — do not promote
 
@@ -140,11 +147,12 @@ model, §1.2/§1.5), not more features on the shared model.
 
 1. **Model-freshness asymmetry in the val tail.** ✅ **RESOLVED (2026-06-06)** —
    re-ran the baseline on a manifest truncated to Track B's 34-cut range; see
-   §2.1. The asymmetry was REAL and inflated the magnitude ~1.8× (full baseline
-   +0.0106 → matched baseline +0.0039; like-for-like Δ −0.0088, not −0.0155).
-   The do-not-promote verdict stands (Track B still negative, still below the
-   matched baseline, and the shift-60 diagnostic remains negative) but the
-   magnitude claim is corrected.
+   §2.1. The matched comparison corrects the magnitude to Δ −0.0088, not
+   −0.0155. The do-not-promote verdict stands (Track B still negative, still
+   below the matched baseline, and the shift-60 diagnostic remains negative).
+   Remaining attribution caveat: the old full-baseline diagnostic and corrected
+   matched diagnostics also differ in panel/universe coverage, so the
+   full→truncated drop is not a clean estimate of model recency alone.
    Original note: baseline had cuts through 2026-03-09, Track B through
    2025-11-24, so baseline scored the val tail with fresher point-in-time
    models.

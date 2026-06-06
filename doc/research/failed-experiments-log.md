@@ -4147,8 +4147,11 @@ CHOPPY +0.017→+0.035 (n=40), BULL_VOLATILE −0.024→−0.037.
 re-run on a baseline truncated to Track B's 34-cut range: matched baseline
 BULL_CALM **+0.0039** → honest Δ **−0.0088** (not −0.0155); pooled truncated
 +0.028. REJECT unchanged (still negative, still below matched baseline,
-placebo-noise); only the magnitude is corrected. Independent finding: model
-recency materially lifts IC on the recent val tail across regimes.
+placebo-noise); only the magnitude is corrected. Caveat: full-baseline vs
+truncated-baseline deltas are not a pure model-recency estimate because the
+archived full baseline used narrower 142-ticker transformer-panel coverage,
+while the matched rerun used the current 292-ticker rawlabel/training-panel
+supplement path.
 **Sanity check**: shift-60 placebo on the Track B BULL_CALM cell —
 aligned_real_ic +0.005 vs model_placebo_ic +0.032 (**placebo 6.5x the real
 signal**, label_autocorr ~0). The §7.2.1 R2 shift-120 closeout also failed:
