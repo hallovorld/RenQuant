@@ -4143,14 +4143,18 @@ identical script (baseline reproduced the +0.011 anchor first).
 direction; target ≥ +0.030). Pooled +0.039 → +0.029. BEAR +0.307→+0.315,
 CHOPPY +0.017→+0.035 (n=40), BULL_VOLATILE −0.024→−0.037.
 **Sanity check**: shift-60 placebo on the Track B BULL_CALM cell —
-aligned_real_ic +0.005 vs model_placebo_ic +0.032 (**placebo 6.5× the real
-signal**, label_autocorr ~0). Signal is noise; `promotion_evidence=False`.
-**Conclusion**: §7.4 Tier-1 REJECT. Bolting momentum features onto a single
-pooled `rank:pairwise` model can't fix BULL_CALM — momentum works in CALM and
-reverses in VOLATILE, so one global loading dilutes to noise. 4th consecutive
-negative on the weak-BULL_CALM problem (after Kelly σ-horizon, cash overlay, QP
-allocator). Next structurally-different lever: a per-regime specialist model,
-not more features on the shared model.
+aligned_real_ic +0.005 vs model_placebo_ic +0.032 (**placebo 6.5x the real
+signal**, label_autocorr ~0). This is a strong negative diagnostic, but not
+the full Track-B §7.2.1 R2 contract: the pre-fire memo requires a 120d shift
+(2x fwd_60d) before any promotion-grade IC claim.
+**Conclusion**: do not promote. Bolting momentum features onto a single
+pooled `rank:pairwise` model has no usable BULL_CALM evidence here — momentum
+works in CALM and reverses in VOLATILE, so one global loading likely dilutes to
+noise. 4th consecutive negative on the weak-BULL_CALM problem (after Kelly
+σ-horizon, cash overlay, QP allocator). Next structurally-different lever: a
+per-regime specialist model, not more features on the shared model. Rerun the
+time-shift placebo at 120d before treating this as a final R2-compliant
+experiment record.
 **Reproduction**: `analyze_manifest_sanity_placebo.py --artifact
 backtesting/renquant_104/artifacts/walkforward_track_b/2025-11-24/panel-ltr.json
 --manifest artifacts/walkforward_manifest_track_b.json`; evidence at

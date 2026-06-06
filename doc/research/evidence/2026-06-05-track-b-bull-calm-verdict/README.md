@@ -1,9 +1,12 @@
 # 2026-06-05 — Track B (momentum features) verdict: REJECT in BULL_CALM
 
-**Status**: §7.4 Tier-1 REJECT. The Track-B momentum/low-beta features make
-the dominant regime (BULL_CALM) **worse**, and the residual signal does NOT
-survive the §7.2.1 R2 placebo. This is the 4th consecutive NEGATIVE on the
-"weak BULL_CALM signal" problem.
+**Status**: do not promote. The Track-B momentum/low-beta features make the
+dominant regime (BULL_CALM) **worse**. The available shift-60 placebo is a
+strong negative diagnostic, but it is **not** the full §7.2.1 R2 placebo
+contract because the Track-B fire instructions require a 120-day time shift
+(2x the fwd_60d horizon). This is the 4th consecutive NEGATIVE on the
+"weak BULL_CALM signal" problem, but the evidence is recorded as a
+directional reject, not R2-compliant promotion evidence.
 **Owner**: Claude. **Reviewer requested**: codex (operator suspects
 methodology issues — caveats called out explicitly in §5, please attack them).
 
@@ -25,8 +28,10 @@ BULL_CALM IC from +0.011 toward the Tier-1 bar +0.030.
    `--include-features mom_carry_12_1,beta_dm,rvar_total,idio_vol_market`.
    Result: 176-feature models (172 baseline + 4). Manifest
    `walkforward_manifest_track_b.json`.
-3. Per-regime IC + shift-placebo via `analyze_manifest_sanity_placebo.py`,
+3. Per-regime IC + shift-60 placebo via `analyze_manifest_sanity_placebo.py`,
    leak-free WF scoring (each OOS date scored by its point-in-time cut model).
+   Caveat: shift-60 is 1x the forward-label horizon; the pre-registered R2
+   contract for Track B requires shift-120 before any promotion-grade IC claim.
 4. **Identical script on the 172-feature baseline** (`walkforward_manifest_v2_20260602`,
    39 cuts) — same panel, same last-20% val window, same placebo battery — so
    the comparison is apples-to-apples, not against the doc-quoted +0.011.
@@ -47,7 +52,7 @@ method before the Track-B comparison.
 
 BULL_CALM is ~78% of trading days. Track B made it **negative**.
 
-## 3 · The placebo — Track B BULL_CALM signal is noise (§7.2.1 R2)
+## 3 · The shift-60 placebo — strong negative, not full R2
 
 Shift-60 placebo (label shifted by the full forward-label horizon; if the
 "signal" survives, it's not signal). BULL_CALM cell:
@@ -59,14 +64,22 @@ Shift-60 placebo (label shifted by the full forward-label horizon; if the
 
 The baseline already had a weak BULL_CALM signal (placebo keeps 62%). For
 **Track B the real signal at the placebo alignment is ~0 (+0.005) while the
-placebo IC is +0.032 — the fake signal is 6.5× the real one.** Label
-autocorrelation is ~0, so the placebo is clean. Verdict: Track B's BULL_CALM
-predictions are noise. `promotion_evidence = False`.
+placebo IC is +0.032 — the fake signal is 6.5x the real one.** Label
+autocorrelation is ~0, so this is a strong negative diagnostic. However,
+because it uses shift-60 rather than the pre-registered shift-120, this block
+does not satisfy the Track-B R2 compliance proof. Treat it as
+`promotion_evidence = False`; do not treat it as a complete R2 verdict.
 
-## 4 · Verdict — Tier-1 REJECT, do not promote
+## 4 · Verdict — do not promote; 120d placebo still pending
 
-`§7.4` Tier-1: mean ΔIC < 0 in the target regime AND placebo-confirmed →
-**REJECT**. No config change. Track B features are not added to production.
+The mean IC delta is negative in the target regime and the available shift-60
+diagnostic is worse than the real signal, so there is no basis to promote or
+continue with a prod/shadow switch. No config change. Track B features are not
+added to production.
+
+This is intentionally weaker than a full R2 statement: before quoting these IC
+numbers as promotion-grade evidence, rerun the time-shift placebo at 120 days
+per [`2026-06-03-track-b-fire-instructions.md`](../../2026-06-03-track-b-fire-instructions.md).
 
 **Why the diagnostic was wrong** (hypothesis, not proven): the +0.039 naive
 momentum IC was computed on the `sim_runs.db` ticker subset, not the full
@@ -90,9 +103,9 @@ model, §1.2/§1.5), not more features on the shared model.
    For val dates after 2025-11, baseline scores with fresher point-in-time
    models while Track B reuses its last (2025-11-24) model. This mildly
    disadvantages Track B on the tail. n_dates is near-identical (399 vs 400)
-   so coverage matches, and the BULL_CALM gap (−0.0155) + placebo (ratio 6.5)
-   are far too large for ~1 month of model staleness to explain — but it is a
-   real asymmetry. A like-for-like fix is to truncate the baseline manifest to
+   so coverage matches, and the BULL_CALM gap (−0.0155) + shift-60 placebo
+   (ratio 6.5) are large enough to block promotion now, but it is a real
+   asymmetry. A like-for-like fix is to truncate the baseline manifest to
    2025-11-30 and re-run.
 2. **Feature source for the 4 added columns.** Baseline reads all 172 features
    from the rawlabel sanity panel; Track B reads the same 172 from rawlabel
@@ -106,8 +119,10 @@ model, §1.2/§1.5), not more features on the shared model.
 3. **CHOPPY crossed +0.030 (n=40).** Per §1.5 this could in principle be a
    CHOPPY-conditional win, but n=40 is too small and CHOPPY is not the
    bottleneck regime. Not promoted; flagged for completeness.
-4. **No multi-seed** (§7.3). Single WF retrain per arm. The placebo is the
-   load-bearing control here, not seed variance, but a 5-seed repeat would
+4. **No R2-compliant 120d placebo yet.** The current negative uses shift-60,
+   which is useful but below the Track-B pre-fire contract. A 120d rerun is
+   required before any final R2-compliant experiment record.
+5. **No multi-seed** (§7.3). Single WF retrain per arm. A 5-seed repeat would
    tighten the negative.
 
 ## 6 · Artifacts
