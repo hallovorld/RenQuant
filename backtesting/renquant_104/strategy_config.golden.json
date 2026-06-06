@@ -148,7 +148,7 @@
   "data_src": "yfinance",
   "initial_cash": 100000,
   "model_staleness_days": 60,
-  "sharpe_floor": 1.0,
+  "sharpe_floor": 1,
   "wash_sale_days": 30,
   "min_hold_days": 5,
   "model_sell": {
@@ -184,7 +184,7 @@
   },
   "position_sizing": {
     "max_position_pct": 0.15,
-    "cash_reserve_pct": 0.0
+    "cash_reserve_pct": 0
   },
   "regime": {
     "hurst_window": 63,
@@ -205,9 +205,9 @@
     "earnings_sell_buffer_pre_days": 2,
     "earnings_sell_buffer_post_days": 5,
     "choppy_hurst_floor": 0.2,
-    "confidence_veto_threshold": 0.0,
+    "confidence_veto_threshold": 0,
     "cusum_cooldown_mode": "wall_time",
-    "cusum_cooldown_days": 3.0,
+    "cusum_cooldown_days": 3,
     "bear_vol_threshold_5d": 0.25,
     "bear_return_threshold_5d": -0.04,
     "vol_realized_window_5d": 5,
@@ -221,22 +221,22 @@
       "qp_turnover_max": 0.15,
       "_qp_turnover_max_reason": "2026-05-23 Codex churn fix: BULL_CALM is the accumulation regime, so buys remain enabled, but daily QP L1 turnover is capped at 15% NAV to avoid small-edge churn after hidden tax gates were removed. This follows no-trade-region logic for proportional costs (Garleanu-Pedersen 2013 / cvxportfolio).",
       "max_sector_weight_pct": 0.35,
-      "cash_reserve_pct": 0.0,
+      "cash_reserve_pct": 0,
       "stop_loss_pct": 0.15,
-      "max_single_day_loss_pct": 0.0,
-      "sdl_n_sigma": 3.0,
-      "_sdl_reason": "2026-05-04: replaced absolute 6% threshold with \u03c3-scaled 3\u00b7daily_vol. B2 holdout showed absolute mode tripped on noise for high-vol stocks (NVDA/RBLX daily \u03c3\u22484-5%, threshold of 6% = ~1.3\u03c3 \u2014 common noise day). 20 SDL exits, 60% lost, median pnl \u22125.2%. With sdl_n_sigma=3, threshold = 3\u00b7(NGBoost_\u03c3/\u221a5). Per-ticker; low-vol stock \u03c3=2% \u2192 threshold 6% (legacy); high-vol \u03c3=5% \u2192 threshold 15% (more permissive on noise). Set max_single_day_loss_pct=0 so \u03c3 mode dominates; absolute mode comes back if NGBoost \u03c3 unavailable for a position.",
+      "max_single_day_loss_pct": 0,
+      "sdl_n_sigma": 3,
+      "_sdl_reason": "2026-05-04: replaced absolute 6% threshold with σ-scaled 3·daily_vol. B2 holdout showed absolute mode tripped on noise for high-vol stocks (NVDA/RBLX daily σ≈4-5%, threshold of 6% = ~1.3σ — common noise day). 20 SDL exits, 60% lost, median pnl −5.2%. With sdl_n_sigma=3, threshold = 3·(NGBoost_σ/√5). Per-ticker; low-vol stock σ=2% → threshold 6% (legacy); high-vol σ=5% → threshold 15% (more permissive on noise). Set max_single_day_loss_pct=0 so σ mode dominates; absolute mode comes back if NGBoost σ unavailable for a position.",
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.35,
       "entry_mode": "momentum",
       "min_model_score": 0.1,
-      "min_price_move_pct": 0.0,
+      "min_price_move_pct": 0,
       "trailing_stop_trigger_pct": 0.12,
       "trailing_stop_trail_pct": 0.25,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3,
       "take_profit_pct": 0,
-      "_bb14_meta_reason": "2026-05-11 P4.5 winner: BB_14 stops + meta-label classifier. Validated on 11-mo OOS 2025-04\u21922026-03: APY +0.2% / MaxDD 44.7% vs baseline -0.3% / 55.8%. Meta-label vetoed 5 SDLs. See doc/research/meta-labeling-results-2026-05-11.md.",
+      "_bb14_meta_reason": "2026-05-11 P4.5 winner: BB_14 stops + meta-label classifier. Validated on 11-mo OOS 2025-04→2026-03: APY +0.2% / MaxDD 44.7% vs baseline -0.3% / 55.8%. Meta-label vetoed 5 SDLs. See doc/research/meta-labeling-results-2026-05-11.md.",
       "drawdown_resume_pct": 0.175,
       "sentiment": {
         "enabled": false
@@ -262,7 +262,7 @@
       "ngboost": {
         "enabled": false,
         "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0,
+        "lambda_sigma": 1,
         "_disable_reason": "2026-05-25 Codex contract repair: global NGBoost was already disabled after E55 (NGB-on lost to NGB-off), but this stale regime overlay still activated an old ngboost-head with mismatched train_run_id. Keep disabled until a same-run NGBoost head passes strict WF/regime evidence."
       },
       "sentiment": {
@@ -279,7 +279,7 @@
       "drawdown_halt_pct": 0.08,
       "entry_mode": "divergence",
       "min_model_score": 0.15,
-      "min_price_move_pct": 0.0,
+      "min_price_move_pct": 0,
       "trailing_stop_trigger_pct": 0.15,
       "trailing_stop_trail_pct": 0.1,
       "max_concurrent_positions": 4,
@@ -288,7 +288,7 @@
       "ngboost": {
         "enabled": false,
         "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0,
+        "lambda_sigma": 1,
         "_disable_reason": "2026-05-25 Codex contract repair: global NGBoost was already disabled after E55 (NGB-on lost to NGB-off), but this stale regime overlay still activated an old ngboost-head with mismatched train_run_id. Keep disabled until a same-run NGBoost head passes strict WF/regime evidence."
       },
       "sentiment": {
@@ -296,16 +296,16 @@
       }
     },
     "BEAR": {
-      "max_position_pct": 0.0,
+      "max_position_pct": 0,
       "max_sector_weight_pct": 0.2,
-      "cash_reserve_pct": 1.0,
+      "cash_reserve_pct": 1,
       "stop_loss_pct": 0.05,
-      "max_single_day_loss_pct": 0.0,
+      "max_single_day_loss_pct": 0,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.05,
       "entry_mode": "blocked",
-      "min_model_score": 0.0,
-      "min_price_move_pct": 0.0,
+      "min_model_score": 0,
+      "min_price_move_pct": 0,
       "trailing_stop_trigger_pct": 0.1,
       "trailing_stop_trail_pct": 0.05,
       "take_profit_pct": 0,
@@ -313,7 +313,7 @@
       "ngboost": {
         "enabled": false,
         "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0,
+        "lambda_sigma": 1,
         "_disable_reason": "2026-05-25 Codex contract repair: global NGBoost was already disabled after E55 (NGB-on lost to NGB-off), but this stale regime overlay still activated an old ngboost-head with mismatched train_run_id. Keep disabled until a same-run NGBoost head passes strict WF/regime evidence."
       },
       "sentiment": {
@@ -398,7 +398,7 @@
       "enabled": true,
       "legacy_enabled": false,
       "panel_sell_floor": 0.2,
-      "mu_sell_ceiling": 0.0,
+      "mu_sell_ceiling": 0,
       "trigger_mode": "and",
       "xs_panel_percentile_floor": 0.2,
       "mu_strong_sell_ceiling": -0.05,
@@ -410,13 +410,13 @@
       "tax_adjusted_soft_exit": {
         "enabled": true,
         "short_term_only": true,
-        "min_unrealized_gain": 0.0,
-        "tax_drag_fraction": 1.0,
-        "transaction_cost_pct": 0.0,
-        "min_exit_edge": 0.0,
+        "min_unrealized_gain": 0,
+        "tax_drag_fraction": 1,
+        "transaction_cost_pct": 0,
+        "min_exit_edge": 0,
         "_reason": "2026-05-21 P0-4: model-driven soft exits on short-term unrealized gains must have enough negative expected return to pay immediate tax drag. Uses the same fraction-of-position tax_drag convention as kernel.rotation.tax_drag. Path-risk exits remain exempt."
       },
-      "_deployment_reason": "2026-05-11 audit fix: legacy PanelConvictionExitTask had 0/12336 historical fire rate due to calibrator-saturation rank_score gating. NEW CrossSectionalPanelExitTask post-PanelScoringJob uses raw panel_score with cross-sectional percentile (AND mu) + strong-mu OR-bypass. Catches BA-style cases: panel=+0.198 (32%ile) mu=-0.123 \u2192 fires via strong_mu bypass."
+      "_deployment_reason": "2026-05-11 audit fix: legacy PanelConvictionExitTask had 0/12336 historical fire rate due to calibrator-saturation rank_score gating. NEW CrossSectionalPanelExitTask post-PanelScoringJob uses raw panel_score with cross-sectional percentile (AND mu) + strong-mu OR-bypass. Catches BA-style cases: panel=+0.198 (32%ile) mu=-0.123 → fires via strong_mu bypass."
     }
   },
   "sector_map": {
@@ -618,7 +618,7 @@
     "short_decile": 0.1,
     "max_shorts": 3,
     "max_short_pct": 0.05,
-    "max_gross_exposure": 1.0,
+    "max_gross_exposure": 1,
     "borrow_rate_etb": 0.005,
     "borrow_rate_htb": 0.05,
     "borrow_status_path": "data/alpaca_borrow_status.json",
@@ -648,8 +648,8 @@
     "enabled": true,
     "min_expected_advantage_pct": 0.06,
     "target_horizon_days": 60,
-    "_target_horizon_days_reason": "2026-05-24 Codex horizon-contract fix: panel-LTR production label/calibrator/QP \u03bc are 60d (`panel_ltr.lookahead_days=60`, `qp_mu_horizon_days=60`). Rotation decisions must use the same expected-return horizon; 20d made logs/thresholds short-horizon while the panel calibrator supplied 60d \u03bc, and BULL_CALM forensics showed the signal aligns better at longer horizons.",
-    "transaction_cost_pct": 0.0,
+    "_target_horizon_days_reason": "2026-05-24 Codex horizon-contract fix: panel-LTR production label/calibrator/QP μ are 60d (`panel_ltr.lookahead_days=60`, `qp_mu_horizon_days=60`). Rotation decisions must use the same expected-return horizon; 20d made logs/thresholds short-horizon while the panel calibrator supplied 60d μ, and BULL_CALM forensics showed the signal aligns better at longer horizons.",
+    "transaction_cost_pct": 0,
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
     "max_rotations_per_bar": 1,
@@ -663,7 +663,7 @@
       "slippage_pct": 0.0005,
       "slot_budget_mode": "shared",
       "solver": "qp",
-      "qp_risk_aversion": 3.0,
+      "qp_risk_aversion": 3,
       "qp_cost_kappa": 0.002,
       "qp_cost_kappa_floor_round_trip": true,
       "_qp_cost_kappa_reason": "2026-05-23 Codex churn fix: QP turnover penalty must be at least round-trip fee+slippage = 2*(0.0005+0.0005)=0.002. The prior 0.0001 underpriced trading by 20x and let small-edge rebalances dominate.",
@@ -671,24 +671,24 @@
       "_qp_turnover_max_reason": "2026-05-23 Codex churn fix: explicit global daily L1 turnover cap. Regime-specific overrides may be tighter; BULL_CALM uses 0.15 so the system can still accumulate but cannot churn the book aggressively on marginal signals.",
       "qp_dw_max": 0.5,
       "qp_min_dw_pct": 0.02,
-      "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
-      "qp_min_share_floor_pct": 0.0,
+      "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005→0.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
+      "qp_min_share_floor_pct": 0,
       "_qp_min_share_floor_pct_reason": "2026-05-24 Codex QP safety fix: disabled whole-share floor. Continuous Markowitz/Boyd QP weights are the constraint contract; integer execution may round down when target delta is below one share, but must not round up to one share and exceed solver target/caps. Re-enable only with fractional-share execution or a mixed-integer lot-size optimizer.",
       "qp_admission_gate": {
         "enabled": true,
         "min_rank_score": 0.55,
-        "min_panel_score": 0.0,
+        "min_panel_score": 0,
         "topup_min_rank_score": 0.55,
-        "topup_min_panel_score": 0.0,
+        "topup_min_panel_score": 0,
         "min_expected_return_by_regime": {
           "BULL_CALM": 0.04
         },
-        "_min_expected_return_reason": "2026-05-24 Codex QP alpha contract: QP may size only candidates with finite calibrated expected-return evidence on the same 60d horizon as panel_ltr/QP \u03bc. Requiring 4% 60d expected excess return in BULL_CALM keeps thin probability-only signals from becoming trades after friction and benchmark-sleeve opportunity cost.",
+        "_min_expected_return_reason": "2026-05-24 Codex QP alpha contract: QP may size only candidates with finite calibrated expected-return evidence on the same 60d horizon as panel_ltr/QP μ. Requiring 4% 60d expected excess return in BULL_CALM keeps thin probability-only signals from becoming trades after friction and benchmark-sleeve opportunity cost.",
         "respect_open_slots": true,
         "_reason": "2026-05-23 Codex alpha-conversion fix: QP may size/rebalance only pre-qualified alpha. WF trace forensics showed negative raw-panel and low-rank QP/TopUp adds were net negative after tax/friction, and QP opened risk when the book was already at the legacy slot cap. Require calibrated rank >=0.55, raw panel >=0, and available slot for new names before emitting QP buys/top-ups."
       },
       "qp_tax_aware": false,
-      "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect \u2014 strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
+      "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect — strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
       "qp_soft_sell_guard": {
         "enabled": true,
         "apply_tax_gates": false,
@@ -701,15 +701,15 @@
       "qp_tax_lot_method": "hifo",
       "_qp_tax_lot_method_reason": "G7 (2026-05-04): tax-lot disposal rule. 'fifo' = oldest lot first (broker default); 'hifo' = highest-cost lot first (minimises realized gain on partial sells); 'avg' = legacy single-cost-basis kill-switch.",
       "default_sigma": 0.05,
-      "qp_signal_decay": 0.0,
-      "qp_robust_mu_kappa": 0.0,
-      "qp_cvar_lambda": 0.0,
+      "qp_signal_decay": 0,
+      "qp_robust_mu_kappa": 0,
+      "qp_cvar_lambda": 0,
       "qp_drawdown_limit": 0.2,
-      "qp_no_trade_band_factor": 1.0,
+      "qp_no_trade_band_factor": 1,
       "qp_no_trade_band_cap": 0.05,
-      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: \u03c3-derived no-trade band uncapped \u2192 high-\u03c3 holdings (e.g. BA \u03c3\u0302=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
-      "qp_min_invested_pct": 0.0,
-      "qp_cash_drag_lambda": 0.0,
+      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: σ-derived no-trade band uncapped → high-σ holdings (e.g. BA σ̂=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
+      "qp_min_invested_pct": 0,
+      "qp_cash_drag_lambda": 0,
       "qp_min_invested_requires_positive_edge": true,
       "qp_min_invested_edge_floor": 0.002,
       "_qp_min_invested_edge_reason": "2026-05-23 Codex alpha-conversion fix: disable forced cash deployment while QP/TopUp admission is being repaired. Cash drag previously let marginal candidates become trades; re-enable only after WF shows benchmark-relative alpha survives the strict admission gate.",
@@ -719,16 +719,16 @@
       "qp_horizon_contract": "strict",
       "_qp_horizon_contract_reason": "2026-05-23 Codex audit: calibrator mu is a 60d forward-return estimate while realized-vol fallback is annualized; Markowitz QP requires mu and Sigma on the same single-period horizon, so sigma is scaled by sqrt(60/252) before covariance construction.",
       "qp_ledoit_wolf_lambda": 0.2,
-      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0\u21920.2 (Ledoit-Wolf 2004 mid-of-recommended-range). 169-stock universe sample-cov is high-noise / near-singular without shrinkage; \u03bb=0.2 lifts off-diagonals toward 0 and equalises variance toward avg. Reference: Ledoit & Wolf 2004 Honey paper (J.PortMgmt 30(4):110-119).",
+      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0→0.2 (Ledoit-Wolf 2004 mid-of-recommended-range). 169-stock universe sample-cov is high-noise / near-singular without shrinkage; λ=0.2 lifts off-diagonals toward 0 and equalises variance toward avg. Reference: Ledoit & Wolf 2004 Honey paper (J.PortMgmt 30(4):110-119).",
       "qp_sector_cap_enabled": true,
-      "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
+      "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight ≤ max_positions_per_sector × max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
-      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|ρ| ≥ correlation_guard_threshold). wp[i] + wp[j] ≤ 2 × max_position_pct. Linear approx of pair-product cap (Boyd 2004 §4.4).",
       "qp_c2_infeasible_policy": "strict",
       "_qp_c2_infeasible_policy_reason": "2026-05-24 Codex audit: sector/correlation caps are hard diversification constraints. If they make the QP infeasible, block QP orders for the bar instead of relaxing or dropping risk constraints. Diagnostic configs may explicitly set relax/drop.",
       "qp_conviction_cap_enabled": true,
       "qp_mu_contract": "strict",
-      "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu.",
+      "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects μ in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost μ, or alpha_to_mu.",
       "qp_band_method": "davis_norman"
     },
     "enabled_regimes": [
@@ -789,7 +789,7 @@
       "spy_trend",
       "hurst_proxy"
     ],
-    "_lookahead_removed_2026-05-10": "Per \u00a75.13.5 single-source-of-truth: this key shadowed panel_ltr.lookahead_days and produced ambiguity (model_params.lookahead=5 vs panel_ltr.lookahead_days=10 vs prod artifact=60). Canonical key is now panel_ltr.lookahead_days. Tournament-side code (training/features.py build_training_features) still defaults to 5 internally \u2014 behavior unchanged for tournament path, but config no longer carries a conflicting value.",
+    "_lookahead_removed_2026-05-10": "Per §5.13.5 single-source-of-truth: this key shadowed panel_ltr.lookahead_days and produced ambiguity (model_params.lookahead=5 vs panel_ltr.lookahead_days=10 vs prod artifact=60). Canonical key is now panel_ltr.lookahead_days. Tournament-side code (training/features.py build_training_features) still defaults to 5 internally — behavior unchanged for tournament path, but config no longer carries a conflicting value.",
     "threshold": 0.03,
     "leaf_size": 25,
     "bags": 15,
@@ -802,35 +802,36 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
+      "artifact_path": "../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std",
       "buy_floor_adaptive_cap": 0.3,
       "buy_floor_min": 0.2,
-      "buy_floor_std_mult": 1.0,
+      "buy_floor_std_mult": 1,
       "_buy_floor_reason": "2026-05-21 Codex audit: use uncapped cross-sectional mean+1*std on calibrated rank_score. The prior adaptive_mean_std_cap mode capped the floor at 0.30; once calibrated scores clustered around 0.55-0.65, the floor became a no-op and admitted nearly every candidate. This follows cross-sectional normalization/ranking practice (Qlib CSRankNorm/CSZFillna) while preserving the no-signal behavior when mean+std exceeds all compressed scores. adaptive_mean_std_cap remains for old experiments only.",
-      "rotation_advantage": 0.0,
+      "rotation_advantage": 0,
       "sizing": {
         "enabled": true,
-        "floor": 0.0,
+        "floor": 0,
         "ceiling": 0.3,
-        "min_mult": 0.0
+        "min_mult": 0
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/prod/ngboost-head.alpha158_fund.json",
+        "artifact_path": "artifacts/shadow/ngboost-head.alpha158_fund.shadow.json",
         "score_mode": "additive",
-        "lambda_sigma": 0.0,
-        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
+        "lambda_sigma": 0,
+        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The σ-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha ≥+0.04 or alternative sizing scheme proves itself."
       },
       "sigma_sizing": {
         "enabled": true,
         "floor": 0.3,
-        "ceiling": 1.0
+        "ceiling": 1
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/prod/panel-rank-calibration.json",
+        "artifact_path": "artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json",
+        "strict_scorer_match": true,
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -847,7 +848,7 @@
         "edge_sharpe_floor": {
           "enabled": false,
           "threshold": 0.1,
-          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no \u03c4 achieves target FDR=0.30 OR 0.40. Best \u03c4=0.39 \u2192 FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val \u03bc-IC \u2265 +0.04 + placebo |IC|<0.01."
+          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no τ achieves target FDR=0.30 OR 0.40. Best τ=0.39 → FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val μ-IC ≥ +0.04 + placebo |IC|<0.01."
         },
         "distribution_floor": {
           "enabled": false
@@ -861,8 +862,8 @@
         "enabled": true,
         "threshold": 0.1
       },
-      "kind": "xgb",
-      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask using registry.get(kind), but registry only registers 'xgb'. Config still used legacy name \u2192 LoadScorerTask fails silently every bar (logs ERROR, returns False) \u2192 ApplyScoresTask never runs \u2192 candidates fall back to per-ticker scores \u2192 conviction_floor=0.20 blocks all top-ups \u2192 QP returns optimal_no_signal \u2192 zero trades on 2026-05-19 daily run. Artifact JSON still has kind=panel_ltr_xgboost (legacy alpha158-feature-path dispatch), unchanged.",
+      "kind": "hf_patchtst",
+      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask using registry.get(kind), but registry only registers 'xgb'. Config still used legacy name → LoadScorerTask fails silently every bar (logs ERROR, returns False) → ApplyScoresTask never runs → candidates fall back to per-ticker scores → conviction_floor=0.20 blocks all top-ups → QP returns optimal_no_signal → zero trades on 2026-05-19 daily run. Artifact JSON still has kind=panel_ltr_xgboost (legacy alpha158-feature-path dispatch), unchanged.",
       "sentiment": {
         "enabled": true,
         "regime_policy": {
@@ -885,17 +886,19 @@
       },
       "shadow_models": [
         {
-          "name": "hf_patchtst_pt07_strict_seed44",
-          "kind": "hf_patchtst",
-          "artifact_path": "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
-          "_2026-05-22_provenance": "Strict-contract PatchTST shadow: tail-val 10%, 60BD embargo, train-only label winsor, seq_len=24, lr=1e-4, wd=0.3, warmup=0.1, seed=44. Final min-regime IC=+0.0307 (BULL_VOLATILE +0.0524, BEAR +0.1916, CHOPPY +0.0307). Cleaner than the old canonical seed44 path, but weaker than old non-embargo IC; SHADOW only, no promotion."
+          "name": "xgb_alpha158_fund_previous_primary",
+          "kind": "xgb",
+          "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
+          "_2026_06_05_role": "Previous primary scorer moved to strategy_config.shadow.json after PatchTST promotion."
         }
       ],
       "shadow_tracking_uri": "file:./mlruns",
-      "shadow_experiment": "renquant_104_shadow",
+      "shadow_experiment": "renquant_104_xgb_shadow_after_patchtst_promotion",
       "regime_admission": {
-        "enabled": true
-      }
+        "enabled": false,
+        "_promotion_reason_2026_06_05": "Operator-directed PatchTST promotion from shadow to primary. Current HF checkpoint does not yet carry strict WF regime-admission metadata, so runtime regime admission remains disabled for this scorer; preflight/model contract, calibrator strict_scorer_match, QP, freshness, drawdown, and sell-only risk gates remain active."
+      },
+      "_2026_06_05_patchtst_promotion": "2026-06-05 operator-directed prod/shadow switch: HF PatchTST pt07 strict seed44 promoted to primary scorer; XGB moved to readonly shadow config."
     },
     "universe_floor": {
       "type": "sharpe",
@@ -905,7 +908,7 @@
       "enabled": true,
       "fractional": 0.5,
       "max_concentration": 0.35,
-      "min_edge": 0.0,
+      "min_edge": 0,
       "top_up_threshold": 0.05,
       "topup_conviction_floor": 0.55,
       "base_rate": 0.273,
@@ -914,7 +917,7 @@
       "realized_vol_window_days": 60,
       "realized_vol_floor": 0.05,
       "realized_vol_ceiling": 1.5,
-      "_2026-05-15_activation_reason": "Phase 3 of calibrator P0 (commits b16e2a1, 00f94ff, 342309e). Pre-fix: mu_none=33 across every panel, Kelly returned 0 for every candidate, QP fell back to uniform 10.17% sizing. Post-fix: c.mu = c.expected_return (bounded \u00b10.20 by train-site + load-site clips); c.sigma = trailing 60d annualized realized vol (clipped to [0.05, 1.50]). Calibrator artifact refitted with bounded ER (2026-05-15 15:52)."
+      "_2026-05-15_activation_reason": "Phase 3 of calibrator P0 (commits b16e2a1, 00f94ff, 342309e). Pre-fix: mu_none=33 across every panel, Kelly returned 0 for every candidate, QP fell back to uniform 10.17% sizing. Post-fix: c.mu = c.expected_return (bounded ±0.20 by train-site + load-site clips); c.sigma = trailing 60d annualized realized vol (clipped to [0.05, 1.50]). Calibrator artifact refitted with bounded ER (2026-05-15 15:52)."
     },
     "buy_quality_gates": {
       "regime_momentum": {
@@ -924,7 +927,7 @@
           "BULL_VOLATILE"
         ],
         "hurst_floor": 0.65,
-        "r60d_floor": 0.0,
+        "r60d_floor": 0,
         "mismatch_scale": 0.5,
         "attr": "rank_score"
       },
@@ -932,12 +935,12 @@
         "enabled": false,
         "dd_threshold": 0.2,
         "window_days": 252,
-        "sue_floor": 0.0,
-        "pead_floor": 0.0,
+        "sue_floor": 0,
+        "pead_floor": 0,
         "require_either": true,
-        "_disable_reason_2026-05-17": "DISABLED 2026-05-17: Hou-Xue-Zhang 2020 (RFS) Replicating Anomalies showed 65% of published anomalies fail under NYSE-breakpoints + value-weighted returns. The distress / 52w-loser anomaly is among the failed ones in modern data. 5/17 e2e showed DDV vetoed META (rank #1, \u03bc=+0.146, mega-cap $1.4T \u2192 distress effect weakest per FF 2008) on dd=-22.2%. Author's own docstring warned this costs +25pp in BULL_CALM/BULL_STRONG rallies. Config retained for potential regime-conditional re-enablement in BEAR/CHOPPY only."
+        "_disable_reason_2026-05-17": "DISABLED 2026-05-17: Hou-Xue-Zhang 2020 (RFS) Replicating Anomalies showed 65% of published anomalies fail under NYSE-breakpoints + value-weighted returns. The distress / 52w-loser anomaly is among the failed ones in modern data. 5/17 e2e showed DDV vetoed META (rank #1, μ=+0.146, mega-cap $1.4T → distress effect weakest per FF 2008) on dd=-22.2%. Author's own docstring warned this costs +25pp in BULL_CALM/BULL_STRONG rallies. Config retained for potential regime-conditional re-enablement in BEAR/CHOPPY only."
       },
-      "_2026-05-15_activation_reason": "Upgrades A+B from META trade evaluation. A: shrink rank_score by 0.5 when SPY regime is momentum-dominated (BULL_CALM/BULL_VOLATILE + hurst>0.65) but candidate's own 60d return is negative. B: veto candidates >20% below 52w high unless SUE or PEAD score is positive. Catches META-class trades (META today: r60=-4.66%, dd=-22.1%, no SUE \u2192 would have been score\u00d70.5 then vetoed). See Asness-Moskowitz-Pedersen 2013, Hong-Stein 2003."
+      "_2026-05-15_activation_reason": "Upgrades A+B from META trade evaluation. A: shrink rank_score by 0.5 when SPY regime is momentum-dominated (BULL_CALM/BULL_VOLATILE + hurst>0.65) but candidate's own 60d return is negative. B: veto candidates >20% below 52w high unless SUE or PEAD score is positive. Catches META-class trades (META today: r60=-4.66%, dd=-22.1%, no SUE → would have been score×0.5 then vetoed). See Asness-Moskowitz-Pedersen 2013, Hong-Stein 2003."
     },
     "ngboost_head": {
       "enabled": false
@@ -946,12 +949,13 @@
       "enabled": false,
       "threshold": 0.5,
       "artifact_path": "backtesting/renquant_104/artifacts/meta-label-exit.json",
-      "_deployment_reason": "2026-05-11: meta-label exit veto. L\u00f3pez de Prado AFML ch.20. Trained 2026-05-11 on 2024-04\u21922025-04 (146 events, class balance 55.5%, AUC 0.554). Threshold 0.5 used in OOS validation; do NOT switch to artifact's F1-optimum 0.30 without re-validation. Fallback: \u00a75.13.10 \u2014 missing artifact \u2192 no-op."
-    }
+      "_deployment_reason": "2026-05-11: meta-label exit veto. López de Prado AFML ch.20. Trained 2026-05-11 on 2024-04→2025-04 (146 events, class balance 55.5%, AUC 0.554). Threshold 0.5 used in OOS validation; do NOT switch to artifact's F1-optimum 0.30 without re-validation. Fallback: §5.13.10 — missing artifact → no-op."
+    },
+    "_2026_06_05_patchtst_promotion": "2026-06-05 operator-directed prod/shadow switch: HF PatchTST pt07 strict seed44 promoted to primary scorer; XGB moved to readonly shadow config."
   },
   "panel_ltr": {
     "lookahead_days": 60,
-    "_lookahead_days_reason_2026-05-10": "Production artifact (panel-ltr.alpha158_fund.json trained 2026-05-09) has lookahead_days=60 / label_col=fwd_60d_excess. Prior config value (10) silently diverged from the artifact produced by scripts/train_production_model.py, which hardcodes 60. Setting config to 60 makes panel_ltr.lookahead_days the single source of truth (\u00a75.13.5) and matches the production training horizon (CLAUDE.md project-status: 'XGBoost rank:pairwise + alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, fwd_60d label').",
+    "_lookahead_days_reason_2026-05-10": "Production artifact (panel-ltr.alpha158_fund.json trained 2026-05-09) has lookahead_days=60 / label_col=fwd_60d_excess. Prior config value (10) silently diverged from the artifact produced by scripts/train_production_model.py, which hardcodes 60. Setting config to 60 makes panel_ltr.lookahead_days the single source of truth (§5.13.5) and matches the production training horizon (CLAUDE.md project-status: 'XGBoost rank:pairwise + alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, fwd_60d label').",
     "data_scan": {
       "enabled": true,
       "strict": true,
@@ -982,16 +986,16 @@
       "min_child_weight": 60,
       "subsample": 0.5,
       "colsample_bytree": 0.5,
-      "lambda": 5.0,
-      "alpha": 2.0,
+      "lambda": 5,
+      "alpha": 2,
       "objective": "rank:pairwise"
     },
     "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
-    "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
+    "training_notes": "renquant_104 — panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
       "artifact_path": "artifacts/prod/ngboost-head.alpha158_fund.json",
-      "min_val_mu_ic": 0.0,
+      "min_val_mu_ic": 0,
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -1025,8 +1029,8 @@
       "feature_fraction": 0.5,
       "bagging_fraction": 0.5,
       "bagging_freq": 5,
-      "lambda_l1": 2.0,
-      "lambda_l2": 5.0,
+      "lambda_l1": 2,
+      "lambda_l2": 5,
       "verbose": -1
     },
     "cv_method": "cpcv",
@@ -1095,7 +1099,7 @@
     "minute": {
       "enabled": false,
       "cache_dir": "data/intraday",
-      "_disabled_reason": "Same as hourly above \u2014 daily model uses daily-only data by default."
+      "_disabled_reason": "Same as hourly above — daily model uses daily-only data by default."
     },
     "macro": {
       "enabled": false,
@@ -1121,7 +1125,7 @@
       "rolling_window": 252,
       "min_window_overlap_pct": 0.95
     },
-    "training_window_years": 3.0,
+    "training_window_years": 3,
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
@@ -1130,7 +1134,7 @@
     "imputation": {
       "fill_zero": true,
       "add_missingness_indicators": true,
-      "missingness_threshold_pct": 5.0,
+      "missingness_threshold_pct": 5,
       "ffill_cols": [],
       "ffill_max_gap_days": 5
     }
@@ -1153,7 +1157,7 @@
     "g7_severity": "hard",
     "g8_min_std": 0.001,
     "g8_severity": "soft",
-    "g9_max_pp_drop": 1.0,
+    "g9_max_pp_drop": 1,
     "g9_severity": "hard",
     "g10_max_sharpe_drop": 0.1,
     "g10_severity": "hard",
@@ -1161,7 +1165,7 @@
     "g11_severity": "soft",
     "run_sim_smoke": false,
     "challenger": {
-      "_doc": "Phase 4 \u2014 shadow-mode infrastructure (platform only; live wiring in Phase 4b).",
+      "_doc": "Phase 4 — shadow-mode infrastructure (platform only; live wiring in Phase 4b).",
       "enabled": false,
       "artifact_path": null,
       "name": null,
@@ -1180,7 +1184,7 @@
   "_activation_log": [
     {
       "date": "2026-04-26",
-      "change": "enable QP solver + Gate B (\u03c4=0.10)",
+      "change": "enable QP solver + Gate B (τ=0.10)",
       "rollback": "set rotation.joint_actions.solver=\"greedy\" + ranking.panel_scoring.quality_floor.enabled=false"
     },
     {
@@ -1197,7 +1201,7 @@
     "user_approval": "Option A (2026-05-18, in-session)"
   },
   "min_reentry_days": 5,
-  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
+  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign — compounds with wash_sale_days (§1091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
   "wf_gate": {
     "benchmark_required": false,
     "regime_required": false,

@@ -19,6 +19,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 STRATEGY = REPO / "backtesting" / "renquant_104"
+PIPELINE_SRC = REPO / ".subrepo_runtime" / "repos" / "renquant-pipeline" / "src"
+if PIPELINE_SRC.exists() and str(PIPELINE_SRC) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_SRC))
 if str(STRATEGY) not in sys.path:
     sys.path.insert(0, str(STRATEGY))
 
@@ -328,6 +331,53 @@ def test_runner_sell_only_can_use_broker_mark_for_held_symbols(tmp_path):
         ctx = adapter.make_context()
 
     try:
+        assert ctx.prices["AAA"] == pytest.approx(120.0)
+    finally:
+        adapter._db.close()
+
+
+def test_runner_sell_only_synthesizes_held_ohlcv_when_fetch_fails(tmp_path):
+    from adapters.runner import RunnerAdapter
+
+    cfg = _minimal_config(tmp_path)
+    broker = MagicMock()
+    broker.broker_name = None
+    broker.get_account_value.return_value = 100_000.0
+    broker.get_cash.return_value = 90_000.0
+    broker.get_all_positions.return_value = [{
+        "symbol": "AAA",
+        "qty": 10,
+        "qty_available": 10,
+        "market_value": 1_200.0,
+        "avg_entry_price": 80.0,
+    }]
+    broker.get_open_orders.return_value = set()
+    broker.get_filled_orders.return_value = []
+
+    frame = _ohlcv_frame()
+    adapter = RunnerAdapter(
+        cfg,
+        models={"AAA": {"_metadata": {"model_type": "xgb"}}},
+        broker=broker,
+        strategy_dir=tmp_path,
+        sell_only=True,
+    )
+
+    def _fetch(sym):
+        if sym == "AAA":
+            raise RuntimeError("upstream down")
+        return frame
+
+    with patch("kernel.data.fetch_ohlcv", side_effect=_fetch), \
+         patch("kernel.data.LocalStore.load", return_value=None), \
+         patch("kernel.realized_pnl.compute_recent_realized_pnl",
+               return_value={}):
+        ctx = adapter.make_context()
+
+    try:
+        assert "AAA" in ctx.ohlcv
+        assert ctx.ohlcv["AAA"]["close"].iloc[-1] == pytest.approx(120.0)
+        assert ctx.ohlcv["AAA"].index.max().date() == ctx.today
         assert ctx.prices["AAA"] == pytest.approx(120.0)
     finally:
         adapter._db.close()

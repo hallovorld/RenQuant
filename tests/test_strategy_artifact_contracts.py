@@ -11,6 +11,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
+PIPELINE_SRC = REPO_ROOT / ".subrepo_runtime" / "repos" / "renquant-pipeline" / "src"
+if PIPELINE_SRC.exists() and str(PIPELINE_SRC) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_SRC))
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
@@ -114,14 +117,15 @@ def test_patchtst_shadow_artifact_has_selection_contract_sidecar() -> None:
         )
 
 
-def test_shadow_patchtst_calibration_matches_shadow_scorer() -> None:
-    cfg = _load_config("strategy_config.shadow.json")
+def test_production_patchtst_calibration_matches_production_scorer() -> None:
+    cfg = _load_config("strategy_config.json")
     panel_cfg = cfg["ranking"]["panel_scoring"]
     scorer = _resolve_config_path(panel_cfg["artifact_path"])
     calib_cfg = panel_cfg["global_calibration"]
     calib = json.loads(_resolve_config_path(calib_cfg["artifact_path"]).read_text())
     calib_meta = calib.get("metadata") or {}
 
+    assert panel_cfg["kind"] == "hf_patchtst"
     assert calib_cfg.get("strict_scorer_match") is True
     assert Path(calib_meta["scorer_artifact"]).resolve() == scorer
     assert "patchtst_shadow" in panel_cfg["artifact_path"]

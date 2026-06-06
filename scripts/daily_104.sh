@@ -47,6 +47,49 @@ notify() {
     curl -s -H "Title: $title" -d "$body" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
 }
 
+_kill_process_tree() {
+    local root="$1"
+    local child
+    for child in $(pgrep -P "$root" 2>/dev/null || true); do
+        _kill_process_tree "$child"
+    done
+    kill -TERM "$root" 2>/dev/null || true
+}
+
+run_news_sentiment_refresh() {
+    local timeout_sec="${RENQUANT_DAILY_NEWS_TIMEOUT_SEC:-1200}"
+    local tmp_log pid start_ts now_ts elapsed rc
+    tmp_log=$(mktemp "/tmp/renquant_104_news_sentiment.XXXXXX") || return 1
+
+    "$REPO_DIR/scripts/daily_news_sentiment_refresh.sh" > "$tmp_log" 2>&1 &
+    pid=$!
+    start_ts=$(date +%s)
+
+    while kill -0 "$pid" 2>/dev/null; do
+        now_ts=$(date +%s)
+        elapsed=$((now_ts - start_ts))
+        if [ "$elapsed" -ge "$timeout_sec" ]; then
+            echo "sentiment refresh timed out after ${timeout_sec}s (non-fatal; daily continues with stale sentiment)"
+            _kill_process_tree "$pid"
+            sleep 2
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+            wait "$pid" 2>/dev/null || true
+            tail -20 "$tmp_log" || true
+            rm -f "$tmp_log"
+            return 124
+        fi
+        sleep 5
+    done
+
+    wait "$pid"
+    rc=$?
+    tail -3 "$tmp_log" || true
+    rm -f "$tmp_log"
+    return "$rc"
+}
+
 # Load Alpaca credentials
 CRED_FILE="$REPO_DIR/.env"
 if [ -f "$CRED_FILE" ]; then
@@ -255,7 +298,7 @@ echo "--- Step 2b: Backfill forward returns + portfolio metrics ---"
 # already fresh; full refresh ~30min when behind.
 echo "--- Step 2c: Refresh news sentiment ---"
 if [ -x "$REPO_DIR/scripts/daily_news_sentiment_refresh.sh" ]; then
-    if "$REPO_DIR/scripts/daily_news_sentiment_refresh.sh" 2>&1 | tail -3; then
+    if run_news_sentiment_refresh; then
         echo "sentiment refresh finished at $(date)"
     else
         echo "sentiment refresh failed (non-fatal — daily continues with stale sentiment)"
