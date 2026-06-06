@@ -4151,17 +4151,17 @@ placebo-noise); only the magnitude is corrected. Independent finding: model
 recency materially lifts IC on the recent val tail across regimes.
 **Sanity check**: shift-60 placebo on the Track B BULL_CALM cell —
 aligned_real_ic +0.005 vs model_placebo_ic +0.032 (**placebo 6.5x the real
-signal**, label_autocorr ~0). This is a strong negative diagnostic, but not
-the full Track-B §7.2.1 R2 contract: the pre-fire memo requires a 120d shift
-(2x fwd_60d) before any promotion-grade IC claim.
+signal**, label_autocorr ~0). The §7.2.1 R2 shift-120 closeout also failed:
+BULL_CALM aligned_real_ic **+0.0044** vs model_placebo_ic **+0.0726**
+(**16.39x placebo/real**, label_autocorr +0.0432, 302 dates). Pooled Track B
+was also placebo-heavy: +0.0451 real vs +0.0667 placebo (1.48x, 388 dates).
 **Conclusion**: do not promote. Bolting momentum features onto a single
 pooled `rank:pairwise` model has no usable BULL_CALM evidence here — momentum
 works in CALM and reverses in VOLATILE, so one global loading likely dilutes to
 noise. 4th consecutive negative on the weak-BULL_CALM problem (after Kelly
 σ-horizon, cash overlay, QP allocator). Next structurally-different lever: a
-per-regime specialist model, not more features on the shared model. Rerun the
-time-shift placebo at 120d before treating this as a final R2-compliant
-experiment record.
+per-regime specialist model, not more features on the shared model. The
+120d placebo closes the R2 requirement and confirms the do-not-promote verdict.
 **Reproduction**: `analyze_manifest_sanity_placebo.py --artifact
 backtesting/renquant_104/artifacts/walkforward_track_b/2025-11-24/panel-ltr.json
 --manifest artifacts/walkforward_manifest_track_b.json`; evidence at
