@@ -191,3 +191,63 @@ def test_load_sanity_panel_supplements_addendum_from_training_panel(
     assert meta["supplement_only_missing"] is True
     assert meta["feature_cols_supplied_by_feature_panel"] == ["mom_carry_12_1"]
     assert "alpha158_291_fundamental_dataset.parquet" in meta["sanity_feature_panel"]
+
+
+def test_load_sanity_panel_rejects_duplicate_training_panel_keys(
+    tmp_path, monkeypatch
+) -> None:
+    import pytest
+    import scripts.run_wf_gate as wf
+
+    data = tmp_path / "data"
+    data.mkdir()
+    dates = pd.bdate_range("2024-01-01", periods=2)
+    raw = pd.DataFrame({
+        "ticker": ["AAA", "AAA"],
+        "date": dates,
+        "alpha_base": [0.1, 0.2],
+        "fwd_60d_excess_raw": [0.3, 0.4],
+    })
+    raw.to_parquet(data / "alpha158_291_fundamental_dataset_rawlabel.parquet")
+    train = pd.DataFrame({
+        "ticker": ["AAA", "AAA", "AAA"],
+        "date": [dates[0], dates[0], dates[1]],
+        "mom_carry_12_1": [0.5, 0.6, 0.7],
+    })
+    train.to_parquet(data / "alpha158_291_fundamental_dataset.parquet")
+    monkeypatch.setattr(wf, "REPO", tmp_path)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        wf._load_sanity_panel(
+            ["alpha_base", "mom_carry_12_1"], "fwd_60d_excess_raw"
+        )
+
+
+def test_load_sanity_panel_rejects_incomplete_training_panel_coverage(
+    tmp_path, monkeypatch
+) -> None:
+    import pytest
+    import scripts.run_wf_gate as wf
+
+    data = tmp_path / "data"
+    data.mkdir()
+    dates = pd.bdate_range("2024-01-01", periods=2)
+    raw = pd.DataFrame({
+        "ticker": ["AAA", "AAA"],
+        "date": dates,
+        "alpha_base": [0.1, 0.2],
+        "fwd_60d_excess_raw": [0.3, 0.4],
+    })
+    raw.to_parquet(data / "alpha158_291_fundamental_dataset_rawlabel.parquet")
+    train = pd.DataFrame({
+        "ticker": ["AAA"],
+        "date": [dates[0]],
+        "mom_carry_12_1": [0.5],
+    })
+    train.to_parquet(data / "alpha158_291_fundamental_dataset.parquet")
+    monkeypatch.setattr(wf, "REPO", tmp_path)
+
+    with pytest.raises(ValueError, match="missing values"):
+        wf._load_sanity_panel(
+            ["alpha_base", "mom_carry_12_1"], "fwd_60d_excess_raw"
+        )

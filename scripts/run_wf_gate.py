@@ -1664,7 +1664,28 @@ def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, 
         if set(missing).issubset(tp_cols):
             tp = pd.read_parquet(train_panel, columns=["ticker", "date", *missing])
             tp["date"] = pd.to_datetime(tp["date"])
-            merged = raw.merge(tp, on=["ticker", "date"], how="left")
+            if tp.duplicated(["ticker", "date"]).any():
+                raise ValueError(
+                    "sanity training panel has duplicate (ticker, date) keys; "
+                    "cannot supplement addendum features safely"
+                )
+            merged = raw.merge(
+                tp,
+                on=["ticker", "date"],
+                how="left",
+                validate="many_to_one",
+            )
+            if len(merged) != len(raw):
+                raise ValueError(
+                    "sanity training panel supplement changed row count; "
+                    f"raw={len(raw)} merged={len(merged)}"
+                )
+            null_cols = [c for c in missing if merged[c].isna().any()]
+            if null_cols:
+                raise ValueError(
+                    "sanity training panel supplement has missing values for "
+                    f"columns: {null_cols[:20]}"
+                )
             return merged, {
                 "sanity_feature_panel": str(train_panel),
                 "sanity_label_panel": str(raw_path),
