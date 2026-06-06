@@ -71,11 +71,11 @@ also dropped on truncation (+0.039 → **+0.028**), and BEAR +0.307→+0.258,
 CHOPPY +0.017→+0.009 — i.e. **model recency materially lifts IC on the recent
 val window across regimes**, an independent finding worth noting.
 
-**The REJECT verdict is unchanged**: even matched-freshness, Track B (−0.0049)
-is still negative and still below the matched baseline (+0.0039); neither is
-near the +0.030 target; and the §3 placebo (computed on Track B alone,
-unaffected by this) already shows the BULL_CALM signal is noise. Only the
-*magnitude* claim changes. Artifacts:
+**The do-not-promote verdict is unchanged**: even matched-freshness, Track B
+(−0.0049) is still negative and still below the matched baseline (+0.0039);
+neither is near the +0.030 target; and the §3 shift-60 diagnostic (computed on
+Track B alone, unaffected by this) remains worse than the real aligned signal.
+Only the *magnitude* claim changes. Artifacts:
 `sanity_placebo_baseline_trunc_20260605/panel-ltr.json`,
 `walkforward_manifest_v2_20260602.trunc_to_trackb.abspath.json`.
 
@@ -129,8 +129,9 @@ model, §1.2/§1.5), not more features on the shared model.
    re-ran the baseline on a manifest truncated to Track B's 34-cut range; see
    §2.1. The asymmetry was REAL and inflated the magnitude ~1.8× (full baseline
    +0.0106 → matched baseline +0.0039; like-for-like Δ −0.0088, not −0.0155).
-   The REJECT verdict stands (Track B still negative, still below the matched
-   baseline, placebo-confirmed noise) but the magnitude claim is corrected.
+   The do-not-promote verdict stands (Track B still negative, still below the
+   matched baseline, and the shift-60 diagnostic remains negative) but the
+   magnitude claim is corrected.
    Original note: baseline had cuts through 2026-03-09, Track B through
    2025-11-24, so baseline scored the val tail with fresher point-in-time
    models.
