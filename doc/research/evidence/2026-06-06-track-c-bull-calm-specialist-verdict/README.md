@@ -1,10 +1,11 @@
-# 2026-06-06 — Track C (BULL_CALM specialist) verdict: FIRST POSITIVE, placebo-clean
+# 2026-06-06 — Track C (BULL_CALM specialist) verdict: FIRST POSITIVE, shift-60 clean
 
 **Status**: §7.4 **Tier-2 SCREEN** (promising, keep researching — NOT yet
 live-promotable). A BULL_CALM-only specialist model lifts BULL_CALM IC from
-**+0.0035 (pooled, placebo-noise) → +0.0241 (real, placebo-clean)** — the first
-genuine signal-side win in the campaign after 5 negatives. Lands just short of
-the +0.030 Tier-1 bar.
+**+0.0035 (pooled, shift-60 placebo-noise) → +0.0241 (shift-60 clean)** — the
+first signal-side screen in the campaign after the prior negatives. Lands just
+short of the +0.030 Tier-1 bar and still fails/needs the stricter shift-120
+confirm.
 **Owner**: Claude. **Reviewer requested**: codex (caveats in §5).
 
 ---
@@ -32,18 +33,18 @@ val window AND model-freshness), run through the **same code**.
 
 ## 2 · The data — all under identical code, 34 cuts, n≈400, val 2024-02→2026-02
 
-| BULL_CALM | mean_ic | hit-rate | shift-60 placebo ratio | real signal? |
-|---|--:|--:|--:|---|
-| Track B (pooled + momentum) | −0.0049 | — | 6.5 | ✗ noise |
-| **pooled baseline (matched)** | **+0.0035** | 48.5% | **1.11** | ✗ **noise** |
-| **BULL_CALM specialist** | **+0.0241** | 52.8% | **0.47** | ✓ **real** |
-| Tier-1 promotion bar | ≥ +0.030 | — | < 0.5 | — |
+| BULL_CALM | mean_ic | hit-rate | shift-60 placebo ratio | shift-120 placebo ratio | verdict |
+|---|--:|--:|--:|--:|---|
+| Track B (pooled + momentum) | −0.0049 | — | 6.5 | 16.4 | ✗ noise |
+| **pooled baseline (matched)** | **+0.0035** | 48.5% | **1.11** | 1.37 | ✗ **noise** |
+| **BULL_CALM specialist** | **+0.0241** | 52.8% | **0.47** | 1.35 | shift-60 clean, shift-120 not clean |
+| Tier-1 promotion bar | ≥ +0.030 | — | < 0.5 | < 0.5 | — |
 
 Other regimes (specialist): BEAR +0.295 (n=50, still strong), CHOPPY +0.0247
 (n=39), BULL_VOLATILE −0.0369 (n=19, momentum reverses — expected). Pooled
 real_ic rises +0.039 → **+0.049**.
 
-## 3 · The placebo is the headline (§7.2.1 R2)
+## 3 · The shift-60 placebo is the positive screen; shift-120 blocks promotion
 
 Shift-60 placebo (label shifted by the full forward-label horizon; if the
 "signal" survives, it's not signal):
@@ -53,20 +54,25 @@ Shift-60 placebo (label shifted by the full forward-label horizon; if the
 | pooled baseline | +0.0229 | +0.0254 | **1.11** | placebo ≥ real → **NOISE** |
 | **BULL_CALM specialist** | **+0.0382** | +0.0178 | **0.47** | placebo < ½ real → **REAL** |
 
-**This is the load-bearing result.** It is not merely that the specialist has a
-higher IC — it is that **the pooled model's BULL_CALM IC is itself placebo-noise
-(ratio 1.11), while the specialist's is a genuine signal (ratio 0.47).** The
-pooled model literally cannot express BULL_CALM signal; the specialist can. That
-is the regime-conditional thesis (§1) validated empirically, not asserted.
-`promotion_evidence = True` for the specialist (real ≥ 0.005, placebo < ½ real).
+**This is the positive screen.** It is not merely that the specialist has a
+higher IC — it is that the pooled model's BULL_CALM IC is shift-60 placebo-noise
+(ratio 1.11), while the specialist separates under shift-60 (ratio 0.47). That
+supports the regime-specialist thesis as a research lead.
+
+It is **not** full §7.2.1 R2 evidence. At shift-120, the specialist's BULL_CALM
+placebo ratio is **1.35** (aligned_real_ic +0.0417, model_placebo_ic +0.0562),
+so the signal does not survive a stricter placebo audit cleanly. Treat
+`promotion_evidence=True` from the script as shift-60-local, not a promotion
+contract.
 
 ## 4 · Verdict — Tier-2 SCREEN (keep going), not Tier-3 (promote)
 
-`§7.4`: specialist ΔIC = +0.0206 over the matched baseline, placebo-clean →
-**not a REJECT, a positive SCREEN**. But +0.0241 < +0.030, so it does **not**
-clear the Tier-1 promotion bar. No live config flip. The specialist is wired in
-the runtime (`ranking.panel_scoring.specialists`, #121) but stays off until it
-clears the bar.
+`§7.4`: specialist ΔIC = +0.0206 over the matched baseline and shift-60 improves
+from noise to clean → **not a REJECT, a positive SCREEN**. But +0.0241 < +0.030
+and shift-120 is not clean, so it does **not** clear the Tier-1 promotion bar.
+No live config flip. The specialist is wired in the runtime
+(`ranking.panel_scoring.specialists`, #121) but stays off until it clears both
+the magnitude and placebo bars.
 
 **Next step (well-motivated):** momentum features on the SPECIALIST (Track B ⊕
 Track C). Track B failed only because momentum was added to the *pooled* model
@@ -92,9 +98,9 @@ should actually land. That is the candidate to push +0.0241 over +0.030.
    *magnitude* still needs the momentum synthesis to clear the live bar.
 4. **No multi-seed** (§7.3). Single WF retrain per arm; the placebo is the
    load-bearing control. A 5-seed repeat would tighten it.
-5. **shift-60 = 1× horizon.** Per the #226 review note, a full-strength R2 wants
-   shift-120; shift-60 already separates real (0.47) from the pooled noise
-   (1.11), but a shift-120 confirm is the rigorous follow-up.
+5. **shift-120 is not clean.** Per the #226 review note, a full-strength R2 wants
+   shift-120. The specialist separates at shift-60 (0.47) but fails at shift-120
+   (1.35), so the correct interpretation is SCREEN, not placebo-clean evidence.
 
 ## 6 · Artifacts
 
@@ -102,3 +108,4 @@ should actually land. That is the candidate to push +0.0241 over +0.030.
 - Matched baseline (same code): `.../diagnostics/sanity_placebo_baseline_trunc_patched_20260606/panel-ltr.json`
 - Specialist WF manifest: `.../artifacts/sim/walkforward_manifest_v2_20260606_per_regime_bull_calm.json` (34 cuts, 34 ok / 0 failed)
 - Specialist models: `.../artifacts/walkforward_bull_calm_specialist/bull_calm/<cut>/panel-ltr.json`
+- Compact summary: `track_c_specialist_summary.json`
