@@ -1651,6 +1651,48 @@ def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, 
             "sanity_label_panel": str(raw_path),
             "feature_panel_merge": False,
         }
+    # Opt-in addendum features (Track B/C: mom_carry_12_1, beta_dm, …) live in
+    # the production training panel but never in the rawlabel panel. Supplement
+    # ONLY the missing columns from the training panel, keeping the rawlabel
+    # base features untouched so addendum sanity runs stay apples-to-apples with
+    # the non-addendum (baseline) sanity run. Falls through to the transformer
+    # panel below only if the training panel can't supply every missing column.
+    train_panel = REPO / "data/alpha158_291_fundamental_dataset.parquet"
+    if train_panel.exists():
+        import pyarrow.parquet as _pq  # noqa: PLC0415
+        tp_cols = set(_pq.ParquetFile(train_panel).schema.names)
+        if set(missing).issubset(tp_cols):
+            tp = pd.read_parquet(train_panel, columns=["ticker", "date", *missing])
+            tp["date"] = pd.to_datetime(tp["date"])
+            if tp.duplicated(["ticker", "date"]).any():
+                raise ValueError(
+                    "sanity training panel has duplicate (ticker, date) keys; "
+                    "cannot supplement addendum features safely"
+                )
+            merged = raw.merge(
+                tp,
+                on=["ticker", "date"],
+                how="left",
+                validate="many_to_one",
+            )
+            if len(merged) != len(raw):
+                raise ValueError(
+                    "sanity training panel supplement changed row count; "
+                    f"raw={len(raw)} merged={len(merged)}"
+                )
+            null_cols = [c for c in missing if merged[c].isna().any()]
+            if null_cols:
+                raise ValueError(
+                    "sanity training panel supplement has missing values for "
+                    f"columns: {null_cols[:20]}"
+                )
+            return merged, {
+                "sanity_feature_panel": str(train_panel),
+                "sanity_label_panel": str(raw_path),
+                "feature_panel_merge": True,
+                "feature_cols_supplied_by_feature_panel": missing,
+                "supplement_only_missing": True,
+            }
     feature_path = REPO / "data/transformer_v4_wl200_clean.parquet"
     if not feature_path.exists():
         raise FileNotFoundError(
