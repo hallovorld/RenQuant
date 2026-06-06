@@ -70,34 +70,48 @@ def main() -> int:
         log.error("FAIL: artifact not found at %s", artifact_path)
         return 1
 
-    # ── Step 2: Artifact JSON loads + has expected schema ────────────────
-    try:
-        artifact = json.loads(artifact_path.read_text())
-    except Exception as exc:
-        log.error("FAIL: artifact JSON parse — %s: %s", type(exc).__name__, exc)
-        return 1
-    feature_cols = artifact.get("feature_cols", [])
-    if not feature_cols:
-        log.error("FAIL: artifact has no feature_cols")
-        return 1
-    if "booster_raw_json" not in artifact and "params" not in artifact:
-        log.error("FAIL: artifact has neither booster_raw_json nor params field")
-        return 1
-    log.info("Artifact loaded: %s  trained=%s  n_feat=%d",
-             artifact_path.name, artifact.get("trained_date"), len(feature_cols))
+    # ── Step 2: Backend-aware scorer load ────────────────────────────────
+    kind = panel_cfg.get("kind", "xgb")
+    sequence_kind = kind in {"hf_patchtst", "patchtst"} or artifact_path.suffix == ".pt"
+    artifact = {}
+    if sequence_kind:
+        try:
+            from kernel.panel_pipeline.model_registry import registry  # noqa: PLC0415
+            scorer = registry.get(kind).scorer_loader(artifact_path, cfg)
+            feature_cols = list(getattr(scorer, "feature_cols", []) or [])
+        except Exception as exc:
+            log.error("FAIL: sequence scorer load — %s: %s", type(exc).__name__, exc)
+            return 1
+        if not feature_cols:
+            log.error("FAIL: sequence artifact has no feature_cols")
+            return 1
+        log.info("Sequence artifact loaded: %s kind=%s n_feat=%d seq_len=%s",
+                 artifact_path.name, kind, len(feature_cols),
+                 getattr(scorer, "seq_len", "?"))
+    else:
+        try:
+            artifact = json.loads(artifact_path.read_text())
+        except Exception as exc:
+            log.error("FAIL: artifact JSON parse — %s: %s", type(exc).__name__, exc)
+            return 1
+        feature_cols = artifact.get("feature_cols", [])
+        if not feature_cols:
+            log.error("FAIL: artifact has no feature_cols")
+            return 1
+        if "booster_raw_json" not in artifact and "params" not in artifact:
+            log.error("FAIL: artifact has neither booster_raw_json nor params field")
+            return 1
+        log.info("Artifact loaded: %s  trained=%s  n_feat=%d",
+                 artifact_path.name, artifact.get("trained_date"), len(feature_cols))
 
-    # ── Step 3: Scorer loads via PanelScorer ─────────────────────────────
-    try:
-        from kernel.panel_pipeline import PanelScorer  # noqa: PLC0415
-        scorer = PanelScorer.load(artifact_path)
-    except Exception as exc:
-        log.error("FAIL: PanelScorer.load — %s: %s", type(exc).__name__, exc)
-        return 1
+        try:
+            from kernel.panel_pipeline import PanelScorer  # noqa: PLC0415
+            scorer = PanelScorer.load(artifact_path)
+        except Exception as exc:
+            log.error("FAIL: PanelScorer.load — %s: %s", type(exc).__name__, exc)
+            return 1
 
-    # ── Step 4: Score a synthetic row ────────────────────────────────────
-    # Build a single-ticker DataFrame with all feature columns set to a
-    # deterministic value (column index / 100). The model should produce
-    # a finite score.
+    # ── Step 3: Score synthetic inputs ───────────────────────────────────
     try:
         import numpy as np  # noqa: PLC0415
         import pandas as pd  # noqa: PLC0415
@@ -110,17 +124,35 @@ def main() -> int:
     # 2. We can ALSO assert the model produces DIFFERENT scores for
     #    different inputs (catches BUG #6 μ̂-collapse class regression)
     rng = np.random.default_rng(42)
-    test_df = pd.DataFrame(
-        rng.standard_normal((2, len(feature_cols))),
-        index=["SMOKE_TEST_A", "SMOKE_TEST_B"],
-        columns=feature_cols,
-    )
-
-    try:
-        scores = scorer.score(test_df)
-    except Exception as exc:
-        log.error("FAIL: scorer.score crash — %s: %s", type(exc).__name__, exc)
-        return 1
+    if sequence_kind:
+        seq_len = int(getattr(scorer, "seq_len", 24))
+        dates = pd.bdate_range("2026-01-02", periods=seq_len)
+        rows = []
+        tickers = ["SMOKE_TEST_A", "SMOKE_TEST_B"]
+        for ticker in tickers:
+            values = rng.standard_normal((seq_len, len(feature_cols)))
+            for date, row in zip(dates, values):
+                payload = {"date": date, "ticker": ticker}
+                payload.update(dict(zip(feature_cols, row)))
+                rows.append(payload)
+        panel_history = pd.DataFrame(rows)
+        try:
+            scores = scorer.score_with_history(panel_history, tickers)
+        except Exception as exc:
+            log.error("FAIL: scorer.score_with_history crash — %s: %s",
+                      type(exc).__name__, exc)
+            return 1
+    else:
+        test_df = pd.DataFrame(
+            rng.standard_normal((2, len(feature_cols))),
+            index=["SMOKE_TEST_A", "SMOKE_TEST_B"],
+            columns=feature_cols,
+        )
+        try:
+            scores = scorer.score(test_df)
+        except Exception as exc:
+            log.error("FAIL: scorer.score crash — %s: %s", type(exc).__name__, exc)
+            return 1
 
     if scores is None or len(scores) == 0:
         log.error("FAIL: scorer returned empty result")

@@ -102,6 +102,49 @@ def resolve_hwm(stored_hwm: float, account_value: float,
     return float(max(stored_hwm, account_value)), False
 
 
+def _held_mark_ohlcv_frame(
+    symbol: str,
+    today: datetime.date,
+    price: float,
+    base_df: Any | None = None,
+) -> Any | None:
+    """Build a risk-only OHLCV frame from a broker mark for held sell checks."""
+    import math as _math  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+
+    try:
+        px = float(price)
+    except (TypeError, ValueError):
+        return None
+    if not _math.isfinite(px) or px <= 0:
+        return None
+
+    idx = pd.DatetimeIndex([pd.Timestamp(today)])
+    mark_bar = pd.DataFrame(
+        {
+            "open": [px],
+            "high": [px],
+            "low": [px],
+            "close": [px],
+            "volume": [0.0],
+        },
+        index=idx,
+    )
+
+    if base_df is None or getattr(base_df, "empty", True):
+        return mark_bar
+
+    try:
+        df = base_df.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        df = df[df.index.date != today]
+        return pd.concat([df, mark_bar]).sort_index()
+    except Exception:
+        return mark_bar
+
+
 def persisted_skip_buys(state: dict | None) -> bool:
     """Read persisted drawdown-halt state with legacy-safe coercion.
 
@@ -1174,6 +1217,32 @@ class RunnerAdapter:
                             )
             except Exception as exc:
                 log.warning("OHLCV fetch failed for %s: %s", sym, exc)
+                if (self._sell_only or self._use_intraday_prices) and sym in held_set:
+                    fallback_df = None
+                    try:
+                        from kernel.data import LocalStore  # noqa: PLC0415
+                        fallback_df = LocalStore().load(sym)
+                    except Exception as cache_exc:
+                        log.warning(
+                            "OHLCV cache fallback read failed for held %s: %s",
+                            sym, cache_exc,
+                        )
+                    mark_px = broker_mark_prices.get(sym)
+                    risk_df = _held_mark_ohlcv_frame(
+                        sym,
+                        today,
+                        mark_px if mark_px is not None else prices.get(sym, 0.0),
+                        fallback_df,
+                    )
+                    if risk_df is not None:
+                        ohlcv[sym] = risk_df
+                        prices[sym] = float(risk_df["close"].iloc[-1])
+                        log.warning(
+                            "SELL-ONLY-RISK-OHLCV-FALLBACK %s: using broker "
+                            "mark %.4f as synthetic risk-only bar for %s; "
+                            "not writing official OHLCV cache.",
+                            sym, prices[sym], today.isoformat(),
+                        )
 
         if not (self._sell_only or self._use_intraday_prices):
             for sym, px in broker_mark_prices.items():

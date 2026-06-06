@@ -48,6 +48,16 @@ def test_full_preflight_exception_falls_back_to_sell_only():
     assert "Full run hit preflight system failure; sell-only fallback completed" in script
 
 
+def test_news_sentiment_refresh_is_timeout_bounded():
+    """Non-fatal news sentiment refresh must not block the live trader forever."""
+    script = DAILY_104.read_text()
+
+    assert "RENQUANT_DAILY_NEWS_TIMEOUT_SEC:-1200" in script
+    assert "run_news_sentiment_refresh" in script
+    assert "_kill_process_tree" in script
+    assert "sentiment refresh timed out" in script
+
+
 def test_buy_blocked_wrapper_alert_has_cooldown():
     """Repeated expected buy-side gate blocks should not page every rerun."""
     script = DAILY_104.read_text()
