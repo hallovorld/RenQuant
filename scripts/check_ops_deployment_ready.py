@@ -141,11 +141,19 @@ def _validate_runtime_pins(repo_root: Path, runtime_root: Path) -> dict[str, Any
     }
 
 
+def _repo_python(repo_root: Path) -> str:
+    """Return the Python interpreter used by repo Makefile targets."""
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
 def _run_runtime_qp_sanity(repo_root: Path, runtime_root: Path) -> dict[str, Any]:
     """Run the QP runtime import sanity check in a subprocess."""
     script = repo_root / "scripts" / "runtime_qp_sanity_check.py"
     cmd = (
-        sys.executable,
+        _repo_python(repo_root),
         str(script),
         "--runtime-root",
         str(runtime_root),
