@@ -4142,6 +4142,13 @@ identical script (baseline reproduced the +0.011 anchor first).
 **Numbers**: BULL_CALM mean_ic **+0.0106 → −0.0049** (Δ −0.0155, WRONG
 direction; target ≥ +0.030). Pooled +0.039 → +0.029. BEAR +0.307→+0.315,
 CHOPPY +0.017→+0.035 (n=40), BULL_VOLATILE −0.024→−0.037.
+**CORRECTION (2026-06-06)**: the −0.0155 was partly a model-freshness artifact
+(baseline 39 cuts to 2026-03 vs Track B 34 cuts to 2025-11). Like-for-like
+re-run on a baseline truncated to Track B's 34-cut range: matched baseline
+BULL_CALM **+0.0039** → honest Δ **−0.0088** (not −0.0155); pooled truncated
++0.028. REJECT unchanged (still negative, still below matched baseline,
+placebo-noise); only the magnitude is corrected. Independent finding: model
+recency materially lifts IC on the recent val tail across regimes.
 **Sanity check**: shift-60 placebo on the Track B BULL_CALM cell —
 aligned_real_ic +0.005 vs model_placebo_ic +0.032 (**placebo 6.5x the real
 signal**, label_autocorr ~0). This is a strong negative diagnostic, but not
