@@ -52,6 +52,33 @@ method before the Track-B comparison.
 
 BULL_CALM is ~78% of trading days. Track B made it **negative**.
 
+### 2.1 · CORRECTION (2026-06-06) — the −0.0155 was partly a model-freshness artifact
+
+The baseline above (39 cuts, through 2026-03-09) had **fresher point-in-time
+models on the val tail** than Track B (34 cuts, through 2025-11-24) — exactly
+caveat §5.1. Re-running the baseline on a manifest **truncated to Track B's
+34-cut range** (2024-01-01 → 2025-11-24) makes the comparison like-for-like:
+
+| BULL_CALM | mean_ic | n_dates | vs Track B |
+|---|--:|--:|--:|
+| full baseline (39 cuts, fresher tail) | +0.0106 | 400 | — |
+| **truncated baseline (34 cuts, MATCHED)** | **+0.0039** | 399 | — |
+| Track B (34 cuts) | −0.0049 | 399 | **like-for-like Δ = −0.0088** |
+
+**The honest like-for-like effect of Track B is −0.0088, not −0.0155** — the
+model-freshness asymmetry inflated the reported damage by ~1.8×. The pooled IC
+also dropped on truncation (+0.039 → **+0.028**), and BEAR +0.307→+0.258,
+CHOPPY +0.017→+0.009 — i.e. **model recency materially lifts IC on the recent
+val window across regimes**, an independent finding worth noting.
+
+**The do-not-promote verdict is unchanged**: even matched-freshness, Track B
+(−0.0049) is still negative and still below the matched baseline (+0.0039);
+neither is near the +0.030 target; and the §3 shift-60 diagnostic (computed on
+Track B alone, unaffected by this) remains worse than the real aligned signal.
+Only the *magnitude* claim changes. Artifacts:
+`sanity_placebo_baseline_trunc_20260605/panel-ltr.json`,
+`walkforward_manifest_v2_20260602.trunc_to_trackb.abspath.json`.
+
 ## 3 · The shift-60 placebo — strong negative, not full R2
 
 Shift-60 placebo (label shifted by the full forward-label horizon; if the
@@ -98,15 +125,16 @@ model, §1.2/§1.5), not more features on the shared model.
 
 ## 5 · Caveats — where this could be wrong (codex: please attack)
 
-1. **Model-freshness asymmetry in the val tail.** The baseline manifest has
-   cuts through 2026-03-09; Track B only through 2025-11-30 (34 vs 39 cuts).
-   For val dates after 2025-11, baseline scores with fresher point-in-time
-   models while Track B reuses its last (2025-11-24) model. This mildly
-   disadvantages Track B on the tail. n_dates is near-identical (399 vs 400)
-   so coverage matches, and the BULL_CALM gap (−0.0155) + shift-60 placebo
-   (ratio 6.5) are large enough to block promotion now, but it is a real
-   asymmetry. A like-for-like fix is to truncate the baseline manifest to
-   2025-11-30 and re-run.
+1. **Model-freshness asymmetry in the val tail.** ✅ **RESOLVED (2026-06-06)** —
+   re-ran the baseline on a manifest truncated to Track B's 34-cut range; see
+   §2.1. The asymmetry was REAL and inflated the magnitude ~1.8× (full baseline
+   +0.0106 → matched baseline +0.0039; like-for-like Δ −0.0088, not −0.0155).
+   The do-not-promote verdict stands (Track B still negative, still below the
+   matched baseline, and the shift-60 diagnostic remains negative) but the
+   magnitude claim is corrected.
+   Original note: baseline had cuts through 2026-03-09, Track B through
+   2025-11-24, so baseline scored the val tail with fresher point-in-time
+   models.
 2. **Feature source for the 4 added columns.** Baseline reads all 172 features
    from the rawlabel sanity panel; Track B reads the same 172 from rawlabel
    plus the 4 Track-B columns supplemented from the production training panel
