@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from scripts.analyze_manifest_sanity_placebo import (
     render_markdown,
@@ -196,7 +197,6 @@ def test_load_sanity_panel_supplements_addendum_from_training_panel(
 def test_load_sanity_panel_rejects_duplicate_training_panel_keys(
     tmp_path, monkeypatch
 ) -> None:
-    import pytest
     import scripts.run_wf_gate as wf
 
     data = tmp_path / "data"
@@ -226,7 +226,6 @@ def test_load_sanity_panel_rejects_duplicate_training_panel_keys(
 def test_load_sanity_panel_rejects_incomplete_training_panel_coverage(
     tmp_path, monkeypatch
 ) -> None:
-    import pytest
     import scripts.run_wf_gate as wf
 
     data = tmp_path / "data"
