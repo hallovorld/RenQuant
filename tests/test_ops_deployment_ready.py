@@ -276,6 +276,33 @@ def test_readiness_blocks_failed_runtime_qp_sanity(monkeypatch, tmp_path: Path) 
     assert any(issue["check"] == "runtime_qp_sanity" for issue in result["issues"])
 
 
+def test_runtime_qp_sanity_prefers_repo_venv_python(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    script = tmp_path / "scripts" / "runtime_qp_sanity_check.py"
+    script.parent.mkdir()
+    script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    captured: dict[str, tuple[str, ...]] = {}
+
+    class Proc:
+        returncode = 0
+        stdout = "OK: 13 runtime symbols + 2 CLI subcommands present.\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = tuple(cmd)
+        return Proc()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module._run_runtime_qp_sanity(tmp_path, tmp_path / ".subrepo_runtime" / "repos")
+
+    assert result["ok"] is True
+    assert captured["cmd"][0] == str(venv_python)
+
+
 def test_readiness_blocks_dirty_worktree(monkeypatch, tmp_path: Path) -> None:
     module = _load_module()
     _patch_green_dependencies(monkeypatch, module, dirty=True)
