@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-06-06T08:06:30Z",
+  "purpose": "Compact record for Track C BULL_CALM specialist screen.",
+  "decision": {
+    "verdict": "tier_2_screen",
+    "promotion_allowed": false,
+    "reason": "BULL_CALM specialist improves IC and is shift-60 clean, but mean_ic is below +0.030 and shift-120 placebo is not clean."
+  },
+  "runs": {
+    "matched_pooled_baseline": {
+      "source_artifact": "backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_baseline_trunc_patched_20260606/panel-ltr.json",
+      "manifest": "backtesting/renquant_104/artifacts/sim/walkforward_manifest_v2_20260602.trunc_to_trackb.abspath.json",
+      "feature_count": 172,
+      "n_tickers": 292,
+      "n_dates": 508,
+      "n_rows": 147249,
+      "real_mean_ic": 0.02739173864034221,
+      "bull_calm": {
+        "mean_ic": 0.0035015360005951424,
+        "hit_rate": 0.485,
+        "n_dates": 400,
+        "n_rows": 116260,
+        "shift_60": {
+          "aligned_real_ic": 0.02293486844313646,
+          "model_placebo_ic": 0.025409586187216074,
+          "ratio": 1.107901981221968
+        },
+        "shift_120": {
+          "aligned_real_ic": 0.030160765251177567,
+          "model_placebo_ic": 0.04134600558649608,
+          "ratio": 1.3708539966465807
+        }
+      }
+    },
+    "bull_calm_specialist": {
+      "source_artifact": "backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_specialist_bull_calm_20260606/panel-ltr.json",
+      "manifest": "backtesting/renquant_104/artifacts/sim/walkforward_manifest_v2_20260606_per_regime_bull_calm.json",
+      "feature_count": 172,
+      "n_tickers": 292,
+      "n_dates": 508,
+      "n_rows": 147249,
+      "real_mean_ic": 0.04855098218807288,
+      "bull_calm": {
+        "mean_ic": 0.024121801720872037,
+        "hit_rate": 0.5275,
+        "n_dates": 400,
+        "n_rows": 116260,
+        "shift_60": {
+          "aligned_real_ic": 0.03816320069629829,
+          "model_placebo_ic": 0.01775433029744707,
+          "ratio": 0.465221207171158
+        },
+        "shift_120": {
+          "aligned_real_ic": 0.04165224914874203,
+          "model_placebo_ic": 0.056184036178257374,
+          "ratio": 1.3488836095650367
+        }
+      }
+    },
+    "track_b_pooled_momentum": {
+      "source_artifact": "backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_track_b_20260605/panel-ltr.json",
+      "manifest": "artifacts/walkforward_manifest_track_b.json",
+      "feature_count": 176,
+      "bull_calm": {
+        "mean_ic": -0.004906666691359304,
+        "n_dates": 399,
+        "shift_60": {
+          "aligned_real_ic": 0.004955228662937884,
+          "model_placebo_ic": 0.03228324122669677,
+          "ratio": 6.514985164691976
+        },
+        "shift_120": {
+          "aligned_real_ic": 0.004431133233610954,
+          "model_placebo_ic": 0.07262609234261305,
+          "ratio": 16.389959072259643
+        }
+      }
+    }
+  },
+  "review_caveats": [
+    "The specialist result is shift-60 clean, not full placebo-clean evidence.",
+    "The shift-120 placebo ratio is 1.35 for the specialist, so promotion remains blocked.",
+    "The Track B comparator uses the prior Track B manifest and has n_dates=399, while the patched baseline and specialist have n_dates=400; Track B is context, not the load-bearing matched comparison."
+  ]
+}

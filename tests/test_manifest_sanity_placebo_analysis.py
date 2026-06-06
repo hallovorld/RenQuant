@@ -250,3 +250,70 @@ def test_load_sanity_panel_rejects_incomplete_training_panel_coverage(
         wf._load_sanity_panel(
             ["alpha_base", "mom_carry_12_1"], "fwd_60d_excess_raw"
         )
+
+
+def test_load_sanity_panel_drops_tail_edge_coverage_gap(tmp_path, monkeypatch) -> None:
+    """A tail-edge coverage gap (rawlabel has keys the training panel lacks, e.g.
+    the rawlabel's last date not yet stamped into the training panel) below the
+    1% tolerance is DROPPED, not hard-failed — the model scores NaN natively and
+    a handful of tail rows is immaterial to a per-regime IC. Regression guard for
+    the 2026-06-06 Track-C specialist eval (109/715629 = 0.02% gap).
+    """
+    import scripts.run_wf_gate as wf
+
+    data = tmp_path / "data"
+    data.mkdir()
+    dates = pd.bdate_range("2024-01-01", periods=200)
+    raw = pd.DataFrame({
+        "ticker": ["AAA"] * 200,
+        "date": dates,
+        "alpha_base": [0.001 * i for i in range(200)],
+        "fwd_60d_excess_raw": [0.002 * i for i in range(200)],
+    })
+    raw.to_parquet(data / "alpha158_291_fundamental_dataset_rawlabel.parquet")
+    # Training panel covers all dates EXCEPT the last one → 1/200 = 0.5% gap (< 1%).
+    train = pd.DataFrame({
+        "ticker": ["AAA"] * 199,
+        "date": dates[:199],
+        "mom_carry_12_1": [0.5 * i for i in range(199)],
+    })
+    train.to_parquet(data / "alpha158_291_fundamental_dataset.parquet")
+    monkeypatch.setattr(wf, "REPO", tmp_path)
+
+    panel, meta = wf._load_sanity_panel(
+        ["alpha_base", "mom_carry_12_1"], "fwd_60d_excess_raw"
+    )
+
+    assert len(panel) == 199  # the 1 gap row dropped
+    assert panel["mom_carry_12_1"].notna().all()
+    assert meta["supplement_only_missing"] is True
+
+
+def test_load_sanity_panel_rejects_small_non_tail_coverage_gap(
+    tmp_path, monkeypatch
+) -> None:
+    """A small sparse gap inside covered history is not a tail-edge delay."""
+    import scripts.run_wf_gate as wf
+
+    data = tmp_path / "data"
+    data.mkdir()
+    dates = pd.bdate_range("2024-01-01", periods=200)
+    raw = pd.DataFrame({
+        "ticker": ["AAA"] * 200,
+        "date": dates,
+        "alpha_base": [0.001 * i for i in range(200)],
+        "fwd_60d_excess_raw": [0.002 * i for i in range(200)],
+    })
+    raw.to_parquet(data / "alpha158_291_fundamental_dataset_rawlabel.parquet")
+    train = pd.DataFrame({
+        "ticker": ["AAA"] * 199,
+        "date": [d for i, d in enumerate(dates) if i != 100],
+        "mom_carry_12_1": [0.5 * i for i in range(199)],
+    })
+    train.to_parquet(data / "alpha158_291_fundamental_dataset.parquet")
+    monkeypatch.setattr(wf, "REPO", tmp_path)
+
+    with pytest.raises(ValueError, match="within covered history"):
+        wf._load_sanity_panel(
+            ["alpha_base", "mom_carry_12_1"], "fwd_60d_excess_raw"
+        )
