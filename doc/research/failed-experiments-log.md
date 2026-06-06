@@ -4127,3 +4127,31 @@ skill. Config levers are now exhausted: vol cap (removing hurts), calibrator
 (fixed). **Beating SPY requires a better SIGNAL (features/label/model), not a
 knob.** Reproduction: derive prod-semantic config, set
 `risk_gates.realized_vol.enabled=false`, run_wf_gate on the cfdd6c manifest.
+
+## 2026-06-05 — Track B momentum/low-beta features in BULL_CALM (FAILED)
+
+**Hypothesis**: a naive momentum factor lands IC +0.039 in BULL_CALM (3.5× the
+model), so adding 4 Kelly-Gu-Xiu / Frazzini-Pedersen features (`mom_carry_12_1`,
+`beta_dm`, `rvar_total`, `idio_vol_market`) should lift the panel-LTR
+BULL_CALM IC from +0.011 toward the Tier-1 bar +0.030.
+**Implementation**: panel rebuilt with `--include-track-b`; WF retrain 34 cuts
+(2024-01-01→2025-11-30) `--include-features …` → 176-feature models;
+per-regime IC + shift-60 placebo via `analyze_manifest_sanity_placebo.py`,
+compared apples-to-apples against the 172-feature baseline run through the
+identical script (baseline reproduced the +0.011 anchor first).
+**Numbers**: BULL_CALM mean_ic **+0.0106 → −0.0049** (Δ −0.0155, WRONG
+direction; target ≥ +0.030). Pooled +0.039 → +0.029. BEAR +0.307→+0.315,
+CHOPPY +0.017→+0.035 (n=40), BULL_VOLATILE −0.024→−0.037.
+**Sanity check**: shift-60 placebo on the Track B BULL_CALM cell —
+aligned_real_ic +0.005 vs model_placebo_ic +0.032 (**placebo 6.5× the real
+signal**, label_autocorr ~0). Signal is noise; `promotion_evidence=False`.
+**Conclusion**: §7.4 Tier-1 REJECT. Bolting momentum features onto a single
+pooled `rank:pairwise` model can't fix BULL_CALM — momentum works in CALM and
+reverses in VOLATILE, so one global loading dilutes to noise. 4th consecutive
+negative on the weak-BULL_CALM problem (after Kelly σ-horizon, cash overlay, QP
+allocator). Next structurally-different lever: a per-regime specialist model,
+not more features on the shared model.
+**Reproduction**: `analyze_manifest_sanity_placebo.py --artifact
+backtesting/renquant_104/artifacts/walkforward_track_b/2025-11-24/panel-ltr.json
+--manifest artifacts/walkforward_manifest_track_b.json`; evidence at
+`doc/research/evidence/2026-06-05-track-b-bull-calm-verdict/`.

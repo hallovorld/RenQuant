@@ -145,3 +145,49 @@ def test_markdown_marks_failed_promotion_evidence() -> None:
     assert "Promotion evidence: `False`" in md
     assert "60-day placebo is too large" in md
     assert "60d aligned real IC" in md
+
+
+def test_load_sanity_panel_supplements_addendum_from_training_panel(
+    tmp_path, monkeypatch
+) -> None:
+    """Opt-in addendum features (Track B) are absent from the rawlabel sanity
+    panel. They must be supplemented column-wise from the production training
+    panel, leaving the rawlabel base features untouched so addendum sanity runs
+    stay apples-to-apples with the non-addendum (baseline) run.
+
+    Regression guard for the 2026-06-05 Track-B verdict run, where the sanity
+    eval crashed with KeyError because mom_carry_12_1/beta_dm/etc. lived only in
+    the training panel, not in the rawlabel or transformer panels.
+    """
+    import scripts.run_wf_gate as wf
+
+    data = tmp_path / "data"
+    data.mkdir()
+    dates = pd.bdate_range("2024-01-01", periods=4)
+    rows = [(t, d) for t in ("AAA", "BBB") for d in dates]
+    raw = pd.DataFrame({
+        "ticker": [t for t, _ in rows],
+        "date": [d for _, d in rows],
+        "alpha_base": [0.1 * i for i in range(len(rows))],
+        "fwd_60d_excess_raw": [0.2 * i for i in range(len(rows))],
+    })
+    raw.to_parquet(data / "alpha158_291_fundamental_dataset_rawlabel.parquet")
+    # Training panel carries the base feature AND the Track-B addendum column.
+    train = raw[["ticker", "date", "alpha_base"]].copy()
+    train["mom_carry_12_1"] = [0.5 * i for i in range(len(rows))]
+    train.to_parquet(data / "alpha158_291_fundamental_dataset.parquet")
+
+    monkeypatch.setattr(wf, "REPO", tmp_path)
+
+    panel, meta = wf._load_sanity_panel(
+        ["alpha_base", "mom_carry_12_1"], "fwd_60d_excess_raw"
+    )
+
+    # Addendum column supplemented, every row populated (1:1 key merge).
+    assert "mom_carry_12_1" in panel.columns
+    assert panel["mom_carry_12_1"].notna().all()
+    # Base feature preserved from rawlabel (NOT the training panel copy).
+    assert "alpha_base" in panel.columns
+    assert meta["supplement_only_missing"] is True
+    assert meta["feature_cols_supplied_by_feature_panel"] == ["mom_carry_12_1"]
+    assert "alpha158_291_fundamental_dataset.parquet" in meta["sanity_feature_panel"]
