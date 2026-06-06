@@ -1685,12 +1685,22 @@ def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, 
                 # Coverage gap: rawlabel has (ticker, date) keys the training
                 # panel lacks (e.g. the rawlabel's last date not yet stamped
                 # into the training panel). Drop those rows rather than
-                # hard-fail — BUT only when the gap is a tail-edge minority; a
-                # large gap is a real data problem and must still raise.
+                # hard-fail only when the gap is both tiny and strictly beyond
+                # the training panel's max date. Sparse missing keys inside
+                # covered history can bias IC and must still fail closed.
                 n_before = len(merged)
                 gap_mask = merged[missing].isna().any(axis=1)
                 gap_frac = float(gap_mask.mean())
                 MAX_SUPPLEMENT_GAP_FRAC = 0.01  # 1% — tail-edge tolerance
+                max_train_date = tp["date"].max()
+                gap_min_date = merged.loc[gap_mask, "date"].min()
+                if gap_min_date <= max_train_date:
+                    raise ValueError(
+                        "sanity training panel supplement has missing values "
+                        f"for columns {null_cols[:20]} within covered history "
+                        f"(first gap date {gap_min_date.date()}, training max "
+                        f"{max_train_date.date()}); refusing to drop non-tail gaps"
+                    )
                 if gap_frac > MAX_SUPPLEMENT_GAP_FRAC:
                     raise ValueError(
                         "sanity training panel supplement has missing values "

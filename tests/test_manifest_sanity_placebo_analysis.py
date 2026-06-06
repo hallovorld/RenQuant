@@ -287,3 +287,33 @@ def test_load_sanity_panel_drops_tail_edge_coverage_gap(tmp_path, monkeypatch) -
     assert len(panel) == 199  # the 1 gap row dropped
     assert panel["mom_carry_12_1"].notna().all()
     assert meta["supplement_only_missing"] is True
+
+
+def test_load_sanity_panel_rejects_small_non_tail_coverage_gap(
+    tmp_path, monkeypatch
+) -> None:
+    """A small sparse gap inside covered history is not a tail-edge delay."""
+    import scripts.run_wf_gate as wf
+
+    data = tmp_path / "data"
+    data.mkdir()
+    dates = pd.bdate_range("2024-01-01", periods=200)
+    raw = pd.DataFrame({
+        "ticker": ["AAA"] * 200,
+        "date": dates,
+        "alpha_base": [0.001 * i for i in range(200)],
+        "fwd_60d_excess_raw": [0.002 * i for i in range(200)],
+    })
+    raw.to_parquet(data / "alpha158_291_fundamental_dataset_rawlabel.parquet")
+    train = pd.DataFrame({
+        "ticker": ["AAA"] * 199,
+        "date": [d for i, d in enumerate(dates) if i != 100],
+        "mom_carry_12_1": [0.5 * i for i in range(199)],
+    })
+    train.to_parquet(data / "alpha158_291_fundamental_dataset.parquet")
+    monkeypatch.setattr(wf, "REPO", tmp_path)
+
+    with pytest.raises(ValueError, match="within covered history"):
+        wf._load_sanity_panel(
+            ["alpha_base", "mom_carry_12_1"], "fwd_60d_excess_raw"
+        )
