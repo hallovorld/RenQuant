@@ -1,12 +1,16 @@
 # 2026-06-06 — PatchTST primary promotion: placebo/triad verdict
 
-**Verdict:** `promotion_evidence` (pooled) = **true**, but per §1 PRIME DIRECTIVE
-the per-regime read is **NOT promote-grade** — the pooled positive is a
-regime-mix artifact carried by BEAR, and PatchTST shows **no edge over the
-demoted XGB**. Recommendation: treat the live PatchTST promotion (#222) as
-**unsupported by evidence**; either roll back to XGB primary or keep PatchTST
-only after the matched-window tiebreaker below confirms a real BULL_CALM edge
-(it does not, on current evidence).
+**Verdict (operator decision 2026-06-06): KEEP PatchTST primary. Do NOT roll
+back to XGB.** PatchTST is leakage-clean (time-shift placebo ≈0 at the true
+horizon) and strong in BEAR. Its BULL_CALM IC is ~zero — but so is XGB's, so a
+rollback fixes nothing and discards a placebo-cleaner, BEAR-stronger model. The
+real blocker is that **no scorer — global or specialist — has clean BULL_CALM
+alpha** (§3/§4); that, not the global-scorer choice, is where the work goes next.
+
+> **Retraction:** an earlier draft of this doc recommended rolling back to XGB.
+> Withdrawn — the XGB "advantage" was a confounded mixed-window artifact (its
+> BEAR number came from a longer window including the 2024 bear), and XGB is no
+> better in the dominant BULL_CALM regime.
 
 This is **evidence only**; it does not by itself flip the live scorer.
 
@@ -80,27 +84,42 @@ Baseline `panel-ltr.alpha158_fund.json` (prior runs,
 | CHOPPY | +0.0172 | +0.0408 |
 | pooled aligned 60d | +0.0655 | +0.0566 |
 
-PatchTST is **not an improvement**: XGB has higher pooled aligned IC and far
-stronger BEAR; the two tie at ≈0 in BULL_CALM. PatchTST's only wins are CHOPPY
-(small sample) and being placebo-cleaner pooled (XGB's longer window flags
-`promotion_evidence=false`). XGB's BEAR edge may be partly the 2024 bear that
-PatchTST's window excludes — hence the tiebreaker.
+The pooled IC gap (+0.0655 vs +0.0566) is **not a clean XGB win**: XGB's number
+comes from a longer window whose extra 2024 bear inflates its BEAR cell, and the
+two **tie at ≈0 in the dominant BULL_CALM regime**. XGB is no better where it
+matters, and PatchTST is the placebo-cleaner of the two (XGB's window flags
+`promotion_evidence=false`). → no basis for rollback.
 
-## 4 · Open tiebreaker (to make this airtight)
+## 4 · The actual blocker — BULL_CALM, and the specialist lead (#233)
 
-Score XGB on the **identical** 2025-02→2026-02 window for a clean per-regime
-comparison. On all current evidence PatchTST shows no BULL_CALM edge, so the
-matched-window run is expected to confirm the rollback case, not overturn it.
+The same-window (2024-02→2026-02, apples-to-apples) Track-C **BULL_CALM
+specialist** vs XGB:
+
+| Regime | XGB | BULL_CALM specialist |
+|---|---:|---:|
+| BEAR | +0.3072 | +0.2950 |
+| **BULL_CALM** | +0.0106 | **+0.0241** |
+| CHOPPY | +0.0172 | +0.0247 |
+| pooled aligned 60d | +0.0655 | +0.0636 |
+
+The specialist **doubles XGB's raw BULL_CALM IC** — the right direction. **But
+it does not survive the placebo:** the specialist's BULL_CALM 60d model-placebo
+IC is **+0.0178**, so net-of-placebo clean alpha ≈ **+0.006** — back in the same
+~zero band as every other scorer. The "FIRST POSITIVE" is real as a raw number
+but ~¾ of it is persistence/overlapping-horizon structure, not clean alpha.
+
+**This is the real finding:** no scorer — PatchTST, XGB, or the BULL_CALM
+specialist — has *placebo-robust* BULL_CALM alpha. That is the open problem.
 
 ## Verdict
 
 - **Leakage:** none — PatchTST is placebo-clean. ✓
-- **Promotion (§7.4 / §1):** NOT supported as a global primary. Real only in
-  BEAR; ~zero in the 74%-of-time BULL_CALM regime; no edge over XGB.
-- **Action:** the operator-directed promotion (#222) lacks supporting evidence.
-  Recommend rolling back to XGB primary (revert #222 + renquant-strategy-104#8),
-  or repositioning PatchTST as a BEAR-regime specialist rather than the global
-  primary. Re-enabling runtime regime admission still requires backfilling WF
+- **Keep PatchTST primary.** XGB is not better (no clean pooled edge; ties at ≈0
+  in BULL_CALM) and is placebo-dirtier. Rollback rec **withdrawn**.
+- **Open problem (next work):** placebo-robust BULL_CALM alpha. The Track-C
+  specialist (#233) is the best lead but its raw +0.024 collapses to ~+0.006
+  under time-shift — closing that gap is the objective.
+- Re-enabling runtime regime admission still requires backfilling WF
   regime-admission metadata regardless.
 
 Agent-Origin: Claude
