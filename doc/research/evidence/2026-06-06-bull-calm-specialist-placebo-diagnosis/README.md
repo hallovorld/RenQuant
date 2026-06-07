@@ -97,7 +97,9 @@ accrues — if the placebo-clean +0.088 persists forward, revisit harvest.
 
 Reproduction: gain bucketing parses `booster_raw_json` from the specialist
 artifact; placebo profile is `artifacts/diagnostics/sanity_placebo_specialist_bull_calm_20260606/`;
-two-window split via `/tmp/specialist_two_window.py` (reuses the manifest
-scoring path; H1/H2 = median-date split of the 400 BULL_CALM OOS dates).
+two-window split via `two_window_split.py` (reuses the manifest scoring path;
+H1/H2 = median-date split of the 400 BULL_CALM OOS dates). If running from a
+temporary worktree without local artifacts, pass
+`--repo-root /Users/renhao/git/github/RenQuant`.
 
 Agent-Origin: Claude

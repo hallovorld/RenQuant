@@ -1,9 +1,31 @@
-import sys, json
+import argparse
+import sys
 from pathlib import Path
-import numpy as np, pandas as pd
-REPO=Path("/Users/renhao/git/github/RenQuant"); STRAT=REPO/"backtesting/renquant_104"
-for p in (REPO, REPO/"scripts", STRAT):
-    if str(p) not in sys.path: sys.path.insert(0, str(p))
+import pandas as pd
+
+
+def _default_repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
+parser.add_argument("--github-root", type=Path, default=None)
+args = parser.parse_args()
+
+REPO = args.repo_root.resolve()
+GITHUB_ROOT = args.github_root.resolve() if args.github_root else REPO.parent
+STRAT = REPO / "backtesting/renquant_104"
+for p in (
+    REPO,
+    REPO / "scripts",
+    STRAT,
+    GITHUB_ROOT / "renquant-pipeline/src",
+    GITHUB_ROOT / "renquant-backtesting/src",
+    GITHUB_ROOT / "renquant-common/src",
+):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 from scripts.analyze_manifest_sanity_placebo import (
     _load_artifact_payload, _load_sanity_panel, _score_manifest_sanity,
     _sanity_model_label_col, summarize_ic, shift_diagnostics, build_regime_series,
