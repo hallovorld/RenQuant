@@ -21,68 +21,31 @@ token was rotated. Never quote the token value in the audit comment.
 
 ### 1.0 · Storage SOP
 
-Use fine-grained PATs scoped only to the renquant repos. Normal agent tokens
-need:
+Canonical storage/loading procedure:
+[`doc/ops/agent-token-storage.md`](agent-token-storage.md). The short version:
 
-- `Contents: read/write`
-- `Pull requests: read/write`
-- `Issues: read/write`
-- `Metadata: read`
-- `Actions: read`
-
-Do **not** grant admin permissions to agent tokens. Keep owner/admin override
-credentials separate and use them only for §4 emergency owner override.
-
-Store the two agent tokens in the local OS secret store. On macOS:
-
-```bash
-security add-generic-password -U -s renquant-gh-token -a claude -w '<CLAUDE_PAT>'
-security add-generic-password -U -s renquant-gh-token -a codex  -w '<CODEX_PAT>'
-```
-
-Create local wrappers outside every repo:
-
-```bash
-# ~/.local/bin/rq-gh-claude
-#!/usr/bin/env bash
-set -euo pipefail
-export GH_TOKEN="$(security find-generic-password -s renquant-gh-token -a claude -w)"
-exec gh "$@"
-```
-
-```bash
-# ~/.local/bin/rq-gh-codex
-#!/usr/bin/env bash
-set -euo pipefail
-export GH_TOKEN="$(security find-generic-password -s renquant-gh-token -a codex -w)"
-exec gh "$@"
-```
-
-```bash
-chmod 700 ~/.local/bin/rq-gh-claude ~/.local/bin/rq-gh-codex
-```
+- Claude and Codex PATs must belong to **different GitHub accounts**.
+- Store each PAT in the OS Keychain with the hidden interactive prompt shown in
+  the SOP; never pass a token value on the command line.
+- Load tokens with `source scripts/agent_gh_env.sh <claude|codex|--orchestrator>`.
+- Do **not** grant admin permissions to normal agent tokens. Keep owner/admin
+  override credentials separate and use them only for §4 emergency owner
+  override.
 
 The orchestrator's `--as <agent>` resolves tokens in this order:
-`--token` → `RENQUANT_<AGENT>_GH_TOKEN` → `GH_TOKEN`/`GITHUB_TOKEN`.
-The recommended local pattern is to inject the Keychain value for one process:
-
-```bash
-CLAUDE_TOKEN="$(security find-generic-password -s renquant-gh-token -a claude -w)" \
-  $ORCH repos agent --as claude --workflow review --repo all --token "$CLAUDE_TOKEN"
-
-CODEX_TOKEN="$(security find-generic-password -s renquant-gh-token -a codex -w)" \
-  $ORCH repos agent --as codex --workflow review --repo all --token "$CODEX_TOKEN"
-```
-
-If an agent acts on GitHub via an MCP server instead of `gh`, configure that
-server with the same per-agent token; `--token` is the single override point
-for orchestrator queue/merge calls either way.
+`--token` → `RENQUANT_<AGENT>_GH_TOKEN` → `GH_TOKEN`/`GITHUB_TOKEN`. If an agent
+acts on GitHub via an MCP server instead of `gh`, configure that server with the
+same per-agent token; `--token` is the single override point for orchestrator
+queue/merge calls either way.
 
 Before any recurring review/merge loop, verify the visible GitHub identities:
 
 ```bash
-rq-gh-claude api user --jq .login
-rq-gh-codex api user --jq .login
+source scripts/agent_gh_env.sh claude
+gh api user --jq .login
+
+source scripts/agent_gh_env.sh codex
+gh api user --jq .login
 ```
 
 If both commands print the same login, stop. Different token strings from the
