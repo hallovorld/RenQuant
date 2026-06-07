@@ -79,3 +79,53 @@ sentiment-velocity experiment is the range-finder that tells us whether fast
 data helps at all before any spend.
 
 Agent-Origin: Claude
+
+---
+
+## Range-finder RESULT (2026-06-06) — sentiment-velocity: negative
+
+Built the 4 MVP features from the on-disk `data/news_sentiment_alpaca/` levels
+(`sentiment_velocity_5d`, `sentiment_surprise` = 20d z-score, `news_intensity_accel`,
+`pos_share_velocity_5d`) + an equal-weight z-combo, and measured cross-sectional
+Spearman IC vs `fwd_{5,20,60}d_excess` on the 400 BULL_CALM OOS dates
+(2024-02→2026-02). News coverage = 54% of BULL_CALM stock-days.
+Reproduction: `sentiment_velocity_rangefind.py`.
+
+Best cells (IC vs fwd_60d_excess):
+
+| Feature | real IC | placebo | H1 | H2 |
+|---|---:|---:|---:|---:|
+| sentiment_surprise | +0.0121 | +0.0078 | +0.0127 | +0.0115 |
+| combo (fwd_20d) | +0.0063 | −0.0030 | −0.0055 | +0.0182 |
+| sent_velocity_5d | +0.0025 | +0.0090 | −0.0006 | +0.0056 |
+| news_accel / posshare_vel | ≈0 / noisy | — | — | — |
+
+**Verdict: fails the gates.** With n≈400 and per-date IC std ≈0.16, SE of the
+mean IC ≈ 0.008, so 2σ significance needs |IC| > ~0.016. **No feature clears it.**
+- `sentiment_surprise` is the bright spot — +0.0121 and, unlike the specialist,
+  **stationary** across halves (+0.0127 / +0.0115) — but at ~1.5σ it is not
+  statistically significant, and ~⅔ is persistence (placebo +0.0078).
+- Every other feature shows the same non-stationarity (H1<0, H2>0) the specialist
+  exhibited, i.e. one-window noise.
+
+## Decision (pre-registered)
+
+This was the planned decision point: *if even the already-paid-for
+sentiment-velocity fails the placebo + two-window gates, BULL_CALM timing alpha
+is genuinely scarce here.* It failed. Therefore:
+
+- **Do NOT spend on paid fast-data vendors** (options, short-interest, revisions)
+  — the free experiment indicates fast news data does not unlock tradeable
+  BULL_CALM timing alpha, so more exotic fast data is unlikely to pay back.
+- **Accept BULL_CALM as a low-conviction regime:** size down there and lean on
+  BEAR / CHOPPY where the models demonstrably have signal (BEAR IC +0.12–0.31).
+  This is a portfolio-construction response, not a new-model response.
+- **Optional, cheap keep:** `sentiment_surprise` is stationary, already-paid-for,
+  and orthogonal to price features — worth adding as a minor feature and
+  re-checking incrementality (gate 4) on the next panel retrain, but with no
+  expectation that it transforms BULL_CALM.
+
+**Net:** the §1 BULL_CALM weakness is not a model or feature-engineering gap we
+can close with available data — it is a genuine scarcity of short-horizon
+cross-sectional predictability in calm-bull regimes for this universe. The
+highest-ROI response is regime-aware sizing, not more BULL_CALM model search.
