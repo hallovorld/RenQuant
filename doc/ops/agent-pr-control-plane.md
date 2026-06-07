@@ -14,17 +14,79 @@ Each agent uses its OWN GitHub token, so reviews/commits/merges are
 attributed correctly and GitHub's native "cannot approve your own PR" rule
 enforces review separation for free.
 
+**Do not paste token values into chat, PR bodies, comments, commits, config,
+or `.env` files.** If a token is exposed, revoke it in GitHub immediately,
+mint a replacement, update the local secret store, and mention only that the
+token was rotated. Never quote the token value in the audit comment.
+
+### 1.0 · Storage SOP
+
+Use fine-grained PATs scoped only to the renquant repos. Normal agent tokens
+need:
+
+- `Contents: read/write`
+- `Pull requests: read/write`
+- `Issues: read/write`
+- `Metadata: read`
+- `Actions: read`
+
+Do **not** grant admin permissions to agent tokens. Keep owner/admin override
+credentials separate and use them only for §4 emergency owner override.
+
+Store the two agent tokens in the local OS secret store. On macOS:
+
 ```bash
-# In Claude's shell environment:
-export RENQUANT_CLAUDE_GH_TOKEN=ghp_...claude...
-# In Codex's shell environment:
-export RENQUANT_CODEX_GH_TOKEN=ghp_...codex...
+security add-generic-password -U -s renquant-gh-token -a claude -w '<CLAUDE_PAT>'
+security add-generic-password -U -s renquant-gh-token -a codex  -w '<CODEX_PAT>'
 ```
 
-The orchestrator's `--as <agent>` resolves the matching var (falls back to
-`GH_TOKEN`). If an agent acts on GitHub via an MCP server instead of `gh`,
-configure that server with the same per-agent token; `--token` is the
-single override point either way.
+Create local wrappers outside every repo:
+
+```bash
+# ~/.local/bin/rq-gh-claude
+#!/usr/bin/env bash
+set -euo pipefail
+export GH_TOKEN="$(security find-generic-password -s renquant-gh-token -a claude -w)"
+exec gh "$@"
+```
+
+```bash
+# ~/.local/bin/rq-gh-codex
+#!/usr/bin/env bash
+set -euo pipefail
+export GH_TOKEN="$(security find-generic-password -s renquant-gh-token -a codex -w)"
+exec gh "$@"
+```
+
+```bash
+chmod 700 ~/.local/bin/rq-gh-claude ~/.local/bin/rq-gh-codex
+```
+
+The orchestrator's `--as <agent>` resolves tokens in this order:
+`--token` → `RENQUANT_<AGENT>_GH_TOKEN` → `GH_TOKEN`/`GITHUB_TOKEN`.
+The recommended local pattern is to inject the Keychain value for one process:
+
+```bash
+CLAUDE_TOKEN="$(security find-generic-password -s renquant-gh-token -a claude -w)" \
+  $ORCH repos agent --as claude --workflow review --repo all --token "$CLAUDE_TOKEN"
+
+CODEX_TOKEN="$(security find-generic-password -s renquant-gh-token -a codex -w)" \
+  $ORCH repos agent --as codex --workflow review --repo all --token "$CODEX_TOKEN"
+```
+
+If an agent acts on GitHub via an MCP server instead of `gh`, configure that
+server with the same per-agent token; `--token` is the single override point
+for orchestrator queue/merge calls either way.
+
+Before any recurring review/merge loop, verify the visible GitHub identities:
+
+```bash
+rq-gh-claude api user --jq .login
+rq-gh-codex api user --jq .login
+```
+
+If both commands print the same login, stop. Different token strings from the
+same GitHub account are not independent identities.
 
 ### 1.1 · The two tokens must belong to DISTINCT GitHub accounts
 
@@ -38,10 +100,10 @@ the token**, not on the token string. So:
   `Can not approve your own pull request`, and `gh pr merge --admin` is then
   blocked by `required_approving_review_count: 1`.
 - `RENQUANT_CLAUDE_GH_TOKEN` and `RENQUANT_CODEX_GH_TOKEN` must therefore come
-  from **two different GitHub accounts** (e.g. a `…-claude-bot` and a
-  `…-codex-bot` machine user), each with write access (collaborator) on the
-  renquant repos. Codex commits/pushes as one; Claude reviews/approves as the
-  other. Only then does the merge flow through the genuine two-identity path.
+  from **two different GitHub accounts** (for example dedicated Claude and
+  Codex machine users), each with collaborator access on the renquant repos.
+  Codex commits/pushes as one; Claude reviews/approves as the other. Only
+  then does the merge flow through the genuine two-identity path.
 
 **Until both accounts exist**, agent-authored PRs cannot complete the normal
 review-gated merge path. They either remain queued for a real second account,
