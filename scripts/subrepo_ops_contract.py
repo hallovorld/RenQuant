@@ -68,6 +68,21 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        name="orchestrator_bridge_bootstrap_prefers_pinned_runtime",
+        path="scripts/orchestrator_bridge_bootstrap.py",
+        required=(
+            "RENQUANT_SUBREPO_ROOT",
+            "RENQUANT_ASSEMBLY_DIR",
+            "current.env",
+            "current.json",
+            "RENQUANT_STRICT_SUBREPO_PATHS",
+            "RENQUANT_OPS_FAIL_CLOSED",
+            "does not match lock commit",
+            "does not match lock remote",
+            "return siblings / \"renquant-orchestrator\" / \"src\"",
+        ),
+    ),
+    Check(
         name="python_delegate_exports_strategy_config",
         path="scripts/subrepo_module_delegate.py",
         required=(
@@ -116,7 +131,8 @@ CHECKS: tuple[Check, ...] = (
         path="scripts/live_multirepo.py",
         required=(
             "Compatibility entrypoint for the orchestrator-owned live bridge",
-            'ORCH_SRC = SIBLINGS / "renquant-orchestrator" / "src"',
+            "from orchestrator_bridge_bootstrap import resolve_orchestrator_src",
+            "ORCH_SRC = resolve_orchestrator_src(REPO, SIBLINGS)",
             "from renquant_orchestrator import live_bridge as _bridge",
             "_PIN_SRCS = list(_bridge.DEFAULT_PIN_SRCS)",
             "return _bridge._with_pinned_strategy_config(argv, repo_root=REPO)",
@@ -134,7 +150,8 @@ CHECKS: tuple[Check, ...] = (
         path="scripts/daily_multirepo.py",
         required=(
             "Compatibility entrypoint for the orchestrator-owned daily bridge",
-            'ORCH_SRC = SIBLINGS / "renquant-orchestrator" / "src"',
+            "from orchestrator_bridge_bootstrap import resolve_orchestrator_src",
+            "ORCH_SRC = resolve_orchestrator_src(REPO, SIBLINGS)",
             "from renquant_orchestrator import live_bridge as _bridge",
             "_PIN_SRCS = list(_bridge.DEFAULT_PIN_SRCS)",
             "return _bridge._with_pinned_strategy_config(argv, repo_root=REPO)",

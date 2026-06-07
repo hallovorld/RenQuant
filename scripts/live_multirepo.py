@@ -2,15 +2,21 @@
 """Compatibility entrypoint for the orchestrator-owned live bridge."""
 from __future__ import annotations
 
-import importlib
+import importlib  # noqa: F401 - tests monkeypatch this module for fail-closed import checks.
 import sys
 from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from orchestrator_bridge_bootstrap import resolve_orchestrator_src  # noqa: E402
 
 
 REPO = Path(__file__).resolve().parent.parent
 SIBLINGS = REPO.parent
 LOCK_FILE = REPO / "subrepos.lock.json"
-ORCH_SRC = SIBLINGS / "renquant-orchestrator" / "src"
+ORCH_SRC = resolve_orchestrator_src(REPO, SIBLINGS)
 if str(ORCH_SRC) not in sys.path:
     sys.path.insert(0, str(ORCH_SRC))
 

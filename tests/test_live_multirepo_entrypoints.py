@@ -5,18 +5,21 @@ import importlib.util
 import json
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-ORCH_BRIDGE = (
-    REPO.parent
-    / "renquant-orchestrator"
-    / "src"
-    / "renquant_orchestrator"
-    / "live_bridge.py"
-)
+
+
+def _orchestrator_bridge_path() -> Path:
+    lock = json.loads((REPO / "subrepos.lock.json").read_text())
+    entry = next(e for e in lock["subrepos"] if e["name"] == "renquant-orchestrator")
+    return Path(entry["local_path"]) / "src" / "renquant_orchestrator" / "live_bridge.py"
+
+
+ORCH_BRIDGE = _orchestrator_bridge_path()
 
 
 def _load_bridge_module():
@@ -37,6 +40,79 @@ def _load_daily_module():
     return module
 
 
+def _load_bootstrap_module():
+    path = REPO / "scripts" / "orchestrator_bridge_bootstrap.py"
+    spec = importlib.util.spec_from_file_location("orchestrator_bridge_bootstrap_for_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _clear_orchestrator_modules() -> None:
+    for name in list(sys.modules):
+        if name == "renquant_orchestrator" or name.startswith("renquant_orchestrator."):
+            sys.modules.pop(name, None)
+
+
+def _write_fake_live_bridge(root: Path) -> Path:
+    package = root / "renquant-orchestrator" / "src" / "renquant_orchestrator"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "live_bridge.py").write_text(
+        textwrap.dedent(
+            """
+            DEFAULT_PIN_SRCS = []
+
+            def _arg_value(argv, flag, default=None):
+                return default
+
+            def _without_arg(argv, flag):
+                return argv
+
+            def _strategy_config_name(argv):
+                return "strategy_config.json"
+
+            def _with_pinned_strategy_config(argv, *, repo_root):
+                return argv
+
+            def _subrepo_src_roots(**kwargs):
+                return [], []
+
+            def _force_alias(alias, target, aliased):
+                aliased.append(alias)
+
+            def bootstrap_multirepo(**kwargs):
+                return []
+
+            def main(*, mode, repo_root):
+                return 0
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    return package.parent
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.check_output(("git", "-C", str(repo), *args), text=True).strip()
+
+
+def _init_git_repo(path: Path, remote: str = "https://github.com/hallovorld/renquant-orchestrator") -> str:
+    (path / "src").mkdir(parents=True)
+    (path / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.check_call(("git", "init", str(path)), stdout=subprocess.DEVNULL)
+    subprocess.check_call(("git", "-C", str(path), "remote", "add", "origin", remote))
+    subprocess.check_call(("git", "-C", str(path), "add", "."))
+    subprocess.check_call((
+        "git", "-C", str(path),
+        "-c", "user.name=Test",
+        "-c", "user.email=test@example.com",
+        "commit", "-m", "fixture",
+    ), stdout=subprocess.DEVNULL)
+    return _git(path, "rev-parse", "HEAD")
+
+
 @pytest.mark.parametrize(
     ("script", "mode"),
     [
@@ -47,7 +123,8 @@ def _load_daily_module():
 def test_multirepo_wrappers_delegate_to_orchestrator_bridge(script: str, mode: str) -> None:
     src = (REPO / "scripts" / script).read_text()
     assert "orchestrator-owned" in src
-    assert 'ORCH_SRC = SIBLINGS / "renquant-orchestrator" / "src"' in src
+    assert "from orchestrator_bridge_bootstrap import resolve_orchestrator_src" in src
+    assert "ORCH_SRC = resolve_orchestrator_src(REPO, SIBLINGS)" in src
     assert "from renquant_orchestrator import live_bridge as _bridge" in src
     assert "_PIN_SRCS = list(_bridge.DEFAULT_PIN_SRCS)" in src
     assert "return _bridge._with_pinned_strategy_config(argv, repo_root=REPO)" in src
@@ -57,6 +134,194 @@ def test_multirepo_wrappers_delegate_to_orchestrator_bridge(script: str, mode: s
     assert 'importlib.import_module("live.runner")' not in src
     assert "from subrepo_paths import resolve_subrepo_root" not in src
     assert "renquant_pipeline.kernel.panel_pipeline.job_panel_scoring" not in src
+
+
+def test_orchestrator_bridge_bootstrap_prefers_runtime_root(monkeypatch, tmp_path) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    runtime = tmp_path / "runtime" / "repos"
+    monkeypatch.setenv("RENQUANT_SUBREPO_ROOT", str(runtime))
+
+    assert mod.resolve_orchestrator_src(repo, siblings) == (
+        runtime / "renquant-orchestrator" / "src"
+    )
+
+
+def test_orchestrator_bridge_bootstrap_reads_assembly_dir_env(monkeypatch, tmp_path) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    assembly = tmp_path / "assembly"
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.setenv("RENQUANT_ASSEMBLY_DIR", str(assembly))
+
+    assert mod.resolve_orchestrator_src(repo, siblings) == (
+        assembly / "repos" / "renquant-orchestrator" / "src"
+    )
+
+
+def test_orchestrator_bridge_bootstrap_reads_current_env(monkeypatch, tmp_path) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    env_dir = repo / ".subrepo_assembly"
+    env_dir.mkdir(parents=True)
+    (env_dir / "current.env").write_text(
+        "export RENQUANT_SUBREPO_ROOT=.subrepo_runtime/repos\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_SUBREPO_ENV", raising=False)
+
+    assert mod.resolve_orchestrator_src(repo, siblings) == (
+        repo / ".subrepo_runtime" / "repos" / "renquant-orchestrator" / "src"
+    )
+
+
+def test_orchestrator_bridge_bootstrap_reads_current_json(monkeypatch, tmp_path) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    assembly = tmp_path / "assembly"
+    (assembly / "repos").mkdir(parents=True)
+    (repo / ".subrepo_assembly").mkdir(parents=True)
+    (repo / ".subrepo_assembly" / "current.json").write_text(
+        json.dumps({"current": str(assembly)}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_ASSEMBLY_DIR", raising=False)
+    monkeypatch.delenv("RENQUANT_SUBREPO_ENV", raising=False)
+
+    assert mod.resolve_orchestrator_src(repo, siblings) == (
+        assembly / "repos" / "renquant-orchestrator" / "src"
+    )
+
+
+def test_orchestrator_bridge_bootstrap_falls_back_to_sibling(monkeypatch, tmp_path) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_SUBREPO_ENV", raising=False)
+
+    assert mod.resolve_orchestrator_src(repo, siblings) == (
+        siblings / "renquant-orchestrator" / "src"
+    )
+
+
+def test_orchestrator_bridge_bootstrap_uses_lock_local_path(monkeypatch, tmp_path) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    orch = tmp_path / "locked-orchestrator"
+    (orch / "src").mkdir(parents=True)
+    repo.mkdir()
+    (repo / "subrepos.lock.json").write_text(
+        json.dumps({
+            "subrepos": [
+                {"name": "renquant-orchestrator", "local_path": str(orch)},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_SUBREPO_ENV", raising=False)
+
+    assert mod.resolve_orchestrator_src(repo, siblings) == orch / "src"
+
+
+def test_orchestrator_bridge_bootstrap_validates_lock_local_path_in_strict_mode(
+    monkeypatch, tmp_path,
+) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    orch = tmp_path / "locked-orchestrator"
+    head = _init_git_repo(orch)
+    repo.mkdir()
+    (repo / "subrepos.lock.json").write_text(
+        json.dumps({
+            "subrepos": [{
+                "name": "renquant-orchestrator",
+                "local_path": str(orch),
+                "commit": head,
+                "remote": "https://github.com/hallovorld/renquant-orchestrator",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_ASSEMBLY_DIR", raising=False)
+    monkeypatch.delenv("RENQUANT_SUBREPO_ENV", raising=False)
+    monkeypatch.setenv("RENQUANT_STRICT_SUBREPO_PATHS", "1")
+
+    assert mod.resolve_orchestrator_src(repo, siblings) == orch / "src"
+
+
+def test_orchestrator_bridge_bootstrap_blocks_stale_lock_local_path_in_strict_mode(
+    monkeypatch, tmp_path,
+) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    orch = tmp_path / "locked-orchestrator"
+    _init_git_repo(orch)
+    repo.mkdir()
+    (repo / "subrepos.lock.json").write_text(
+        json.dumps({
+            "subrepos": [{
+                "name": "renquant-orchestrator",
+                "local_path": str(orch),
+                "commit": "deadbeef",
+                "remote": "https://github.com/hallovorld/renquant-orchestrator",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_ASSEMBLY_DIR", raising=False)
+    monkeypatch.delenv("RENQUANT_SUBREPO_ENV", raising=False)
+    monkeypatch.setenv("RENQUANT_STRICT_SUBREPO_PATHS", "1")
+
+    with pytest.raises(SystemExit, match="does not match lock commit"):
+        mod.resolve_orchestrator_src(repo, siblings)
+
+
+def test_orchestrator_bridge_bootstrap_blocks_sibling_fallback_in_strict_mode(
+    monkeypatch, tmp_path,
+) -> None:
+    mod = _load_bootstrap_module()
+    repo = tmp_path / "RenQuant"
+    siblings = tmp_path / "siblings"
+    repo.mkdir()
+    (repo / "subrepos.lock.json").write_text(json.dumps({"subrepos": []}), encoding="utf-8")
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT", raising=False)
+    monkeypatch.delenv("RENQUANT_ASSEMBLY_DIR", raising=False)
+    monkeypatch.delenv("RENQUANT_SUBREPO_ENV", raising=False)
+    monkeypatch.setenv("RENQUANT_OPS_FAIL_CLOSED", "1")
+
+    with pytest.raises(SystemExit, match="requires a pinned renquant-orchestrator"):
+        mod.resolve_orchestrator_src(repo, siblings)
+
+
+def test_live_multirepo_imports_orchestrator_bridge_from_runtime_root(
+    monkeypatch, tmp_path,
+) -> None:
+    runtime = tmp_path / "runtime" / "repos"
+    fake_src = _write_fake_live_bridge(runtime)
+    monkeypatch.setenv("RENQUANT_SUBREPO_ROOT", str(runtime))
+    _clear_orchestrator_modules()
+    try:
+        mod = _load_bridge_module()
+        assert Path(mod._bridge.__file__).resolve() == (
+            fake_src / "renquant_orchestrator" / "live_bridge.py"
+        ).resolve()
+    finally:
+        _clear_orchestrator_modules()
+        while str(fake_src) in sys.path:
+            sys.path.remove(str(fake_src))
 
 
 @pytest.mark.parametrize(
