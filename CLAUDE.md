@@ -247,6 +247,13 @@ If any file contains sensitive data, gitignore it FIRST then commit
 `data/`, `backtesting/data/`, `backtesting/*/backtests/`. If it's not
 gitignored, it should be in remote.
 
+**Agent GitHub tokens** (Claude / Codex PATs) follow
+[`doc/ops/agent-token-storage.md`](doc/ops/agent-token-storage.md): stored in
+the OS Keychain (never `.env`, never a file, never pasted into chat), loaded per
+agent via `scripts/agent_gh_env.sh`, and guarded by the pre-push secret-scan in
+`scripts/install_pr_hook.sh`. A token exposed anywhere (including a transcript)
+is rotated immediately.
+
 ### 3.4 · PR review protocol
 
 Treat review findings as first-class PR artifacts.
