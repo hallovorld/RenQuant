@@ -57,11 +57,13 @@ exit 0
 
 install_hook() {
   local repo_dir="$1"
-  if [[ ! -d "$repo_dir/.git" ]]; then
-    echo "  skip $repo_dir (no .git)"
+  if ! git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "  skip $repo_dir (not a git repo)"
     return
   fi
-  local hook="$repo_dir/.git/hooks/pre-push"
+  local hook
+  hook="$(git -C "$repo_dir" rev-parse --git-path hooks/pre-push)"
+  mkdir -p "$(dirname "$hook")"
   printf '%s' "$HOOK_CONTENT" > "$hook"
   chmod +x "$hook"
   echo "  ✅ installed → $hook"

@@ -2,8 +2,10 @@
 # Agent GitHub-token loader (SOP: doc/ops/agent-token-storage.md).
 #
 # Reads per-agent fine-grained PATs from the macOS login Keychain into the env
-# vars the orchestrator + gh expect. The token is NEVER printed and NEVER
-# written to disk — it lives only in this shell's environment.
+# vars the orchestrator + gh expect. The Claude/Codex PATs must belong to
+# different GitHub accounts; otherwise GitHub still treats reviews as
+# self-approval. The token is NEVER printed and NEVER written to disk -- it
+# lives only in this shell's environment.
 #
 # Usage — SOURCE this, do not execute:
 #   source scripts/agent_gh_env.sh claude          # single agent: GH_TOKEN + RENQUANT_CLAUDE_GH_TOKEN

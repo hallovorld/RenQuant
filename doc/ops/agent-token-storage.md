@@ -4,9 +4,9 @@
 the orchestrator's multi-agent PR workflows.
 
 Each agent (Claude, Codex) authenticates to GitHub with its **own**
-fine-grained PAT, so tokens are independently revocable, rate-limit-isolated,
-and individually auditable. This SOP defines how those tokens are **stored,
-loaded, and rotated** — safely. It complements
+fine-grained PAT from a **different GitHub account**, so GitHub can enforce
+independent approvals instead of seeing both agents as the same reviewer. This
+SOP defines how those tokens are **stored, loaded, and rotated** safely. It complements
 [`agent-automation.md`](agent-automation.md) (§3.7 identity/attribution canon)
 and the orchestrator's `doc/agent-pr-workflows.md` (which already reads
 `RENQUANT_<AGENT>_GH_TOKEN`).
@@ -16,32 +16,34 @@ and the orchestrator's `doc/agent-pr-workflows.md` (which already reads
 1. **A token never appears in plaintext** in chat, a transcript, a commit, a
    file in any repo, or shell history/argv.
 2. **Storage is the OS Keychain**, encrypted at rest. Not `.env`, not a dotfile.
-3. **Each agent's token is independently revocable** — revoking one never
-   affects the other.
+3. **The Claude and Codex tokens must resolve to different GitHub logins**.
 
 A pre-push hook (`scripts/install_pr_hook.sh`) blocks any push whose diff
 contains a real token shape — defense-in-depth for rule 1.
 
 ## 1 · Provision the PATs (GitHub → Settings → Developer settings → Fine-grained tokens)
 
-Two tokens, **Resource owner = `hallovorld`**, **Repository access = only the
-`renquant-*` repositories**, **Repository permissions**:
+Two tokens, one minted by the Claude GitHub identity and one minted by the Codex
+GitHub identity. Both accounts must be collaborators on the renquant repos.
+Repository access should be only the `renquant-*` repositories. Permissions:
 
 | Permission | Access |
 |---|---|
 | Contents | Read & write |
 | Pull requests | Read & write |
 | Issues | Read & write |
-| Workflows | Read & write |
+| Actions | Read |
+| Metadata | Read |
+| Workflows | Read & write only if the agent may edit workflow files |
 | (everything else) | No access |
 
 Name them `renquant-gh-claude` and `renquant-gh-codex`. Set an expiry (90 days)
 and calendar the rotation.
 
-> Attribution stays via the §3.7 convention (`Co-Authored-By` trailers +
-> `agent:claude` / `agent:codex` labels); both tokens act as `hallovorld`. If
-> true distinct authorship is ever needed, upgrade to machine-user accounts —
-> the storage/loading below is unchanged.
+Do not mint both PATs from `hallovorld`, and do not mint two PATs from any other
+single account. GitHub approval separation keys on the account login, not on the
+token string. If both tokens resolve to the same login, `gh pr review --approve`
+will still be a self-approval and protected merges will remain blocked.
 
 ## 2 · Store them in the Keychain (run YOURSELF, in a terminal)
 
@@ -77,6 +79,19 @@ The shim reads the Keychain into the env vars the orchestrator + `gh` already
 expect (`RENQUANT_CLAUDE_GH_TOKEN`, `RENQUANT_CODEX_GH_TOKEN`, `GH_TOKEN`). The
 token lives only in that shell's environment — never on disk.
 
+Before starting a review/merge loop, verify the two visible GitHub identities:
+
+```bash
+source scripts/agent_gh_env.sh claude
+gh api user --jq .login
+
+source scripts/agent_gh_env.sh codex
+gh api user --jq .login
+```
+
+If both commands print the same login, stop and provision a real second account
+before merging agent-authored PRs.
+
 ## 4 · Leak-prevention hook (install once per clone)
 
 ```bash
@@ -102,4 +117,4 @@ being pasted into any chat/transcript.
 - ❌ Paste a token into an agent chat or any transcript (rotate it if you do).
 - ❌ Put tokens in `.env`, a dotfile, `git config`, or a CI variable file in-repo.
 - ❌ `echo $GH_TOKEN`, or pass a token as a command-line argument.
-- ❌ Reuse one token for both agents (breaks independent revocation + audit).
+- ❌ Reuse one token, or two same-account tokens, for both agents.
