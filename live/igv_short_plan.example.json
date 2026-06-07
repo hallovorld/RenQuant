@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy to live/igv_short_plan.json (gitignored) and edit. mode stays 'paper' until you deliberately set 'live' AND export IGV_LIVE_ARMED=1. contracts + max_debit are required (loader fails closed if unset).",
+  "plan_id": "igv-short-2026q2",
+  "mode": "paper",
+  "contracts": 1,
+  "max_debit": 3.50,
+  "long_strike": 98.0,
+  "short_strike": 90.0,
+  "dte_min": 0,
+  "dte_max": 7,
+  "slippage": 0.10,
+  "zones": {
+    "reject_zone": [97.5, 99.0],
+    "breakdown_level": 94.8,
+    "failed_bounce_zone": [95.0, 96.0],
+    "standby_level": 100.0,
+    "void_level": 101.5,
+    "tp_half_at": 93.0,
+    "tp_most_at": 90.0,
+    "sl_half_at": 100.5,
+    "sl_exit_close_at": 101.5
+  }
+}

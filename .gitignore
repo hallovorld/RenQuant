@@ -80,3 +80,7 @@ artifacts/patchtst_doe_hf/pt_*/
 artifacts/patchtst_doe_hf_smoke/
 artifacts/hf_smoke/
 artifacts/hf_swa_smoke/
+
+# IGV short-plan: operator live config + runtime state (never commit)
+live/igv_short_plan.json
+live/state/

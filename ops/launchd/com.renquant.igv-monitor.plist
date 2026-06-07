@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- IGV short-plan monitor. TEMPLATE — do NOT auto-install.
+     Install only after reviewing doc/ops/igv-short-automation.md:
+       cp ops/launchd/com.renquant.igv-monitor.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.renquant.igv-monitor.plist
+     Edit ProgramArguments path + EnvironmentVariables before loading.
+     Runs every 15 min (StartInterval); the script self-guards on the Alpaca
+     market clock, so it no-ops outside RTH. Add a second copy with
+     IGV_IGNORE_HOURS=1 on a post-close calendar entry for the close-based stop. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.renquant.igv-monitor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>cd /Users/renhao/git/github/RenQuant &amp;&amp; set -a; source .env; set +a; .venv/bin/python scripts/igv_short_monitor.py --once</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- LIVE ARMING: set to 1 ONLY when you intend real-money orders.
+         Leave unset/0 for dry-run (alerts only, no orders). -->
+    <key>IGV_LIVE_ARMED</key>
+    <string>0</string>
+    <key>RENQUANT_NTFY_URL</key>
+    <string>REPLACE_WITH_YOUR_NTFY_TOPIC_URL</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/renhao/git/github/RenQuant/live/logs/igv_monitor.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/renhao/git/github/RenQuant/live/logs/igv_monitor.err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
