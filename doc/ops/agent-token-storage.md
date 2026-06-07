@@ -5,8 +5,9 @@ the orchestrator's multi-agent PR workflows.
 
 Each agent (Claude, Codex) authenticates to GitHub with its **own**
 fine-grained PAT from a **different GitHub account**, so GitHub can enforce
-independent approvals instead of seeing both agents as the same reviewer. This
-SOP defines how those tokens are **stored, loaded, and rotated** safely. It complements
+independent approvals instead of seeing both agents as the same reviewer. One of
+those accounts may be `hallovorld`; a third account is not required. This SOP
+defines how those tokens are **stored, loaded, and rotated** safely. It complements
 [`agent-automation.md`](agent-automation.md) (§3.7 identity/attribution canon)
 and the orchestrator's `doc/agent-pr-workflows.md` (which already reads
 `RENQUANT_<AGENT>_GH_TOKEN`).
@@ -40,10 +41,25 @@ Repository access should be only the `renquant-*` repositories. Permissions:
 Name them `renquant-gh-claude` and `renquant-gh-codex`. Set an expiry (90 days)
 and calendar the rotation.
 
-Do not mint both PATs from `hallovorld`, and do not mint two PATs from any other
-single account. GitHub approval separation keys on the account login, not on the
-token string. If both tokens resolve to the same login, `gh pr review --approve`
-will still be a self-approval and protected merges will remain blocked.
+Two-account roster:
+
+| Agent | GitHub login | Token service |
+|---|---|---|
+| Claude | `hallovorld` | `renquant-gh-claude` |
+| Codex | `haorensjtu-dev` or another non-`hallovorld` collaborator | `renquant-gh-codex` |
+
+This is sufficient: the system needs **two distinct logins**, not two bot
+accounts plus the owner. Do not mint both PATs from `hallovorld`, and do not
+mint two PATs from any other single account. GitHub approval separation keys on
+the account login, not on the token string. If both tokens resolve to the same
+login, `gh pr review --approve` will still be a self-approval and protected
+merges will remain blocked.
+
+The PR actor must also match the agent. A Codex-authored PR should be opened and
+pushed with the Codex token/login; a Claude-authored PR should be opened and
+pushed with the Claude token/login. If a Codex PR is created with
+`hallovorld`, Claude cannot be the independent approver because GitHub sees the
+PR author and reviewer as the same account.
 
 ## 2 · Store them in the Keychain (run YOURSELF, in a terminal)
 
