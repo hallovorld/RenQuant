@@ -2,7 +2,7 @@
 
 Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline: data ingestion → cross-sectional ML signal generation → backtesting (LEAN) → live trading (Alpaca/IBKR). Statistically interpretable, strictly decoupled.
 
-**Active strategy: `renquant_104`** — panel learning-to-rank (cross-sectional XGBoost ranker + NGBoost μ/σ residual head + **Platt-scaled** calibrator + portfolio QP with HIFO lot accounting) with an 11-gate model-acceptance system, shadow-mode challenger infrastructure, and **HF PatchTST shadow active since 2026-05-19** (HF Trainer refactor + FiLM regime conditioning).
+**Active strategy: `renquant_104`** — panel learning-to-rank with **HF PatchTST as the current production primary scorer** (operator-directed switch on 2026-06-05), NGBoost μ/σ residual head, **Platt-scaled** calibrator, portfolio QP, and HIFO lot accounting. The previous cross-sectional XGBoost ranker is retained in readonly shadow / rollback configuration while PatchTST production artifact naming is cleaned up.
 
 `renquant_103` (single-stock per-symbol scanner) is retained as the rollback strategy. `renquant_101` / `renquant_102` are reference scaffolding.
 
@@ -178,9 +178,9 @@ See [`CLAUDE.md`](CLAUDE.md) for the full set; key ones:
 Cross-sectional ranker:
 - **Stage 1**: per-ticker indicators (RSI, MACD, ADX, BB%, …) + SPY-relative neutralization + cross-sectional z-score
 - **Stage 2**: panel features (size, momentum 12-1, beta 60d, residual mom) + macro factor frame (default off)
-- **Stage 3**: XGBoost rank:pairwise model trained CPCV (6 splits, 2 test groups, 10d embargo). OOS mean IC 0.0482 (28-feature prod as of 2026-04-26).
+- **Stage 3**: HF PatchTST primary panel scorer (`ranking.panel_scoring.kind: "hf_patchtst"`). The previous XGBoost rank:pairwise scorer remains the readonly shadow / rollback baseline.
 - **Stage 4**: NGBoost head produces μ/σ for top-K candidates → edge-Sharpe gate
-- **Stage 5**: Isotonic global calibrator → tier thresholds (0.10 / 0.20 / 0.30)
+- **Stage 5**: Platt/global calibrator → tier thresholds (0.10 / 0.20 / 0.30)
 - **Stage 6**: Portfolio QP solves for rotation under correlation + sector + concentration constraints
 - **Stage 7**: 8 acceptance gates (G1-G6 hard catastrophic, G7 hard floor, G8 soft variance) + 3 sim-based gates (G9/G10 hard, G11 soft) gate every retrain. Tournament + shadow infra ready.
 
