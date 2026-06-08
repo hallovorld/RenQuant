@@ -10,8 +10,9 @@
 > - `pending_orders` / `pending_broker_tickers` tracking (2026-05-17 State-EXT-SELL
 >   fix) — needed so Sunday-queued unfilled BUY isn't misclassified as
 >   "externally sold". Lives in `live_state.alpaca.json`
-> - HF PatchTST shadow scoring outputs persist via `mlruns/renquant_104_shadow/`
->   (MLflow), not in runs.db directly; cross-ref via `pipeline_run_id`
+> - HF PatchTST comparison/diagnostic scoring outputs persist via
+>   `mlruns/renquant_104_shadow/` (MLflow), not in runs.db directly; cross-ref
+>   via `pipeline_run_id`
 
 > **2026-05-07 addition**: `experiment_configs` table (Task #38) —
 > side-config storage as DB rows. Replaces the file-system

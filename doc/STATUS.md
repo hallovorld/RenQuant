@@ -1,6 +1,6 @@
 # RenQuant — Status
 
-**Last updated:** 2026-05-20
+**Last updated:** 2026-06-08
 
 This file used to maintain a parallel status snapshot. Per `feedback_journal_lessons_in_session`, status is now load-bearing in:
 - **`CLAUDE.md` § "🗂 Current state"** — active strategy, live mode mandate, NAV invariant, roadmap pointers
@@ -27,7 +27,7 @@ Use `git log --oneline --since=2026-05-09` for authoritative history. Highlights
 - **min_share_floor for high-price stocks** (2026-05-17): unblocked EQIX-class ($1059/share)
 - **Walk-forward gate enforcement** (2026-05-17): removed `RQ_ALLOW_NO_WF=1` setdefault; daily retrain stages only, weekly `weekly_wf_promote.sh` does the promote
 - **Anti-churn `min_reentry_days=5`** (2026-05-18, MCD incident): compounds on top of §1091 wash-sale
-- **HF PatchTST shadow** (2026-05-19): full second-pipeline-run with HF PatchTST primary, hard-isolated; shadow scorer at `kernel/panel_pipeline/hf_patchtst_scorer.py`
+- **HF PatchTST primary** (promoted by operator-directed prod/shadow switch on 2026-06-05): full second-pipeline-run infrastructure shipped on 2026-05-19; current production scorer is `hf_patchtst`, with previous XGB primary retained as readonly shadow / rollback.
 - **HF Trainer refactor** (2026-05-19): `scripts/patchtst_hf.py` swapped hand-rolled train loop to `transformers.Trainer`; multi-task head (rank + Student-t dist); `load_best_model_at_end=True`; per-regime IC callback; cosine LR + warmup; Margin Ranking loss
 - **FiLM regime conditioning** (2026-05-19): `--film-regime-cond` flag; FiLMLayer at γ, β = MLP(regime); identity-at-init = strict superset of baseline
 - **DLinear baseline shipped** (2026-05-19): §5.12 must-have for transformer overhead validation

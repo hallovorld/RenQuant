@@ -1,4 +1,4 @@
-# Golden Config — Current state (2026-05-20)
+# Golden Config — Current state (2026-06-08)
 
 > **⚠️ This file is partial.** Authoritative golden config is the on-disk
 > `backtesting/renquant_104/strategy_config.golden.json` (~1000 lines). Historical
@@ -8,8 +8,9 @@
 > For current production-state snapshot: see `doc/roadmap.md` § "📍 Current state"
 > and `CLAUDE.md` § "🗂 Current state".
 
-**Current golden (2026-05-20)**:
-- Production artifact: `artifacts/prod/panel-ltr.alpha158_fund.json` — XGBoost rank:pairwise on **172 features** (158 alpha158 + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment)
+**Current golden (2026-06-08)**:
+- Production scorer: HF PatchTST primary (`ranking.panel_scoring.kind="hf_patchtst"`) since the 2026-06-05 operator-directed prod/shadow switch. The active checkpoint still uses a shadow-named path pending artifact registry cleanup.
+- Previous primary / readonly shadow: `artifacts/prod/panel-ltr.alpha158_fund.json` — XGBoost rank:pairwise on **172 features** (158 alpha158 + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment)
 - NGBoost head: `artifacts/prod/ngboost-head.alpha158_fund.json` — promoted 2026-05-17 (val_IC +0.0352, σ-calib +0.274). σ-wire dormant per 3-condition A/B all NULL/negative.
 - Calibrator: `artifacts/prod/panel-rank-calibration.json` — **Platt scaling** (switched from isotonic 2026-05-18). `expected_return.y` clipped to [-0.20, +0.20] at train-site (P0 fix 2026-05-15).
 - Universe: wl200 (142 ticker quality-first, promoted 2026-05-18; replaced wl103)
@@ -18,7 +19,7 @@
 - DDV (deep_drawdown_veto): DISABLED globally 2026-05-17 per HXZ 2020
 - min_share_floor: 2026-05-17 unblock for high-priced stocks (EQIX-class)
 - Walk-forward gate: ENFORCED via `weekly_wf_promote.sh` (2026-05-17 commit `96af42b` removed `RQ_ALLOW_NO_WF=1` setdefault); daily retrain STAGES only, weekly Saturday 04:00 PT does the actual promote
-- Shadow model: HF PatchTST since 2026-05-19 (commits `cf6311c`, `4e156e2`); HF Trainer refactor + FiLM regime conditioning landed same day
+- Shadow model: previous XGBoost primary via `strategy_config.shadow.json`; PatchTST began as the 2026-05-19 shadow path and became production primary on 2026-06-05.
 
 **Validation evidence** (post Bug-C fix 2026-05-11):
 - 3-window post-fix baseline: APY +11.6%, Sharpe 0.77, MaxDD 8.2% (vs pre-fix +0% / 0.60 / 46.4% — all artifacts of Bug C). See `doc/AUDIT_2026-05-09.md` for Bug C details.

@@ -826,9 +826,9 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
             pass
     parts.append(" ".join(ctx_bits))
 
-    # 2026-05-19 user mandate: surface shadow-model output in ntfy so
-    # operator sees what the candidate (e.g. PatchTST) would have picked
-    # vs. live XGB primary. Compact: one segment per shadow with top-3
+    # Surface comparison-model output in ntfy so the operator sees what
+    # the readonly candidate/baseline would have picked versus the active
+    # primary. Compact: one segment per comparison with top-3
     # picks, top-10 overlap, and Spearman vs primary.
     shadow_summary = list(getattr(ctx, "_shadow_summary", []) or [])
     for ss in shadow_summary:

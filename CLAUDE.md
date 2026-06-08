@@ -53,8 +53,9 @@ Personal quantitative trading workstation for Apple Silicon. Glass-box
 pipeline: data ingestion → ML signal generation → backtesting (LEAN) → live
 trading (Alpaca / IBKR). Statistically interpretable, strictly decoupled.
 
-**Active strategy**: `renquant_104` (panel-LTR cross-sectional ranking, XGBoost
-`rank:pairwise` on `alpha158 + fund + PEAD + SUE` = 169 features).
+**Active strategy**: `renquant_104` (panel-LTR cross-sectional ranking, HF
+PatchTST production primary since 2026-06-05; previous XGBoost
+`rank:pairwise` scorer retained as readonly shadow / rollback).
 `renquant_103` archived; rollback only.
 
 **Live mode**: Alpaca PAPER for cron schedules (2026-05-11 safety mandate).

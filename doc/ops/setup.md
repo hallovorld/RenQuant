@@ -31,7 +31,7 @@ source .venv/bin/activate
 
 # Install pinned dependencies (xgboost, lightgbm, ngboost, pandas, numpy, scikit-learn,
 # yfinance, jupyterlab, pyarrow, scipy, alpaca-py, lean, openbb, transformers >= 5.8.1,
-# accelerate >= 1.1.0 for HF Trainer-based PatchTST shadow, etc.)
+# accelerate >= 1.1.0 for HF Trainer-based PatchTST, etc.)
 pip install -r requirements.lock.txt
 
 # Notifications (macOS + iPhone)
@@ -69,9 +69,9 @@ That's it — one command to start working.
 
 ---
 
-## HF PatchTST shadow model (2026-05-19)
+## HF PatchTST model
 
-If working on the HF PatchTST shadow path, the lockfile includes `transformers>=5.8.1` and `accelerate>=1.1.0` (required by HF `Trainer`). Verify:
+If working on the HF PatchTST path, the lockfile includes `transformers>=5.8.1` and `accelerate>=1.1.0` (required by HF `Trainer`). Verify:
 
 ```bash
 .venv/bin/python -c "import transformers, accelerate; print(transformers.__version__, accelerate.__version__)"

@@ -1,6 +1,6 @@
 # RenQuant Documentation
 
-Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking, **172 features**, cvxpy + CLARABEL portfolio QP, **NGBoost head ON in prod / σ-wire dormant**, HF PatchTST shadow active). `renquant_103` archived.
+Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking, **172 features**, cvxpy + CLARABEL portfolio QP, **NGBoost head ON in prod / σ-wire dormant**, HF PatchTST primary since 2026-06-05; previous XGB primary is readonly shadow / rollback). `renquant_103` archived.
 
 > **Where to start:** [`roadmap.md`](roadmap.md) → [`arch/strategy-104.md`](arch/strategy-104.md) → [`arch/overview.md`](arch/overview.md) → [`components/portfolio-qp.md`](components/portfolio-qp.md) → [`ops/usage.md`](ops/usage.md).
 >
