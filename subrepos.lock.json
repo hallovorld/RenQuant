@@ -24,7 +24,7 @@
       "local_path": "/Users/renhao/git/github/renquant-strategy-104",
       "remote": "https://github.com/hallovorld/renquant-strategy-104",
       "branch": "main",
-      "commit": "5933026e9ecb6d6bad9972d2f6c832e8b26ad148",
+      "commit": "76140b13520d94123e4b28af0e5a93169a2ae3bd",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -34,7 +34,7 @@
       "local_path": "/Users/renhao/git/github/renquant-model",
       "remote": "https://github.com/hallovorld/renquant-model",
       "branch": "main",
-      "commit": "c7b761bcb2a511db0fe260602a5a6d0b7d1ee705",
+      "commit": "27ef4370e8667b095785d74b4e67d20f51ad0476",
       "test_command": "make test",
       "status": "active"
     },
@@ -44,7 +44,7 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "f61ac70a8a3fc99589a494ba696ef7c3a7ed2bc8",
+      "commit": "ac540c5fc0e86c638e40fae2946ead9f1f233a75",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -54,7 +54,7 @@
       "local_path": "/Users/renhao/git/github/renquant-execution",
       "remote": "https://github.com/hallovorld/renquant-execution",
       "branch": "main",
-      "commit": "b505870ad6f005582ef57d3cc641498d9f61cc70",
+      "commit": "92eb4ce64401bd3aeb41c5b39e7398a620128684",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -64,7 +64,7 @@
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
-      "commit": "da1dc6ce6cb7d1d87eaf7c454908240fbd1e1bcd",
+      "commit": "ef3e7b944b25d6f0f4a9fa94ed444cdc13e8c6ba",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -94,7 +94,7 @@
       "local_path": "/Users/renhao/git/github/renquant-orchestrator",
       "remote": "https://github.com/hallovorld/renquant-orchestrator",
       "branch": "main",
-      "commit": "c974739cac0004f01bd333edbfad1d464dda76e6",
+      "commit": "24c61f94f303cfed2b0e0fb42f45ac0ec41d3307",
       "test_command": "make test",
       "status": "active"
     }
