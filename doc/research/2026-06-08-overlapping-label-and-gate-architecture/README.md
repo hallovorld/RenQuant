@@ -11,24 +11,27 @@ The live daily trader has placed **no buys for ~2 weeks** because no production
 model carries `wf_gate_metadata{passed:true}`, which the hard preflight gates
 (`P-WF-GATE`, `P-REGIME-IC`) require. The proximate cause is that the weekly
 promote pipeline was broken (now fixed, PRs #247/#249/#43/#253/#254); the
-**deeper** cause is that **no model can pass the §7.2 sanity gate** — and this
-doc shows that is **not primarily a model-quality problem but a label-and-gate
-architecture problem**.
+**deeper** issue is that the §7.2 sanity gate's time-shift placebo is
+**confounded** for the production label — it cannot distinguish a leaky/overfit
+model from a model picking up the label's own persistence.
 
 The production label `fwd_60d_excess` is a 60-trading-day forward return computed
 daily → **overlapping windows → cross-sectional autocorrelation of +0.049 at
 lag-120** (the gate's time-shift point). The §7.2 time-shift placebo therefore
-measures the *label's persistence*, not the *model's leakage* — so it rejects
-every model whose IC contains the unavoidable persistence floor. Shorter-horizon
-labels do **not** have this problem (fwd_20d: +0.009, fwd_5d: −0.001 at
-2×-horizon). This is a textbook overlapping-outcomes pathology
-(López de Prado, *Advances in Financial Machine Learning*, 2018, Ch. 4).
+partly measures the *label's persistence*, not purely the *model's leakage*.
+Shorter-horizon labels do **not** have this confound (fwd_20d: +0.009, fwd_5d:
+−0.001 at 2×-horizon). This is a textbook overlapping-outcomes pathology
+(López de Prado, *Advances in Financial Machine Learning*, 2018, Ch. 4). It does
+**not** prove every useful model must show `placebo_ic ≈ 0.036` — it proves the
+*diagnostic is confounded* and needs an empirically-calibrated baseline.
 
-**Recommendation:** a three-layer fix — (1) make the placebo gate
-label-autocorrelation-aware (immediate, bounded, unblocks the daily); (2)
-migrate the sanity/training label off the overlapping fwd_60d horizon
-(architectural root fix); (3) unify the promote pipeline so both model families
-(GBDT, PatchTST) earn metadata the same way (no more manual promotion).
+**Recommendation (revised after codex review):** a fail-closed, diagnostic-first
+sequence — (P0) **unify the promote pipeline** so no primary scorer reaches
+production unvalidated (the systemic fix, independent of the label debate);
+(P1) **stamp gate diagnostics with no threshold change**; (P2) **calibrate** a
+distribution-based gate from that data; (P3) add a **fwd_20d secondary** sanity
+target. This is leakage-control done correctly — explicitly separated from the
+operator's trading-risk decision (§7).
 
 ## 1 · The failure chain (evidence)
 
@@ -80,15 +83,17 @@ measures the **target**, not the **model**.
 | component | IC |
 |---|--:|
 | real (aligned) | +0.059 |
-| time-shift placebo = **persistence floor** | +0.036 |
+| time-shift placebo (persistence-contaminated component) | +0.036 |
 | **genuine forward alpha** (real − placebo) | **+0.023** |
 | shuffle placebo (noise) | −0.0005 |
 
-The model has **+0.023 of genuine, non-persistence forward alpha** — real (the
-shuffle confirms it) but buried under a +0.036 persistence floor that is a
-property of the *label*. The gate's `placebo < 0.5×real` rule fails it because
-0.036/0.059 = 61% > 50% — i.e. it fails on the label's autocorrelation, not on
-model leakage.
+This model carries **+0.023 of genuine, non-persistence forward alpha** — real
+(the shuffle confirms it) — alongside a +0.036 placebo component that the label's
+autocorrelation makes hard to attribute cleanly to the model. The gate's
+`placebo < 0.5×real` rule fails it (0.036/0.059 = 61% > 50%), but on a metric the
+label's persistence confounds. **This is evidence of a confounded diagnostic and
+a persistence-heavy model — not proof that no useful model could ever clear a
+properly-calibrated gate.** That is what Layer 1a/1b determine empirically.
 
 ## 3 · Why this matters (and why it's not "just relax the gate")
 
@@ -120,39 +125,58 @@ measurable and stable (§2). This is the difference between a *valid* placebo
 - **Bailey & López de Prado (2014), DSR/PBO:** already in §9; complementary —
   controls multiple-testing, not label autocorrelation.
 
-## 5 · Proposal — three layers
+## 5 · Proposal — layered, diagnostic-first
 
-### Layer 1 — Label-autocorrelation-aware placebo gate (IMMEDIATE, bounded)
-Replace the absolute `placebo_ic < 0.5 × real_ic` with a test against the
-**label's measured 2×-horizon autocorrelation floor**:
+> **Revised after codex review (2026-06-08).** The first draft proposed a
+> closed-form gate `placebo < label_autocorr_2h × |real_ic| + tol`. Codex
+> correctly showed it does **not** hold: `0.049 × 0.059 = 0.0029`, far below the
+> observed `placebo_ic = 0.0359`, so the model only "passes" with a huge `tol` —
+> a relaxation, not a calibrated correction. A model's placebo IC is **not**
+> `real_ic × label_autocorr` (it also depends on the model's own ranking
+> persistence and its loading on persistent features), so the baseline must be
+> **estimated empirically**, not derived in closed form. The corrected,
+> fail-closed sequence below replaces it.
 
-```
-floor   = label_autocorr_2h × |aligned_real_ic|     # persistence baseline
-genuine = aligned_real_ic − placebo_ic              # alpha beyond persistence
-PASS if  genuine ≥ margin  AND  placebo_ic ≤ floor + tol
-```
+### Layer 1a — Diagnostic-only, fail-closed (FIRST; zero behavior change)
+Stamp, on the **exact sanity panel the gate already scores**, with **no** change
+to any pass/fail:
+- `label_autocorr_profile` — cross-sectional label autocorr at {1×, 2×, 3×}
+  horizon, pooled **and** per-regime.
+- `model_placebo_profile` — `aligned_real_ic`, `placebo_ic`, `shuf_ic`, and
+  `genuine_ic = aligned_real_ic − placebo_ic` at the same shifts, pooled +
+  per-regime.
+This produces the data to **calibrate** a real gate and lets every reject be read
+as "weak model" vs "confounded by an autocorrelated target." No threshold moves.
+(renquant-backtesting `wf_gate`; additive metadata + tests.)
 
-This passes a model whose alpha *exceeds the label's persistence floor* and fails
-one that doesn't beat persistence — the correct specificity. For the current
-GBDT: genuine = +0.023 vs a persistence floor set by the +0.049 label autocorr →
-the gate becomes a real test of "beats momentum," not "has zero persistence."
-Surfaces `placebo / label_autocorr` in the metadata so a reject reads as
-"weak model" vs "autocorrelated target." (renquant-backtesting `wf_gate`; ~1 file
-+ tests; companion to RFC #257.)
+### Layer 1b — Distribution-calibrated gate (ONLY after 1a data exists)
+Replace the single-mean binary rule with a **bootstrapped confidence bound** over
+per-date IC (not a global multiplier):
+- require the **lower confidence bound** of `genuine_ic = real_ic − placebo_ic`
+  to be **> 0** (alpha beyond the *measured* persistence baseline is positive
+  with CI), **and**
+- an explicit **minimum genuine-IC** floor set from the baseline distribution and
+  trading economics — *not* reverse-engineered to pass today's model.
+This is leakage control calibrated to the label's empirical persistence, not a
+relaxation. **Whether the current GBDT clears it is an open empirical question
+the 1a diagnostics must answer — this doc does not claim it will.**
 
-### Layer 2 — Migrate off the overlapping 60-day label (ARCHITECTURAL root fix)
-Options, in increasing order of change:
-- **2a. Shorter sanity/eval label** — run the §7.2 sanity battery on `fwd_20d`
-  (autocorr +0.009) instead of fwd_60d, so the placebo is *valid* by
-  construction. Cheapest correct fix; the training label can stay fwd_60d.
+### Layer 2 — Reduce reliance on the overlapping 60-day label (ARCHITECTURAL)
+A 60-day model can **validly optimize 60-day returns** — the issue is the
+*sanity/leakage gate*, not the training objective. So treat the short-horizon
+label as an **additional acceptance target**, not a forced training swap:
+- **2a. fwd_20d as a secondary sanity acceptance target** — add a `fwd_20d`
+  (autocorr +0.009) placebo as a *second* trust boundary the candidate must also
+  clear. Since live rebalancing is daily, near-term sanity is genuinely
+  informative, and its placebo is valid by construction. The fwd_60d training
+  label stays. Cheapest correct addition.
 - **2b. Sample-uniqueness weighting** (AFML Ch. 4) on the fwd_60d training set —
   weight each (ticker, date) by average uniqueness so the 60× overlap stops
-  inflating apparent fit. Keeps the horizon, fixes the IID violation.
-- **2c. Shorten the production horizon** to fwd_20d (or triple-barrier) — the
-  fullest fix; aligns with canonical Qlib practice and removes the persistence
-  floor at the source. Largest change (re-train, re-tune, re-validate both model
-  families), but it is the architecturally correct target and the operator has
-  signalled openness to architecture change.
+  inflating apparent fit. Keeps the horizon, fixes the IID violation in training.
+- **2c. (Larger, evaluate later) shorten the production horizon** to fwd_20d /
+  triple-barrier — aligns with canonical Qlib practice but changes holding
+  period, turnover, and tax profile; needs a full WF + cost re-validation of
+  both model families. Not a label swap — a strategy change.
 
 ### Layer 3 — Unified gate→stamp→promote for BOTH model families (SYSTEMIC)
 The PatchTST was promoted manually on 2026-06-05 with **no** manifest, gate, or
@@ -163,34 +187,51 @@ renquant-backtesting owns the gate) so PatchTST and GBDT both earn
 `wf_gate_metadata` the same way. No artifact reaches `panel_scoring.artifact_path`
 without passing the gate. (Closes the manual-promotion hole that started this.)
 
-## 6 · Recommended path + sequencing
+## 6 · Recommended sequence (revised per codex — diagnostic-first, fail-closed)
 
 ```
-[now]                    [Layer 1 PR]            [Layer 2a]           [Layer 3]
-gate confounded ───────► autocorr-aware ───────► fwd_20d sanity ────► unified promote
-by label persistence     placebo gate            (valid placebo)      pipeline
-                          → GBDT can pass         → root fix           → no manual promote
-                          → daily buys resume      (training stays)     (both families)
+[P0: systemic]        [P1: diagnostic]      [P2: calibrate]       [P3: 2nd target]
+Layer 3               Layer 1a              Layer 1b              Layer 2a
+unified promote ────► gate diagnostics ───► distribution-        ► fwd_20d
+(both families)       (no behavior change)   calibrated gate        secondary sanity
+no manual promote     stamp profiles         (CI lower-bound       (valid placebo)
+                                              genuine_ic > 0)
 ```
 
-1. **Layer 1** (this RFC + PR) — unblocks the daily *now* with a *correct*
-   (not loosened) gate. Lowest risk, bounded.
-2. **Layer 2a** — switch the sanity-battery label to fwd_20d; the placebo
-   becomes valid by construction (no autocorrelation confound).
-3. **Layer 3** — unify promotion so this class of "unvalidated model in prod"
-   cannot recur.
-4. **Layer 2c** (optional, larger) — evaluate shortening the production horizon
-   to fwd_20d/triple-barrier as the canonical end-state.
+1. **Layer 3 — unified gate→stamp→promote (highest priority).** Independent of
+   the label debate, no primary scorer should ever reach production without
+   manifest-based sanity + regime-IC + `wf_gate_metadata`. This closes the
+   manual-promotion hole that started the incident and is the right fix
+   regardless of the threshold question. (codex strongly endorses.)
+2. **Layer 1a — diagnostic-only metadata (fail-closed).** Ship the
+   autocorr/placebo/genuine-IC profiles with **no threshold change**, so the
+   calibration in 1b is data-driven, not hand-waved.
+3. **Layer 1b — distribution-calibrated gate**, only after 1a data exists.
+4. **Layer 2a — fwd_20d secondary sanity target.** Then 2b/2c as larger,
+   separately-validated changes.
 
-## 7 · Trade-off the operator must weigh
+**The daily-buy unblock is NOT a single-gate fix.** Today's daily also fails
+`P-REGIME-IC` (BEAR/BULL_CALM) and the PatchTST primary carries no metadata at
+all — so even a perfect placebo gate does not, by itself, resume buys. The
+honest near-term unblock is **Layer 3** (get a *validated* model — whichever
+family — properly stamped into production); Layers 1–2 make the gate that
+validates it *correct*.
 
-Even a *correct* Layer-1 gate will pass a model whose edge is **+0.023 genuine
-alpha on top of momentum persistence**. That is a real, positive, shuffle-clean
-signal — but it is momentum-tilted. Promoting it means **being in-market with a
-momentum-heavy model**, which is a deliberate trading-risk choice, not a pure
-engineering one. Layers 2–3 reduce reliance on that tilt over time
-(per-regime specialists, Track C, +0.0241 placebo-clean BULL_CALM IC, are the
-genuine-alpha lever).
+## 7 · Two separate decisions — do not conflate them
+
+**(a) Leakage control (engineering).** "Is the model's IC an artifact of leakage
+or label autocorrelation?" — answered by the diagnostic-calibrated gate (Layers
+1a/1b). This is mechanical and belongs to the gate.
+
+**(b) Trading risk (operator).** *Given* a model that is leakage-clean but whose
+residual edge is **+0.023 genuine IC on top of momentum persistence** — do we
+want to be **in-market with a momentum-tilted model**? That is a deliberate
+capital-allocation choice, not an engineering one, and must not be smuggled in by
+tuning a leakage gate. Per-regime specialists (Track C, +0.0241 placebo-clean
+BULL_CALM IC) are the lever to earn down that tilt over time.
+
+Conflating (a) and (b) is exactly the trap the first draft fell into (using a
+leakage threshold to make a trading-risk call). Keep them separate.
 
 ## 8 · Caveats / what would falsify this
 
