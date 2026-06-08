@@ -4,7 +4,12 @@
 
 > **2026-05-20 update — training paths**:
 >
-> **1. Production XGBoost panel-LTR** (PRIMARY):
+> **1. Production HF PatchTST panel scorer** (PRIMARY since 2026-06-05):
+> - Active production config uses `ranking.panel_scoring.kind="hf_patchtst"`.
+> - The active checkpoint/calibrator still use shadow-named paths pending artifact registry cleanup.
+> - The previous XGBoost primary remains the readonly shadow / rollback baseline.
+>
+> **1b. XGBoost panel-LTR** (previous primary / rollback):
 > - `scripts/daily_retrain_alpha158_fund.sh` is the wrapper for the alpha158+fund+sentiment retrain pipeline (172 features = alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment).
 > - Weekly `weekly_wf_promote.sh` writes unique scorer/calibrator staging artifacts, runs the strict 3-cut WF + sanity + trade-ledger gate, and swaps active production only after `wf_gate_metadata.passed=True`.
 > - Label: `fwd_60d_excess` (60-day forward excess return), `lookahead_days=60`
@@ -19,7 +24,7 @@
 > - Monthly cron `monthly_calibrator_refresh.sh` with H2a (non-collapse) + H2b (IC-regression) hard gates + auto-rollback (commit `637594e`)
 > - ER clip [-0.20, +0.20] at train-site + load-time guard (P0 2026-05-15)
 >
-> **4. HF PatchTST shadow** (NEW 2026-05-19, multi-task head):
+> **4. HF PatchTST training path** (shipped 2026-05-19, primary since 2026-06-05):
 > - `scripts/patchtst_hf.py` — HF `transformers.Trainer` + `PatchTSTModel` backbone + dual head (rank_head + dist_head Student-t df/loc/scale)
 > - Margin Ranking loss (CIKM 2025) + Student-t NLL multi-task
 > - `PerRegimeICCallback` selects best epoch by min-across-regime IC (PRIME DIRECTIVE in code)
@@ -35,7 +40,7 @@
 >
 > **Per-regime IC tracking**: `kernel/hmm_regime_labels.py` provides stateless 4-regime taxonomy (BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR) via SPY OHLCV thresholds. Used by `PerRegimeICCallback` and downstream analysis scripts.
 >
-> **Backends registered in model_registry.py**: `xgb` (primary), `hf_patchtst` (shadow), `patchtst` (legacy custom, pre-2026-05-19 refactor), `regime_router` (FROZEN as dormant baseline per arXiv 2603.13252).
+> **Backends registered in model_registry.py**: `hf_patchtst` (primary), `xgb` (previous primary / readonly shadow), `patchtst` (legacy custom, pre-2026-05-19 refactor), `regime_router` (FROZEN as dormant baseline per arXiv 2603.13252).
 >
 > **alpha158_linear** (E29): walk-forward NO-GO 2026-05-07; dormant.
 

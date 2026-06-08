@@ -29,11 +29,11 @@ pip install -r requirements.lock.txt
 | Core data | `numpy` | **2.2.6** | arrays / numeric |
 | Core data | `scipy` | **1.15.3** | stats / optimization |
 | Core data | `pyarrow` | **23.0.1** | parquet cache I/O |
-| ML — ranker | `xgboost` | **3.2.0** | panel-LTR primary backend (`rank:pairwise`) on 172 features |
+| ML — ranker | `xgboost` | **3.2.0** | previous panel-LTR primary; retained as readonly shadow / rollback |
 | ML — ranker | `lightgbm` | **4.6.0** | alternate backend; re-opened 2026-05-20 with GICS unblock |
 | ML — uncertainty | `ngboost` | **0.5.10** | μ/σ head — trained + promoted 2026-05-17 (val_IC +0.0352); σ-wire dormant per A/B |
 | ML — classical | `scikit-learn` | **1.7.2** | Platt-scaling calibration (switched from isotonic 2026-05-18), splits, preprocessing |
-| ML — transformer backbone | `transformers` (HF) | **5.8.1** | HF PatchTST shadow path; `Trainer`, `TrainingArguments`, `TrainerCallback`, `PatchTSTModel` |
+| ML — transformer backbone | `transformers` (HF) | **5.8.1** | HF PatchTST primary path; `Trainer`, `TrainingArguments`, `TrainerCallback`, `PatchTSTModel` |
 | ML — transformer training | `accelerate` (HF) | **1.13.0** | Required by `transformers.Trainer` (`accelerate>=1.1.0` minimum) |
 | ML — transformer tensor | `torch` | **2.11.0** | MPS backend on M4 Pro 20 GPU cores |
 | ML — serialization | `safetensors` | installed | Optional safe checkpoint format (used by `export_transformer_to_safetensors.py`) |

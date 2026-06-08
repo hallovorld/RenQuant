@@ -526,7 +526,7 @@ fi
 # inner runner preflight ntfy to avoid duplicate phone errors.
 echo "--- Step 4: Shadow e2e run (HF PatchTST primary, no real orders) ---"
 SHADOW_LOG="$LOG_DIR/${DATE}_shadow.log"
-# HF PatchTST shadow is a full e2e pass: live broker reads, panel-frame
+# Readonly comparison e2e is a full pass: live broker reads, panel-frame
 # assembly, fundamentals/earnings/insider context, then sequence inference.
 # Empirical 2026-05-22 run exceeded the old 420s cap during cold start,
 # producing a false shadow failure after the production pass had succeeded.

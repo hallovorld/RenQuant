@@ -13,7 +13,7 @@ python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.lock.txt
 # Includes transformers >= 5.8.1 + accelerate >= 1.1.0 for HF Trainer-based
-# PatchTST shadow path
+# PatchTST training/inference
 lean login
 ```
 

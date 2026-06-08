@@ -243,7 +243,7 @@ scripts/
 ├── monthly_meta_label_retrain.sh Monthly meta-label retrain (currently retraining a disabled artifact)
 ├── model_dashboard.py           ★ Single-screen production state (read-only)
 ├── select_best_model.py         ★ Backend tournament + --promote
-├── patchtst_hf.py               ★ HF Trainer-based PatchTST shadow training (multi-task head + FiLM opt)
+├── patchtst_hf.py               ★ HF Trainer-based PatchTST training (multi-task head + FiLM opt)
 ├── eval_hf_trainer_5cut_5seed.py 5-cut × 5-seed PatchTST baseline eval driver
 ├── eval_hf_film_5cut_5seed.py   FiLM A/B eval driver
 ├── eval_dlinear_5cut_5seed.py   DLinear baseline eval driver (§5.12 must-have)

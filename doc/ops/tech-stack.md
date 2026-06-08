@@ -7,14 +7,14 @@
 | Data | yfinance + OpenBB + Alpaca IEX (intraday) | OHLCV + intraday bars + macro factors + news sentiment |
 | Data cache | Parquet (pyarrow) | Local storage for fetched data (`data/ohlcv/`, `data/intraday/`, `data/macro/`, `data/news_sentiment/`) |
 | Research | JupyterLab + `scripts/train_104.py` | Interactive 101/102/103; CLI-driven for 104 (`FullTrainingPipeline`) |
-| Panel ranker | XGBoost (rank:pairwise, PRIMARY), HF PatchTST (shadow, 2026-05-19 ship), legacy custom PatchTST (deprecated) | Cross-sectional learning-to-rank backends (104); registry at `kernel/panel_pipeline/model_registry.py` |
-| Sequence model training | Hugging Face `transformers` 5.8.1 + `accelerate` 1.13.0 | HF Trainer-based PatchTST shadow with multi-task head (rank + Student-t dist) + optional FiLM regime conditioning (Perez 2017) |
+| Panel ranker | HF PatchTST (PRIMARY since 2026-06-05), XGBoost (previous primary, readonly shadow / rollback), legacy custom PatchTST (deprecated) | Cross-sectional learning-to-rank backends (104); registry at `kernel/panel_pipeline/model_registry.py` |
+| Sequence model training | Hugging Face `transformers` 5.8.1 + `accelerate` 1.13.0 | HF Trainer-based PatchTST with multi-task head (rank + Student-t dist) + optional FiLM regime conditioning (Perez 2017) |
 | Probabilistic head | NGBoost (Normal distn) + Student-t via `torch.distributions` in HF PatchTST | μ/σ residual estimator (NGB head promoted 2026-05-17; σ-wire dormant); Student-t NLL multi-task head in HF PatchTST replaces NGB σ wire long-term |
 | Calibration | scikit-learn Platt scaling (switched from isotonic 2026-05-18) | Score-DB global calibrator with non-collapse gate (H2a) + IC-regression gate (H2b) |
 | Per-symbol learners | RTLearner, BagLearner, TabularQLearner, XGBoost (`XGBClassifier`) | 101/102/103 tournament backends + 104 baseline |
 | Portfolio QP | cvxpy + CLARABEL solver | Rotation under correlation + sector + concentration constraints + HIFO lot accounting + min_share_floor (104) |
 | State store | SQLite (runs.db) + parquet | pipeline_runs / candidate_scores / trades / training_runs / challenger_decisions / etc. |
-| Native acceleration | Rust (`rust/transformer_scorer/`) | Pre-2026-05-19 transformer-inference path (legacy); HF PatchTST is the current shadow path |
+| Native acceleration | Rust (`rust/transformer_scorer/`) | Pre-2026-05-19 transformer-inference path (legacy); HF PatchTST now uses the HF runtime path |
 | Calendar | pandas-market-calendars | NYSE holiday + early-close awareness for cron + trading-day math |
 | Final backtest | QuantConnect LEAN (Docker) | Industrial-grade event-driven backtesting |
 | Live trading | Alpaca (alpaca-py) + IBKR (stub) | Real-time order execution (PAPER for cron; LIVE for explicit `--broker alpaca`) |
@@ -50,8 +50,8 @@ JupyterLab provides an interactive environment for the entire research pipeline:
 - **RTLearner / BagLearner / TabularQLearner**: ported from ML4T, cleaned up — Random tree, bagging wrapper (Random Forest when wrapping RTLearner), Q-table with epsilon-greedy + optional Dyna experience replay
 
 **Cross-sectional panel-LTR backends** (104 active):
-- **XGBoost** (`rank:pairwise`, PRIMARY): production. 172 features (alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment). Verify `xgb_params` against current `strategy_config.golden.json::panel_ltr.xgb_params`. Artifact at `artifacts/prod/panel-ltr.alpha158_fund.json`.
-- **HF PatchTST** (shadow since 2026-05-19): `transformers.PatchTSTModel` backbone + dual head (rank_head Linear→1, dist_head Linear→3 for Student-t df/loc/scale). Margin Ranking loss + Student-t NLL multi-task. HF Trainer with `load_best_model_at_end=True` + PerRegimeICCallback (PRIME DIRECTIVE) + cosine LR + warmup. Optional FiLM regime conditioning via `--film-regime-cond`. Training: `scripts/patchtst_hf.py`. Plan: `doc/research/2026-05-19-patchtst-improvement-plan.md`.
+- **HF PatchTST** (PRIMARY since 2026-06-05): `transformers.PatchTSTModel` backbone + dual head (rank_head Linear→1, dist_head Linear→3 for Student-t df/loc/scale). Margin Ranking loss + Student-t NLL multi-task. HF Trainer with `load_best_model_at_end=True` + PerRegimeICCallback (PRIME DIRECTIVE) + cosine LR + warmup. Optional FiLM regime conditioning via `--film-regime-cond`. Training: `scripts/patchtst_hf.py`. Plan: `doc/research/2026-05-19-patchtst-improvement-plan.md`.
+- **XGBoost** (`rank:pairwise`, previous primary): readonly shadow / rollback. 172 features (alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment). Artifact at `artifacts/prod/panel-ltr.alpha158_fund.json`.
 - **Legacy custom PatchTST**: pre-2026-05-19 refactor (hand-rolled train loop); retained for old shadow checkpoints. Replaced by HF Trainer-based.
 - **LightGBM** (`lambdarank`): RE-OPENED 2026-05-20 — GICS sector data unblock (`data/ticker_sectors.json` 304 tickers). E48 retest pending.
 - **RegimeRouterScorer** (`regime_router_scorer.py`, commit `c52ad8d`): FROZEN as dormant baseline per arXiv 2603.13252 — hard routing + market-state gate AUROC < 0.5.

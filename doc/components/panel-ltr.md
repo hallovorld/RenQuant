@@ -5,13 +5,16 @@
 适用对象:不熟悉这两个模块的使用者/维护者。
 前置要求:对 OHLCV 数据和"横截面 vs 时间序列"有基本概念即可。
 
-> **2026-05-20 update**: production is **alpha158+fund XGBoost** (`kind: xgb`,
+> **2026-06-08 update**: production primary is **HF PatchTST** (`kind:
+> hf_patchtst`) after the 2026-06-05 operator-directed prod/shadow switch. The
+> previous **alpha158+fund XGBoost** scorer (`kind: xgb`,
 > `artifacts/prod/panel-ltr.alpha158_fund.json`, **172 features** = 158 alpha158
-> + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment). NGBoost head **trained + promoted
+> + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment) is retained as readonly shadow /
+> rollback. NGBoost head **trained + promoted
 > to prod 2026-05-17** (val_IC +0.0352, σ-calib +0.274) but the σ-wire to Kelly
 > stays OFF per 3-condition A/B all NULL/negative. μ from calibrator (Platt,
 > switched from isotonic 2026-05-18); σ from `realized_vol_60d` fallback.
-> **HF PatchTST shadow** wired 2026-05-19 (commits `cf6311c`, `4e156e2`) — see
+> **HF PatchTST** wired 2026-05-19 (commits `cf6311c`, `4e156e2`) — see
 > `scripts/patchtst_hf.py` + `doc/research/2026-05-19-patchtst-improvement-plan.md`.
 > The legacy 27-feat XGB and alpha158_linear paths are dormant.
 

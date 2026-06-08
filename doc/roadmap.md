@@ -31,7 +31,7 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 | Watchlist | wl200 (142 ticker quality-first, promoted 2026-05-18 — replaced wl103) |
 | **C5 news sentiment** | **2026-05-18 LIVE**: 14 regime entries `enabled`; panel-LTR retrained 169→172 feats; daily refresh cron staged |
 | **C1 options-IV** | **2026-05-18 ACCUMULATION**: fetcher + parser shipped, daily snapshot cron staged. Wait n_daily_rows ≥ 120 (~6mo) |
-| **HF PatchTST shadow** | **2026-05-19 SHIPPED**: shadow scorer wired (commits `cf6311c`, `4e156e2`); HF Trainer refactor + multi-task head + FiLM regime conditioning all landed; 5-cut × 5-seed eval drivers ready |
+| **HF PatchTST primary** | **2026-06-05 PRIMARY** after operator-directed prod/shadow switch; 2026-05-19 shadow infrastructure shipped first (commits `cf6311c`, `4e156e2`); HF Trainer refactor + multi-task head + FiLM regime conditioning all landed |
 | **PatchTST improvement plan** | **2026-05-19**: full systematic plan at `doc/research/2026-05-19-patchtst-improvement-plan.md` (Pillar A/B/C × Tier 1/2/3) |
 
 ---
@@ -163,7 +163,7 @@ mechanism), López de Prado 2016 *JPM* (HRP), Garleanu-Pedersen 2013 *JF*
 **Status (2026-05-20)** — see `doc/research/2026-05-19-patchtst-improvement-plan.md` for full Pillar A/B/C × Tier 1/2/3 roadmap.
 
 **Shipped 2026-05-19**:
-- Scorer wired in prod (commits `c7f710e`, `9a6cca1`, `a80ba96`, `5bad1a8`, `cf6311c`, `4e156e2`): full HF PatchTST shadow path active.
+- Scorer wired in prod (commits `c7f710e`, `9a6cca1`, `a80ba96`, `5bad1a8`, `cf6311c`, `4e156e2`): full HF PatchTST comparison path shipped before the 2026-06-05 primary switch.
 - Model registry: `kind: xgb | patchtst | hf_patchtst | regime_router` (commit `f611601`).
 - DOE Phase 2 verdict (commit `1863a4d`): 70/81 — pt_07 best at `lr=1e-4, wd=0.3, seq_len=24` confirmed "structural limit, router thesis holds". Parameter tuning hit ceiling.
 - **HF Trainer refactor of `scripts/patchtst_hf.py`** (commit `ca21654`): swapped hand-rolled train loop to `transformers.Trainer`; multi-task head (`rank_head` + `dist_head` for Student-t df/loc/scale); Margin Ranking loss (CIKM 2025 arXiv 2510.14156); `PerRegimeICCallback` for min-regime IC selection (PRIME DIRECTIVE in code); cosine LR + warmup; `load_best_model_at_end=True`. Solves prior best-epoch save bug.
@@ -200,7 +200,7 @@ mechanism), López de Prado 2016 *JPM* (HRP), Garleanu-Pedersen 2013 *JF*
 4. **N-seed Ensemble** at eval level via `eval_*_5cut_5seed.py` drivers — 5 seeds × 5 cuts
 5. SWA removed (was custom impl; HF Trainer's `load_best_model_at_end` replaces the actual need — best-epoch save not late-epoch averaging)
 
-**Shadow model wiring**: ✅ shipped 2026-05-19 via commits `cf6311c` / `4e156e2`. HF PatchTST runs as shadow alongside XGB primary; weekly review feeds promote-to-primary decision.
+**PatchTST model wiring**: ✅ shipped 2026-05-19 via commits `cf6311c` / `4e156e2`; promoted to primary by operator-directed prod/shadow switch on 2026-06-05. Previous XGB primary now serves as readonly shadow / rollback.
 
 References: Nie et al 2023 ICLR *PatchTST*, Perez 2017 arXiv 1709.07871 *FiLM*, CIKM 2025 arXiv 2510.14156 *Margin Ranking for stock ranking*, Box-Hunter-Hunter 2005 (FrFact), Qlib `pytorch_*_ts.py`.
 

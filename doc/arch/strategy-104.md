@@ -1,17 +1,18 @@
 # renquant_104 — Panel-LTR Cross-Sectional Ranking
 
 **Status:** Active daily strategy.
-**Last updated:** 2026-05-20 (post HF Trainer refactor + FiLM + 5-day BEAR detector + HIFO + anti-churn + sentiment + wl200 + NGB head promote)
+**Last updated:** 2026-06-08 (post HF PatchTST prod/shadow switch + HF Trainer refactor + FiLM + 5-day BEAR detector + HIFO + anti-churn + sentiment + wl200 + NGB head promote)
 **Based on:** renquant_103 (adaptive regime multi-stock, kept for rollback)
 
 ---
 
-## Production snapshot (2026-05-20)
+## Production snapshot (2026-06-08)
 
 | | |
 |---|---|
-| Active model | **XGB rank:pairwise on 172 features** (alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment) |
-| Artifact | `artifacts/prod/panel-ltr.alpha158_fund.json` |
+| Active model | **HF PatchTST primary** (`ranking.panel_scoring.kind="hf_patchtst"`) since the 2026-06-05 operator-directed prod/shadow switch |
+| Previous primary / shadow | XGB rank:pairwise on 172 features, retained as readonly shadow / rollback |
+| Active artifact | Shadow-named HF PatchTST seed44 checkpoint pending production registry cleanup |
 | Feature count | 172 (158 alpha158-faithful per Qlib + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment: `sentiment_pos_share`, `mean_sentiment`, `n_articles`) |
 | 5-cut WF mean IC | **+0.039 ± 0.046** (cuts: cut1_covid / cut2_fed / cut3_inflpk / cut4_svb / cut5_unwind) |
 | Watchlist | wl200 (142 ticker quality-first, promoted 2026-05-18; replaced wl103) |
@@ -24,7 +25,7 @@
 | Regime detector | 5-day BEAR + vol-cluster CHOPPY (2026-05-17, commit `0a192c4`); HMM hysteresis sticky N=10 bars |
 | DDV | DISABLED globally 2026-05-17 per HXZ 2020 "Replicating Anomalies" (was vetoing META rank #1) |
 | Promote gate | Weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) retrains into unique staging paths, runs strict WF + sanity + trade-ledger gates, then swaps scorer+calibrator only on `wf_gate_metadata.passed=True` |
-| Shadow model | HF PatchTST shadow registered 2026-05-19 (commits `cf6311c`, `4e156e2`); HF Trainer refactor + FiLM regime conditioning shipped same day |
+| Shadow model | Previous XGB primary via `strategy_config.shadow.json`; HF PatchTST started as the 2026-05-19 shadow path and became primary on 2026-06-05 |
 
 ---
 
@@ -59,7 +60,7 @@ Sell jobs (parallel) — model_sell + path rules + SellGateB + meta-label veto +
 Candidate jobs (parallel) — earnings + wash-sale + features + score + threshold + RS
 ↓
 PanelScoringJob:
-  AssembleInferenceMatrix → ApplyScores (XGB rank or hf_patchtst shadow)
+  AssembleInferenceMatrix → ApplyScores (HF PatchTST primary or XGB rollback/shadow)
   → ApplyNGBoost (μ promoted to prod; σ-wire dormant)
   → ApplyGlobalCalibration (Platt)
   → RegimeModelAdmission (trade monotonicity + aligned placebo IC)

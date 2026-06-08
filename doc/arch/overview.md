@@ -4,11 +4,14 @@
 
 RenQuant is built around **strict layer decoupling**. Each layer has one job, communicates via well-defined interfaces (JSON files), and can be developed or replaced independently. Every decision in the pipeline is inspectable — no end-to-end black boxes.
 
-> **2026-05-20 status**: Production artifact is `artifacts/prod/panel-ltr.alpha158_fund.json`
-> (172 features = alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment). NGBoost head
+> **2026-06-08 status**: Production primary scorer is HF PatchTST (`kind:
+> hf_patchtst`) after the 2026-06-05 operator-directed prod/shadow switch. The
+> previous XGBoost artifact `artifacts/prod/panel-ltr.alpha158_fund.json`
+> remains readonly shadow / rollback (172 features = alpha158 + 5 fund + 3 PEAD
+> + 3 SUE + 3 sentiment). NGBoost head
 > promoted to prod (val_IC +0.0352); σ-wire dormant per A/B. Portfolio QP cvxpy + CLARABEL
-> with HIFO lot accounting and min_share_floor for high-price stocks. HF PatchTST shadow
-> active since 2026-05-19 (commits `cf6311c`, `4e156e2`) — HF Trainer refactor + FiLM
+> with HIFO lot accounting and min_share_floor for high-price stocks. HF PatchTST
+> infrastructure shipped on 2026-05-19 (commits `cf6311c`, `4e156e2`) — HF Trainer refactor + FiLM
 > regime conditioning shipped same day. See [`../roadmap.md`](../roadmap.md)
 > § "📍 Current state" for full snapshot.
 
@@ -558,7 +561,7 @@ Each symbol's best model may be a different type. The daily automation retrains 
 Successor to 103, now the active daily strategy. Inherits the entire 103 decision graph — regime detection, sell priority, buy gates, sector/wash-sale guards, rotation — and replaces per-ticker `rank_score` with a cross-sectional panel-LTR score. See full design: [`doc/arch/strategy-104.md`](renquant_104_design.md).
 
 Key differences from 103:
-- **Cross-sectional panel-LTR ranker**: single XGBoost ranker trained on the whole watchlist panel each day. `PanelScoringJob` (4 Tasks) is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and scores both candidates and current holdings so rotation/sizing compare apples-to-apples.
+- **Cross-sectional panel-LTR ranker**: active scorer is HF PatchTST; the previous XGBoost ranker is retained as readonly shadow / rollback. `PanelScoringJob` is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and scores both candidates and current holdings so rotation/sizing compare apples-to-apples.
 - **Hybrid scoring stack**: per-ticker tournament still picks champion Buy/Hold/Sell models, filtered by OOS Sharpe floor (`sharpe_floor=1.0`). Panel model is filtered by OOS mean IC at training time.
 - **Panel-gated policies** (all optional, driven by `ranking.panel_scoring` block in `strategy_config.json`):
   - `buy_floor`: drops candidates whose panel score is below the floor (`VetoWeakBuysTask`)

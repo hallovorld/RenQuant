@@ -10,7 +10,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 RenQuant is a personal quantitative trading workstation for Apple Silicon. It implements a "Glass-box" pipeline: data ingestion → ML signal generation → backtesting (LEAN) → live trading (Alpaca/IBKR). All components are statistically interpretable and strictly decoupled.
 
-**Active strategy**: `renquant_104` (panel-LTR cross-sectional ranking on 172 features, XGBoost rank:pairwise primary + HF PatchTST shadow since 2026-05-19). Universe: wl200 (142 ticker quality-first). Calibrator: Platt scaling. NGBoost head promoted (σ-wire dormant).
+**Active strategy**: `renquant_104` (panel-LTR cross-sectional ranking on 172 features, HF PatchTST primary since the 2026-06-05 operator-directed prod/shadow switch; previous XGBoost rank:pairwise primary retained as readonly shadow / rollback). Universe: wl200 (142 ticker quality-first). Calibrator: Platt scaling. NGBoost head promoted (σ-wire dormant).
 
 ## Environment Setup
 
@@ -20,7 +20,7 @@ Project-local `.venv` (Python 3.10) on Apple Silicon M4 Pro 14c (10P+4E) / 48 GB
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.lock.txt
-# Includes transformers >= 5.8.1 + accelerate >= 1.1.0 for HF Trainer-based PatchTST shadow
+# Includes transformers >= 5.8.1 + accelerate >= 1.1.0 for HF Trainer-based PatchTST
 lean login
 ```
 
