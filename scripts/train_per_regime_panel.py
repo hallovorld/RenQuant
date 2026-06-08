@@ -89,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         help="Restrict tickers to the named watchlist JSON.",
     )
     p.add_argument(
+        "--include-features", default=None,
+        help="Comma-list of opt-in addendum feature names (Track B/C: "
+             "mom_carry_12_1,beta_dm,rvar_total,idio_vol_market). Threaded into "
+             "load_and_slice_panel so a per-regime specialist can use them.",
+    )
+    p.add_argument(
         "--fingerprint-config", default=None,
         help="Strategy config whose model-relevant fields stamp into the artifact.",
     )
@@ -209,10 +215,14 @@ def main() -> None:
     out_path = Path(args.output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    include_features = None
+    if args.include_features:
+        include_features = [c.strip() for c in args.include_features.split(",") if c.strip()]
     train, feat_cols, label_used = load_and_slice_panel(
         cutoff_date,
         watchlist_file=args.watchlist_file,
         label_override=args.label,
+        include_features=include_features,
     )
 
     # Build the fingerprint config FIRST so the regime replay has the

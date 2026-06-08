@@ -75,6 +75,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--jobs", type=int, default=1,
                    help="Concurrent (cutoff, regime) retrains.")
     p.add_argument("--label", default=None, help="Override label column.")
+    p.add_argument("--include-features", default=None,
+                   help="Comma-list of opt-in addendum features forwarded to each "
+                        "per-cutoff specialist (Track B/C: mom_carry_12_1,beta_dm,...).")
     p.add_argument("--fingerprint-config", default=None,
                    help="Strategy config whose model-relevant fields stamp each artifact.")
     p.add_argument("--skip-calibrators", action="store_true",
@@ -124,6 +127,8 @@ def _train_one(cutoff_iso: str, regime: str, args: argparse.Namespace,
     ]
     if args.label:
         cmd.extend(["--label", args.label])
+    if args.include_features:
+        cmd.extend(["--include-features", args.include_features])
     if args.fingerprint_config:
         cmd.extend(["--fingerprint-config", args.fingerprint_config])
     if args.dry_run:
