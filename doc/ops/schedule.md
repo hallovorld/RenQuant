@@ -1,6 +1,6 @@
 # RenQuant Cadence — Single Source of Truth
 
-**Last updated:** 2026-05-24 (weekly same-recipe manifest selection + repo hygiene mainline). Authoritative table of every scheduled or event-triggered job in the system.
+**Last updated:** 2026-06-08 (PatchTST scheduled retrain + orchestrator scheduled-job inventory). Authoritative operator view of every scheduled or event-triggered job in the system.
 
 > **Broker mode** (2026-05-11 safety mandate + live-account operator override):
 > - `scripts/daily_104.sh` currently runs `--broker alpaca` by operator mandate, so it can submit LIVE orders when buy-side preflight passes.
@@ -17,6 +17,27 @@ Pre-2026-05-09 the cadence was implicit — `daily_104.sh` did EVERYTHING (retra
 - **Event-triggered** = manual operator-initiated overrides
 
 Every job below documents: **what it does, what files it touches, what alerts on failure**.
+
+## Multi-repo migration status
+
+The machine-readable scheduled-job inventory now lives in
+`renquant-orchestrator`:
+
+```bash
+PYTHONPATH=src python -m renquant_orchestrator.cli scheduled-jobs
+PYTHONPATH=src python -m renquant_orchestrator.cli scheduled-jobs --fail-on-umbrella-bridge
+```
+
+Current status as of 2026-06-08:
+
+- 8 of 10 scheduled jobs are `native_multirepo`.
+- 2 jobs still use umbrella code by explicit bridge:
+  `daily_live_runner_bridge` and `live_runner_bridge`.
+- All training jobs in the inventory are native multi-repo jobs owned by
+  `renquant-orchestrator`; the remaining umbrella-code dependency is the
+  production live/inference handoff to `RenQuant live.runner`.
+- `--fail-on-umbrella-bridge` intentionally returns non-zero until those two
+  live bridge jobs are replaced by a native live runner with parity evidence.
 
 ---
 
@@ -70,6 +91,24 @@ Every job below documents: **what it does, what files it touches, what alerts on
 7. ntfy with verdict
 
 **Trust invariant:** EVERY model that ships to production (live trading) passes through this gate. The daily cron has no path to promote (staging only). The only override is `scripts/manual_promote.sh` (3-confirmation manual) — and even that requires a follow-up weekly run within 24h.
+
+### PatchTST scheduled retrain
+
+| Field | Value |
+|---|---|
+| **Script** | `scripts/weekly_retrain_patchtst.sh` |
+| **Owner pipeline** | `renquant_orchestrator.build_patchtst_wf_manifest` |
+| **Cadence** | Weekly latest-cut retrain by default; sparse full validation only with `RQ_PATCHTST_FULL_MANIFEST=1` |
+| **Default runtime** | CPU with `OMP_NUM_THREADS=1`; `RQ_PATCHTST_DEVICE=mps` is reserved for manual runs |
+| **Touches (mutates)** | `backtesting/renquant_104/artifacts/walkforward_patchtst/` and `walkforward_patchtst_manifest.json` |
+| **Touches (read-only)** | source WF manifest, subrepo runtime roots, active strategy config |
+
+This wrapper is intentionally thin: it owns lock/log/root setup and delegates
+training to the orchestrator-owned Task/Job/Pipeline implementation. It restores
+scheduled retraining for the second production model family after the
+operator-directed PatchTST promotion. It does not directly promote the resulting
+checkpoint; promotion still requires the normal evidence and operator review
+boundary.
 
 ---
 
