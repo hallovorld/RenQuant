@@ -74,6 +74,19 @@ else
     exit 2
 fi
 export RENQUANT_STRATEGY_CONFIG="$PROD_STRATEGY_CONFIG"
+
+# 2026-06-08: production now runs TWO scorers — PatchTST (primary, in
+# strategy_config.json) and the GBDT alpha158_fund (moved to
+# strategy_config.shadow.json after the 2026-06-05 PatchTST promotion). This
+# weekly job retrains the GBDT, so its WF gate must validate against GBDT
+# decision semantics, NOT the PatchTST primary config — otherwise the config
+# parity guard rejects ("PatchTST kind should not point at a non-PatchTST JSON").
+if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
+    GBDT_PROD_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.shadow.json"
+else
+    GBDT_PROD_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow.json)" \
+        || GBDT_PROD_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.shadow.json"
+fi
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
 
 run_wf_gate() {
@@ -209,7 +222,7 @@ WF_MANIFEST="artifacts/sim/walkforward_manifest_v2_20260602.json"
 echo "--- Step 3.5: Stamp WF manifest fingerprints ($WF_MANIFEST) ---"
 if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     --manifest "$WF_MANIFEST" \
-    --fingerprint-config "$PROD_STRATEGY_CONFIG" \
+    --fingerprint-config "$GBDT_PROD_CONFIG" \
     --reference-artifact "$STAGING_ART"; then
     echo "WF manifest stamping/recipe validation FAILED — production unchanged."
     notify "RenQuant 104 WEEKLY-FAIL" \
@@ -219,7 +232,7 @@ fi
 
 # ── Step 4: Run WF gate (3-cut WF + §5.2 sanity battery) ──────────────────
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
-if ! run_wf_gate \
+if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \
     --artifact "$STAGING_ART" \
     --strategy-config strategy_config.sim_wl200_gbdt_prod_recipe_calibrated.json \
     --derive-config-from-prod \
