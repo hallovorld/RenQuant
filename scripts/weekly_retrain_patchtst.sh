@@ -12,9 +12,9 @@
 # schedule and feed the daily signal.
 #
 # Usage: bash scripts/weekly_retrain_patchtst.sh [pipeline args]
-set -uo pipefail
+set -euo pipefail
 
-REPO_DIR="/Users/renhao/git/github/RenQuant"
+REPO_DIR="${RENQUANT_REPO_ROOT:-/Users/renhao/git/github/RenQuant}"
 PYTHON="$REPO_DIR/.venv/bin/python"
 LOG_DIR="$REPO_DIR/logs/weekly_retrain_patchtst"
 mkdir -p "$LOG_DIR"
@@ -23,12 +23,17 @@ LOG="$LOG_DIR/$DATE.log"
 exec > >(tee -a "$LOG") 2>&1
 echo "═══ weekly_retrain_patchtst started $(date -u +'%Y-%m-%dT%H:%M:%SZ') ═══"
 
-LOCK_FILE="/tmp/renquant_retrain_patchtst.lock"
-if [ -e "$LOCK_FILE" ] && kill -0 "$(cat "$LOCK_FILE" 2>/dev/null)" 2>/dev/null; then
-    echo "Another weekly_retrain_patchtst is active (PID=$(cat "$LOCK_FILE")) — exiting."
-    exit 0
+LOCK_FILE="${RQ_PATCHTST_LOCK_FILE:-/tmp/renquant_retrain_patchtst.lock}"
+if ! (set -C; echo $$ > "$LOCK_FILE") 2>/dev/null; then
+    EXISTING_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "?")
+    if ! kill -0 "$EXISTING_PID" 2>/dev/null; then
+        rm -f "$LOCK_FILE"
+        echo $$ > "$LOCK_FILE"
+    else
+        echo "Another weekly_retrain_patchtst is active (PID=$EXISTING_PID) — exiting."
+        exit 0
+    fi
 fi
-echo $$ > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 # torch on macOS can segfault on MPS under headless launchd + at high OMP on .pt
@@ -66,7 +71,7 @@ if [ "${RQ_PATCHTST_FULL_MANIFEST:-0}" = "1" ]; then
     echo "Mode: FULL validation manifest (sparse, cadence=${CADENCE}d)"
 else
     LATEST_CUT="$("$PYTHON" -c "import json;r=json.load(open('$SRC_MANIFEST')).get('retrains',[]);print(sorted(x['cutoff_date'] for x in r if x.get('cutoff_date'))[-1].split('T')[0])")"
-    EFFECTIVE_SRC="$(mktemp /tmp/patchtst_src_XXXXXX.json)"
+    EFFECTIVE_SRC="$(mktemp "${TMPDIR:-/tmp}/patchtst_src.XXXXXX")"
     "$PYTHON" -c "import json;json.dump({'retrains':[{'cutoff_date':'$LATEST_CUT'}]},open('$EFFECTIVE_SRC','w'))"
     CADENCE=0
     echo "Mode: WEEKLY — train latest cutoff only ($LATEST_CUT)"
