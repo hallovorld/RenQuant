@@ -55,12 +55,28 @@ SRC_MANIFEST="${RQ_PATCHTST_SOURCE_MANIFEST:-$REPO_DIR/backtesting/renquant_104/
 OUT_DIR="$REPO_DIR/backtesting/renquant_104/artifacts/walkforward_patchtst"
 OUT_MANIFEST="$REPO_DIR/backtesting/renquant_104/artifacts/walkforward_patchtst_manifest.json"
 
+# Two modes (mirrors the GBDT side: 1 model + gate weekly; WF manifest built once):
+#   WEEKLY (default): train ONLY the latest cutoff — 1 model, ~15min on MPS.
+#   FULL (RQ_PATCHTST_FULL_MANIFEST=1): one-time SPARSE validation manifest,
+#     ~6 cutoffs at cadence 180 (~90min). NOT the dense 39-cut/12h build.
 cd "$REPO_DIR"
+if [ "${RQ_PATCHTST_FULL_MANIFEST:-0}" = "1" ]; then
+    EFFECTIVE_SRC="$SRC_MANIFEST"
+    CADENCE="${RQ_PATCHTST_CADENCE:-180}"
+    echo "Mode: FULL validation manifest (sparse, cadence=${CADENCE}d)"
+else
+    LATEST_CUT="$("$PYTHON" -c "import json;r=json.load(open('$SRC_MANIFEST')).get('retrains',[]);print(sorted(x['cutoff_date'] for x in r if x.get('cutoff_date'))[-1].split('T')[0])")"
+    EFFECTIVE_SRC="$(mktemp /tmp/patchtst_src_XXXXXX.json)"
+    "$PYTHON" -c "import json;json.dump({'retrains':[{'cutoff_date':'$LATEST_CUT'}]},open('$EFFECTIVE_SRC','w'))"
+    CADENCE=0
+    echo "Mode: WEEKLY — train latest cutoff only ($LATEST_CUT)"
+    trap 'rm -f "$LOCK_FILE" "$EFFECTIVE_SRC"' EXIT
+fi
 "$PYTHON" -m renquant_orchestrator.build_patchtst_wf_manifest \
-    --source-manifest "$SRC_MANIFEST" \
+    --source-manifest "$EFFECTIVE_SRC" \
     --output-dir "$OUT_DIR" \
     --output-manifest "$OUT_MANIFEST" \
-    --cadence-days "${RQ_PATCHTST_CADENCE:-21}" \
+    --cadence-days "$CADENCE" \
     --seed "${RQ_PATCHTST_SEED:-44}" \
     --epochs "${RQ_PATCHTST_EPOCHS:-5}" \
     --device "${RQ_PATCHTST_DEVICE:-cpu}" \
