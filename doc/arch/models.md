@@ -34,12 +34,17 @@ This keeps one champion model per symbol while putting mixed model families onto
 In renquant_104 the per-ticker `rank_score` above is **overwritten cross-sectionally** by `PanelScoringJob` (see `doc/arch/strategy-104.md`) whenever `ranking.panel_scoring.enabled=true` in `strategy_config.json`.
 
 **Backends registered in `kernel/panel_pipeline/model_registry.py`**:
-- `kind: xgb` — XGBoost rank:pairwise on 172 features (primary, production)
-- `kind: hf_patchtst` — HF PatchTST shadow (active since 2026-05-19, commits `cf6311c`, `4e156e2`); see `scripts/patchtst_hf.py` for HF Trainer-based training with multi-task head (rank + Student-t dist) + optional FiLM regime conditioning
+- `kind: hf_patchtst` — HF PatchTST production primary as of the 2026-06-05 operator-directed prod/shadow switch; see `scripts/patchtst_hf.py` for HF Trainer-based training with multi-task head (rank + Student-t dist) + optional FiLM regime conditioning
+- `kind: xgb` — previous XGBoost rank:pairwise production scorer; retained as readonly shadow / rollback baseline
 - `kind: patchtst` — legacy custom PatchTST (pre-2026-05-19 refactor; retained for old shadow checkpoints)
 - `kind: regime_router` — frozen as dormant baseline per arXiv 2603.13252 (hard routing + market-state gate AUROC < 0.5)
 
-A single XGBoost learning-to-rank model emits `panel_score` — which is also written into `rank_score` so every downstream consumer (ranking blend, tier thresholds, rotation advantage) sees a directly comparable cross-sectional score. HF PatchTST shadow scoring runs in parallel and logs divergence vs primary to MLflow without submitting orders.
+The active panel scorer emits `panel_score`, which is also written into
+`rank_score` so every downstream consumer (ranking blend, tier thresholds,
+rotation advantage) sees a directly comparable cross-sectional score. The
+previous XGBoost production scorer now runs through the shadow / rollback
+configuration; older docs that call PatchTST shadow-only are historical
+snapshots taken before the 2026-06-05 switch.
 
 ## Manual Model — Dual Momentum + Trend Following
 
@@ -264,14 +269,14 @@ ranking that overrides per-ticker `rank_score` when `panel_scoring.enabled=true`
 
 | Backend | Artifact | Activation | Status |
 |---|---|---|---|
-| XGBoost (default) | `artifacts/prod/panel-ltr.alpha158_fund.json` | `ranking.panel_scoring.kind: "xgb"` | PRIMARY production, 172 features |
-| HF PatchTST shadow | `artifacts/patchtst_shadow/.../hf_patchtst_*.pt` | `ranking.panel_scoring.kind: "hf_patchtst"` | SHADOW since 2026-05-19 (HF Trainer + multi-task head + FiLM optional) |
+| HF PatchTST primary | `artifacts/patchtst_shadow/.../hf_patchtst_*.pt` | `ranking.panel_scoring.kind: "hf_patchtst"` | PRIMARY production since 2026-06-05; artifact path is still shadow-named until registry cleanup |
+| XGBoost rollback/shadow | `artifacts/prod/panel-ltr.alpha158_fund.json` | `ranking.panel_scoring.kind: "xgb"` | Previous primary, now readonly shadow / rollback baseline |
 | Legacy custom PatchTST | `artifacts/patchtst_5seed_v3_promote/patchtst_seed*.pt` | `ranking.panel_scoring.kind: "patchtst"` | Pre-2026-05-19 refactor, retained for old checkpoints |
 | RegimeRouter (dormant baseline) | composes XGB + HF PatchTST per-regime | `ranking.panel_scoring.kind: "regime_router"` | FROZEN — hard routing on HMM-on-SPY gate per arXiv 2603.13252 has AUROC < 0.5 |
 
 Sidecars (always written):
 - `artifacts/prod/ngboost-head.alpha158_fund.json` — μ/σ residual head (val_IC +0.0352, promoted 2026-05-17)
-- `artifacts/prod/panel-rank-calibration.json` — Platt-scaling mapping raw → `rank_score ∈ [0,1]` (switched from isotonic 2026-05-18)
+- active calibrator follows the selected scorer in strategy config; current PatchTST primary still points at a shadow-named calibration artifact pending production registry cleanup
 
 Tournament via `scripts/select_best_model.py`. Model registry at `kernel/panel_pipeline/model_registry.py` exposes the `kind`-based dispatcher (decorator pattern, extensible).
 
