@@ -134,7 +134,10 @@ cd "$REPO_DIR"
 
 # ── Step 1: Smoke test ────────────────────────────────────────────────────
 echo "--- Step 1: Pre-flight smoke test ---"
-if ! "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
+# P0 fix (2026-06-07): the production scorer is a torch (PatchTST) model;
+# torch.load segfaults under OMP_NUM_THREADS>=4 (set to 14 above for XGBoost).
+# Run the torch smoke test single-threaded; the XGBoost retrain below keeps 14.
+if ! OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
     echo "Smoke test FAILED — aborting weekly promote (no train)."
     notify "RenQuant 104 WEEKLY-ABORT" "Pre-flight smoke test failed; weekly promote skipped. Check $LOG"
     exit 1

@@ -288,24 +288,13 @@ echo "--- Step 2b: Backfill forward returns + portfolio metrics ---"
 "$PYTHON" scripts/backfill_forward_returns.py --source live --broker alpaca 2>&1 | tail -5 || echo "forward_returns backfill failed (non-fatal)"
 "$PYTHON" scripts/compute_portfolio_metrics.py --source live --strategy renquant-104 2>&1 | tail -15 || echo "portfolio metrics compute failed (non-fatal)"
 
-# Step 2c: Refresh news sentiment (2026-06-01 audit fix #4).
-# The standalone com.renquant.daily-news-sentiment launchd cron silently
-# stopped firing — sentiment data was 12+ trading days stale, causing
-# ApplyScoresTask to log hit=0/142 every run (sentiment features all-null).
-# Inlining the refresh here makes the daily wrapper self-sufficient: if the
-# cron is broken or hasn't loaded, daily still gets fresh sentiment before
-# the live trader's panel scoring step. Fast skip (<10s) when the data is
-# already fresh; full refresh ~30min when behind.
-echo "--- Step 2c: Refresh news sentiment ---"
-if [ -x "$REPO_DIR/scripts/daily_news_sentiment_refresh.sh" ]; then
-    if run_news_sentiment_refresh; then
-        echo "sentiment refresh finished at $(date)"
-    else
-        echo "sentiment refresh failed (non-fatal — daily continues with stale sentiment)"
-    fi
-else
-    echo "sentiment refresh script missing — skip (non-fatal)"
-fi
+# Step 2c (news sentiment refresh) MOVED to after the live trade — see Step 3b.
+# P0 fix (2026-06-07): the ~30min (or hung) news refresh ran BEFORE the trade,
+# so when the over-long job was SIGTERM'd by launchd the live trade never
+# executed (account stuck in cash for weeks). The trade is the critical,
+# irreplaceable action; it now runs first. Sentiment is one of 172 features and
+# one-day staleness is negligible; the dedicated com.renquant.daily-news-sentiment
+# cron is the primary refresher, this inline run is the self-sufficient backup.
 
 # Step 3: Run live trading (Alpaca, single pass)
 echo "--- Step 3: Running live trader (alpaca) ---"
@@ -498,6 +487,21 @@ print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today=
 "$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \
     --out "$REPO_DIR/doc/dashboard.md" 2>&1 \
     || echo "dashboard refresh failed (non-fatal)"
+
+# Step 3b: Refresh news sentiment (moved from Step 2c — P0 fix 2026-06-07).
+# Runs AFTER the live trade so a slow/hung refresh can never block the trade.
+# Time-bounded + non-fatal; the dedicated com.renquant.daily-news-sentiment cron
+# is the primary refresher, this is the self-sufficient backup.
+echo "--- Step 3b: Refresh news sentiment (post-trade) ---"
+if [ -x "$REPO_DIR/scripts/daily_news_sentiment_refresh.sh" ]; then
+    if run_news_sentiment_refresh; then
+        echo "sentiment refresh finished at $(date)"
+    else
+        echo "sentiment refresh failed/timed out (non-fatal — trade already executed)"
+    fi
+else
+    echo "sentiment refresh script missing — skip (non-fatal)"
+fi
 
 # ── Step 4: SHADOW e2e run (2026-05-19) ──────────────────────────────────
 # Per user mandate "整条 pipeline 都参考 shadow model 的 output — 跑两遍
