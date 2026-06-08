@@ -235,16 +235,19 @@ leakage threshold to make a trading-risk call). Keep them separate.
 
 ## 8 · Caveats / what would falsify this
 
-- The +0.049 autocorr is measured on the rawlabel sanity panel; the +0.036
-  placebo is the model inheriting it. They are consistent (placebo ≈
-  real × persistence-share) but distinct quantities; Layer 1 should compute the
-  floor from the *same* panel the gate scores.
+- The +0.049 autocorr is the *target's* property (rawlabel sanity panel); the
+  +0.036 placebo is the model's measured persistence-contaminated IC inheriting
+  it. They are related but distinct quantities — there is **no closed-form
+  floor**. Layer 1a must estimate the **empirical baseline distribution/profile**
+  from the *same* panel the gate scores (per-date IC, bootstrapped), not a
+  single derived number.
 - Layer 2c (shorten horizon) changes the strategy's holding period and tax/turn
   profile — not just a label swap; it needs a full WF + cost re-validation.
-- If, after Layer 1, the GBDT's `genuine` (+0.023) still fails a sensible
-  `margin`, then the honest conclusion is **the model has no tradeable alpha
-  beyond momentum** and the right action is signal research (Track C), not
-  gate-tuning. Layer 1 makes that determination *correctly*; today's gate cannot.
+- If, after Layers 1a/1b, the GBDT's `genuine_ic` lower confidence bound is not
+  positive (or below a sensible minimum), the honest conclusion is **the model
+  has no tradeable alpha beyond momentum** and the right action is signal
+  research (Track C), not gate-tuning. Layers 1a/1b make that determination on a
+  calibrated baseline; today's gate cannot.
 
 ## 9 · Reproduction
 
