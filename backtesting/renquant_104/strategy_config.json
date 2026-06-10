@@ -916,7 +916,7 @@
   "kelly_sizing": {
    "enabled": true,
    "fractional": 0.5,
-   "max_concentration": 0.35,
+   "max_concentration": 0.12,
    "min_edge": 0,
    "top_up_threshold": 0.05,
    "topup_conviction_floor": 0.55,
@@ -926,7 +926,8 @@
    "realized_vol_window_days": 60,
    "realized_vol_floor": 0.05,
    "realized_vol_ceiling": 1.5,
-   "_2026-05-15_activation_reason": "Phase 3 of calibrator P0 (commits b16e2a1, 00f94ff, 342309e). Pre-fix: mu_none=33 across every panel, Kelly returned 0 for every candidate, QP fell back to uniform 10.17% sizing. Post-fix: c.mu = c.expected_return (bounded \u00b10.20 by train-site + load-site clips); c.sigma = trailing 60d annualized realized vol (clipped to [0.05, 1.50]). Calibrator artifact refitted with bounded ER (2026-05-15 15:52)."
+   "_2026-05-15_activation_reason": "Phase 3 of calibrator P0 (commits b16e2a1, 00f94ff, 342309e). Pre-fix: mu_none=33 across every panel, Kelly returned 0 for every candidate, QP fell back to uniform 10.17% sizing. Post-fix: c.mu = c.expected_return (bounded \u00b10.20 by train-site + load-site clips); c.sigma = trailing 60d annualized realized vol (clipped to [0.05, 1.50]). Calibrator artifact refitted with bounded ER (2026-05-15 15:52).",
+   "_max_conc_note_20260609": "operator sizing mandate: per-name cap 12% (was 0.35 \u2014 readonly emitted 21.5%/23.5% targets). Aligns kelly cap with BULL_CALM max_position_pct."
   },
   "buy_quality_gates": {
    "regime_momentum": {
