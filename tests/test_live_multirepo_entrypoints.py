@@ -463,6 +463,62 @@ def test_strategy_subrepo_configs_are_available_from_lock_pin() -> None:
         assert isinstance(pinned.get("ranking"), dict)
 
 
+def _locked_subrepo_source(repo_name: str, path: str) -> str:
+    lock = json.loads((REPO / "subrepos.lock.json").read_text())
+    entry = next(item for item in lock["subrepos"] if item["name"] == repo_name)
+    return subprocess.check_output(
+        ["git", "-C", entry["local_path"], "show", f"{entry['commit']}:{path}"],
+        text=True,
+    )
+
+
+def test_pinned_orchestrator_rehearsal_plan_threads_native_commit_plan_output() -> None:
+    src = _locked_subrepo_source(
+        "renquant-orchestrator",
+        "src/renquant_orchestrator/live_rehearsal_plan.py",
+    )
+
+    assert "native_live_run_candidate" in src
+    assert "--commit-plan-output-json" in src
+    assert "native_commit_plan" in src
+    assert 'f"{mode}-native-commit-plan.json"' in src
+
+
+def test_pinned_orchestrator_native_live_run_writes_commit_plan_output() -> None:
+    src = _locked_subrepo_source(
+        "renquant-orchestrator",
+        "src/renquant_orchestrator/native_live_run.py",
+    )
+
+    assert "commit_plan_output_json" in src
+    assert "build_live_commit_plan" in src
+    assert "--commit-plan-output-json" in src
+
+
+def test_pinned_execution_live_commit_plan_preserves_ordering_contract() -> None:
+    src = _locked_subrepo_source(
+        "renquant-execution",
+        "src/renquant_execution/live_commit.py",
+    )
+
+    assert "def _intent_priority" in src
+    assert "sorted(order_intents, key=_intent_priority)" in src
+    assert 'execution_payload["execution_audit"]' in src
+    assert 'if "state_mutations" in execution_payload' in src
+
+
+def test_pinned_pipeline_live_context_snapshot_normalizes_holding_aliases() -> None:
+    src = _locked_subrepo_source(
+        "renquant-pipeline",
+        "src/renquant_pipeline/inference.py",
+    )
+
+    assert "class LiveContextSnapshot" in src
+    assert "def live_context_snapshot_from_live_context" in src
+    assert 'row.pop("qty", None)' in src
+    assert 'row.pop("shares", None)' in src
+
+
 def test_daily_shadow_run_uses_same_multirepo_bridge() -> None:
     src = (REPO / "scripts" / "daily_104.sh").read_text()
     shadow = src[src.find("Step 4: Shadow e2e"):]
