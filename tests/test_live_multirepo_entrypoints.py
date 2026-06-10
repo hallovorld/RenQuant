@@ -495,6 +495,19 @@ def test_pinned_orchestrator_native_live_run_writes_commit_plan_output() -> None
     assert "--commit-plan-output-json" in src
 
 
+def test_pinned_orchestrator_scheduled_jobs_exposes_native_cutover_commands() -> None:
+    src = _locked_subrepo_source(
+        "renquant-orchestrator",
+        "src/renquant_orchestrator/scheduled_jobs.py",
+    )
+
+    assert "native_replacement_job_id" in src
+    assert "native_cutover_command" in src
+    assert 'native_replacement_job_id="native_live_run_candidate"' in src
+    assert '"/tmp/renquant-live-rehearsal/daily-native-commit-plan.json"' in src
+    assert '"/tmp/renquant-live-rehearsal/live-native-commit-plan.json"' in src
+
+
 def test_pinned_execution_live_commit_plan_preserves_ordering_contract() -> None:
     src = _locked_subrepo_source(
         "renquant-execution",
