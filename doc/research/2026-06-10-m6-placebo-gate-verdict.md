@@ -1,4 +1,4 @@
-# M6 verdict — the weekly_wf_promote time-shift placebo FAILURE is a confounded-diagnostic / overlapping-label artifact, not GBDT panel leakage
+# M6 verdict — the weekly_wf_promote time-shift placebo FAILURE is consistent with an overlapping-label diagnostic confound
 
 **Date:** 2026-06-10 · **Author:** Claude (Fable 5) · **Status:** diagnosis + fix-path, for review
 **Decision owner:** operator (gate-architecture call) · **Scope:** sanity battery / WF-gate / panel-builder only
@@ -8,15 +8,16 @@
 ## 0 · Verdict (one line)
 
 The §5.2 time-shift placebo FAIL on the GBDT `alpha158_fund` panel
-(`placebo_ic=+0.0359` vs `threshold=+0.0295`) is **a placebo-threshold /
-overlapping-label confound, NOT genuine label/feature leakage in the panel
-builder.** The gate's `placebo < 0.5×aligned_real_ic` rule is mis-specified for a
-daily-sampled 60-day-horizon label. **Do NOT relax the threshold — replace it**
-with the persistence-baselined Layer-1b gate (the data to calibrate it is already
-stamped). Risk of the fix: the GBDT only *barely* clears a correct gate and is
-**momentum/persistence-tilted with near-zero genuine alpha in the
-production-dominant BULL_CALM regime** — that residual is an operator
-trading-risk call, kept separate from the leakage decision.
+(`placebo_ic=+0.0359` vs `threshold=+0.0295`) is **consistent with a
+placebo-threshold / overlapping-label confound**, and no direct leakage path has
+been identified in the reviewed evidence. That is weaker than proving all
+label/feature leakage is absent. The gate's `placebo < 0.5×aligned_real_ic` rule
+is mis-specified for a daily-sampled 60-day-horizon label. **Do NOT relax the
+threshold — replace it** with the persistence-baselined Layer-1b gate (the data
+to calibrate it is already stamped). Risk of the fix: the GBDT only *barely*
+clears a correct gate and is **momentum/persistence-tilted with near-zero genuine
+alpha in the production-dominant BULL_CALM regime** — that residual is an
+operator trading-risk call, kept separate from the leakage decision.
 
 ---
 
@@ -39,12 +40,13 @@ Gate code path: `renquant-backtesting`
 gate shift = `2 × label_horizon`).
 
 **Only the time-shift placebo fails; the shuffle placebo PASSES.** That asymmetry
-is the first tell: a shuffled label kills *all* structure, so a passing shuffle
-proves the signal is real (not pure noise/overfit-to-shuffle). A failing
-time-shift placebo *alone* is the classic signature of a **persistent target**,
-not necessarily a leaky model.
+is the first tell: a shuffled label kills the target structure under this
+diagnostic, so a passing shuffle is evidence against fitting a fully shuffled
+target. It does not by itself prove production-useful alpha or rule out every
+leakage/selection path. A failing time-shift placebo *alone* is consistent with a
+**persistent target**, not necessarily a leaky model.
 
-## 2 · Evidence — it is the overlapping-label autocorrelation confound
+## 2 · Evidence — supports an overlapping-label autocorrelation confound
 
 ### 2.1 · The label is autocorrelated exactly at the gate's shift point (reproduced)
 
@@ -65,11 +67,11 @@ to 59/60 of their realization path → strong serial correlation. The gate shift
 labels 120d forward and asserts the model's IC collapses; for fwd_5d/fwd_20d the
 shifted label is decorrelated (≈0) so the placebo cleanly isolates leakage, but
 for **fwd_60d the shifted label still correlates at +0.0489**, so a model that
-genuinely predicts forward returns *necessarily* scores on the shifted labels too.
+loads on persistent forward-return structure can score on the shifted labels too.
 This is the textbook overlapping/concurrent-outcomes pathology
 (López de Prado, *Advances in Financial Machine Learning*, 2018, Ch. 4).
 
-### 2.2 · The decisive discriminator: placebo IC tracks label autocorr, r=+0.993
+### 2.2 · Supporting discriminator: placebo IC tracks label autocorr, r=+0.993
 
 The model's Layer-1a `model_placebo_profile` is **already stamped** on the failing
 artifact
@@ -83,34 +85,37 @@ regime at the gate shift (2×h = 120d), for regimes with enough OOS dates:
 | BULL_CALM | +0.0413 | +0.0422 | +0.0302 | **−0.0112** | 302 |
 | CHOPPY | +0.0433 | +0.0403 | −0.0097 | **−0.0530** | 26 |
 
-**`corr(placebo_ic, label_autocorr_ic)` across regimes = +0.993.** The model's
-placebo IC is, regime for regime, almost perfectly explained by the *target's own*
-autocorrelation. If this were genuine leakage (model peeking at future info
-independent of the label's persistence), placebo would be HIGH where label
-autocorr is LOW — the opposite of what we see. **This is a confound signature, not
-a leakage signature.**
+**`corr(placebo_ic, label_autocorr_ic)` across regimes = +0.993.** Across the
+three eligible regimes, the model's placebo IC moves with the *target's own*
+autocorrelation. This is strong supporting evidence for a persistence-confounded
+time-shift diagnostic. It is not a standalone leak/no-leak classifier: a leaking
+feature path could still be regime-correlated with target persistence, and this
+sample has only three eligible regime points.
 
 ### 2.3 · Contrast with the confirmed PatchTST leak (different class)
 
 The 2026-06-02 experiment-validity audit found PatchTST B_tuned leak-contaminated
 with `timeshift_placebo +0.067 > real_ic +0.044` — placebo **EXCEEDS** real (ratio
 >1, a sequence-boundary leak crossing the seq_len=24 window across the train/val
-cut). The GBDT here is the **opposite signature**: `placebo +0.0359 < aligned_real
-+0.0590` (ratio 0.63), placebo tracks label persistence, and the per-fold OOS IC
-is genuinely positive. **The two failures are NOT the same class.** The audit's
-finding does not transfer to the GBDT panel.
+cut). The GBDT here has a different signature: `placebo +0.0359 < aligned_real
++0.0590` (ratio 0.63), placebo tracks label persistence across the eligible
+regimes, and the per-fold OOS IC is positive in 2/3 folds. **The two failures
+should not be treated as the same class without more evidence.**
 
-### 2.4 · The CV setup is structurally leakage-safe (ruling out genuine leakage)
+### 2.4 · The CV setup does not show an obvious leakage path
 
 From the failing artifact: `cv_method=purged_walk_forward`, `cv_embargo_days=60`,
 `lookahead_days=60`. **Embargo = label horizon = 60d**, which is the
-AFML-Ch.7-correct minimum to prevent train/test contamination for a 60d-horizon
-label (embargo must be ≥ horizon). `oos_per_fold_ic = [+0.087, −0.011, +0.056]`
-(genuinely positive in 2/3 folds), `training_train_ic=0.124` vs `oos=0.044` (2.8×
-gap — ordinary overfit, not catastrophic). No structural leakage path in the CV.
+AFML-Ch.7-correct minimum to prevent the common train/test overlap contamination
+for a 60d-horizon label (embargo must be ≥ horizon). `oos_per_fold_ic =
+[+0.087, −0.011, +0.056]` (positive in 2/3 folds), `training_train_ic=0.124` vs
+`oos=0.044` (2.8× gap). This reduces concern about the known CV-overlap failure
+mode, but it does not prove every panel-builder or feature-path leakage mode is
+absent.
 
-**Conclusion: genuine leakage is ruled out. The failure is the placebo diagnostic
-being confounded by the overlapping label's autocorrelation at the gate shift.**
+**Conclusion: the evidence supports treating this as a persistence-confounded
+placebo diagnostic and not as proof of GBDT panel leakage. The evidence does not
+fully exonerate every possible leakage path.**
 
 ## 3 · Why the threshold is wrong (not "just relax it")
 
@@ -152,7 +157,7 @@ with a genuine-IC lower-bound gate at the 2×-horizon shift:
    starting floor is **+0.01** (≈ half the current pooled genuine_ic of +0.021,
    above zero with margin), to be finalized from the per-regime distribution.
 4. Keep `shuf_ic` (|·|<0.005) as an **independent** hard gate — it stays; it is
-   the valid placebo and confirms the signal is real.
+   the less persistence-confounded placebo and remains a separate sanity check.
 5. **Per-regime:** require the LCB-positive condition in the production-dominant
    regimes the candidate will actually trade in; do not pool-average away a
    regime where genuine_ic is negative (see §5).
@@ -193,8 +198,9 @@ relaxation. This keeps the two decisions cleanly separated (RFC §7).
   the economics floor), the honest conclusion is **no tradeable alpha beyond
   momentum** → signal research, not gate-tuning.
 - If a future panel build shows `embargo < horizon` or a feature computed with a
-  forward window, that *would* be genuine leakage — re-open. (Current build:
-  embargo = horizon = 60, ruled clean.)
+  forward window, that *would* be genuine leakage — re-open. Current reviewed
+  evidence has `embargo = horizon = 60`; do not treat that as a blanket clean
+  stamp for every feature path.
 - The +0.0489 autocorr is the *target's* property; the +0.0359 placebo is the
   *model's* measured persistence-contaminated IC inheriting it. They are related
   but distinct — there is **no closed-form floor** (codex-confirmed). Layer 1b must
@@ -207,16 +213,19 @@ PY=/Users/renhao/git/github/RenQuant/.venv/bin/python
 
 # (a) label-autocorr decay — the root data (§2.1)
 $PY renquant-backtesting/.../analysis/repro_m6_placebo_confound.py --mode autocorr \
-    --rawlabel data/alpha158_291_fundamental_dataset_rawlabel.parquet
+    --rawlabel data/alpha158_291_fundamental_dataset_rawlabel.parquet \
+    --out backtesting/renquant_104/artifacts/diagnostics/m6_placebo/autocorr.json
 
 # (b) regime placebo↔autocorr discriminator from the STAMPED artifact (§2.2)
 $PY renquant-backtesting/.../analysis/repro_m6_placebo_confound.py --mode regime \
-    --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.weekly_20260610T201007Z.staging.json
+    --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.weekly_20260610T201007Z.staging.json \
+    --out backtesting/renquant_104/artifacts/diagnostics/m6_placebo/regime.json
 
 # gate numbers: logs/weekly_wf_promote/2026-06-09.log (Sanity result line)
 ```
 
-(Script: `renquant-backtesting/src/renquant_backtesting/analysis/repro_m6_placebo_confound.py`.)
+(Script: `renquant-backtesting/src/renquant_backtesting/analysis/repro_m6_placebo_confound.py`;
+`--out` JSON support is added by `renquant-backtesting#53`.)
 
 **Related:** RFC `doc/research/2026-06-08-overlapping-label-and-gate-architecture/`
 (architecture-level answer; this doc is the M6 verdict applying it to the GBDT);
