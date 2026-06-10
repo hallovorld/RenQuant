@@ -24,7 +24,7 @@
       "local_path": "/Users/renhao/git/github/renquant-strategy-104",
       "remote": "https://github.com/hallovorld/renquant-strategy-104",
       "branch": "main",
-      "commit": "76140b13520d94123e4b28af0e5a93169a2ae3bd",
+      "commit": "4ff14a63ca7085bcd78cf02512c8a44f0f3046a2",
       "test_command": "make test",
       "status": "bootstrapped"
     },
