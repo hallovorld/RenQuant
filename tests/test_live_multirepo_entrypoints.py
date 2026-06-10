@@ -508,6 +508,15 @@ def test_pinned_orchestrator_scheduled_jobs_exposes_native_cutover_commands() ->
     assert '"/tmp/renquant-live-rehearsal/live-native-commit-plan.json"' in src
 
 
+def test_pinned_orchestrator_readme_documents_native_cutover_target() -> None:
+    src = _locked_subrepo_source("renquant-orchestrator", "README.md")
+
+    assert "/tmp/renquant-live-rehearsal/live-bridge-bundle.json" in src
+    assert "/tmp/renquant-live-rehearsal/live-native-bundle.json" in src
+    assert "native_replacement_job_id" in src
+    assert "native_cutover_command" in src
+
+
 def test_pinned_execution_live_commit_plan_preserves_ordering_contract() -> None:
     src = _locked_subrepo_source(
         "renquant-execution",
@@ -520,6 +529,30 @@ def test_pinned_execution_live_commit_plan_preserves_ordering_contract() -> None
     assert 'if "state_mutations" in execution_payload' in src
 
 
+def test_pinned_execution_live_broker_result_contract_is_available() -> None:
+    live_commit_src = _locked_subrepo_source(
+        "renquant-execution",
+        "src/renquant_execution/live_commit.py",
+    )
+    broker_src = _locked_subrepo_source(
+        "renquant-execution",
+        "src/renquant_execution/broker.py",
+    )
+    alpaca_src = _locked_subrepo_source(
+        "renquant-execution",
+        "src/renquant_execution/alpaca_broker.py",
+    )
+
+    assert "def classify_broker_result" in live_commit_src
+    assert '"filled"' in live_commit_src
+    assert '"partial"' in live_commit_src
+    assert '"pending"' in live_commit_src
+    assert '"rejected"' in live_commit_src
+    assert 'intent.get("shares")' in broker_src
+    assert '"action": side' in alpaca_src
+    assert '"avg_price": filled_avg_price' in alpaca_src
+
+
 def test_pinned_pipeline_live_context_snapshot_normalizes_holding_aliases() -> None:
     src = _locked_subrepo_source(
         "renquant-pipeline",
@@ -530,6 +563,29 @@ def test_pinned_pipeline_live_context_snapshot_normalizes_holding_aliases() -> N
     assert "def live_context_snapshot_from_live_context" in src
     assert 'row.pop("qty", None)' in src
     assert 'row.pop("shares", None)' in src
+
+
+def test_pinned_pipeline_native_inference_snapshot_facade_is_available() -> None:
+    init_src = _locked_subrepo_source("renquant-pipeline", "src/renquant_pipeline/__init__.py")
+    inference_src = _locked_subrepo_source(
+        "renquant-pipeline",
+        "src/renquant_pipeline/inference.py",
+    )
+    native_src = _locked_subrepo_source(
+        "renquant-pipeline",
+        "src/renquant_pipeline/native_inference.py",
+    )
+
+    assert "run_native_inference_snapshot" in init_src
+    assert '"market_snapshot": dict(self.market_snapshot)' in inference_src
+    assert '"account_snapshot": dict(self.account_snapshot)' in inference_src
+    assert '"pending_broker_tickers": list(self.pending_broker_tickers)' in inference_src
+    assert "def _trace_context" in inference_src
+    assert "setattr(ctx_obj" not in inference_src
+    assert "def run_native_inference_snapshot" in native_src
+    assert "SellOnlyPipeline" in native_src
+    assert "live.runner" not in native_src
+    assert "adapters.runner" not in native_src
 
 
 def test_daily_shadow_run_uses_same_multirepo_bridge() -> None:
