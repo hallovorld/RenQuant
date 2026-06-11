@@ -60,6 +60,13 @@ export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orches
 exec >> "$LOG" 2>&1
 echo "=== intraday_sell started at $(date) (HHMM=$HHMM) ==="
 
+# ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
+# Intraday loop (every ~12 min): align siblings to pins (fast no-op when already
+# pinned) and abort if dirty/unreachable. Umbrella-lag check is left to the
+# once-daily run (PREFLIGHT_CHECK_UMBRELLA unset here). See preflight_pin_align.sh.
+# shellcheck source=scripts/preflight_pin_align.sh
+source "$REPO_DIR/scripts/preflight_pin_align.sh"
+
 # NYSE calendar guard — skip on holidays/weekends
 TODAY_DATE=$(date +%Y-%m-%d)
 if ! "$PYTHON" -c "

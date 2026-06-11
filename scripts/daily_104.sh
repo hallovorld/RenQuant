@@ -122,6 +122,13 @@ fi
 exec >> "$LOG" 2>&1
 echo "=== daily_104 started at $(date) ==="
 
+# ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
+# Once-daily run also checks (warn-only) whether the umbrella main lags
+# origin/main. See scripts/preflight_pin_align.sh for the full policy.
+PREFLIGHT_CHECK_UMBRELLA=1
+# shellcheck source=scripts/preflight_pin_align.sh
+source "$REPO_DIR/scripts/preflight_pin_align.sh"
+
 # ── Lock file — prevent concurrent invocations ────────────────────────────────
 # Audit fix LOCK-STALE (Round 2 deep audit, 2026-04-25): pre-fix, a
 # stale lock with a dead PID (left over after a SIGKILL / kernel panic
