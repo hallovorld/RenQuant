@@ -880,6 +880,11 @@ class RunnerAdapter:
 
         entry_dates     = state.get("entry_dates",     {})
         sell_streaks    = state.get("sell_streaks",    {})
+        # Cross-DAY model-protection breach counter (pipeline #111). Mirrors
+        # sell_streaks: persisted so the N-consecutive-day thesis-breach
+        # debounce survives restarts. Missing key (older state) → {} → every
+        # holding starts at 0 strikes, so the round-trip is back-compatible.
+        protection_breaches = state.get("protection_breaches", {})
         last_sell_dates = state.get("last_sell_dates", {})
         # G8 (2026-05-04): per-ticker date when a path-rule exit
         # (trailing_stop / stop_loss / single_day_loss / max_hold / gap_down)
@@ -1129,6 +1134,11 @@ class RunnerAdapter:
                 entry_kelly_target_pct = es.get("kelly_target_pct"),
                 entry_regime           = es.get("regime"),
             )
+            # Cross-DAY model-protection breach counter. Set post-construction
+            # (not a constructor kwarg) so a pin whose HoldingState predates the
+            # field cannot TypeError in this hot path; pipeline reads it
+            # getattr-safe (default 0).
+            holdings[ticker].protection_breaches = int(protection_breaches.get(ticker, 0) or 0)
             lots = live_tax_lots.get(ticker)
             if lots:
                 lot_qty = sum(float(getattr(L, "shares", 0.0) or 0.0) for L in lots)
@@ -1376,6 +1386,7 @@ class RunnerAdapter:
         self._entry_dates    = entry_dates
         self._entry_signals  = entry_signals   # Approach A — persisted per-ticker
         self._sell_streaks   = sell_streaks
+        self._protection_breaches = protection_breaches
         self._last_sell_dates_str = last_sell_dates
         self._last_stop_exit_dates_str = dict(last_stop_exit_dates or {})
         self._position_hwm   = position_hwm
@@ -2168,6 +2179,7 @@ class RunnerAdapter:
                 self._entry_dates.pop(ticker, None)
                 self._entry_signals.pop(ticker, None)   # Approach A cleanup
                 self._sell_streaks.pop(ticker, None)
+                self._protection_breaches.pop(ticker, None)
                 self._position_hwm.pop(ticker, None)
                 # Z9: cancel broker-side stop on full liquidation.
                 if self._z9_enabled(ctx):
@@ -2380,6 +2392,7 @@ class RunnerAdapter:
                 if not is_topup:
                     self._entry_dates[ticker]       = today_str
                     self._sell_streaks.pop(ticker, None)
+                    self._protection_breaches.pop(ticker, None)
                     self._last_sell_dates_str.pop(ticker, None)
                     self._position_hwm[ticker]      = price
                     # Thesis-degradation baseline (Approach A) — stamp entry
@@ -2466,6 +2479,7 @@ class RunnerAdapter:
             if ticker in full_exit_tickers:
                 continue
             self._sell_streaks[ticker] = hs.sell_streak
+            self._protection_breaches[ticker] = int(getattr(hs, "protection_breaches", 0) or 0)
             # Prefer the validated HWM that compute_exits computed for
             # this bar; only fall back to a price-based max if hs is
             # somehow missing or non-finite.
@@ -2539,6 +2553,7 @@ class RunnerAdapter:
                 self._entry_dates.pop(t, None)
                 self._entry_signals.pop(t, None)
                 self._sell_streaks.pop(t, None)
+                self._protection_breaches.pop(t, None)
                 self._position_hwm.pop(t, None)
             log.warning(
                 "STALE_STATE: %d ticker(s) missing from positions after "
@@ -2596,6 +2611,7 @@ class RunnerAdapter:
             ("entry_dates",   self._entry_dates),
             ("entry_signals", self._entry_signals),
             ("sell_streaks",  self._sell_streaks),
+            ("protection_breaches", self._protection_breaches),
             ("position_hwm",  self._position_hwm),
         ):
             stale = [t for t in store if t not in held_or_pending]
@@ -2662,6 +2678,7 @@ class RunnerAdapter:
             "entry_dates":       self._entry_dates,
             "entry_signals":     self._entry_signals,   # Approach A
             "sell_streaks":      self._sell_streaks,
+            "protection_breaches": self._protection_breaches,
             "last_sell_dates":   self._last_sell_dates_str,
             "last_stop_exit_dates": self._last_stop_exit_dates_str,
             "position_hwm":      self._position_hwm,

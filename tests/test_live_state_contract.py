@@ -12,8 +12,8 @@ in `tests/test_runner_hwm_guard.py` + `tests/test_regime_state_persistence.py`.
 
 Keys audited:
   regime, regime_confidence, high_water_mark,
-  entry_dates, sell_streaks, last_sell_dates, position_hwm,
-  monitor_state, regime_state
+  entry_dates, sell_streaks, protection_breaches, last_sell_dates,
+  position_hwm, monitor_state, regime_state
 """
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ class TestAllKeysAreLoaded:
     @pytest.mark.parametrize("key,default_form", [
         ("entry_dates",     r'state.get("entry_dates"'),
         ("sell_streaks",    r'state.get("sell_streaks"'),
+        ("protection_breaches", r'state.get("protection_breaches"'),
         ("last_sell_dates", r'state.get("last_sell_dates"'),
         ("position_hwm",    r'state.get("position_hwm"'),
         ("high_water_mark", r'state.get("high_water_mark"'),
@@ -64,8 +65,8 @@ class TestAllKeysAreSaved:
 
     @pytest.mark.parametrize("key", [
         "regime", "regime_confidence", "high_water_mark",
-        "entry_dates", "sell_streaks", "last_sell_dates",
-        "position_hwm", "monitor_state", "regime_state",
+        "entry_dates", "sell_streaks", "protection_breaches",
+        "last_sell_dates", "position_hwm", "monitor_state", "regime_state",
     ])
     def test_key_is_saved(self, key: str):
         assert f'"{key}":' in SOURCE, (
@@ -151,6 +152,30 @@ class TestSellStreaksLifecycle:
         assert 'self._sell_streaks[ticker] = hs.sell_streak' in SOURCE
 
 
+class TestProtectionBreachesLifecycle:
+    """`protection_breaches[ticker]` carries the cross-DAY model-protection
+    strike counter (pipeline ModelProtectionExitTask #111).
+
+    Invariants (mirror sell_streaks):
+      - Loaded on startup and hydrated onto HoldingState.protection_breaches.
+      - Popped on BUY and on full SELL of that ticker (key goes away).
+      - Written back from HoldingState.protection_breaches at end of bar.
+
+    Without this round-trip the N-consecutive-DAY thesis-breach debounce
+    resets every run, so the protection task can never reach N strikes and
+    stays inert (cannot misfire). See pipeline task_sell.ModelProtectionExitTask.
+    """
+
+    def test_hydrated_onto_holding(self):
+        assert 'holdings[ticker].protection_breaches = int(protection_breaches.get(' in SOURCE
+
+    def test_popped_on_buy_or_sell(self):
+        assert 'self._protection_breaches.pop(ticker, None)' in SOURCE
+
+    def test_written_from_hs(self):
+        assert 'self._protection_breaches[ticker] = int(getattr(hs, "protection_breaches"' in SOURCE
+
+
 class TestLastSellDatesWashSaleIntegration:
     """`last_sell_dates[ticker]` → wash-sale guard.
 
@@ -221,8 +246,8 @@ class TestLiveStateSchemaComplete:
 
     EXPECTED_KEYS = {
         "regime", "regime_confidence", "high_water_mark",
-        "entry_dates", "sell_streaks", "last_sell_dates",
-        "position_hwm", "monitor_state", "regime_state",
+        "entry_dates", "sell_streaks", "protection_breaches",
+        "last_sell_dates", "position_hwm", "monitor_state", "regime_state",
     }
 
     def test_all_expected_keys_are_written(self):
