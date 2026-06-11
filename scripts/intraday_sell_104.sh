@@ -82,6 +82,27 @@ fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
 cd "$REPO_DIR"
+
+# ── Sync umbrella + runtime repos to latest pinned commits ────────────────
+# User mandate 2026-06-11: every run must start with (1) umbrella on latest
+# main (fresh subrepos.lock.json) and (2) runtime repos checked out at the
+# commits in that lock. Prevents the 2026-06-11 incident (4 consecutive
+# intraday failures because runtime was 3 commits ahead of the lock pins).
+echo "[subrepo-sync] Pulling latest umbrella (subrepos.lock.json)..."
+git -C "$REPO_DIR" fetch origin -q
+if ! git -C "$REPO_DIR" pull --ff-only origin main -q; then
+    echo "[subrepo-sync] WARNING: umbrella pull failed (dirty tree or diverged) — proceeding with current lock"
+fi
+echo "[subrepo-sync] Syncing runtime repos to pinned commits..."
+if ! "$PYTHON" "$REPO_DIR/scripts/subrepo_assemble.py" \
+        --sync --runtime-root "$REPO_DIR/.subrepo_runtime/repos"; then
+    echo "=== intraday_sell RUNTIME-SYNC-FAIL at $(date) ==="
+    notify "RenQuant 104 RUNTIME-SYNC-FAIL" \
+        "subrepo_assemble --sync failed; runtime repos inconsistent. Check logs."
+    exit 1
+fi
+echo "[subrepo-sync] Runtime repos in sync with lock."
+
 if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
     RUNNER_ARGS=(-m live.runner)
 else

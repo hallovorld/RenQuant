@@ -169,6 +169,26 @@ sys.exit(0 if len(sched) > 0 else 1)
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
 
+# ── Sync umbrella + runtime repos to latest pinned commits ────────────────
+# User mandate 2026-06-11: every full run must start with (1) umbrella on
+# latest main (fresh subrepos.lock.json) and (2) runtime repos checked out
+# at the commits in that lock. Prevents subrepo pin drift from failing the
+# run mid-execution (the 2026-06-11 4-alert incident: runtime was 3 commits
+# ahead of the lock, pin-drift guard fired on every intraday cycle).
+echo "[subrepo-sync] Pulling latest umbrella (subrepos.lock.json)..."
+git -C "$REPO_DIR" fetch origin -q
+if ! git -C "$REPO_DIR" pull --ff-only origin main -q; then
+    echo "[subrepo-sync] WARNING: umbrella pull failed (dirty tree or diverged) — proceeding with current lock"
+fi
+echo "[subrepo-sync] Syncing runtime repos to pinned commits..."
+if ! "$PYTHON" "$REPO_DIR/scripts/subrepo_assemble.py" \
+        --sync --runtime-root "$REPO_DIR/.subrepo_runtime/repos"; then
+    echo "Runtime subrepo sync failed — aborting daily run."
+    notify "RenQuant 104 RUNTIME-SYNC-FAIL" "subrepo_assemble --sync failed; runtime repos may be inconsistent. Check logs."
+    exit 1
+fi
+echo "[subrepo-sync] Runtime repos in sync with lock."
+
 if [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
     if ! "$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"; then
         echo "Runtime QP sanity check failed — aborting daily run before live trade."
