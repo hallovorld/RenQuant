@@ -122,13 +122,6 @@ fi
 exec >> "$LOG" 2>&1
 echo "=== daily_104 started at $(date) ==="
 
-# ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
-# Once-daily run also checks (warn-only) whether the umbrella main lags
-# origin/main. See scripts/preflight_pin_align.sh for the full policy.
-PREFLIGHT_CHECK_UMBRELLA=1
-# shellcheck source=scripts/preflight_pin_align.sh
-source "$REPO_DIR/scripts/preflight_pin_align.sh"
-
 # ── Lock file — prevent concurrent invocations ────────────────────────────────
 # Audit fix LOCK-STALE (Round 2 deep audit, 2026-04-25): pre-fix, a
 # stale lock with a dead PID (left over after a SIGKILL / kernel panic
@@ -175,6 +168,13 @@ sys.exit(0 if len(sched) > 0 else 1)
     exit 0
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
+
+# ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
+# Run only after duplicate/holiday exits so sync checkout is serialized and only
+# happens for a real trading run. Once-daily also warns if umbrella main lags.
+PREFLIGHT_CHECK_UMBRELLA=1
+# shellcheck source=scripts/preflight_pin_align.sh
+source "$REPO_DIR/scripts/preflight_pin_align.sh"
 
 if [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
     if ! "$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"; then

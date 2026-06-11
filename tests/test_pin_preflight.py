@@ -20,6 +20,12 @@ DAILY = (_SCRIPTS / "daily_104.sh").read_text()
 INTRADAY = (_SCRIPTS / "intraday_sell_104.sh").read_text()
 
 
+def _pos(src: str, needle: str) -> int:
+    idx = src.find(needle)
+    assert idx >= 0, needle
+    return idx
+
+
 class TestPreflightHelper:
     def test_aligns_to_pins_via_assemble_sync(self):
         # Aligns clean-but-drifted checkouts to the lock commit (--sync); the
@@ -58,6 +64,19 @@ class TestTradingEntrypointsWireThePreflight:
     def test_intraday_does_not_check_umbrella_lag(self):
         # The 12-minute loop must not fetch the umbrella every run.
         assert "PREFLIGHT_CHECK_UMBRELLA=1" not in INTRADAY
+
+    def test_daily_preflight_runs_after_lock_and_market_guard(self):
+        preflight = _pos(DAILY, 'source "$REPO_DIR/scripts/preflight_pin_align.sh"')
+        assert _pos(DAILY, "trap \"rm -f '$LOCK_FILE'\" EXIT") < preflight
+        assert _pos(DAILY, 'echo "NYSE open today') < preflight
+        assert preflight < _pos(DAILY, "runtime_qp_sanity_check.py")
+
+    def test_intraday_preflight_runs_after_lock_and_market_guard(self):
+        preflight = _pos(INTRADAY, 'source "$REPO_DIR/scripts/preflight_pin_align.sh"')
+        assert _pos(INTRADAY, "sys.exit(0 if len(sched) > 0 else 1)") < preflight
+        assert _pos(INTRADAY, "trap \"rm -f '$LOCK_FILE'\" EXIT") < preflight
+        assert _pos(INTRADAY, 'cd "$REPO_DIR"') < preflight
+        assert preflight < _pos(INTRADAY, "runtime_qp_sanity_check.py")
 
 
 if __name__ == "__main__":
