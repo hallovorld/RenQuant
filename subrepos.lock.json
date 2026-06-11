@@ -44,7 +44,7 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "37c5be8a4a4da1f097e4c9e39e04a6e6f1a8e2fd",
+      "commit": "dfe03062a8f04eedc35790d0c86141d7a59d969c",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -94,7 +94,7 @@
       "local_path": "/Users/renhao/git/github/renquant-orchestrator",
       "remote": "https://github.com/hallovorld/renquant-orchestrator",
       "branch": "main",
-      "commit": "af8f2c340798a1204b1a31c089c380a7b426a114",
+      "commit": "7825434070ccfcf0fe3d92766ac9a5835c5ecc92",
       "test_command": "make test",
       "status": "active"
     }
