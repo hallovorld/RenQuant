@@ -82,6 +82,13 @@ fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
 cd "$REPO_DIR"
+
+# ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
+# Run only after duplicate/holiday exits so sync checkout is serialized and only
+# happens for a real trading run. Umbrella-lag check is left to the daily run.
+# shellcheck source=scripts/preflight_pin_align.sh
+source "$REPO_DIR/scripts/preflight_pin_align.sh"
+
 if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
     RUNNER_ARGS=(-m live.runner)
 else

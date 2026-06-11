@@ -169,6 +169,13 @@ sys.exit(0 if len(sched) > 0 else 1)
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
 
+# ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
+# Run only after duplicate/holiday exits so sync checkout is serialized and only
+# happens for a real trading run. Once-daily also warns if umbrella main lags.
+PREFLIGHT_CHECK_UMBRELLA=1
+# shellcheck source=scripts/preflight_pin_align.sh
+source "$REPO_DIR/scripts/preflight_pin_align.sh"
+
 if [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
     if ! "$PYTHON" "$REPO_DIR/scripts/runtime_qp_sanity_check.py"; then
         echo "Runtime QP sanity check failed — aborting daily run before live trade."
