@@ -63,7 +63,13 @@ def extract_decisions(conn: sqlite3.Connection, run_id: str) -> dict:
     (run_date, run_type, regime, confidence, buy_blocked, skip_buys,
      bear_only, n_candidates, n_exits, n_buys, counters_json) = run
 
-    cols = ", ".join(TICKER_DECISION_COLS)
+    # Schema-vintage resilience: older DDLs (fresh sim dbs) lack columns
+    # that live dbs gained via migration. The snapshot SURFACE is fixed
+    # (TICKER_DECISION_COLS); columns absent from this db read as None,
+    # so capture and verify stay comparable across db vintages.
+    present = {r[1] for r in conn.execute("PRAGMA table_info(ticker_daily_state)")}
+    cols = ", ".join(
+        c if c in present else f"NULL AS {c}" for c in TICKER_DECISION_COLS)
     rows = conn.execute(
         f"SELECT {cols} FROM ticker_daily_state WHERE run_id = ? "
         f"ORDER BY ticker", (run_id,)).fetchall()
