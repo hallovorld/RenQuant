@@ -19,6 +19,23 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
+# Self-validating harness (codex review, #322): the registry lives in the
+# renquant-pipeline sibling; bare `pytest` in this repo has no sibling on
+# sys.path, so the lazy import degrades and every ledger assertion goes
+# vacuous. Bootstrap the sibling src explicitly and FAIL (not skip) if it
+# is missing — the runtime pin guarantees it exists on any valid checkout.
+_SIBLING_CANDIDATES = (
+    REPO.parent / "renquant-pipeline" / "src",                      # sibling layout
+    Path.home() / "git" / "github" / "renquant-pipeline" / "src",   # canonical root (worktrees)
+)
+_SIBLING_SRC = next((p for p in _SIBLING_CANDIDATES if p.exists()), None)
+assert _SIBLING_SRC is not None, (
+    f"renquant-pipeline sibling missing (tried {[str(p) for p in _SIBLING_CANDIDATES]}) "
+    f"— required for gate-ledger tests (runtime pin guarantees it)")
+if str(_SIBLING_SRC) not in sys.path:
+    sys.path.insert(0, str(_SIBLING_SRC))
+
+
 from kernel.persistence import get_connection, record_gate_verdicts  # noqa: E402
 from kernel.pipeline.task_gates import (  # noqa: E402
     DrawdownGateTask,
