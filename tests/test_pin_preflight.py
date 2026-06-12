@@ -2,11 +2,11 @@
 audited pins before trading, fail-closed.
 
 Context (2026-06-11): a daily full silently traded STALE code because nothing
-verified the local sibling checkouts matched subrepos.lock.json (the umbrella
+verified the runtime subrepo checkouts matched subrepos.lock.json (the umbrella
 was a day behind origin/main). The fix is a shared preflight that auto-aligns
-each sibling to its PINNED commit and ABORTS if a repo is dirty or unreachable.
-These source-level checks pin that wiring so a future refactor can't silently
-drop the guard from a trading path.
+each isolated runtime checkout to its PINNED commit and ABORTS if a repo is
+dirty or unreachable. These source-level checks pin that wiring so a future
+refactor can't silently drop the guard from a trading path.
 """
 from __future__ import annotations
 
@@ -32,6 +32,13 @@ class TestPreflightHelper:
         # tool refuses on a dirty repo, which is our fail-closed signal.
         assert "subrepo_assemble.py" in PREFLIGHT
         assert "--sync" in PREFLIGHT
+
+    def test_aligns_isolated_runtime_root_by_default(self):
+        # Production should validate the isolated runtime root, not dirty
+        # sibling developer worktrees.
+        assert "--runtime-root" in PREFLIGHT
+        assert "$REPO_DIR/.subrepo_runtime/repos" in PREFLIGHT
+        assert "RENQUANT_PIN_SYNC_RUNTIME_ROOT" in PREFLIGHT
 
     def test_fail_closed_aborts_on_misalignment(self):
         # A non-zero assemble result must abort the caller (never trade).
