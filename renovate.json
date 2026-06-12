@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Renovate config for RenQuant umbrella (#108 S14): auto pin-bump PRs for subrepos.lock.json. Deploy by copying to RenQuant/renovate.json and enabling the Renovate GitHub App on the org.",
+  "enabledManagers": ["regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Each subrepo entry: remote URL + pinned commit. Renovate tracks the repo's main branch digest and opens a PR when it moves.",
+      "fileMatch": ["^subrepos\\.lock\\.json$"],
+      "matchStrings": [
+        "\"remote\": \"https://github.com/(?<depName>[^\"]+)\"[\\s\\S]*?\"branch\": \"(?<currentValue>[^\"]+)\",\\s*\"commit\": \"(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/{{depName}}"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["regex"],
+      "groupName": "subrepo pins",
+      "commitMessagePrefix": "chore(pins): ",
+      "prBodyNotes": [
+        "Auto pin-bump. MERGE RULES: (1) wait for the umbrella compat-matrix CI (coupled-change contracts) to pass; (2) a human or codex merges per SOP — never auto-merge; (3) after merge, the run machine still needs `make subrepo-runtime-root` (merged-is-not-deployed)."
+      ],
+      "schedule": ["after 5pm every weekday"],
+      "prConcurrentLimit": 1
+    }
+  ],
+  "labels": ["pins", "renovate"],
+  "automerge": false
+}
