@@ -485,11 +485,17 @@ def _submit_gate_verdict(ctx: Any, *, gate: str, reason: str, inputs: dict) -> N
     so a missing module skips the ledger row WITH a warning, never silently.
     """
     _bootstrap_gate_registry_import()
+    # Degrade-safe block latch (retirement prerequisite): the choke point
+    # applies the flag from EITHER the registry aggregate OR this plain
+    # attribute — a pin regression that breaks the import can therefore
+    # never silently disable the gates.
+    ctx._gate_block_pending = True  # noqa: SLF001
     try:
         from renquant_pipeline.kernel.gate_registry import ctx_registry  # noqa: PLC0415
     except ImportError as exc:
         log.warning("gate_registry unavailable (%s) — ledger row for gate=%s "
-                    "skipped; sync the renquant-pipeline checkout", exc, gate)
+                    "skipped (block still latched); sync the "
+                    "renquant-pipeline checkout", exc, gate)
         return
     ctx_registry(ctx).submit(gate=gate, scope="book", verdict="block",
                              reason=reason, inputs=inputs)
@@ -505,7 +511,6 @@ def _fail_closed_panel_scoring(ctx: Any, reason: str) -> None:
         if ticker:
             blocked[ticker] = reason
     ctx.candidates = []
-    ctx.buy_blocked = True
     ctx.skip_buys = True
     _submit_gate_verdict(ctx, gate="panel_scoring_fail_closed", reason=reason,
                          inputs={"candidates_blocked": len(candidates)})
@@ -2409,6 +2414,21 @@ class PanelScoringJob(Job):
       both additive and mu_minus_lambda_sigma modes produce calibrated
       rank_score and the tier logic works in either.
     """
+
+
+    def run(self, ctx) -> None:
+        """Apply the gate aggregate ONCE at the job boundary (errata C).
+
+        Degrade-safe: the flag lands from EITHER the registry max-join
+        aggregate OR the plain _gate_block_pending latch — so a broken
+        registry import (pin regression) can never silently disable the
+        gates. Mirrors pipeline #123/#125/#128.
+        """
+        super().run(ctx)
+        registry = getattr(ctx, "gate_registry", None)
+        if (registry is not None and registry.blocked("book")) or \
+                getattr(ctx, "_gate_block_pending", False):
+            ctx.buy_blocked = True
 
     def should_skip(self, ctx: InferenceContext) -> bool:
         # Run even with no candidates so holdings can still be panel-scored

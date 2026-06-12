@@ -19,6 +19,23 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
+# Self-validating harness (codex review, #322): the registry lives in the
+# renquant-pipeline sibling; bare `pytest` in this repo has no sibling on
+# sys.path, so the lazy import degrades and every ledger assertion goes
+# vacuous. Bootstrap the sibling src explicitly and FAIL (not skip) if it
+# is missing — the runtime pin guarantees it exists on any valid checkout.
+_SIBLING_CANDIDATES = (
+    REPO.parent / "renquant-pipeline" / "src",                      # sibling layout
+    Path.home() / "git" / "github" / "renquant-pipeline" / "src",   # canonical root (worktrees)
+)
+_SIBLING_SRC = next((p for p in _SIBLING_CANDIDATES if p.exists()), None)
+assert _SIBLING_SRC is not None, (
+    f"renquant-pipeline sibling missing (tried {[str(p) for p in _SIBLING_CANDIDATES]}) "
+    f"— required for gate-ledger tests (runtime pin guarantees it)")
+if str(_SIBLING_SRC) not in sys.path:
+    sys.path.insert(0, str(_SIBLING_SRC))
+
+
 from kernel.persistence import get_connection, record_gate_verdicts  # noqa: E402
 from kernel.pipeline.task_gates import (  # noqa: E402
     DrawdownGateTask,
@@ -53,26 +70,27 @@ class TestDualWriteStaysDual:
     def test_drawdown(self):
         ctx = _ctx(skip_buys=True)
         DrawdownGateTask().run(ctx)
-        assert ctx.buy_blocked, "umbrella keeps the direct write"
+        assert not ctx.buy_blocked, "retired: job boundary applies the flag"
+        assert ctx._gate_block_pending
         assert _gates(ctx) == ["drawdown_circuit"]
 
     def test_flatten_same_bar(self):
         ctx = _ctx(monitor_state={"flatten_last_date_iso": "2026-06-12",
                                   "flatten_cooldown_bars": 3})
         FlattenCooldownGateTask().run(ctx)
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         assert _gates(ctx) == ["flatten_cooldown"]
 
     def test_transition(self):
         ctx = _ctx(regime_state=SimpleNamespace(in_transition=True))
         TransitionWindowTask().run(ctx)
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         assert _gates(ctx) == ["transition_window"]
 
     def test_regime_alpha(self):
         ctx = _ctx(config={"regime_params": {"BULL_CALM": {"disable_new_buys": True}}})
         RegimeAlphaGateTask().run(ctx)
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         assert _gates(ctx) == ["regime_alpha"]
 
     def test_velocity(self):
@@ -81,19 +99,19 @@ class TestDualWriteStaysDual:
                        "spy_velocity_halt_pct": 0.05,
                        "spy_velocity_lookback_days": 3}}})
         VelocityCrashTask().run(ctx)
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         assert _gates(ctx) == ["spy_velocity_crash"]
 
     def test_ema50_both_branches(self):
         ctx = _ctx(ohlcv={})
         EMA50GateTask().run(ctx)
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         rows = ctx.gate_registry.ledger_rows(run_id="t")
         assert rows[0]["inputs"]["data_outage"] is True
         closes = pd.Series([100.0 - i for i in range(60)])
         ctx2 = _ctx(ohlcv={"SPY": pd.DataFrame({"close": closes})})
         EMA50GateTask().run(ctx2)
-        assert ctx2.buy_blocked
+        assert not ctx2.buy_blocked and ctx2._gate_block_pending
         assert ctx2.gate_registry.ledger_rows(run_id="t")[0]["inputs"]["data_outage"] is False
 
     def test_non_blocking_silent(self):
@@ -125,3 +143,32 @@ class TestLedgerMirror:
         assert record_gate_verdicts(None, run_id="r", run_date=d, registry=None) == 0
         assert record_gate_verdicts(conn, run_id=None, run_date=d, registry=None) == 0
         assert record_gate_verdicts(conn, run_id="r", run_date=d, registry=None) == 0
+
+
+class TestUmbrellaChokePoints:
+
+    def test_buy_gates_job_applies_flag(self):
+        from kernel.pipeline.job_gates import BuyGatesJob
+
+        ctx = _ctx(skip_buys=True)
+        BuyGatesJob().run(ctx)
+        assert ctx.buy_blocked
+
+    def test_latch_alone_applies_flag(self, monkeypatch):
+        # Registry import broken (pin regression simulation): the plain
+        # latch still lands the flag at the boundary — gates never die.
+        import builtins
+        from kernel.pipeline.job_gates import BuyGatesJob
+
+        real = builtins.__import__
+
+        def _broken(name, *a, **kw):
+            if "gate_registry" in name:
+                raise ImportError("simulated pin regression")
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _broken)
+        ctx = _ctx(skip_buys=True)
+        BuyGatesJob().run(ctx)
+        assert ctx.buy_blocked, "degrade-safe retirement invariant"
+        assert ctx.gate_registry is None

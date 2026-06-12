@@ -21,6 +21,23 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
+# Self-validating harness (codex review, #322): the registry lives in the
+# renquant-pipeline sibling; bare `pytest` in this repo has no sibling on
+# sys.path, so the lazy import degrades and every ledger assertion goes
+# vacuous. Bootstrap the sibling src explicitly and FAIL (not skip) if it
+# is missing — the runtime pin guarantees it exists on any valid checkout.
+_SIBLING_CANDIDATES = (
+    REPO.parent / "renquant-pipeline" / "src",                      # sibling layout
+    Path.home() / "git" / "github" / "renquant-pipeline" / "src",   # canonical root (worktrees)
+)
+_SIBLING_SRC = next((p for p in _SIBLING_CANDIDATES if p.exists()), None)
+assert _SIBLING_SRC is not None, (
+    f"renquant-pipeline sibling missing (tried {[str(p) for p in _SIBLING_CANDIDATES]}) "
+    f"— required for gate-ledger tests (runtime pin guarantees it)")
+if str(_SIBLING_SRC) not in sys.path:
+    sys.path.insert(0, str(_SIBLING_SRC))
+
+
 from kernel.panel_pipeline.job_panel_scoring import (  # noqa: E402
     _fail_closed_missing_calibrator,
     _fail_closed_ngboost,
@@ -84,7 +101,8 @@ class TestDualWrite:
     def test_panel_scoring_fail_closed(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_panel_scoring(ctx, "panel_scorer_load_failed")
-        assert ctx.buy_blocked and ctx.skip_buys
+        assert not ctx.buy_blocked, "retired: job boundary applies the flag"
+        assert ctx.skip_buys and ctx._gate_block_pending
         rows = _rows(ctx)
         assert rows and rows[0]["gate"] == "panel_scoring_fail_closed"
         assert rows[0]["reason"] == "panel_scorer_load_failed"
@@ -92,14 +110,14 @@ class TestDualWrite:
     def test_calibrator_fail_closed(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_missing_calibrator(ctx, "calibrator_missing")
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         rows = _rows(ctx)
         assert rows and rows[0]["gate"] == "calibrator_fail_closed"
 
     def test_ngboost_fail_closed_carries_detail(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_ngboost(ctx, "ngb_artifact_unreadable", detail="bad json")
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         rows = _rows(ctx)
         assert rows and rows[0]["gate"] == "ngboost_fail_closed"
         assert rows[0]["inputs"]["detail"] == "bad json"
@@ -107,7 +125,7 @@ class TestDualWrite:
     def test_registry_equivalence(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_panel_scoring(ctx, "r")
-        assert ctx.gate_registry.blocked("book") == ctx.buy_blocked
+        assert ctx.gate_registry.blocked("book") and ctx._gate_block_pending
 
 
 class TestStaleSiblingDegradesLoudly:
@@ -128,7 +146,8 @@ class TestStaleSiblingDegradesLoudly:
         ctx = _ctx()
         with caplog.at_level(logging.WARNING):
             _fail_closed_panel_scoring(ctx, "r")  # must not raise
-        assert ctx.buy_blocked, "direct write must survive telemetry outage"
+        assert not ctx.buy_blocked and ctx._gate_block_pending, \
+            "latch must survive telemetry outage (degrade-safe retirement)"
         assert ctx.gate_registry is None
         assert any("gate_registry unavailable" in r.message
                    for r in caplog.records)

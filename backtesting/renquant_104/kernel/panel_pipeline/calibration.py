@@ -139,7 +139,6 @@ def _fail_closed_missing_calibrator(ctx: InferenceContext, reason: str) -> None:
     scores. Exits already emitted earlier in the pipeline are left intact.
     """
     ctx._calibrator_contract_failed = True  # noqa: SLF001
-    ctx.buy_blocked = True
     ctx.skip_buys = True
     _submit_gate_verdict(ctx, gate="calibrator_fail_closed", reason=reason,
                          inputs={})
@@ -664,7 +663,6 @@ def _fail_closed_ngboost(ctx: InferenceContext, reason: str, *, detail: str = ""
     ctx._ngboost_fail_closed_reason = reason  # noqa: SLF001
     if detail:
         ctx._ngboost_fail_closed_detail = detail  # noqa: SLF001
-    ctx.buy_blocked = True
     ctx.skip_buys = True
     ctx.candidates = []
     _submit_gate_verdict(ctx, gate="ngboost_fail_closed", reason=reason,
