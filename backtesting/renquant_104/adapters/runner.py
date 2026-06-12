@@ -1525,9 +1525,28 @@ class RunnerAdapter:
 
     @staticmethod
     def _z9_stop_pct(ctx) -> float:  # noqa: ANN001
-        """Per-regime intraday loss cap. Default 6% in BULL_*/CHOPPY (set
-        2026-04-28 after NVTS post-mortem). BEAR=0 means no buys, so no
-        stops needed."""
+        """Broker-side stop distance.
+
+        2026-06-12 G1 (dead-box catastrophe line): when
+        ``live.broker_side_stops.pct`` is set, it OVERRIDES the per-regime
+        intraday cap. Rationale: every in-process stop (SDL/trailing/
+        protection) dies with this machine; the broker-resident GTC stop is
+        the only protection that survives a dead box. It must therefore be a
+        FAR catastrophe line (e.g. 0.20), not the 6% intraday cap — a 6%
+        broker stop on a 119%-vol name whipsaws on noise (the NVTS-class
+        winner-crystallization pathology the sigma-aware SDL exists to avoid).
+        Legacy behavior (per-regime max_single_day_loss_pct, default 6%) is
+        unchanged when the key is absent.
+        """
+        z9_cfg = ctx.config.get("live", {}).get("broker_side_stops", {})
+        pct = z9_cfg.get("pct")
+        if pct is not None:
+            try:
+                pct_f = float(pct)
+                if 0.0 < pct_f < 1.0:
+                    return pct_f
+            except (TypeError, ValueError):
+                pass
         regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         return float(regime_p.get("max_single_day_loss_pct", 0.06))
 
