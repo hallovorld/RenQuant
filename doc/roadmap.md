@@ -1,6 +1,6 @@
 # RenQuant — Roadmap
 
-**Single source of truth for what's next.** All items ranked by **expected ROI (Sharpe-lift ÷ effort)** with status flag. Past dated plans archived to [`doc/archives/plans/`](archives/plans/) for provenance.
+**Single source of truth for what's next.** All items ranked by **expected ROI (Sharpe-lift ÷ effort)** with status flag. Past dated plans are in git history.
 
 **Last consolidated**: 2026-05-18 NIGHT (consolidated 7 plan/backlog files → 1)
 **Last incremental sync**: 2026-05-24 (repo hygiene mainline + future multi-subrepo architecture backlog; HF Trainer refactor + FiLM + DLinear baseline + 5×5 eval infra + DOE Phase 2 verdict landed 2026-05-19; doc/research/2026-05-19-patchtst-improvement-plan.md is canonical for current PatchTST roadmap)
@@ -441,14 +441,4 @@ Bug C (commit `29e34b0` 2026-05-11) inflated Vol by ~75× and corrupted every pr
 
 ## 📁 Provenance
 
-Old plan files archived to [`doc/archives/plans/`](archives/plans/):
-
-| File | Era covered |
-|---|---|
-| `roadmap-2026-05-17-pre-consolidation.md` | The full 789-line predecessor of this file |
-| `2026-05-13-master-plan.md` | Mid-May audit, walk-forward gate enforcement design |
-| `2026-05-13-afternoon-plan.md` | Same-day refinement |
-| `2026-05-14-shorts-master-plan.md` | Long-short Phase 1-3 design (closed via empirical SKIP) |
-| `2026-05-15-regime-reeval-plan.md` | Regime overlay sequential queue (largely resolved) |
-| `2026-05-16-experiment-master-plan.md` | A/B/C lanes — A done, B partial, C ongoing |
-| `2026-05-18-tier-c-planning.md` | C1/C3/C5 scoping (C1+C5 fetchers shipped today) |
+Old plan files are in git history (`git log --oneline --all -- doc/archives/plans/`). Era coverage: pre-consolidation predecessor (2026-05-17), mid-May audit (2026-05-13), long-short Phase 1-3 design (2026-05-14), regime overlay queue (2026-05-15), A/B/C lanes (2026-05-16), C1/C3/C5 scoping (2026-05-18).
