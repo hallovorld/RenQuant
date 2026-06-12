@@ -5,9 +5,10 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
 
-from protective_census import census  # noqa: E402
+from protective_census import _alert, census  # noqa: E402
 
 
 def _pos(symbol, qty):
@@ -58,3 +59,25 @@ class TestCensus:
     def test_zero_qty_position_ignored(self):
         r = census([_pos("MU", 0)], [])
         assert r["protected"] == [] and r["naked"] == []
+
+
+def test_alert_uses_ntfy_url_and_event(monkeypatch):
+    import live.alerts as alerts
+
+    seen = {}
+
+    def _fake_post(url, event, *, logger=None, state_path=None):
+        seen["url"] = url
+        seen["event"] = event
+        seen["logger"] = logger
+        return True
+
+    monkeypatch.setattr(alerts, "post_ntfy_alert", _fake_post)
+    monkeypatch.setenv("RENQUANT_NTFY_TOPIC", "ops-test")
+
+    _alert("Title", "Body", ("naked", "2026-06-12"), priority="urgent")
+
+    assert seen["url"] == "https://ntfy.sh/ops-test"
+    assert seen["event"].taxonomy == "census.protective_orders"
+    assert seen["event"].title == "Title"
+    assert seen["event"].priority == "urgent"

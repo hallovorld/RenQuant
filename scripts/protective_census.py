@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -99,10 +100,18 @@ def _alert(title: str, body: str, key_parts: tuple, priority: str = "high") -> N
     try:
         from live.alerts import AlertEvent, post_ntfy_alert, stable_alert_key  # noqa: PLC0415
 
-        post_ntfy_alert(AlertEvent(taxonomy="census.protective_orders",
-                                   title=title, body=body,
-                                   key=stable_alert_key("pcensus", *key_parts),
-                                   priority=priority))
+        topic = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+        post_ntfy_alert(
+            f"https://ntfy.sh/{topic}",
+            AlertEvent(
+                taxonomy="census.protective_orders",
+                title=title,
+                body=body,
+                key=stable_alert_key("pcensus", *key_parts),
+                priority=priority,
+            ),
+            logger=log,
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("ntfy failed: %s", exc)
 
