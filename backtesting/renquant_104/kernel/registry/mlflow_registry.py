@@ -188,7 +188,7 @@ def resolve_uri(uri: str | Path) -> Path:
 # ── Model Registry ───────────────────────────────────────────────────────────
 
 def register_model(name: str, run_id: str,
-                   stage: str | None = None,
+                   alias: str | None = None,
                    artifact_path: str = "model") -> dict[str, Any]:
     """Register the artifact at `runs:/run_id/artifact_path` as `name`.
 
@@ -197,12 +197,12 @@ def register_model(name: str, run_id: str,
     logged model; our calibrators / xgboost JSON / parquet files don't
     have that flavour).
 
-    Returns a dict with `name`, `version`, `run_id`, and `stage`. Stage
-    transitions use the still-supported `transition_model_version_stage`
-    API (will be deprecated in mlflow 4.x; migrate when that lands).
+    Lifecycle = ALIASES, not stages (eng plan errata B; RFC mlflow#10336:
+    stages are deprecated). Allowed aliases: champion / candidate /
+    shadow. THE WF GATE IS THE ONLY ALIAS-MOVER — promotion scripts call
+    set_model_alias after a PASS verdict; nothing else may.
 
-    Caller is responsible for having logged the artifact at `artifact_path`
-    inside `run_id` first — typically via `log_artifact_with_meta`.
+    Returns a dict with `name`, `version`, `run_id`, and `alias`.
     """
     from mlflow.tracking import MlflowClient  # noqa: PLC0415
     from mlflow.exceptions import RestException  # noqa: PLC0415
@@ -217,13 +217,39 @@ def register_model(name: str, run_id: str,
     source_uri = f"runs:/{run_id}/{artifact_path}"
     mv = client.create_model_version(name=name, source=source_uri,
                                       run_id=run_id)
-    if stage:
-        client.transition_model_version_stage(
-            name=name, version=mv.version, stage=stage,
-        )
+    if alias:
+        set_model_alias(name, alias, str(mv.version))
     return {
         "name":    name,
         "version": str(mv.version),
         "run_id":  run_id,
-        "stage":   stage,
+        "alias":   alias,
     }
+
+
+_ALLOWED_ALIASES = ("champion", "candidate", "shadow")
+
+
+def set_model_alias(name: str, alias: str, version: str) -> None:
+    """Point `alias` at `version` of registered model `name`.
+
+    errata B contract: aliases are the ONLY lifecycle mechanism
+    (champion = live scorer, candidate = awaiting WF gate, shadow =
+    parallel-scored). The WF gate is the only caller that may move
+    champion. Unknown aliases are rejected — typos must not mint new
+    lifecycle states.
+    """
+    if alias not in _ALLOWED_ALIASES:
+        raise ValueError(
+            f"alias {alias!r} not in {_ALLOWED_ALIASES} — lifecycle states "
+            f"are fixed (eng plan errata B)")
+    from mlflow.tracking import MlflowClient  # noqa: PLC0415
+    MlflowClient().set_registered_model_alias(name, alias, version)
+
+
+def resolve_model_by_alias(name: str, alias: str) -> dict[str, Any]:
+    """Resolve `name@alias` → {version, run_id, source}. Raises if unset."""
+    from mlflow.tracking import MlflowClient  # noqa: PLC0415
+    mv = MlflowClient().get_model_version_by_alias(name, alias)
+    return {"name": name, "alias": alias, "version": str(mv.version),
+            "run_id": mv.run_id, "source": mv.source}

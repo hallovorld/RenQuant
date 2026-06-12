@@ -184,7 +184,7 @@ class TestRegisterModel:
             log_artifact_with_meta(run_id, src, artifact_path="model",
                                     meta={"pool_ic": 0.094})
         handle = register_model("renquant-panel-calibration", run_id,
-                                 stage=None, artifact_path="model")
+                                 alias=None, artifact_path="model")
         assert handle["name"] == "renquant-panel-calibration"
         assert handle["run_id"] == run_id
         assert int(handle["version"]) >= 1
@@ -268,3 +268,51 @@ class TestGlobalCalibratorMlflowPoc:
         # Should NOT raise even though the mlflow side will fail.
         cal.save(out_path, metadata={})
         assert out_path.exists()
+
+
+
+class TestAliasLifecycle:
+    """errata B: aliases replace stages; fixed lifecycle vocabulary."""
+
+    def _register(self, tmp_path, name, seed_name):
+        from kernel.registry import (
+            log_artifact_with_meta, register_model, start_run,
+        )
+        src = _seed_artifact(tmp_path, seed_name, {"prob_x": [0.0, 1.0]})
+        with start_run("alias-test", {}) as run_id:
+            log_artifact_with_meta(run_id, src, artifact_path="model",
+                                   meta={})
+        return run_id, register_model(name, run_id, artifact_path="model")
+
+    def test_register_with_alias_sets_it(self, tracking_dir, tmp_path):
+        from kernel.registry import (
+            log_artifact_with_meta, register_model, resolve_model_by_alias,
+            start_run,
+        )
+        src = _seed_artifact(tmp_path, "a.json", {"prob_x": [0.0, 1.0]})
+        with start_run("alias-test", {}) as run_id:
+            log_artifact_with_meta(run_id, src, artifact_path="model",
+                                   meta={})
+        out = register_model("alias-model", run_id, alias="candidate",
+                             artifact_path="model")
+        assert out["alias"] == "candidate"
+        got = resolve_model_by_alias("alias-model", "candidate")
+        assert got["version"] == out["version"]
+        assert got["run_id"] == run_id
+
+    def test_unknown_alias_rejected(self, tracking_dir):
+        import pytest
+        from kernel.registry import set_model_alias
+
+        with pytest.raises(ValueError, match="errata B"):
+            set_model_alias("any", "production", "1")
+
+    def test_champion_handoff_is_atomic_repoint(self, tracking_dir, tmp_path):
+        from kernel.registry import resolve_model_by_alias, set_model_alias
+
+        _, h1 = self._register(tmp_path, "champ-model", "m0.json")
+        _, h2 = self._register(tmp_path, "champ-model", "m1.json")
+        set_model_alias("champ-model", "champion", h1["version"])
+        set_model_alias("champ-model", "champion", h2["version"])
+        got = resolve_model_by_alias("champ-model", "champion")
+        assert got["version"] == h2["version"]

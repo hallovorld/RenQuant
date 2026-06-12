@@ -8,7 +8,7 @@ Public surface:
     start_run(experiment, params)          — context manager → run_id
     log_artifact_with_meta(run_id, ...)    — atomic upload + meta
     resolve_uri(uri)                       — mlflow://run-id/path or local
-    register_model(name, run_id, stage)    — Model Registry handle
+    register_model(name, run_id, alias)    — Model Registry handle (aliases, errata B)
 
 See README.md in this directory for the artifact migration order.
 """
@@ -20,6 +20,8 @@ from .mlflow_registry import (  # noqa: F401
     log_artifact_with_meta,
     resolve_uri,
     register_model,
+    resolve_model_by_alias,
+    set_model_alias,
     is_mlflow_uri,
     parse_mlflow_uri,
 )
@@ -30,6 +32,8 @@ __all__ = [
     "log_artifact_with_meta",
     "resolve_uri",
     "register_model",
+    "resolve_model_by_alias",
+    "set_model_alias",
     "is_mlflow_uri",
     "parse_mlflow_uri",
 ]
