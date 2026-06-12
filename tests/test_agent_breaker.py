@@ -23,7 +23,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from live.agent_breaker import AgentBreaker, BreakerTripped
+from live.agent_breaker import AgentBreaker, BreakerTripped  # noqa: E402
 
 D1 = dt.date(2026, 6, 12)
 D2 = dt.date(2026, 6, 13)
