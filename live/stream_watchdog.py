@@ -77,8 +77,17 @@ class WatchdogCore:
     def heartbeat(self) -> None:
         now = self.clock()
         if now - self._last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
-            self._heartbeat_file.write_text(str(now))
-            self._last_heartbeat = now
+            self.write_heartbeat()
+
+    def write_heartbeat(self) -> None:
+        """Unconditional beat. Driven by the daemon's TIMER thread every
+        HEARTBEAT_INTERVAL_SEC — deliberately decoupled from trade
+        arrivals (codex review, #323): a quiet market must not look like
+        a dead process to the P0.5 dead-man switch. Trade handling also
+        tops it up opportunistically via heartbeat()."""
+        now = self.clock()
+        self._heartbeat_file.write_text(str(now))
+        self._last_heartbeat = now
 
     # ── trade handling ───────────────────────────────────────────────────
 
@@ -159,6 +168,25 @@ def run(symbols: set[str] | None = None) -> int:
             except Exception as exc:  # noqa: BLE001 — alerting must not kill the watchdog
                 log.warning("ntfy post failed: %s", exc)
 
+    import threading  # noqa: PLC0415
+
+    stop = threading.Event()
+
+    def _beat_forever():
+        # Process-liveness beat: runs regardless of trade cadence AND of
+        # stream state — the heartbeat means "watchdog process alive";
+        # stream health is a separate, visible signal (connect/disconnect
+        # events in the log + data staleness via staleness_seconds).
+        while not stop.is_set():
+            try:
+                core.write_heartbeat()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("heartbeat write failed: %s", exc)
+            stop.wait(HEARTBEAT_INTERVAL_SEC)
+
+    threading.Thread(target=_beat_forever, name="watchdog-heartbeat",
+                     daemon=True).start()
+
     backoff = 1.0
     while True:
         stream = StockDataStream(api_key, secret)
@@ -169,6 +197,7 @@ def run(symbols: set[str] | None = None) -> int:
             backoff = 1.0
         except KeyboardInterrupt:
             core._log_event("shutdown", {})
+            stop.set()
             return 0
         except Exception as exc:  # noqa: BLE001
             core._log_event("disconnect", {"error": str(exc)[:200]})

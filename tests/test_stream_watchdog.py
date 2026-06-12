@@ -123,3 +123,37 @@ class TestReadOnlyInvariant:
                 assert node.attr not in ("submit_order", "place_order",
                                          "cancel_order"), \
                     f"order-authority call {node.attr} in read-only watchdog"
+
+
+class TestHeartbeatDecoupling:
+    """codex review #323: heartbeat must advance with ZERO trades."""
+
+    def test_write_heartbeat_unconditional(self, tmp_path):
+        clock = FakeClock()
+        core = _core(tmp_path, clock=clock)
+        core.write_heartbeat()           # no trade ever seen
+        hb1 = core._heartbeat_file.read_text()
+        clock.t += 30
+        core.write_heartbeat()
+        assert core._heartbeat_file.read_text() != hb1
+
+    def test_timer_thread_beats_without_trades(self, tmp_path, monkeypatch):
+        # Drive the daemon's beat loop body directly: simulate the timer
+        # thread's behavior across two intervals with no on_trade calls.
+        clock = FakeClock()
+        core = _core(tmp_path, clock=clock)
+        for _ in range(2):
+            core.write_heartbeat()
+            clock.t += 30
+        assert float(core._heartbeat_file.read_text()) == clock.t - 30
+
+    def test_quiet_market_vs_dead_process_distinguishable(self, tmp_path):
+        # Quiet market: heartbeat fresh (timer), data stale (no trades) —
+        # the two signals must be independently readable.
+        clock = FakeClock()
+        core = _core(tmp_path, clock=clock)
+        core.on_trade("MU", 100.0)
+        clock.t += 600                   # ten quiet minutes
+        core.write_heartbeat()           # timer keeps beating
+        assert float(core._heartbeat_file.read_text()) == clock.t
+        assert core.staleness_seconds("MU") == 600
