@@ -201,3 +201,26 @@ class TestGoldenCorpus:
         assert expected["book"]["run_date"] == "2026-06-11"
         assert expected["book"]["regime"] == "BEAR"
         assert len(expected["tickers"]) == 142
+
+
+class TestCorpusInventory:
+    """Every committed case must be intact; sim cases must self-identify."""
+
+    CORPUS = REPO / "tests" / "drph_corpus"
+
+    def test_all_cases_intact(self):
+        cases = [d for d in self.CORPUS.iterdir() if d.is_dir()]
+        assert len(cases) >= 5
+        for case_dir in cases:
+            problems = ReplayCase(case_dir).check_integrity()
+            assert problems == [], f"{case_dir.name}: {problems}"
+
+    def test_regime_instability_trio_present(self):
+        # The 2026-06-11 trio: three live runs, three different regimes.
+        import json as _json
+        regimes = {}
+        for name in ("2026-06-11_false_bear", "2026-06-11_live_2f0ce396",
+                     "2026-06-11_live_fbb8c140"):
+            exp = ReplayCase(self.CORPUS / name).expected()
+            regimes[name] = exp["book"]["regime"]
+        assert sorted(regimes.values()) == ["BEAR", "BULL_CALM", "CHOPPY"]
