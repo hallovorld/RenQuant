@@ -186,7 +186,9 @@ def _log_trade(strategy_dir: Path, strategy_name: str, record: dict) -> None:
     """Append trade record to daily log file."""
     log_dir = REPO_ROOT / "live" / "logs" / strategy_name
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{datetime.now().strftime('%Y-%m-%d')}.json"
+    from live.clock import trading_date  # noqa: PLC0415
+
+    log_file = log_dir / f"{trading_date().isoformat()}.json"  # P0.3: exchange date
 
     entries = []
     if log_file.exists():
@@ -358,7 +360,9 @@ def _load_strategy_multi(
             trained_date = metadata.get("trained_date")
             if trained_date and staleness_days > 0:
                 from datetime import date as _date  # noqa: PLC0415
-                age = (_date.today() - _dt.datetime.strptime(trained_date, "%Y-%m-%d").date()).days
+                from live.clock import trading_date as _td  # noqa: PLC0415
+
+                age = (_td() - _dt.datetime.strptime(trained_date, "%Y-%m-%d").date()).days  # P0.3
                 if age > staleness_days:
                     log.warning("%s model is %d days old (limit=%d), skipping",
                                 symbol, age, staleness_days)

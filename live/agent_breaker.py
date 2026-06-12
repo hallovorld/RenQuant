@@ -57,7 +57,11 @@ class AgentBreaker:
             raise BreakerTripped(
                 f"manual TRADING_OFF present at {self.off_flag} — all order "
                 f"submission disabled (delete the file to re-enable)")
-        self._roll(today or dt.date.today())
+        if today is None:
+            from live.clock import trading_date  # noqa: PLC0415
+
+            today = trading_date()  # P0.3: exchange date, not midnight-PT
+        self._roll(today)
         if self._orders + 1 > self.max_orders:
             raise BreakerTripped(
                 f"G2 daily order cap {self.max_orders} reached "
