@@ -84,7 +84,8 @@ class TestDualWrite:
     def test_panel_scoring_fail_closed(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_panel_scoring(ctx, "panel_scorer_load_failed")
-        assert ctx.buy_blocked and ctx.skip_buys
+        assert not ctx.buy_blocked, "retired: job boundary applies the flag"
+        assert ctx.skip_buys and ctx._gate_block_pending
         rows = _rows(ctx)
         assert rows and rows[0]["gate"] == "panel_scoring_fail_closed"
         assert rows[0]["reason"] == "panel_scorer_load_failed"
@@ -92,14 +93,14 @@ class TestDualWrite:
     def test_calibrator_fail_closed(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_missing_calibrator(ctx, "calibrator_missing")
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         rows = _rows(ctx)
         assert rows and rows[0]["gate"] == "calibrator_fail_closed"
 
     def test_ngboost_fail_closed_carries_detail(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_ngboost(ctx, "ngb_artifact_unreadable", detail="bad json")
-        assert ctx.buy_blocked
+        assert not ctx.buy_blocked and ctx._gate_block_pending
         rows = _rows(ctx)
         assert rows and rows[0]["gate"] == "ngboost_fail_closed"
         assert rows[0]["inputs"]["detail"] == "bad json"
@@ -107,7 +108,7 @@ class TestDualWrite:
     def test_registry_equivalence(self, gate_registry_module):
         ctx = _ctx()
         _fail_closed_panel_scoring(ctx, "r")
-        assert ctx.gate_registry.blocked("book") == ctx.buy_blocked
+        assert ctx.gate_registry.blocked("book") and ctx._gate_block_pending
 
 
 class TestStaleSiblingDegradesLoudly:
@@ -128,7 +129,8 @@ class TestStaleSiblingDegradesLoudly:
         ctx = _ctx()
         with caplog.at_level(logging.WARNING):
             _fail_closed_panel_scoring(ctx, "r")  # must not raise
-        assert ctx.buy_blocked, "direct write must survive telemetry outage"
+        assert not ctx.buy_blocked and ctx._gate_block_pending, \
+            "latch must survive telemetry outage (degrade-safe retirement)"
         assert ctx.gate_registry is None
         assert any("gate_registry unavailable" in r.message
                    for r in caplog.records)

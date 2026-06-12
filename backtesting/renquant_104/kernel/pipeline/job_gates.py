@@ -44,3 +44,18 @@ class BuyGatesJob(Job):
             VelocityCrashTask(),
             EMA50GateTask(),
         ]
+
+    def run(self, ctx) -> None:
+        """Apply the gate aggregate ONCE at the job boundary (errata C).
+
+        Degrade-safe: the flag lands from EITHER the registry max-join
+        aggregate OR the plain _gate_block_pending latch — so a broken
+        registry import (pin regression) can never silently disable the
+        gates. Mirrors pipeline #123/#125/#128.
+        """
+        super().run(ctx)
+        registry = getattr(ctx, "gate_registry", None)
+        if (registry is not None and registry.blocked("book")) or \
+                getattr(ctx, "_gate_block_pending", False):
+            ctx.buy_blocked = True
+
