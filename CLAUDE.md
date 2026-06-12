@@ -76,10 +76,6 @@ the live mainline for the current repair campaign.
 Day-to-day status: `git fetch origin -q && git log --oneline -30 origin/main`.
 Read `origin/main` (not local `main`) so the result reflects what other agents
 shipped even if you're on a feature branch or your local `main` is stale.
-Recent sessions in `doc/archives/sessions/`:
-- [`2026-05-17-night.md`](doc/archives/sessions/2026-05-17-night.md) — detector + per-regime σ-wire + 3 prod-corruption gates + HIFO
-- [`2026-05-15-evening.md`](doc/archives/sessions/2026-05-15-evening.md) — calibrator P0 + NGBoost confirmed + regime-aware re-eval
-- [`2026-05-12-evening.md`](doc/archives/sessions/2026-05-12-evening.md) — Bug C + industry-grade evaluation rebuild
 
 ### 2.2 · Quick navigation
 
@@ -95,7 +91,7 @@ Recent sessions in `doc/archives/sessions/`:
 | Promote a model | §7.4 (3-tier promotion) |
 | Evaluate an A/B | §7.2 (sanity triad) + §9 (DOE) |
 | See what other agents shipped | `git fetch origin -q && git log --oneline -30 origin/main` |
-| Look up an old session | `doc/archives/sessions/` |
+| Look up old sessions | `git log --oneline --all -- doc/archives/` |
 
 **Documentation index**:
 - Foundation: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)
@@ -104,7 +100,7 @@ Recent sessions in `doc/archives/sessions/`:
 - Research: [`papers-implemented`](doc/research/papers-implemented.md), [`scoring`](doc/research/scoring-research.md), [`rotation`](doc/research/rotation-research.md), [`ic-evaluation-methodology`](doc/research/ic-evaluation-methodology.md), [`failed-experiments-log`](doc/research/failed-experiments-log.md)
 - Experiments: [`ab-journal`](doc/experiments/ab-journal.md), [`panel-training-runs`](doc/experiments/panel-training-runs.md), [`sim-ab-results`](doc/experiments/sim-ab-results.md)
 - Roadmap + audits: [`doc/roadmap.md`](doc/roadmap.md), [`doc/AUDIT_2026-05-09.md`](doc/AUDIT_2026-05-09.md)
-- History: `doc/archives/sessions/`, `doc/archives/audits/`
+- History: `git log --oneline --all -- doc/archives/`
 
 ---
 

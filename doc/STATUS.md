@@ -9,7 +9,7 @@ This file used to maintain a parallel status snapshot. Per `feedback_journal_les
 - **`doc/research/2026-05-19-patchtst-improvement-plan.md`** — current PatchTST capability roadmap (Pillar A/B/C × Tier 1/2/3)
 - **`doc/experiments/2026-05-19-hf-trainer-refactor-journal.md`** — lessons from recent HF Trainer refactor
 
-Read those before assuming this file is current. Historical snapshots are in `doc/archives/sessions/`.
+Read those before assuming this file is current. Historical snapshots are in git history (`git log --oneline --all -- doc/archives/sessions/`).
 
 ---
 
