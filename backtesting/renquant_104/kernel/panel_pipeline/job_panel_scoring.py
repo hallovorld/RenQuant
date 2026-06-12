@@ -547,7 +547,13 @@ class LoadScorerTask(Task):
         if not p.is_absolute():
             strategy_dir = ctx.config.get("_strategy_dir")
             if strategy_dir:
-                p = Path(strategy_dir) / p
+                # Single resolution authority (eng plan §III.5): adds the
+                # existence-checked repo-root fallback — the #114 incident
+                # class (primary vs shadow resolving the same ref against
+                # different roots) is dead on the umbrella side too.
+                from kernel.artifact_resolver import locate_artifact  # noqa: PLC0415
+
+                p = locate_artifact(p, strategy_dir=Path(strategy_dir))
         return p
 
     @staticmethod
@@ -1771,7 +1777,11 @@ class LoadGlobalCalibrationTask(Task):
         strategy_dir = ctx.config.get("_strategy_dir")
 
         def _resolve(p: Path) -> Path:
-            return p if p.is_absolute() or not strategy_dir else Path(strategy_dir) / p
+            if p.is_absolute() or not strategy_dir:
+                return p
+            from kernel.artifact_resolver import locate_artifact  # noqa: PLC0415
+
+            return locate_artifact(p, strategy_dir=Path(strategy_dir))
 
         from training_panel.global_calibrator import GlobalPanelCalibration  # noqa: PLC0415
 

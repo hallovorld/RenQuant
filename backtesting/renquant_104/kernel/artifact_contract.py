@@ -390,14 +390,17 @@ def _iter_artifact_refs(config: Any, prefix: str = "") -> Iterable[tuple[str, An
 
 
 def _resolve_path(strategy_dir: Path, raw: str) -> Path:
-    p = Path(str(raw))
-    if p.is_absolute():
-        return p
-    repo_root = strategy_dir.parent.parent
-    repo_candidate = repo_root / p
-    if str(raw).startswith(("backtesting/", "data/", "models/", "scripts/")):
-        return repo_candidate
-    return strategy_dir / p
+    """Delegates to the single resolution authority (eng plan §III.5).
+
+    2026-06-12: pre-fix this used a prefix-string heuristic ("backtesting/",
+    "data/", ... → repo root, everything else → strategy_dir) with no
+    existence check — a fifth resolution dialect. Now: fixed candidate
+    order with existence-checked fallback, identical to every other
+    resolver call site.
+    """
+    from kernel.artifact_resolver import locate_artifact  # noqa: PLC0415
+
+    return locate_artifact(raw, strategy_dir=strategy_dir)
 
 
 def _read_json(path: Path | None) -> dict[str, Any] | None:
