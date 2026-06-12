@@ -50,6 +50,7 @@ class AlpacaBroker(BaseBroker):
         self._paper = paper
         self._label = label
         self._trading_client = None
+        self._data_client = None
         self._order_counter = 0
 
     @property
@@ -119,7 +120,29 @@ class AlpacaBroker(BaseBroker):
 
     def disconnect(self) -> None:
         self._trading_client = None
+        self._data_client = None
         log.info("Alpaca disconnected")
+
+    def get_last_price(self, symbol: str) -> float:
+        """Latest trade price via alpaca-py market data (IEX feed — free
+        tier cannot query current-day SIP, same constraint as
+        kernel/data.py:fetch_intraday_bars). Used by the G2 breaker for
+        pre-trade notional accounting; raises on any failure so callers
+        decide how to degrade."""
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestTradeRequest
+        from alpaca.data.enums import DataFeed
+
+        if getattr(self, "_data_client", None) is None:
+            self._data_client = StockHistoricalDataClient(
+                api_key=self._api_key, secret_key=self._secret_key,
+            )
+        req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        trades = self._data_client.get_stock_latest_trade(req)
+        price = float(trades[symbol].price)
+        if price <= 0:
+            raise ValueError(f"get_last_price({symbol}): non-positive price {price}")
+        return price
 
     def get_position(self, symbol: str) -> float:
         from alpaca.common.exceptions import APIError
@@ -169,6 +192,24 @@ class AlpacaBroker(BaseBroker):
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:
         from alpaca.trading.requests import MarketOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
+
+        # G2 agent breaker (2026-06-12, eng plan §III.4 disaster guards):
+        # hard daily caps below ALL pipeline logic + manual TRADING_OFF file.
+        # BreakerTripped propagates like any broker failure (recorded as
+        # EXITS-FAIL / orders_skipped by the adapter) and must not be retried.
+        from live.agent_breaker import AgentBreaker  # noqa: PLC0415
+        if not hasattr(self, "_g2_breaker"):
+            self._g2_breaker = AgentBreaker()
+        notional = None
+        try:
+            notional = abs(float(quantity)) * self.get_last_price(symbol)
+        except Exception as exc:
+            # Price unavailable: order slot is still consumed; notional cap
+            # cannot account this order. Loud so degraded accounting is
+            # visible in the run log (no silent-continue, eng plan §IV.1).
+            log.warning("G2: last price unavailable for %s (%s) — "
+                        "count-only accounting for this order", symbol, exc)
+        self._g2_breaker.admit(symbol=symbol, notional=notional)
 
         # Audit fix ALPACA-ACCT-STATUS (Round 2 deep audit, 2026-04-25):
         # pre-fix, account status was checked at connect() only — and even
