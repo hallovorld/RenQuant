@@ -2936,6 +2936,19 @@ class RunnerAdapter:
                 )
                 log.info("ticker_daily_state: wrote %d row(s) for %s",
                          n_tds, ctx.today.isoformat())
+                # Gate-verdict ledger (eng plan S2-PR4 / errata C):
+                # best-effort append; never blocks the bar.
+                try:
+                    from kernel.persistence import record_gate_verdicts  # noqa: PLC0415
+
+                    n_gv = record_gate_verdicts(
+                        self._db, run_id=run_id, run_date=ctx.today,
+                        registry=getattr(ctx, "gate_registry", None),
+                    )
+                    if n_gv:
+                        log.info("gate_verdicts: wrote %d row(s)", n_gv)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("gate_verdicts write failed: %s", exc)
             except Exception as exc:
                 # Diagnostic table — never block the bar on a write error.
                 log.warning("ticker_daily_state write failed: %s", exc)

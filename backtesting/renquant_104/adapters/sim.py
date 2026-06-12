@@ -1608,6 +1608,17 @@ class SimAdapter:
                 rows=tds_rows,
                 run_id=run_id,
             )
+            # Gate-verdict ledger (eng plan S2-PR4 / errata C): best-effort
+            # append; never blocks the bar.
+            try:
+                from kernel.persistence import record_gate_verdicts  # noqa: PLC0415
+
+                record_gate_verdicts(
+                    self._db, run_id=run_id, run_date=today_ts.date(),
+                    registry=getattr(ctx, "gate_registry", None),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("gate_verdicts write failed: %s", exc)
             validate_decision_trace_integrity(
                 self._db,
                 run_id,
