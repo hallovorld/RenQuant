@@ -313,7 +313,11 @@ class TestLoadScorerTask:
         out = LoadScorerTask().run(ctx)
         assert out is False
         assert ctx.candidates == []
-        assert ctx.buy_blocked is True
+        # Post errata-C retirement (#322): fail-closed submits a verdict +
+        # latches _gate_block_pending; the flag lands at the job boundary.
+        assert getattr(ctx, "_gate_block_pending", False) is True
+        reg = getattr(ctx, "gate_registry", None)
+        assert reg is None or reg.blocked("book")
         assert set(ctx._blocked_by_ticker.values()) == {"panel_scorer_load_failed"}
 
     def test_invalid_scorer_kind_fails_closed(self, tmp_path):
@@ -421,7 +425,11 @@ class TestApplyScoresTask:
         out = ApplyScoresTask().run(ctx)
         assert out is None
         assert ctx.candidates == []
-        assert ctx.buy_blocked is True
+        # Post errata-C retirement (#322): fail-closed submits a verdict +
+        # latches _gate_block_pending; the flag lands at the job boundary.
+        assert getattr(ctx, "_gate_block_pending", False) is True
+        reg = getattr(ctx, "gate_registry", None)
+        assert reg is None or reg.blocked("book")
         assert set(ctx._blocked_by_ticker.values()) == {"panel_scorer_missing"}
 
     def test_overwrites_candidate_rank_scores(self, tmp_path):
@@ -549,7 +557,11 @@ class TestApplyScoresTask:
 
         assert out is None
         assert ctx.candidates == []
-        assert ctx.buy_blocked is True
+        # Post errata-C retirement (#322): fail-closed submits a verdict +
+        # latches _gate_block_pending; the flag lands at the job boundary.
+        assert getattr(ctx, "_gate_block_pending", False) is True
+        reg = getattr(ctx, "gate_registry", None)
+        assert reg is None or reg.blocked("book")
         assert ctx.skip_buys is True
         assert ctx._panel_scoring_fail_reason == "panel_score_runtime_error"
         assert set(ctx._blocked_by_ticker.values()) == {"panel_score_runtime_error"}
@@ -576,7 +588,11 @@ class TestApplyScoresTask:
 
         assert out is None
         assert ctx.candidates == []
-        assert ctx.buy_blocked is True
+        # Post errata-C retirement (#322): fail-closed submits a verdict +
+        # latches _gate_block_pending; the flag lands at the job boundary.
+        assert getattr(ctx, "_gate_block_pending", False) is True
+        reg = getattr(ctx, "gate_registry", None)
+        assert reg is None or reg.blocked("book")
         assert ctx.skip_buys is True
         assert ctx._panel_scoring_fail_reason == "panel_score_runtime_error"
         assert set(ctx._blocked_by_ticker.values()) == {"panel_score_runtime_error"}
