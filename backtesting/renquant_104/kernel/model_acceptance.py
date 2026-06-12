@@ -33,6 +33,7 @@ multiple operators retrain concurrently (out of scope for solo use).
 from __future__ import annotations
 
 import datetime
+import datetime as dt
 import json
 import logging
 import math
@@ -810,6 +811,40 @@ def promote(staging_path: Path, active_path: Path) -> None:
         pass
     log.info("PROMOTE: %s → %s (prior preserved at %s)",
              staging_path.name, active_path.name, previous_path.name)
+
+    # ── MLflow champion alias (eng plan S3-8 / errata B, 2026-06-12) ──
+    # The WF gate is the ONLY alias-mover, and promote() is the WF
+    # gate's sole exit — so the alias move lives HERE, mechanically
+    # enforcing the contract. Best-effort: registry failure must never
+    # roll back a gate-passed promote (file swap is the trading truth;
+    # the registry is provenance) — but it is LOUD, never silent.
+    try:
+        _register_champion(active_path, data)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("MLflow champion registration failed (%s) — promote "
+                    "stands; fix the registry and re-register manually "
+                    "via kernel.registry", exc)
+
+
+def _register_champion(active_path: Path, data: dict) -> None:
+    """Register the just-promoted artifact and move `champion` to it."""
+    from kernel.registry import (  # noqa: PLC0415
+        log_artifact_with_meta, register_model, set_model_alias, start_run,
+    )
+
+    name = active_path.stem  # e.g. "panel-ltr.alpha158_fund"
+    wf_meta = (data.get("metadata") or {}).get("wf_gate_metadata") or \
+        data.get("wf_gate_metadata") or {}
+    with start_run("wf-promote", {"artifact": active_path.name}) as run_id:
+        log_artifact_with_meta(
+            run_id, active_path, artifact_path="model",
+            meta={"wf_gate_metadata": wf_meta,
+                  "promoted_at": dt.datetime.now(dt.timezone.utc).isoformat()},
+        )
+    handle = register_model(name, run_id, artifact_path="model")
+    set_model_alias(name, "champion", handle["version"])
+    log.info("MLflow: %s v%s → champion (run %s)", name, handle["version"],
+             run_id)
 
 
 def reject(staging_path: Path, archive_dir: Path,
