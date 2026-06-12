@@ -90,7 +90,19 @@ def _load_market_data(config: dict):
     """
     from kernel.data import LocalStore  # noqa: PLC0415
 
+    # Worktree gate runs: every data path (ohlcv store, panel history
+    # parquet, …) resolves Path(__file__)-relative, so a bare git
+    # worktree sees an EMPTY data/ — pre-#315 that silently fell through
+    # to a network fetch (how the original #314 case got live data) and
+    # post-#315 it fails closed. Protocol: symlink the canonical data
+    # tree into the worktree before running the gate:
+    #     ln -s /Users/renhao/git/github/RenQuant/data <worktree>/data
     store = LocalStore()
+    if not (Path(store.data_dir) / "SPY").exists():
+        raise SystemExit(
+            f"OHLCV store empty at {store.data_dir} — if this is a git "
+            f"worktree, symlink the canonical data/ tree in first "
+            f"(see module docstring)")
     spy_df = store.load("SPY")
     if spy_df is None:
         raise SystemExit("SPY missing from the local OHLCV store — replay "
