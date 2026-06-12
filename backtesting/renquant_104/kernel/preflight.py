@@ -56,11 +56,15 @@ log = logging.getLogger("kernel.preflight")
 
 
 def _resolve_artifact_path(strategy_dir: Path, rel: str | Path) -> Path:
-    """Resolve config artifact paths relative to the strategy directory."""
-    p = Path(rel)
-    if p.is_absolute():
-        return p
-    return strategy_dir / p
+    """Resolve config artifact paths via the single resolution authority.
+
+    2026-06-12 (eng plan §III.5, mirrors renquant-pipeline PR #115):
+    delegates to kernel.artifact_resolver so preflight checks the SAME
+    path the loaders will use — strategy_dir first, repo-root fallback.
+    """
+    from kernel.artifact_resolver import locate_artifact  # noqa: PLC0415
+
+    return locate_artifact(rel, strategy_dir=strategy_dir)
 
 
 def _patchtst_summary_path(path: Path) -> Path:
