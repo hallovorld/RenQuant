@@ -49,6 +49,28 @@ from kernel.drph import ReplayCase, canonical_json, sha  # noqa: E402
 
 DEFAULT_SEED = 44
 FP_TAIL = 250  # trailing closes hashed per ticker — restatement detector
+SUBREPO_IMPORT_ORDER = (
+    "renquant-common",
+    "renquant-base-data",
+    "renquant-artifacts",
+    "renquant-model",
+    "renquant-pipeline",
+    "renquant-execution",
+    "renquant-strategy-104",
+    "renquant-backtesting",
+    "renquant-orchestrator",
+)
+
+
+def _bootstrap_subrepo_imports() -> None:
+    """Make the replay executable runnable from temp PR worktrees too."""
+    from subrepo_paths import resolve_subrepo_root  # noqa: PLC0415
+
+    subrepo_root = resolve_subrepo_root(REPO).resolve()
+    for repo in reversed(SUBREPO_IMPORT_ORDER):
+        src = subrepo_root / repo / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
 
 
 def _load_config() -> dict:
@@ -87,6 +109,7 @@ def _ohlcv_fingerprint(ohlcv: dict, date: str) -> dict:
 def _run_one_day(date: str, seed: int) -> dict:
     """Seeded single-day sim into a throwaway db; returns the canonical
     decision snapshot."""
+    _bootstrap_subrepo_imports()
     from sim.runner import run_backtest  # noqa: PLC0415
 
     config = _load_config()
