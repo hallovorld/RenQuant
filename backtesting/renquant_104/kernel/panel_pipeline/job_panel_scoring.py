@@ -27,10 +27,10 @@ additive: remove this file + the one-line import wiring.
 """
 from __future__ import annotations
 
-import datetime
 import logging
 import math
-from abc import ABC, abstractmethod
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +41,6 @@ from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Job, Task
 
 from .panel_scorer import PanelScorer
-from .feature_matrix import build_inference_matrix
 
 log = logging.getLogger("kernel.panel_pipeline.scoring")
 
@@ -463,6 +462,39 @@ def _snapshot_buy_candidates(ctx: Any) -> list[Any]:
     return existing
 
 
+def _bootstrap_gate_registry_import() -> None:
+    """Best-effort sibling checkout discovery for GateRegistry telemetry."""
+    repo_root = Path(__file__).resolve().parents[4]
+    candidates: list[Path] = []
+    subrepo_root = os.environ.get("RENQUANT_SUBREPO_ROOT")
+    if subrepo_root:
+        candidates.append(Path(subrepo_root) / "renquant-pipeline" / "src")
+    candidates.append(repo_root.parent / "renquant-pipeline" / "src")
+    for src in candidates:
+        src_str = str(src)
+        if src.is_dir() and src_str not in sys.path:
+            sys.path.insert(0, src_str)
+
+
+def _submit_gate_verdict(ctx: Any, *, gate: str, reason: str, inputs: dict) -> None:
+    """Dual-write a block verdict to the GateRegistry (eng plan S2-PR4).
+
+    Lazy import + loud degrade: the registry lives in renquant-pipeline
+    (sibling checkout); during a merged-not-deployed window the sibling
+    may predate kernel.gate_registry. Telemetry must never block trading,
+    so a missing module skips the ledger row WITH a warning, never silently.
+    """
+    _bootstrap_gate_registry_import()
+    try:
+        from renquant_pipeline.kernel.gate_registry import ctx_registry  # noqa: PLC0415
+    except ImportError as exc:
+        log.warning("gate_registry unavailable (%s) — ledger row for gate=%s "
+                    "skipped; sync the renquant-pipeline checkout", exc, gate)
+        return
+    ctx_registry(ctx).submit(gate=gate, scope="book", verdict="block",
+                             reason=reason, inputs=inputs)
+
+
 def _fail_closed_panel_scoring(ctx: Any, reason: str) -> None:
     """Block buy/QP when enabled panel scoring cannot provide the alpha surface."""
     candidates = list(getattr(ctx, "candidates", None) or [])
@@ -475,6 +507,8 @@ def _fail_closed_panel_scoring(ctx: Any, reason: str) -> None:
     ctx.candidates = []
     ctx.buy_blocked = True
     ctx.skip_buys = True
+    _submit_gate_verdict(ctx, gate="panel_scoring_fail_closed", reason=reason,
+                         inputs={"candidates_blocked": len(candidates)})
     ctx._panel_scoring_contract_failed = True  # noqa: SLF001
     ctx._panel_scoring_fail_reason = reason  # noqa: SLF001
     counters = getattr(ctx, "counters", None)
@@ -1679,6 +1713,8 @@ def _fail_closed_missing_calibrator(ctx: InferenceContext, reason: str) -> None:
     ctx._calibrator_contract_failed = True  # noqa: SLF001
     ctx.buy_blocked = True
     ctx.skip_buys = True
+    _submit_gate_verdict(ctx, gate="calibrator_fail_closed", reason=reason,
+                         inputs={})
     blocked_map = getattr(ctx, "_blocked_by_ticker", None)
     if blocked_map is None:
         blocked_map = {}
@@ -2203,6 +2239,8 @@ def _fail_closed_ngboost(ctx: InferenceContext, reason: str, *, detail: str = ""
     ctx.buy_blocked = True
     ctx.skip_buys = True
     ctx.candidates = []
+    _submit_gate_verdict(ctx, gate="ngboost_fail_closed", reason=reason,
+                         inputs={"detail": str(detail)[:120]})
     if hasattr(ctx, "counters"):
         ctx.counters["ngb_fail_closed"] = (
             ctx.counters.get("ngb_fail_closed", 0) + 1
@@ -2906,18 +2944,25 @@ class ApplyKellySizingTask(Task):
         def _kelly_with_reason(obj):
             mu_v = getattr(obj, "mu",    None)
             sg_v = getattr(obj, "sigma", None)
-            if mu_v is None:    return 0.0, "kelly_zero:mu_none"
-            if sg_v is None:    return 0.0, "kelly_zero:sigma_none"
+            if mu_v is None:
+                return 0.0, "kelly_zero:mu_none"
+            if sg_v is None:
+                return 0.0, "kelly_zero:sigma_none"
             try:
-                mu_f = float(mu_v); sg_f = float(sg_v)
+                mu_f = float(mu_v)
+                sg_f = float(sg_v)
             except (TypeError, ValueError):
                 return 0.0, "kelly_zero:mu_nonfinite"
-            if not math.isfinite(mu_f):  return 0.0, "kelly_zero:mu_nonfinite"
-            if not math.isfinite(sg_f):  return 0.0, "kelly_zero:sigma_nonfinite"
-            if sg_f <= 0:                return 0.0, "kelly_zero:sigma_nonpos"
+            if not math.isfinite(mu_f):
+                return 0.0, "kelly_zero:mu_nonfinite"
+            if not math.isfinite(sg_f):
+                return 0.0, "kelly_zero:sigma_nonfinite"
+            if sg_f <= 0:
+                return 0.0, "kelly_zero:sigma_nonpos"
             if not math.isfinite(sigma_horizon_days):
                 return 0.0, "kelly_zero:sigma_horizon_invalid"
-            if mu_f <= min_edge:         return 0.0, "kelly_zero:mu_le_min_edge"
+            if mu_f <= min_edge:
+                return 0.0, "kelly_zero:mu_le_min_edge"
             sg_f = _rescale_annualized_sigma_for_kelly(sg_f, sigma_horizon_days)
             target = kelly_target_pct(
                 mu_f, sg_f,
@@ -2926,7 +2971,8 @@ class ApplyKellySizingTask(Task):
                 fractional        = fractional,
                 min_edge          = min_edge,
             )
-            if target <= 0:              return 0.0, "kelly_zero:capped_zero"
+            if target <= 0:
+                return 0.0, "kelly_zero:capped_zero"
             return target, None
 
         for cand in ctx.candidates:

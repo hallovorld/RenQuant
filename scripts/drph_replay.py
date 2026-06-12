@@ -78,17 +78,30 @@ def _load_config() -> dict:
 
 
 def _load_market_data(config: dict):
-    from kernel.data import fetch_ohlcv  # noqa: PLC0415
+    """STORE-ONLY loads — never the network.
 
-    spy_df = fetch_ohlcv("SPY")
+    Found in the field 2026-06-12: fetch_ohlcv silently switches between
+    the parquet cache and a live yfinance fetch depending on cache
+    coverage; intraday that flipped all 146 tickers' values between two
+    gate runs minutes apart (false DATA-DRIFT on every symbol). A replay
+    gate's inputs must be a frozen local store, full stop — a symbol
+    missing from the store is skipped exactly like the old behavior, but
+    nothing is ever fetched.
+    """
+    from kernel.data import LocalStore  # noqa: PLC0415
+
+    store = LocalStore()
+    spy_df = store.load("SPY")
+    if spy_df is None:
+        raise SystemExit("SPY missing from the local OHLCV store — replay "
+                         "requires frozen local data (no network fallback)")
     etf_map = config.get("sector_etf_map", {})
     symbols = sorted(set(config.get("watchlist") or []) | set(etf_map.values()))
     ohlcv: dict = {"SPY": spy_df}
     for sym in symbols:
-        try:
-            ohlcv[sym] = fetch_ohlcv(sym)
-        except Exception:
-            pass  # missing ticker data → universe checks handle it downstream
+        df = store.load(sym)
+        if df is not None:
+            ohlcv[sym] = df
     return ohlcv, spy_df, etf_map
 
 
