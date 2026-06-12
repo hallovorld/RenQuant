@@ -331,11 +331,25 @@ def build_run_bundle(
     artifact_hashes = {k: sha256_file(v) for k, v in sorted(paths.items())}
     watchlist = sorted(config.get("watchlist") or [])
 
+    # env_sha (eng plan §III.5 provenance): best-effort — a metadata
+    # failure must never block a trading run, but is logged, not silent.
+    try:
+        from kernel.env_fingerprint import env_fingerprint  # noqa: PLC0415
+
+        env = env_fingerprint()
+    except Exception as exc:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger("kernel.artifact_contract").warning(
+            "env fingerprint failed (%s) — bundle ships without env_sha", exc)
+        env = {"env_sha": None, "python": None, "n_packages": None}
+
     bundle = {
         "schema_version": 1,
         "run_id": run_id,
         "run_type": run_type,
         "broker_mode": broker_mode,
+        "env": env,
         "config_hash": hash_jsonable(config),
         "watchlist_hash": hash_jsonable(watchlist),
         "watchlist_size": len(watchlist),
