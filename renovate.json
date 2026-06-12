@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Renovate config for RenQuant umbrella (#108 S14): auto pin-bump PRs for subrepos.lock.json. Deploy by copying to RenQuant/renovate.json and enabling the Renovate GitHub App on the org.",
-  "enabledManagers": ["regex"],
+  "enabledManagers": ["custom.regex"],
   "customManagers": [
     {
       "customType": "regex",
@@ -16,7 +16,7 @@
   ],
   "packageRules": [
     {
-      "matchManagers": ["regex"],
+      "matchManagers": ["custom.regex"],
       "groupName": "subrepo pins",
       "commitMessagePrefix": "chore(pins): ",
       "prBodyNotes": [
