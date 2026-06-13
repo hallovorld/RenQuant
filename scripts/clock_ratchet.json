@@ -1,0 +1,6 @@
+{
+  "_doc": "Clock lint ratchet (eng plan §III.4 / P0.3). CI fails if scripts/clock_lint.py counts MORE naive time sources (datetime.now()/date.today()/datetime.utcnow()) than this in session paths (live/ + adapters/). New code must use live.clock. Migration PRs TIGHTEN this; it never grows.",
+  "max_naive_time_sources": 10,
+  "floor": 0,
+  "_floor_doc": "0 = every session-path time source routed through live.clock (the single-Clock migration complete)."
+}
