@@ -199,42 +199,78 @@ def cmd_capture(args) -> int:
     return 0
 
 
-def cmd_verify(args) -> int:
-    case = ReplayCase(Path(args.case))
+def _verify_one(case_dir: Path) -> int:
+    """Verify one sim_replay case. Exit codes: 0 parity / 1 divergence /
+    2 corpus integrity / 3 data drift / 4 not a sim_replay case."""
+    case = ReplayCase(case_dir)
     problems = case.check_integrity()
     if problems:
-        print("CORPUS INTEGRITY FAILED:")
+        print(f"CORPUS INTEGRITY FAILED: {case_dir.name}")
         for p in problems:
             print(f"  ✗ {p}")
         return 2
     meta = case.read_input("capture_meta")
     if meta.get("kind") != "sim_replay":
-        raise SystemExit(
-            f"case kind={meta.get('kind')!r} is not a sim_replay case — "
-            f"live-captured cases are forensic anchors, not replay gates")
+        print(f"SKIP {case_dir.name}: kind={meta.get('kind')!r} is a forensic "
+              f"anchor, not a replay gate")
+        return 4
     date, seed = meta["date"], int(meta["seed"])
     result = _run_one_day(date, seed)
 
     frozen_fp = case.read_input("ohlcv_fingerprint")
     drifted = sorted(
-        s for s in set(frozen_fp) | set(result["ohlcv_fingerprint"])
-        if frozen_fp.get(s) != result["ohlcv_fingerprint"].get(s))
+        sym for sym in set(frozen_fp) | set(result["ohlcv_fingerprint"])
+        if frozen_fp.get(sym) != result["ohlcv_fingerprint"].get(sym))
     if drifted:
-        print(f"DATA-DRIFT — {len(drifted)} ticker(s) restated/backfilled "
-              f"up to {date} (first 10): {drifted[:10]}")
-        print("the input data changed, not (necessarily) the code — "
-              "re-capture the case after auditing the restatement")
+        print(f"DATA-DRIFT {case_dir.name} — {len(drifted)} ticker(s) "
+              f"restated/backfilled up to {date} (first 10): {drifted[:10]}")
+        print("  the input data changed, not (necessarily) the code — "
+              "re-capture after auditing the restatement")
         return 3
 
     ok, diffs = case.verify(result["decisions"])
     if ok:
-        print(f"PARITY OK — {date} (seed {seed}) reproduces {args.case} "
+        print(f"PARITY OK — {date} (seed {seed}) reproduces {case_dir.name} "
               f"bit-identically")
         return 0
-    print(f"PARITY FAILED — {len(diffs)} diverging path(s) (first 20):")
+    print(f"PARITY FAILED {case_dir.name} — {len(diffs)} diverging path(s) "
+          f"(first 20):")
     for d in diffs:
         print(f"  ✗ {d}")
     return 1
+
+
+def cmd_verify(args) -> int:
+    # Single-case verify is STRICT: gating on a forensic-anchor (live) case
+    # is a user error, so reject hard rather than skip (verify-all skips).
+    case = ReplayCase(Path(args.case))
+    if not case.check_integrity():
+        meta = case.read_input("capture_meta")
+        if meta.get("kind") != "sim_replay":
+            raise SystemExit(
+                f"case kind={meta.get('kind')!r} is not a sim_replay case — "
+                f"live-captured cases are forensic anchors, not replay gates")
+    return _verify_one(Path(args.case))
+
+
+def cmd_verify_all(args) -> int:
+    """Verify EVERY sim_replay case in the corpus dir; exit = worst code.
+    Non-sim_replay (forensic-anchor) cases are skipped, not failed."""
+    root = Path(args.corpus)
+    cases = sorted(d for d in root.iterdir()
+                   if d.is_dir() and (d / "case_manifest.json").exists())
+    if not cases:
+        print(f"no cases under {root}")
+        return 2
+    worst = 0
+    gated = 0
+    for case_dir in cases:
+        code = _verify_one(case_dir)
+        if code != 4:            # 4 = skipped forensic anchor, not a gate
+            gated += 1
+            worst = max(worst, code)
+    print(f"\n{gated} sim_replay case(s) gated; worst exit={worst}")
+    return worst
 
 
 def main() -> int:
@@ -248,6 +284,10 @@ def main() -> int:
     ver = sub.add_parser("verify", help="re-run the frozen day and byte-compare")
     ver.add_argument("--case", required=True)
     ver.set_defaults(fn=cmd_verify)
+    va = sub.add_parser("verify-all",
+                        help="verify every sim_replay case in the corpus dir")
+    va.add_argument("--corpus", default=str(REPO / "tests" / "drph_corpus"))
+    va.set_defaults(fn=cmd_verify_all)
     args = p.parse_args()
     return args.fn(args)
 

@@ -126,3 +126,29 @@ class TestCommittedSimCase:
         assert meta["seed"] == 44
         expected = ReplayCase(SIM_CASE).expected()
         assert len(expected["tickers"]) == 142
+
+
+class TestVerifyAll:
+    """verify-all gates every sim_replay case; skips forensic anchors."""
+
+    def _run(self, *args):
+        import subprocess
+        return subprocess.run(
+            [sys.executable, str(REPO / "scripts" / "drph_replay.py"), *args],
+            capture_output=True, text=True)
+
+    def test_skips_non_sim_replay_cases(self, tmp_path):
+        from kernel.drph import ReplayCase
+        # a forensic-anchor (live) case + the helpers verify-all must skip it
+        live = ReplayCase(tmp_path / "corpus" / "live_case")
+        live.write(inputs={"capture_meta": {"kind": "live"}},
+                   expected_decisions={"book": {}, "tickers": []})
+        r = self._run("verify-all", "--corpus", str(tmp_path / "corpus"))
+        assert "SKIP" in r.stdout
+        # no sim_replay cases → 0 gated, exit reflects "nothing gated"
+        assert "0 sim_replay case(s) gated" in r.stdout
+
+    def test_empty_corpus_dir(self, tmp_path):
+        (tmp_path / "empty").mkdir()
+        r = self._run("verify-all", "--corpus", str(tmp_path / "empty"))
+        assert r.returncode == 2
