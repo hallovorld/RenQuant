@@ -15,7 +15,7 @@ import pandas as pd
 from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Task
 
-log = logging.getLogger("panel_pipeline.admission")
+log = logging.getLogger("kernel.panel_pipeline.scoring")
 
 
 class VetoWeakBuysTask(Task):
@@ -353,6 +353,3 @@ class RegimeModelAdmissionTask(Task):
 
 
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
-
-
-
