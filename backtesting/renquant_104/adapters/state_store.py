@@ -21,8 +21,8 @@ import json
 import logging
 from pathlib import Path
 
-log = logging.getLogger("live.runner")  # same logger as the runner — log
-                                        # contract unchanged by the move
+log = logging.getLogger("adapters.runner")  # same logger as the runner — log
+                                           # contract unchanged by the move
 
 
 def load_live_state(state_file: Path, config: dict, strategy_dir) -> dict:
