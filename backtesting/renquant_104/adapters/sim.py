@@ -76,58 +76,16 @@ log = logging.getLogger("adapters.sim")
 
 _ALPHA158_SCORER_KINDS = {"panel_linear", "panel_ltr_xgboost"}
 _HISTORY_SCORER_KINDS = {"hf_patchtst", "patchtst", "regime_router"}
-_BUYING_POWER_SETTLED = "settled_cash"
-_BUYING_POWER_NMBP = "non_marginable_buying_power"
-_BUYING_POWER_ALIASES = {
-    _BUYING_POWER_SETTLED: _BUYING_POWER_SETTLED,
-    "settled": _BUYING_POWER_SETTLED,
-    "cash": _BUYING_POWER_SETTLED,
-    _BUYING_POWER_NMBP: _BUYING_POWER_NMBP,
-    "cash_plus_unsettled": _BUYING_POWER_NMBP,
-    "unsettled": _BUYING_POWER_NMBP,
-}
-
-
-def _normalize_buying_power_mode(raw: Any) -> str:
-    mode = str(raw or _BUYING_POWER_NMBP).strip().lower()
-    if mode not in _BUYING_POWER_ALIASES:
-        raise ValueError(
-            "execution.buying_power_mode must be one of "
-            f"{sorted(_BUYING_POWER_ALIASES)}; got {raw!r}"
-        )
-    return _BUYING_POWER_ALIASES[mode]
-
-
-def _order_payload(order: dict, key: str) -> Any:
-    value = order.get(key)
-    if value is not None:
-        return value
-    for field in ("score_snapshot", "decision_inputs"):
-        payload = order.get(field)
-        if isinstance(payload, dict) and payload.get(key) is not None:
-            return payload.get(key)
-    return None
-
-
-def _stamp_holding_audit_fields(holding: Any, order: dict) -> None:
-    if holding is None or not isinstance(order, dict):
-        return
-    for key in (
-        "model_type",
-        "sector",
-        "blocked_by",
-        "expected_return",
-        "expected_return_horizon_days",
-        "mu",
-        "mu_horizon_days",
-        "sigma",
-        "panel_score",
-        "rank_score",
-        "kelly_target_pct",
-    ):
-        value = _order_payload(order, key)
-        if value is not None:
-            setattr(holding, key, value)
+# ── Sim order/buying-power helpers — EXTRACTED to sim_order_helpers.py ──
+# (eng plan S2 item 5 decomposition slice 3, 2026-06-13.)
+from adapters.sim_order_helpers import (  # noqa: F401,E402
+    _BUYING_POWER_ALIASES,
+    _BUYING_POWER_NMBP,
+    _BUYING_POWER_SETTLED,
+    _normalize_buying_power_mode,
+    _order_payload,
+    _stamp_holding_audit_fields,
+)
 
 
 # ── Sim artifact-metadata helpers — EXTRACTED to sim_artifacts.py ──────
