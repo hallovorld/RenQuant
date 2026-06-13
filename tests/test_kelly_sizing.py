@@ -298,8 +298,16 @@ class TestSizeAndEmitKellyScaling:
 # ── PanelScoringJob — Kelly target on BOTH sides via ApplyKellySizingTask ──
 
 class TestApplyKellySizingTask:
+    def _sizing_src(self):
+        return (
+            _STRATEGY_DIR
+            / "kernel"
+            / "panel_pipeline"
+            / "sizing_tasks.py"
+        ).read_text()
+
     def test_task_exists(self):
-        src = (_STRATEGY_DIR / "kernel" / "panel_pipeline" / "job_panel_scoring.py").read_text()
+        src = self._sizing_src()
         assert "class ApplyKellySizingTask" in src
 
     def test_task_in_job_chain_last(self):
@@ -323,7 +331,7 @@ class TestApplyKellySizingTask:
         decision-tree DB. The semantic invariant is unchanged: every
         cand and every holding gets a kelly_target_pct assignment.
         """
-        src = (_STRATEGY_DIR / "kernel" / "panel_pipeline" / "job_panel_scoring.py").read_text()
+        src = self._sizing_src()
         assert "cand.kelly_target_pct = target" in src
         assert "hs.kelly_target_pct = target"   in src
         # And the helper that produces (target, reason) exists exactly
@@ -335,7 +343,7 @@ class TestApplyKellySizingTask:
         assert "kelly_zero:" in src   # at least one prefix in the source
 
     def test_uses_kernel_kelly_helper(self):
-        src = (_STRATEGY_DIR / "kernel" / "panel_pipeline" / "job_panel_scoring.py").read_text()
+        src = self._sizing_src()
         assert "from kernel.kelly import kelly_target_pct" in src
 
 
