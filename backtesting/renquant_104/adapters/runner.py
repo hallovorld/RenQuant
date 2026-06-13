@@ -533,21 +533,13 @@ class RunnerAdapter:
         # Full daily runs must not mix real-time broker marks for held symbols
         # with daily OHLCV closes for candidates. Keep broker marks only for
         # sell-only/intraday risk checks or as an OHLCV-missing fallback.
-        import math as _math_p  # noqa: PLC0415
-        prices: dict[str, float] = {}
-        broker_mark_prices: dict[str, float] = {}
-        for ticker, pos in positions_cache.items():
-            qty = float(pos.get("qty", 0))
-            mkt = float(pos.get("market_value", 0))
-            if (_math_p.isfinite(qty) and _math_p.isfinite(mkt)
-                    and qty >= 0.5 and mkt > 0):
-                px = mkt / qty
-                if _math_p.isfinite(px) and 0 < px < 1e6:
-                    broker_mark_prices[ticker] = px
-                    if self._sell_only or self._use_intraday_prices:
-                        prices[ticker] = px
+        from adapters.runner_prices import compute_broker_mark_prices  # noqa: PLC0415
+        prices, broker_mark_prices = compute_broker_mark_prices(
+            positions_cache, sell_only=self._sell_only,
+            use_intraday_prices=self._use_intraday_prices)
 
         # ── OHLCV from parquet cache ─────────────────────────────────────────
+        import math as _math_p  # noqa: PLC0415  (price/close finiteness guards)
         from kernel.data import fetch_ohlcv  # noqa: PLC0415
 
         watchlist   = config["watchlist"]

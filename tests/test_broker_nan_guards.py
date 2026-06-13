@@ -94,13 +94,18 @@ class TestRunnerPriceExtractionGuards:
 
     def test_runner_micro_qty_dust_does_not_inflate_price(self):
         """Pre-fix: pos with qty=1e-7, mkt=$100 → price=$1e9. AUDIT REGRESSION
-        GUARD: any qty < 0.5 is treated as dust and yields NO price."""
-        src = (REPO / "backtesting" / "renquant_104" / "adapters"
-               / "runner.py").read_text()
-        # Find make_context's position-loop block
-        idx = src.find("Current prices from broker positions")
-        assert idx > 0
-        block = src[idx:idx + 1500]
+        GUARD: any qty < 0.5 is treated as dust and yields NO price.
+
+        The price-computation logic moved to adapters/runner_prices.py
+        (S2 make_context decomposition); the guard invariant is scanned
+        across the runner adapter package so it follows the relocation."""
+        adapters = (REPO / "backtesting" / "renquant_104" / "adapters")
+        # The guard now lives in runner_prices.py (S2 make_context
+        # decomposition); scan the runner adapter package for it.
+        block = "".join(
+            p.read_text() for p in
+            [adapters / "runner.py", adapters / "runner_prices.py"])
+        assert "RU-PRICE-1" in block
         # Must have isfinite check + qty floor
         assert "isfinite(qty)" in block, \
             "AUDIT REGRESSION (RU-PRICE-1): runner.py no longer guards qty " \
