@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
+import adapters.broker_sync as broker_sync  # noqa: E402
 from adapters.broker_sync import (  # noqa: E402
     gc_recent_sell_orders,
     override_no_trade_streak_from_broker,
@@ -24,6 +26,34 @@ class _Broker:
 
     def get_filled_orders(self, after):
         return self._fills
+
+
+class TestBrokerSyncContracts:
+
+    def test_log_contract_uses_runner_logger(self):
+        assert broker_sync.log.name == "adapters.runner"
+
+    def test_broker_failure_warning_uses_runner_logger(self, caplog):
+        class _Boom:
+            def get_filled_orders(self, after):
+                raise RuntimeError("down")
+
+        caplog.set_level(logging.WARNING, logger="adapters.runner")
+        override_no_trade_streak_from_broker(
+            _Boom(), {"monitor_state": {"no_trade_streak": 5}}, _Ctx()
+        )
+        assert any(
+            rec.name == "adapters.runner"
+            and "broker.get_filled_orders failed" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_runner_delegates_to_broker_sync_helpers(self):
+        src = (REPO / "backtesting" / "renquant_104" / "adapters" / "runner.py").read_text()
+        assert "from adapters.broker_sync import override_no_trade_streak_from_broker" in src
+        assert "override_no_trade_streak_from_broker(self._broker, self._state, ctx)" in src
+        assert "from adapters.broker_sync import gc_recent_sell_orders" in src
+        assert "gc_recent_sell_orders(self._recent_sell_orders, self._bar_date(ctx))" in src
 
 
 class TestNoTradeStreakOverride:

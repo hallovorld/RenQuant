@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-log = logging.getLogger("live.runner")
+log = logging.getLogger("adapters.runner")
 
 
 def override_no_trade_streak_from_broker(broker, state, ctx) -> None:  # noqa: ANN001
