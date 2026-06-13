@@ -32,7 +32,13 @@ LIVE_RUNNER_PATH = REPO_ROOT / "live/runner.py"
 ROTATION_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/pipeline/task_rotation.py"
 DECISION_TRACE_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/decision_trace.py"
 
-RUNNER_SOURCE = RUNNER_PATH.read_text()
+# RUNNER_SOURCE spans the runner adapter package: runner.py plus the
+# extracted sibling modules (S2 decomposition #335-#338, exec-math).
+# Source-scan invariants check "the logic lives in the runner adapter",
+# which is still true after the logic moved to a runner submodule.
+_RUNNER_PKG = RUNNER_PATH.parent
+RUNNER_SOURCE = RUNNER_PATH.read_text() + "".join(
+    p.read_text() for p in sorted(_RUNNER_PKG.glob("runner_*.py")))
 SIM_ADAPTER_SOURCE = SIM_ADAPTER_PATH.read_text()
 LIVE_RUNNER_SOURCE = LIVE_RUNNER_PATH.read_text()
 ROTATION_SOURCE = ROTATION_PATH.read_text()
