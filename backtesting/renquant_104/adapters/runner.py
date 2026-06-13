@@ -1473,42 +1473,17 @@ class RunnerAdapter:
     #   • broker must support — silently skipped if broker.supports_broker_side_stops()=false
 
     def _z9_enabled(self, ctx) -> bool:  # noqa: ANN001
-        cfg = ctx.config.get("live", {}).get("broker_side_stops", {})
-        if not cfg.get("enabled", False):
-            return False
-        broker = self._broker
-        if not getattr(broker, "supports_broker_side_stops", lambda: False)():
-            log.debug("Z9: broker %s does not support broker-side stops — skip",
-                      type(broker).__name__)
-            return False
-        return True
+        """Delegate — moved to adapters/z9_stops.py (S2 slice 3, 2026-06-13)."""
+        from adapters.z9_stops import z9_enabled  # noqa: PLC0415
+
+        return z9_enabled(self._broker, ctx)
 
     @staticmethod
     def _z9_stop_pct(ctx) -> float:  # noqa: ANN001
-        """Broker-side stop distance.
+        """Delegate — moved to adapters/z9_stops.py (S2 slice 3, 2026-06-13)."""
+        from adapters.z9_stops import z9_stop_pct  # noqa: PLC0415
 
-        2026-06-12 G1 (dead-box catastrophe line): when
-        ``live.broker_side_stops.pct`` is set, it OVERRIDES the per-regime
-        intraday cap. Rationale: every in-process stop (SDL/trailing/
-        protection) dies with this machine; the broker-resident GTC stop is
-        the only protection that survives a dead box. It must therefore be a
-        FAR catastrophe line (e.g. 0.20), not the 6% intraday cap — a 6%
-        broker stop on a 119%-vol name whipsaws on noise (the NVTS-class
-        winner-crystallization pathology the sigma-aware SDL exists to avoid).
-        Legacy behavior (per-regime max_single_day_loss_pct, default 6%) is
-        unchanged when the key is absent.
-        """
-        z9_cfg = ctx.config.get("live", {}).get("broker_side_stops", {})
-        pct = z9_cfg.get("pct")
-        if pct is not None:
-            try:
-                pct_f = float(pct)
-                if 0.0 < pct_f < 1.0:
-                    return pct_f
-            except (TypeError, ValueError):
-                pass
-        regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
-        return float(regime_p.get("max_single_day_loss_pct", 0.06))
+        return z9_stop_pct(ctx)
 
     def _override_no_trade_streak_from_broker(self, ctx) -> None:  # noqa: ANN001
         """Delegate — body moved verbatim to adapters/broker_sync.py
@@ -1520,69 +1495,21 @@ class RunnerAdapter:
     def _z9_place_or_replace_stop(
         self, ticker: str, qty: float, reference_price: float, today_str: str,
     ) -> None:
-        """Place a stop at reference × (1 - pct). If a stop already exists for
-        this ticker, cancel it first; the new stop_price is the MIN of
-        (existing, new) so we never loosen.
-        """
-        # 2026-05-09 audit fix (Z9-NaN): pre-fix, NaN qty / reference_price
-        # slipped past `<= 0` (NaN comparisons return False) → target=NaN
-        # → broker.place_stop_order crashed inside int(qty). Same QTY-NaN
-        # pattern as the exit-side audit fix. Now: explicit isfinite guard.
-        import math as _math_z9  # noqa: PLC0415
-        if (not _math_z9.isfinite(qty) or qty <= 0
-                or not _math_z9.isfinite(reference_price) or reference_price <= 0):
-            log.warning(
-                "Z9: skipping stop for %s — non-finite or non-positive "
-                "qty=%s reference_price=%s", ticker, qty, reference_price,
-            )
-            return
-        broker = self._broker
-        ctx_pct = getattr(self, "_last_ctx_stop_pct", 0.06)
-        if not _math_z9.isfinite(ctx_pct) or ctx_pct <= 0 or ctx_pct >= 1:
-            ctx_pct = 0.06
-        target = reference_price * (1.0 - ctx_pct)
-        if not _math_z9.isfinite(target) or target <= 0:
-            log.warning("Z9: derived target=%s non-finite — skipping", target)
-            return
+        """Delegate — moved to adapters/z9_stops.py (S2 slice 3, 2026-06-13).
+        ``_last_ctx_stop_pct`` is the per-bar stop distance the caller set
+        from _z9_stop_pct; passed through as ctx_pct."""
+        from adapters.z9_stops import place_or_replace_stop  # noqa: PLC0415
 
-        existing = self._stop_orders.get(ticker)
-        if existing is not None:
-            # Never loosen — pick the tighter of current vs proposed.
-            target = min(target, float(existing.get("stop_price", target)))
-            try:
-                broker.cancel_order(existing.get("order_id", ""))
-            except Exception as exc:
-                log.warning("Z9: cancel existing stop %s for %s failed: %s",
-                            existing.get("order_id"), ticker, exc)
-            self._stop_orders.pop(ticker, None)
-
-        try:
-            result = broker.place_stop_order(ticker, qty, target)
-        except Exception as exc:
-            log.warning("Z9: place_stop_order(%s, qty=%s, stop=%.2f) failed: %s",
-                        ticker, qty, target, exc)
-            return
-        self._stop_orders[ticker] = {
-            "order_id":   result.get("order_id"),
-            "stop_price": float(target),
-            "qty":        float(qty),
-            "stamped_at": today_str,
-        }
-        log.info("Z9: %s stop placed @ $%.2f × %s shares (order=%s)",
-                 ticker, target, int(qty), result.get("order_id"))
+        place_or_replace_stop(
+            self._broker, self._stop_orders, ticker, qty, reference_price,
+            today_str, ctx_pct=getattr(self, "_last_ctx_stop_pct", 0.06),
+        )
 
     def _z9_cancel_stop(self, ticker: str, reason: str = "") -> None:
-        """Cancel and forget the stop for a ticker. No-op if none exists."""
-        existing = self._stop_orders.pop(ticker, None)
-        if existing is None:
-            return
-        try:
-            self._broker.cancel_order(existing.get("order_id", ""))
-            log.info("Z9: cancelled stop %s for %s (%s)",
-                     existing.get("order_id"), ticker, reason or "no reason")
-        except Exception as exc:
-            log.warning("Z9: cancel stop %s for %s failed: %s",
-                        existing.get("order_id"), ticker, exc)
+        """Delegate — moved to adapters/z9_stops.py (S2 slice 3, 2026-06-13)."""
+        from adapters.z9_stops import cancel_stop  # noqa: PLC0415
+
+        cancel_stop(self._broker, self._stop_orders, ticker, reason)
 
     # ── STATE-EXT-SELL fill attribution (issue #71 / audit #5) ────────────────
 
