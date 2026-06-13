@@ -76,8 +76,6 @@ log = logging.getLogger("adapters.sim")
 
 _ALPHA158_SCORER_KINDS = {"panel_linear", "panel_ltr_xgboost"}
 _HISTORY_SCORER_KINDS = {"hf_patchtst", "patchtst", "regime_router"}
-_FORBIDDEN_HISTORY_COL_PREFIXES = ("fwd_",)
-_FORBIDDEN_HISTORY_COLS = {"label", "split_label"}
 _BUYING_POWER_SETTLED = "settled_cash"
 _BUYING_POWER_NMBP = "non_marginable_buying_power"
 _BUYING_POWER_ALIASES = {
@@ -132,58 +130,17 @@ def _stamp_holding_audit_fields(holding: Any, order: dict) -> None:
             setattr(holding, key, value)
 
 
-def _artifact_kind(path: Path) -> str | None:
-    try:
-        payload = json.loads(path.read_text())
-    except Exception:
-        return None
-    meta = payload.get("metadata") if isinstance(payload, dict) else None
-    if isinstance(meta, dict) and meta.get("kind"):
-        return str(meta.get("kind"))
-    if isinstance(payload, dict) and payload.get("kind"):
-        return str(payload.get("kind"))
-    return None
-
-
-def _history_seq_len_from_artifact(path: Path) -> int | None:
-    """Best-effort sequence length probe without loading a Torch checkpoint."""
-    candidates = [
-        path.with_name(path.name + ".metadata.json"),
-        path.with_name(path.stem + "_metadata.json"),
-        path.with_name(path.stem + "_summary.json"),
-    ]
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
-        try:
-            payload = json.loads(candidate.read_text())
-        except Exception:
-            continue
-        contract = payload.get("training_contract") or {}
-        hparams = contract.get("hyperparameters") or {}
-        raw = payload.get("seq_len") or hparams.get("seq_len")
-        if raw:
-            return int(raw)
-    return None
-
-
-def _model_type_from_artifact(model: Any) -> str | None:
-    """Extract readable model type from dict/object artifacts for audit rows."""
-    return model_type_from_artifact(model)
-
-
-def _drop_inference_forbidden_cols(df: pd.DataFrame) -> pd.DataFrame:
-    forbidden = [
-        c for c in df.columns
-        if c in _FORBIDDEN_HISTORY_COLS
-        or any(str(c).startswith(prefix) for prefix in _FORBIDDEN_HISTORY_COL_PREFIXES)
-    ]
-    return df.drop(columns=forbidden) if forbidden else df
-
-
-def _resolve_manifest_uri(manifest_path: Path, uri: str) -> Path:
-    p = Path(uri)
-    return p if p.is_absolute() else manifest_path.parent / p
+# ── Sim artifact-metadata helpers — EXTRACTED to sim_artifacts.py ──────
+# (eng plan S2 item 5 decomposition slice 2, 2026-06-13.)
+from adapters.sim_artifacts import (  # noqa: F401,E402
+    _FORBIDDEN_HISTORY_COLS,
+    _FORBIDDEN_HISTORY_COL_PREFIXES,
+    _artifact_kind,
+    _drop_inference_forbidden_cols,
+    _history_seq_len_from_artifact,
+    _model_type_from_artifact,
+    _resolve_manifest_uri,
+)
 
 
 # ── Sim reporting metrics & tax-debit — EXTRACTED to sim_metrics.py ─────
