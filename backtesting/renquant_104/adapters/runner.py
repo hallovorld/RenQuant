@@ -831,52 +831,12 @@ class RunnerAdapter:
                 "path. Verify this state belongs to broker '%s'.",
                 self._broker_name, self._broker_name,
             )
-        state: dict = {}
-        json_loaded = False
-        if state_file.exists():
-            try:
-                state = json.loads(state_file.read_text()) or {}
-                json_loaded = True
-            except (json.JSONDecodeError, OSError) as exc:
-                log.warning(
-                    "live_state read failed (%s) — falling back to db",
-                    exc,
-                )
-        if not json_loaded:
-            try:
-                from kernel.persistence import (  # noqa: PLC0415
-                    get_connection, load_latest_live_state,
-                )
-                conn = get_connection(config, strategy_dir=self._strategy_dir)
-                strategy_name = config.get("_strategy_name", "renquant_104")
-                # max_age_days=14 — defensive: don't resurrect ancient state
-                # (e.g. from a 6-month-old test db). 14d aligns with the
-                # max plausible gap before a sim/restore is needed.
-                db_state = load_latest_live_state(
-                    conn, strategy=strategy_name, max_age_days=14,
-                )
-                if db_state:
-                    log.warning(
-                        "RESTORE-FROM-DB (#144): live_state.json missing/"
-                        "corrupt — restored from live_state_snapshots "
-                        "(strategy=%s). Writing JSON cache now.",
-                        strategy_name,
-                    )
-                    state = db_state
-                    # Write the recovered state back to JSON so subsequent
-                    # bars see a hot cache (no need to re-query db).
-                    try:
-                        state_file.write_text(json.dumps(state, default=str))
-                    except OSError as exc:
-                        log.warning(
-                            "RESTORE-FROM-DB: JSON write-back failed (%s) "
-                            "— state recovered in-memory only", exc,
-                        )
-            except Exception as exc:
-                log.warning(
-                    "RESTORE-FROM-DB: db load failed (%s) — proceeding "
-                    "with empty state", exc,
-                )
+        # state_store (S2 decomposition slice 1, 2026-06-13): JSON-first
+        # load + RESTORE-FROM-DB fallback moved verbatim to
+        # adapters/state_store.py.
+        from adapters.state_store import load_live_state  # noqa: PLC0415
+
+        state = load_live_state(state_file, config, self._strategy_dir)
 
         entry_dates     = state.get("entry_dates",     {})
         sell_streaks    = state.get("sell_streaks",    {})
@@ -2738,9 +2698,9 @@ class RunnerAdapter:
         # never overwritten — it stays as a frozen pre-isolation snapshot
         # for forensics until the operator manually retires it.
         state_file = live_state_path(self._strategy_dir, self._broker_name)
-        tmp_path   = state_file.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(self._state, indent=2))
-        tmp_path.replace(state_file)
+        from adapters.state_store import save_live_state_atomic  # noqa: PLC0415
+
+        save_live_state_atomic(state_file, self._state)
         log.info("State saved → %s (atomic, broker=%s)",
                  state_file, self._broker_name)
 
