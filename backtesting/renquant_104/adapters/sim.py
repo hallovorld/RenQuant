@@ -87,6 +87,13 @@ from adapters.sim_order_helpers import (  # noqa: F401,E402
     _stamp_holding_audit_fields,
 )
 
+# ── Sim cash / buying-power computation — EXTRACTED to sim_cash.py ──────
+# (eng plan S2 item 5, 2026-06-14.)
+from adapters.sim_cash import (  # noqa: F401,E402
+    available_buying_power,
+    pending_settle_cash,
+)
+
 
 # ── Sim artifact-metadata helpers — EXTRACTED to sim_artifacts.py ──────
 # (eng plan S2 item 5 decomposition slice 2, 2026-06-13.)
@@ -871,11 +878,8 @@ class SimAdapter:
             return None
 
     def _pending_settle_cash(self) -> float:
-        queue = getattr(self, "_t2_queue", None)
-        if queue is None:
-            return 0.0
-        pending = queue.pending_total()
-        return pending if math.isfinite(pending) else 0.0
+        # Logic EXTRACTED to adapters.sim_cash.pending_settle_cash (S2 item 5).
+        return pending_settle_cash(getattr(self, "_t2_queue", None))
 
     def _available_buying_power(self) -> float:
         """Cash budget exposed to the decision tree for new long buys.
@@ -884,17 +888,15 @@ class SimAdapter:
         ``non_marginable_buying_power`` mirrors the live Alpaca broker path:
         executed sell proceeds replenish non-margin buying power before they
         have fully settled, while still avoiding 2x/4x margin buying power.
+
+        Logic EXTRACTED to adapters.sim_cash.available_buying_power.
         """
-        cash = float(getattr(self, "_cash", 0.0) or 0.0)
-        if not math.isfinite(cash):
-            return 0.0
-        if (
-            getattr(self, "_exec_enabled", False)
-            and getattr(self, "_buying_power_mode", _BUYING_POWER_SETTLED)
-            == _BUYING_POWER_NMBP
-        ):
-            cash += self._pending_settle_cash()
-        return cash if math.isfinite(cash) else 0.0
+        return available_buying_power(
+            cash=getattr(self, "_cash", 0.0),
+            exec_enabled=getattr(self, "_exec_enabled", False),
+            buying_power_mode=getattr(self, "_buying_power_mode", _BUYING_POWER_SETTLED),
+            t2_queue=getattr(self, "_t2_queue", None),
+        )
 
     # ── Public entry points ─────────────────────────────────────────────────
 
