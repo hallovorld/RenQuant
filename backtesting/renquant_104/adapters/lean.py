@@ -76,36 +76,12 @@ from adapters.lean_price import (  # noqa: F401,E402
 )
 
 
-def _order_payload(order: dict, key: str) -> Any:
-    value = order.get(key)
-    if value is not None:
-        return value
-    for field in ("score_snapshot", "decision_inputs"):
-        payload = order.get(field)
-        if isinstance(payload, dict) and payload.get(key) is not None:
-            return payload.get(key)
-    return None
-
-
-def _stamp_holding_audit_fields(holding: Any, order: dict) -> None:
-    if holding is None or not isinstance(order, dict):
-        return
-    for key in (
-        "model_type",
-        "sector",
-        "blocked_by",
-        "expected_return",
-        "expected_return_horizon_days",
-        "mu",
-        "mu_horizon_days",
-        "sigma",
-        "panel_score",
-        "rank_score",
-        "kelly_target_pct",
-    ):
-        value = _order_payload(order, key)
-        if value is not None:
-            setattr(holding, key, value)
+# ── LEAN holding audit-field stamping — EXTRACTED to lean_holding_audit.py ─
+# (eng plan S2 item 5 decomposition slice 5, 2026-06-14.)
+from adapters.lean_holding_audit import (  # noqa: F401,E402
+    _order_payload,
+    _stamp_holding_audit_fields,
+)
 
 
 def _model_type_from_artifact(model: Any) -> str | None:
