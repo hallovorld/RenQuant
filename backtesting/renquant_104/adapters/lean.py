@@ -68,17 +68,12 @@ from adapters.lean_account import (  # noqa: F401,E402
 )
 
 
-def _symbol_for_ticker(algo: Any, ticker: str):
-    """Resolve regular watchlist, sector ETF, or benchmark symbols."""
-    sym = algo.symbols.get(ticker)
-    if sym is not None:
-        return sym
-    sym = algo._sector_etf_symbols.get(ticker)
-    if sym is not None:
-        return sym
-    if ticker == getattr(algo, "_benchmark", None):
-        return getattr(algo, "_spy_sym", None)
-    return None
+# ── LEAN price / symbol resolution — EXTRACTED to lean_price.py ─────────
+# (eng plan S2 item 5 decomposition slice 4, 2026-06-14.)
+from adapters.lean_price import (  # noqa: F401,E402
+    _current_price_for_ticker,
+    _symbol_for_ticker,
+)
 
 
 def _order_payload(order: dict, key: str) -> Any:
@@ -111,49 +106,6 @@ def _stamp_holding_audit_fields(holding: Any, order: dict) -> None:
         value = _order_payload(order, key)
         if value is not None:
             setattr(holding, key, value)
-
-
-def _current_price_for_ticker(
-    algo: Any,
-    data: Any,
-    ticker: str,
-    ohlcv: dict[str, Any],
-) -> float | None:
-    """Return the current executable price for any ticker the pipeline may size.
-
-    SimAdapter and RunnerAdapter populate prices for all model/watchlist names.
-    LEAN must do the same: a ranked buy candidate with no ``ctx.prices`` entry
-    is rejected downstream as ``size_bad_price`` even if the model signal is
-    valid. Price source order mirrors the execution surface: current Slice,
-    current Security price, then latest OHLCV close.
-    """
-    sym = _symbol_for_ticker(algo, ticker)
-    if sym is not None:
-        try:
-            if data.ContainsKey(sym):
-                px = _positive_finite_price(data[sym].Close)
-                if px is not None:
-                    return px
-        except Exception:
-            pass
-        securities = getattr(algo, "Securities", None)
-        if securities is not None:
-            try:
-                px = _positive_finite_price(securities[sym].Price)
-                if px is not None:
-                    return px
-            except Exception:
-                pass
-
-    df = ohlcv.get(ticker)
-    if df is not None and not getattr(df, "empty", True):
-        try:
-            close = df["close"].dropna()
-            if not close.empty:
-                return _positive_finite_price(close.iloc[-1])
-        except Exception:
-            pass
-    return None
 
 
 def _model_type_from_artifact(model: Any) -> str | None:
