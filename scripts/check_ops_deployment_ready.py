@@ -254,9 +254,26 @@ def run_readiness(
     runtime_pins: dict[str, Any] = {"ok": None, "entries": [], "failures": []}
     runtime_qp_sanity: dict[str, Any] = {"ok": None, "stdout_tail": [], "stderr_tail": []}
     details["subrepo_env"] = str(env_path)
+    details["repo_root_env"] = exports.get("RENQUANT_REPO_ROOT")
     details["subrepo_root"] = exports.get("RENQUANT_SUBREPO_ROOT")
     details["strict_subrepo_paths"] = exports.get("RENQUANT_STRICT_SUBREPO_PATHS")
     details["ops_fail_closed"] = exports.get("RENQUANT_OPS_FAIL_CLOSED")
+    if not exports.get("RENQUANT_REPO_ROOT"):
+        issues.append(
+            Issue(
+                "error",
+                "runtime_repo_root_env",
+                "missing RENQUANT_REPO_ROOT in .subrepo_assembly/current.env; rerun make subrepo-runtime-root",
+            )
+        )
+    elif Path(exports["RENQUANT_REPO_ROOT"]).expanduser().resolve() != repo_root.resolve():
+        issues.append(
+            Issue(
+                "error",
+                "runtime_repo_root_env",
+                f"RENQUANT_REPO_ROOT points outside this repo: {exports['RENQUANT_REPO_ROOT']}",
+            )
+        )
     if not exports.get("RENQUANT_SUBREPO_ROOT"):
         issues.append(
             Issue(
