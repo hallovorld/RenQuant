@@ -8,7 +8,8 @@ symlinks, an env file, and a machine-readable manifest.
 
 For production launchd usage, pass --runtime-root with --sync. That materializes
 separate pinned clones under the runtime root and leaves developer worktrees
-untouched; the generated env exports RENQUANT_SUBREPO_ROOT for the live bridges.
+untouched; the generated env exports RENQUANT_SUBREPO_ROOT for pinned imports
+and RENQUANT_REPO_ROOT for umbrella-owned runtime state.
 """
 from __future__ import annotations
 
@@ -128,6 +129,7 @@ def build_assembly(
     manifest = {
         "created_at": ts,
         "source_repo": lock["source_repo"],
+        "source_repo_root": str(ROOT),
         "subrepos": lock["subrepos"],
         "runtime_repo_root": str(runtime_root) if runtime_root is not None else None,
         "repo_paths": {name: str(path) for name, path in repo_paths.items()},
@@ -138,6 +140,7 @@ def build_assembly(
     env = [
         "# source this file to use the pinned RenQuant subrepo assembly",
         f"export RENQUANT_ASSEMBLY_DIR={assembly}",
+        f"export RENQUANT_REPO_ROOT={ROOT}",
     ]
     if runtime_root is not None:
         env.extend([
@@ -157,6 +160,7 @@ def build_assembly(
         json.dumps(
             {
                 "current": str(assembly),
+                "source_repo_root": str(ROOT),
                 "runtime_repo_root": str(runtime_root) if runtime_root is not None else None,
             },
             indent=2,

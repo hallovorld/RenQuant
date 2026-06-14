@@ -288,9 +288,10 @@ source .subrepo_assembly/current.env  # or source the timestamped env.sh
 That command runs `scripts/subrepo_assemble.py --sync --runtime-root
 .subrepo_runtime/repos`, cloning/fetching pinned repos under
 `.subrepo_runtime/repos` instead of checking out developer worktrees. The
-generated env exports `RENQUANT_SUBREPO_ROOT` and
+generated env exports `RENQUANT_REPO_ROOT`, `RENQUANT_SUBREPO_ROOT`, and
 `RENQUANT_STRICT_SUBREPO_PATHS=1`, so `daily_multirepo.py` and
-`live_multirepo.py` import exactly the lock-pinned code. It also exports
+`live_multirepo.py` import exactly the lock-pinned code while state/artifact
+paths remain anchored in the umbrella repo. It also exports
 `RENQUANT_OPS_FAIL_CLOSED=1`, which makes scheduled Python and shell
 delegates fail closed instead of falling back to umbrella code when pinned
 subrepo modules are unavailable.

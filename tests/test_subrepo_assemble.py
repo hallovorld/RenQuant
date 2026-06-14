@@ -89,17 +89,20 @@ def test_runtime_root_clones_pins_without_touching_dev_worktree(tmp_path):
     assert (dev_path / "UNTOUCHED").read_text() == "developer worktree marker\n"
 
     manifest = json.loads((assembly / "manifest.json").read_text())
+    assert manifest["source_repo_root"] == str(module.ROOT)
     assert manifest["runtime_repo_root"] == str(runtime_root)
     assert manifest["repo_paths"] == {name: str(runtime_repo)}
     assert manifest["pythonpath"] == [str(runtime_repo / "src")]
 
     env = (assembly / "env.sh").read_text()
+    assert f"export RENQUANT_REPO_ROOT={module.ROOT}" in env
     assert f"export RENQUANT_SUBREPO_ROOT={runtime_root}" in env
     assert "export RENQUANT_STRICT_SUBREPO_PATHS=1" in env
     assert "export RENQUANT_OPS_FAIL_CLOSED=1" in env
     assert (assembly_root / "current.env").read_text() == env
     assert json.loads((assembly_root / "current.json").read_text()) == {
         "current": str(assembly),
+        "source_repo_root": str(module.ROOT),
         "runtime_repo_root": str(runtime_root),
     }
 
