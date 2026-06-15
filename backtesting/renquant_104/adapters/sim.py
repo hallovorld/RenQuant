@@ -94,6 +94,9 @@ from adapters.sim_cash import (  # noqa: F401,E402
     pending_settle_cash,
 )
 
+# ── Sim NAV mark-to-market — EXTRACTED to sim_nav.py ────────────────────
+from adapters.sim_nav import portfolio_value  # noqa: F401,E402
+
 # ── Sim price / ticker-universe resolution — EXTRACTED to sim_price.py ──
 from adapters.sim_price import (  # noqa: F401,E402
     context_price_tickers,
@@ -2196,59 +2199,16 @@ class SimAdapter:
             )
 
     def _portfolio_value(self, prices: dict[str, float], today_ts=None) -> float:
-        """Mark-to-market the held positions.
-
-        Bug 25 fix (2026-04-24): when a holding has no price in the
-        per-bar `prices` dict (delisted / suspended / new IPO not yet
-        trading), we fall back to the last AVAILABLE close ON OR
-        BEFORE today_ts — NOT `df.iloc[-1]` of the full ohlcv (which
-        is the LAST historical bar = future data in a sim).
-
-        Audit fix SA-1 (Round 9, 2026-04-25): pre-fix, NaN/inf in either
-        `prices.get(t)` or the fallback close silently propagated into
-        `total += shares * NaN = NaN`. Once corrupted, every subsequent
-        `_portfolio_value` call returned NaN — equity curve filled with
-        NaN, total_ret/APY came out NaN. Now: skip non-finite prices
-        (treat as zero contribution) so a single bad bar doesn't poison
-        the rest of the simulation.
-        """
-        import math
-        # 2026-05-11 BUG #C fix: include T+N pending settlement balance.
-        # Pre-fix, `_portfolio_value` returned cash + position MTM but
-        # ignored sell proceeds sitting in `_t2_queue`. Result: on sell
-        # day, shares drop but cash unchanged (proceeds queued) ⇒ NAV
-        # phantom drop = sale amount. Two bars later when queue drains,
-        # NAV phantom recovery = sale amount. With many sells this
-        # inflates measured ann_vol by O(sale_size · √n_sells) — observed
-        # 516% vol on W1_maxpos08 (45 sells × $5k positions).
-        # Fix invariant (CLAUDE.md §5.3): NAV ≡ free_cash +
-        # pending_settle + Σ(shares × price). All three legs are real
-        # claim against the portfolio's economic value.
-        total = self._cash
-        if getattr(self, "_t2_queue", None) is not None:
-            pending = self._t2_queue.pending_total()
-            if math.isfinite(pending):
-                total += pending
-        for t, shares in self._pos_shares.items():
-            p = prices.get(t)
-            if p is None or not math.isfinite(p):
-                df = self._ohlcv.get(t)
-                if df is not None and not df.empty:
-                    if today_ts is not None:
-                        truncated = df.loc[:today_ts]
-                        if not truncated.empty:
-                            cand = float(truncated["close"].iloc[-1])
-                            p = cand if math.isfinite(cand) else None
-                        else:
-                            p = None
-                    else:
-                        # No truncation hint — caller is responsible
-                        # for not introducing lookahead.
-                        cand = float(df["close"].iloc[-1])
-                        p = cand if math.isfinite(cand) else None
-            if p is not None and math.isfinite(p):
-                total += shares * p
-        return total
+        # Logic EXTRACTED to adapters.sim_nav.portfolio_value (S2 item 5) —
+        # carries the lookahead-safe fallback, non-finite-price skip, and T+N
+        # pending-settlement invariants documented there.
+        return portfolio_value(
+            prices, today_ts,
+            cash=self._cash,
+            t2_queue=getattr(self, "_t2_queue", None),
+            pos_shares=self._pos_shares,
+            ohlcv=self._ohlcv,
+        )
 
     # ── Summary accessors ───────────────────────────────────────────────────
 
