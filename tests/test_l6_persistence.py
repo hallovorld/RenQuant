@@ -101,6 +101,34 @@ class TestAlertBookPersistence:
         # exactly one row — upsert, not duplicate inserts
         assert conn.execute("SELECT COUNT(*) FROM alert_incidents").fetchone()[0] == 1
 
+    def test_resolved_incident_recurrence_resets_first_seen_after_reload(self, tmp_path):
+        conn = _conn(tmp_path)
+        book = AlertBook(escalate_after_days=5)
+        book.observe("score_drift", "panel", "psi~0.5", RUN_DATE)
+        save_alert_book(conn, book)
+
+        book.resolve_audit_scope("score_drift", "panel", RUN_DATE + dt.timedelta(days=1))
+        save_alert_book(conn, book)
+
+        recurrence_date = RUN_DATE + dt.timedelta(days=20)
+        book.observe("score_drift", "panel", "psi~0.5", recurrence_date)
+        save_alert_book(conn, book)
+
+        restored = load_alert_book(conn, escalate_after_days=5)
+        alert = restored.alerts[("score_drift", "panel", "psi~0.5")]
+        assert alert.first_seen == recurrence_date
+        assert alert.state == "WARN"
+        assert alert.notifications == 1
+
+        next_day = restored.observe(
+            "score_drift",
+            "panel",
+            "psi~0.5",
+            recurrence_date + dt.timedelta(days=1),
+        )
+        assert next_day.state == "WARN"
+        assert next_day.notifications == 1
+
     def test_load_empty_book_when_no_rows(self, tmp_path):
         conn = _conn(tmp_path)
         book = load_alert_book(conn)
