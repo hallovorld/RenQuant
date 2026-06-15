@@ -94,6 +94,12 @@ from adapters.sim_cash import (  # noqa: F401,E402
     pending_settle_cash,
 )
 
+# ── Sim price / ticker-universe resolution — EXTRACTED to sim_price.py ──
+from adapters.sim_price import (  # noqa: F401,E402
+    context_price_tickers,
+    price_frame_for,
+)
+
 
 # ── Sim artifact-metadata helpers — EXTRACTED to sim_artifacts.py ──────
 # (eng plan S2 item 5 decomposition slice 2, 2026-06-13.)
@@ -901,39 +907,15 @@ class SimAdapter:
     # ── Public entry points ─────────────────────────────────────────────────
 
     def _price_frame_for(self, ticker: str) -> pd.DataFrame | None:
-        """Return the bar frame used to price ``ticker`` in sim context."""
-        key = str(ticker or "").strip().upper()
-        if not key:
-            return None
-        df = self._ohlcv.get(key)
-        benchmark = str(self._config.get("benchmark") or "SPY").strip().upper()
-        if df is None and key == benchmark and self._spy_df is not None:
-            df = self._spy_df
-        return df
+        # Logic EXTRACTED to adapters.sim_price.price_frame_for (S2 item 5).
+        return price_frame_for(ticker, ohlcv=self._ohlcv, config=self._config,
+                               spy_df=self._spy_df)
 
     def _context_price_tickers(self) -> list[str]:
-        """Ticker universe that must receive current-bar prices.
-
-        Live and LEAN price the watchlist/model universe, sector ETFs, held
-        positions, and benchmark. Keep sim aligned so optional beta sleeve
-        logic cannot silently no-op only in research.
-        """
-        from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
-            benchmark_sleeve_ticker,
-        )
-
-        tickers: list[str] = []
-        tickers.extend(str(t).upper() for t in self._config.get("watchlist", []) if t)
-        tickers.extend(str(t).upper() for t in self._models)
-        tickers.extend(str(t).upper() for t in self._sector_etf_map.values() if t)
-        tickers.extend(str(t).upper() for t in self._holdings)
-        benchmark = str(self._config.get("benchmark") or "SPY").strip().upper()
-        if benchmark:
-            tickers.append(benchmark)
-        sleeve_ticker = benchmark_sleeve_ticker(self._config)
-        if sleeve_ticker:
-            tickers.append(sleeve_ticker)
-        return list(dict.fromkeys(tickers))
+        # Logic EXTRACTED to adapters.sim_price.context_price_tickers.
+        return context_price_tickers(
+            config=self._config, models=self._models,
+            sector_etf_map=self._sector_etf_map, holdings=self._holdings)
 
     def make_context(self, today: pd.Timestamp):
         """Build InferenceContext from current sim state + today's bar."""
