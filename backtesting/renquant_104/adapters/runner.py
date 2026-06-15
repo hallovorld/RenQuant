@@ -83,6 +83,9 @@ from adapters.runner_execmath import (  # noqa: F401,E402
     same_bar_sell_credit,
 )
 
+# ── L6 score-drift audit sidecar — commit() entry point ─────────────────
+from adapters.runner_l6 import run_l6_score_audit_sidecar  # noqa: F401,E402
+
 
 def _preopen_cancel_symbols(strategy_dir: Path, broker_name: str | None, today_str: str) -> set[str]:
     """Symbols whose queued orders were cancelled by the pre-open gate today."""
@@ -1840,6 +1843,13 @@ class RunnerAdapter:
             )
             record_trades(self._db, run_id, trade_events)
             record_rotations(self._db, run_id, ctx)
+
+            # ── L6 score-drift audit sidecar (eng plan §L6 audit sidecar).
+            # Best-effort + AUDIT-ONLY: reads the candidate_scores just
+            # written, appends PSI drift history, and folds the verdict into
+            # the alert escalation book. Degrade-safe — never blocks the bar
+            # (a missing L6 stack / table is a silent no-op).
+            run_l6_score_audit_sidecar(self._db, run_id=run_id, run_date=ctx.today)
 
             # ── ticker_daily_state — every watchlist ticker, every bar ──
             # Per user spec round-5 (2026-04-26): write a row for EVERY
