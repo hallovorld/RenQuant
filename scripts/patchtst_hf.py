@@ -286,6 +286,7 @@ def winsorize_label(panel: pd.DataFrame, label_col: str,
 def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
                           preprocess: bool = True,
                           val_tail_pct: float = 0.0,
+                          val_days: int = 0,
                           embargo_days: int = 60,
                           train_cutoff: str | None = None,
                           data_end: str | None = None) -> tuple[pd.DataFrame, list[str]]:
@@ -316,8 +317,20 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
         panel.attrs["train_cutoff_date"] = str(cutoff_ts.date())
     if cut_name == "all":
         dates_sorted = sorted(panel["date"].unique())
-        if val_tail_pct > 0:
+        # val_days (fixed trailing window) takes precedence over val_tail_pct.
+        # ROOT-CAUSE FIX: val_tail_pct is a fraction of the WHOLE history, so on
+        # a 10-year panel a 0.10 tail reserves ~1 year for val and pushes the
+        # effective train-cutoff ~14 months into the past — the model then can
+        # only learn stale, slow-moving structure (it fails the placebo/sanity
+        # gate and decays to negative OOS IC). A fixed val_days keeps the
+        # train-cutoff near the data end regardless of how long the history is.
+        if val_days and val_days > 0:
+            n_val = min(max(1, int(val_days)), len(dates_sorted) - 1)
+        elif val_tail_pct > 0:
             n_val = max(1, int(len(dates_sorted) * val_tail_pct))
+        else:
+            n_val = 0
+        if n_val > 0:
             val_start = dates_sorted[-n_val]
             train_end = val_start - pd.offsets.BDay(embargo_days)
             panel["split_label"] = "train"
@@ -619,6 +632,7 @@ def train_one(args: argparse.Namespace) -> dict:
     panel, feat_cols = load_panel_with_split(
         Path(args.dataset), args.cut, args.label,
         val_tail_pct=getattr(args, "val_tail_pct", 0.10),
+        val_days=getattr(args, "val_days", 0),
         embargo_days=getattr(args, "embargo_days", 60),
         train_cutoff=getattr(args, "train_cutoff", None),
         data_end=getattr(args, "data_end", None))
@@ -824,6 +838,12 @@ def main():
     p.add_argument("--cut", default="cut1_covid",
                    help="walk-forward cut name OR 'all' for full-data prod")
     p.add_argument("--val-tail-pct", type=float, default=0.10)
+    p.add_argument("--val-days", type=int, default=0,
+                   help="Fixed trailing validation window in trading days "
+                        "(--cut all). Overrides --val-tail-pct. Use this to keep "
+                        "the train-cutoff near the data end on long histories — "
+                        "e.g. --val-days 126 (~6mo) instead of a 10%% tail that "
+                        "reserves ~1yr on a 10yr panel and staleness the model.")
     p.add_argument("--embargo-days", type=int, default=60,
                    help="Business-day embargo before validation when --cut all "
                         "uses a tail validation split.")
