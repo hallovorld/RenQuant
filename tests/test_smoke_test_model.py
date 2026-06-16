@@ -316,7 +316,7 @@ class TestWeeklyShellInvariants:
                 / "strategy_config.sim_wl200_gbdt_prod_recipe_calibrated.json"
             ).read_text()
         )
-        manifest = "artifacts/sim/walkforward_manifest_v2_20260602.json"
+        manifest = "artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.calibrated.json"
         assert f'WF_MANIFEST="{manifest}"' in weekly
         assert config["walkforward"]["manifest_path"] == manifest
         assert '--reference-artifact "$STAGING_ART"' in weekly
