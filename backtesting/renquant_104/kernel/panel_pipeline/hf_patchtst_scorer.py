@@ -113,7 +113,20 @@ class HFPatchTSTPanelScorer:
         sidecar = _load_contract_sidecar(path)
         cfg = PatchTSTConfig(**ckpt["config_dict"])
         uses_dist = ckpt.get("uses_distributional_head", False)
-        model = hf_mod.HFPatchTSTRanker(cfg, use_distributional_head=uses_dist)
+        # Reconstruct the OPTIONAL architecture flags the checkpoint was trained
+        # with. Omitting these silently scored a cross-stock / FiLM model through
+        # the channel-independent baseline path: load_state_dict(strict=False)
+        # dropped the unmatched cross_stock.* / film.* tensors as "unexpected",
+        # so the forward pass ran without those layers and produced wrong scores
+        # (and such a model could never be promoted live).
+        uses_cross_stock = ckpt.get("uses_cross_stock_attn", False)
+        uses_film = ckpt.get("uses_film_regime", False)
+        model = hf_mod.HFPatchTSTRanker(
+            cfg,
+            use_distributional_head=uses_dist,
+            use_film_regime=uses_film,
+            use_cross_stock_attn=uses_cross_stock,
+        )
         state = ckpt["state_dict"]
         # Legacy: SWA-wrapped state had "module." prefix (pre-2026-05-19 refactor)
         if any(k.startswith("module.") for k in state):
@@ -124,12 +137,22 @@ class HFPatchTSTPanelScorer:
                 k.startswith("rank_head.") for k in state):
             state = {("rank_head." + k.removeprefix("head.")) if k.startswith("head.") else k: v
                      for k, v in state.items()}
-        model.load_state_dict(state, strict=False)
+        load_result = model.load_state_dict(state, strict=False)
+        if load_result.unexpected_keys:
+            # An unexpected tensor means the checkpoint carries a layer this
+            # loader did not reconstruct (exactly the cross-stock bug). Fail loud
+            # instead of silently scoring through a different architecture.
+            raise ValueError(
+                "hf_patchtst checkpoint has tensors the scorer did not "
+                f"reconstruct: "
+                f"{sorted({k.split('.')[0] for k in load_result.unexpected_keys})}"
+                " — unsupported architecture flag in the checkpoint?")
         model.eval()
         log.info("HFPatchTSTPanelScorer loaded: n_feat=%d seq_len=%d "
-                 "val_ic=%.4f dist_head=%s",
+                 "val_ic=%.4f dist_head=%s film=%s cross_stock=%s",
                  len(ckpt["feature_cols"]), ckpt["seq_len"],
-                 float(ckpt.get("best_val_ic", float("nan"))), uses_dist)
+                 float(ckpt.get("best_val_ic", float("nan"))), uses_dist,
+                 uses_film, uses_cross_stock)
         ckpt_contract = ckpt.get("training_contract", {}) or {}
         sidecar_contract = sidecar.get("training_contract", {}) or {}
         contract = dict(sidecar_contract)
