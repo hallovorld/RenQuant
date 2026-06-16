@@ -214,11 +214,10 @@ echo "Training pipeline finished at $(date)"
 # no-op. This is also the fail-fast recipe validation point: if the manifest
 # cuts do not match the freshly trained staging artifact, abort before spending
 # time in the WF gate that would fail closed anyway.
-# 2026-06-02: the only committed 172-feature manifest with existing scorer +
-# calibrator artifacts is the v2 rebuild. Keep weekly retrain on the same
-# no-drop-sentiment recipe, and validate stamping against the just-trained
-# staging artifact rather than stale active prod.
-WF_MANIFEST="artifacts/sim/walkforward_manifest_v2_20260602.json"
+# 2026-06-16: the weekly GBDT gate uses the regenerated prod-recipe manifest
+# that matches the no-drop-sentiment staging candidate. Keep Step 3.5 stamping
+# and Step 4 gate evaluation on the same manifest source of truth.
+WF_MANIFEST="artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.calibrated.json"
 echo "--- Step 3.5: Stamp WF manifest fingerprints ($WF_MANIFEST) ---"
 if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     --manifest "$WF_MANIFEST" \

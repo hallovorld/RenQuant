@@ -293,11 +293,12 @@ class TestWeeklyWrapperRegressionGuard:
 
         Resolution: the candidate is the artifact at
         ``ranking.panel_scoring.artifact_path`` in
-        ``strategy_config.json`` (the production scoring artifact).
+        ``strategy_config.shadow.json`` (the GBDT production scoring
+        artifact used by ``scripts/weekly_wf_promote.sh``).
         Compare its ``kind`` + ``feature_cols`` + ``recipe_fingerprint``
         / ``config_fingerprint`` against the (already-uniform-per the
         prior test) manifest cuts. Any axis drift here means a future
-        weekly retrain into this manifest will scoreing-fail-closed.
+        weekly retrain into this manifest will scoring-fail-closed.
         """
         src = _read_wrapper()
         manifest_rel = _shell_assignments(src)["WF_MANIFEST"]
@@ -306,23 +307,23 @@ class TestWeeklyWrapperRegressionGuard:
         retrains = manifest.get("retrains", [])
         assert retrains, "Layer 2 should have caught an empty manifest"
 
-        prod_cfg = json.loads(
-            (STRATEGY_ROOT / "strategy_config.json").read_text()
+        gbdt_cfg = json.loads(
+            (STRATEGY_ROOT / "strategy_config.shadow.json").read_text()
         )
         candidate_rel = (
-            prod_cfg.get("ranking", {})
+            gbdt_cfg.get("ranking", {})
             .get("panel_scoring", {})
             .get("artifact_path")
         )
         assert candidate_rel, (
-            "strategy_config.json missing ranking.panel_scoring."
-            "artifact_path; cannot resolve wrapper's scoring artifact "
-            "for cross-check"
+            "strategy_config.shadow.json missing ranking.panel_scoring."
+            "artifact_path; cannot resolve weekly wrapper's GBDT scoring "
+            "artifact for cross-check"
         )
         candidate_path = (STRATEGY_ROOT / candidate_rel).resolve()
         assert candidate_path.exists(), (
             f"candidate artifact missing on disk: {candidate_path}. "
-            "Resolved via strategy_config.json's "
+            "Resolved via strategy_config.shadow.json's "
             "ranking.panel_scoring.artifact_path."
         )
 
