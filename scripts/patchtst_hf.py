@@ -289,7 +289,9 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
                           val_days: int = 0,
                           embargo_days: int = 60,
                           train_cutoff: str | None = None,
-                          data_end: str | None = None) -> tuple[pd.DataFrame, list[str]]:
+                          data_end: str | None = None,
+                          exclude_feature_prefixes: tuple[str, ...] = (),
+                          ) -> tuple[pd.DataFrame, list[str]]:
     """Load panel + assign train/val/test split.
 
     cut_name = "all": full-data PROD training; last val_tail_pct dates → val.
@@ -348,6 +350,16 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
                  if c not in {"date", "ticker", "split_label",
                               "fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"}
                  and panel[c].dtype.kind in "fiub"]
+    if exclude_feature_prefixes:
+        prefixes = tuple(exclude_feature_prefixes)
+        kept = [c for c in feat_cols if not c.startswith(prefixes)]
+        log.info("excluded %d/%d features by prefix %s -> %d features",
+                 len(feat_cols) - len(kept), len(feat_cols),
+                 list(prefixes), len(kept))
+        if not kept:
+            raise ValueError(
+                f"exclude_feature_prefixes {list(prefixes)} removed ALL features")
+        feat_cols = kept
     if preprocess:
         panel = csrank_norm_per_day(panel, feat_cols)
         winsor_bounds = label_winsor_bounds(
@@ -629,13 +641,17 @@ class PerRegimeICCallback(TrainerCallback):
 
 def train_one(args: argparse.Namespace) -> dict:
     torch.manual_seed(args.seed); np.random.seed(args.seed)
+    exclude_prefixes = tuple(
+        p.strip() for p in str(getattr(args, "exclude_feature_prefixes", "")).split(",")
+        if p.strip())
     panel, feat_cols = load_panel_with_split(
         Path(args.dataset), args.cut, args.label,
         val_tail_pct=getattr(args, "val_tail_pct", 0.10),
         val_days=getattr(args, "val_days", 0),
         embargo_days=getattr(args, "embargo_days", 60),
         train_cutoff=getattr(args, "train_cutoff", None),
-        data_end=getattr(args, "data_end", None))
+        data_end=getattr(args, "data_end", None),
+        exclude_feature_prefixes=exclude_prefixes)
 
     # Compute HMM regime labels once — reused for FiLM dataset injection
     # AND for per-regime IC callback selection metric.
@@ -776,6 +792,7 @@ def train_one(args: argparse.Namespace) -> dict:
         "cut": args.cut, "seed": args.seed,
         "best_val_ic": best_val_ic, "n_params": n_params,
         "feature_cols": feat_cols,
+        "excluded_feature_prefixes": list(exclude_prefixes),
         "label_col": args.label,
         "lookahead_days": training_contract.get("lookahead_days"),
         "params": training_contract.get("hyperparameters", {}),
@@ -844,6 +861,12 @@ def main():
                         "the train-cutoff near the data end on long histories — "
                         "e.g. --val-days 126 (~6mo) instead of a 10%% tail that "
                         "reserves ~1yr on a 10yr panel and staleness the model.")
+    p.add_argument("--exclude-feature-prefixes", default="",
+                   help="Comma-separated feature-name prefixes to DROP from the "
+                        "training feature set, e.g. 'STD,MIN,IMIN' to ablate the "
+                        "slow-volatility / drawdown factor family (the cross-"
+                        "sectional drift the WF sanity placebo flags). Empty = "
+                        "keep all features.")
     p.add_argument("--embargo-days", type=int, default=60,
                    help="Business-day embargo before validation when --cut all "
                         "uses a tail validation split.")
