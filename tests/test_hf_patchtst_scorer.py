@@ -22,6 +22,14 @@ def scorer_mod():
     return hf_patchtst_scorer
 
 
+def _load_patchtst_hf_mod():
+    script = REPO / "scripts" / "patchtst_hf.py"
+    spec = importlib.util.spec_from_file_location("patchtst_hf_mod", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class TestSourceContracts:
     """Pin design intent so future refactors can't drift."""
 
@@ -186,3 +194,57 @@ class TestLoadScore:
         assert len(scores) == 3
         assert scores.notna().all()
         assert scores.name == "panel_score"
+
+
+class TestLoaderArchitectureMismatch:
+    @pytest.mark.parametrize(
+        ("flag_name", "state_root"),
+        [
+            ("uses_cross_stock_attn", "cross_stock"),
+            ("uses_film_regime", "film"),
+        ],
+    )
+    def test_rejects_declared_optional_layer_with_missing_tensors(
+        self,
+        scorer_mod,
+        tmp_path,
+        flag_name,
+        state_root,
+    ):
+        import torch
+        from transformers import PatchTSTConfig
+
+        mod = _load_patchtst_hf_mod()
+        cfg = PatchTSTConfig(
+            num_input_channels=3,
+            context_length=8,
+            patch_length=4,
+            patch_stride=4,
+            d_model=16,
+            num_attention_heads=4,
+            num_hidden_layers=1,
+            ffn_dim=32,
+        )
+        # Save a baseline state_dict that does NOT include the declared optional
+        # component. Prior to the fix this silently loaded a random layer.
+        model = mod.HFPatchTSTRanker(
+            cfg,
+            use_distributional_head=False,
+            use_film_regime=False,
+            use_cross_stock_attn=False,
+        )
+        ckpt = {
+            "config_dict": cfg.to_dict(),
+            "state_dict": model.state_dict(),
+            "feature_cols": ["f1", "f2", "f3"],
+            "seq_len": 8,
+            "uses_distributional_head": False,
+            "uses_film_regime": False,
+            "uses_cross_stock_attn": False,
+        }
+        ckpt[flag_name] = True
+        artifact = tmp_path / f"missing_{state_root}.pt"
+        torch.save(ckpt, artifact)
+
+        with pytest.raises(ValueError, match=state_root):
+            scorer_mod.HFPatchTSTPanelScorer.load(artifact)

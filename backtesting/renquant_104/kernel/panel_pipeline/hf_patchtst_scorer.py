@@ -75,6 +75,54 @@ def _coalesce(*values):
     return None
 
 
+def _checkpoint_component_flags(ckpt: dict) -> dict[str, bool]:
+    return {
+        "uses_distributional_head": bool(
+            ckpt.get("uses_distributional_head", False)
+        ),
+        "uses_film_regime": bool(ckpt.get("uses_film_regime", False)),
+        "uses_cross_stock_attn": bool(ckpt.get("uses_cross_stock_attn", False)),
+    }
+
+
+def _required_state_prefixes(ckpt: dict) -> tuple[str, ...]:
+    flags = _checkpoint_component_flags(ckpt)
+    prefixes = ["backbone.", "rank_head."]
+    if flags["uses_distributional_head"]:
+        prefixes.append("dist_head.")
+    if flags["uses_film_regime"]:
+        prefixes.append("film.")
+    if flags["uses_cross_stock_attn"]:
+        prefixes.append("cross_stock.")
+    return tuple(prefixes)
+
+
+def _summarize_key_roots(keys: list[str]) -> list[str]:
+    return sorted({k.split(".")[0] for k in keys})
+
+
+def _fail_loud_on_arch_mismatch(load_result, ckpt: dict) -> None:
+    unexpected = sorted(load_result.unexpected_keys)
+    if unexpected:
+        raise ValueError(
+            "hf_patchtst checkpoint has tensors the scorer did not "
+            "reconstruct: "
+            f"{_summarize_key_roots(unexpected)}"
+            " — unsupported architecture flag in the checkpoint?"
+        )
+    required_prefixes = _required_state_prefixes(ckpt)
+    missing = sorted(
+        key for key in load_result.missing_keys
+        if key.startswith(required_prefixes)
+    )
+    if missing:
+        raise ValueError(
+            "hf_patchtst checkpoint declared architecture components whose "
+            "tensors are missing: "
+            f"{_summarize_key_roots(missing)}"
+        )
+
+
 class HFPatchTSTPanelScorer:
     """Mirror of PatchTSTPanelScorer interface using HF transformers backbone.
 
@@ -112,15 +160,16 @@ class HFPatchTSTPanelScorer:
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         sidecar = _load_contract_sidecar(path)
         cfg = PatchTSTConfig(**ckpt["config_dict"])
-        uses_dist = ckpt.get("uses_distributional_head", False)
+        flags = _checkpoint_component_flags(ckpt)
+        uses_dist = flags["uses_distributional_head"]
         # Reconstruct the OPTIONAL architecture flags the checkpoint was trained
         # with. Omitting these silently scored a cross-stock / FiLM model through
         # the channel-independent baseline path: load_state_dict(strict=False)
         # dropped the unmatched cross_stock.* / film.* tensors as "unexpected",
         # so the forward pass ran without those layers and produced wrong scores
         # (and such a model could never be promoted live).
-        uses_cross_stock = ckpt.get("uses_cross_stock_attn", False)
-        uses_film = ckpt.get("uses_film_regime", False)
+        uses_cross_stock = flags["uses_cross_stock_attn"]
+        uses_film = flags["uses_film_regime"]
         model = hf_mod.HFPatchTSTRanker(
             cfg,
             use_distributional_head=uses_dist,
@@ -138,15 +187,7 @@ class HFPatchTSTPanelScorer:
             state = {("rank_head." + k.removeprefix("head.")) if k.startswith("head.") else k: v
                      for k, v in state.items()}
         load_result = model.load_state_dict(state, strict=False)
-        if load_result.unexpected_keys:
-            # An unexpected tensor means the checkpoint carries a layer this
-            # loader did not reconstruct (exactly the cross-stock bug). Fail loud
-            # instead of silently scoring through a different architecture.
-            raise ValueError(
-                "hf_patchtst checkpoint has tensors the scorer did not "
-                f"reconstruct: "
-                f"{sorted({k.split('.')[0] for k in load_result.unexpected_keys})}"
-                " — unsupported architecture flag in the checkpoint?")
+        _fail_loud_on_arch_mismatch(load_result, ckpt)
         model.eval()
         log.info("HFPatchTSTPanelScorer loaded: n_feat=%d seq_len=%d "
                  "val_ic=%.4f dist_head=%s film=%s cross_stock=%s",
