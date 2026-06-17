@@ -196,6 +196,61 @@ def _run_review_or_fix(agent: str, workflow: str) -> dict[str, Any]:
     return step
 
 
+def _parse_roadmap_item_id(next_stdout: str) -> str | None:
+    """Parse the item id from `roadmap next` output.
+
+    The first line is exactly ``Implement roadmap item `<id>` — <title>``.
+    Returns the id, or None when it cannot be parsed.
+    """
+    for line in next_stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        marker = "Implement roadmap item `"
+        if line.startswith(marker):
+            rest = line[len(marker):]
+            end = rest.find("`")
+            if end > 0:
+                return rest[:end]
+        return None
+    return None
+
+
+def _run_roadmap_driver(agent: str) -> dict[str, Any]:
+    """OPT-IN self-driving step: when idle, ask the orchestrator for the next
+    actionable roadmap item and dispatch ONE agent to implement it (open a PR).
+
+    Dispatches at most one item per call. ``roadmap next`` rc=1 (nothing
+    actionable) is a no-op. After a successful dispatch the item is marked
+    ``in_progress`` so it is not re-dispatched on the next cycle.
+    """
+    step: dict[str, Any] = {"agent": agent, "workflow": "roadmap"}
+    nxt = _orch(["roadmap", "next"])
+    step["next"] = nxt
+    if nxt["rc"] != 0:
+        # rc=1 => nothing actionable; anything else is a soft failure we record
+        # but do not raise on (the loop's core work already succeeded).
+        step["dispatched"] = False
+        return step
+
+    prompt = str(nxt["stdout"])
+    item_id = _parse_roadmap_item_id(prompt)
+    step["item_id"] = item_id
+    if not item_id:
+        step["dispatched"] = False
+        return step
+
+    step["exec"] = _run(
+        _llm_command(agent),
+        cwd=REPO_ROOT,
+        env=_agent_gh_env(agent),
+        stdin_text=prompt,
+    )
+    step["dispatched"] = True
+    step["mark"] = _orch(["roadmap", "mark", item_id, "in_progress"])
+    return step
+
+
 def _run_merge(agent: str) -> dict[str, Any]:
     plan = _orch_json(
         [
@@ -244,6 +299,7 @@ def main() -> int:
         if sync["rc"] != 0:
             raise RuntimeError("repo sync failed")
 
+        did_work = False
         for agent, workflow in (
             ("codex", "review"),
             ("claude", "review"),
@@ -252,6 +308,8 @@ def main() -> int:
         ):
             step = _run_review_or_fix(agent, workflow)
             status["steps"].append({"name": f"{agent}-{workflow}", "result": step})
+            if step.get("exec"):
+                did_work = True
             exec_result = step.get("exec") or {}
             if exec_result and exec_result.get("rc", 0) != 0:
                 raise RuntimeError(f"{agent} {workflow} failed")
@@ -259,6 +317,18 @@ def main() -> int:
         for agent in ("codex", "claude"):
             step = _run_merge(agent)
             status["steps"].append({"name": f"{agent}-merge", "result": step})
+            if int(step.get("total_merged") or 0) > 0:
+                did_work = True
+
+        # OPT-IN self-driving step (default OFF). Only when RQ_ROADMAP_DRIVER=1
+        # AND the loop did no review/fix/merge work this cycle (idle), dispatch
+        # at most one roadmap implementation so the feature-map self-drives.
+        if os.environ.get("RQ_ROADMAP_DRIVER") == "1" and not did_work:
+            roadmap_step = _run_roadmap_driver("claude")
+            status["steps"].append({"name": "roadmap-driver", "result": roadmap_step})
+            exec_result = roadmap_step.get("exec") or {}
+            if exec_result and exec_result.get("rc", 0) != 0:
+                raise RuntimeError("roadmap implementation dispatch failed")
 
         status["ok"] = True
         status["finished_at"] = _now()
