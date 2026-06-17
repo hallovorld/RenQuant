@@ -228,9 +228,9 @@ def _run_roadmap_driver(agent: str) -> dict[str, Any]:
     nxt = _orch(["roadmap", "next"])
     step["next"] = nxt
     if nxt["rc"] != 0:
-        # rc=1 => nothing actionable; anything else is a soft failure we record
-        # but do not raise on (the loop's core work already succeeded).
         step["dispatched"] = False
+        if int(nxt["rc"]) != 1:
+            step["next_error"] = True
         return step
 
     prompt = str(nxt["stdout"])
@@ -329,6 +329,11 @@ def main() -> int:
         if os.environ.get("RQ_ROADMAP_DRIVER") == "1" and not did_work:
             roadmap_step = _run_roadmap_driver("claude")
             status["steps"].append({"name": "roadmap-driver", "result": roadmap_step})
+            next_result = roadmap_step.get("next") or {}
+            if roadmap_step.get("next_error") or (
+                next_result and next_result.get("rc") not in (0, 1)
+            ):
+                raise RuntimeError("roadmap next failed")
             exec_result = roadmap_step.get("exec") or {}
             if exec_result and exec_result.get("rc", 0) != 0:
                 raise RuntimeError("roadmap implementation dispatch failed")

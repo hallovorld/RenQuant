@@ -160,6 +160,24 @@ def test_roadmap_driver_step_noop_when_nothing_actionable(monkeypatch) -> None:
     assert all(c[:2] != ["roadmap", "mark"] for c in orch_calls)
 
 
+def test_roadmap_driver_records_hard_next_failure(monkeypatch) -> None:
+    mod = _load_module()
+
+    monkeypatch.setattr(
+        mod,
+        "_orch",
+        lambda args: _ok("roadmap broken", rc=2)
+        if args[:2] == ["roadmap", "next"]
+        else (_ for _ in ()).throw(AssertionError(f"unexpected orch call: {args}")),
+    )
+
+    step = mod._run_roadmap_driver("claude")
+
+    assert step["dispatched"] is False
+    assert step["next"]["rc"] == 2
+    assert step["next_error"] is True
+
+
 def test_roadmap_driver_does_not_mark_when_agent_fails(monkeypatch) -> None:
     mod = _load_module()
     orch_calls: list[list[str]] = []
@@ -259,6 +277,24 @@ def test_main_enabled_but_nothing_actionable_dispatches_nothing(monkeypatch) -> 
     assert ["roadmap", "next"] in orch_calls
     assert recorder["dispatched"] == []
     assert all(c[:2] != ["roadmap", "mark"] for c in orch_calls)
+
+
+def test_main_fails_when_roadmap_next_hard_fails(monkeypatch) -> None:
+    mod = _load_module()
+    recorder: dict = {"dispatched": []}
+
+    _install_idle_main_stubs(mod, monkeypatch, recorder=recorder)
+
+    def fake_orch(args):
+        if args[:2] == ["roadmap", "next"]:
+            return _ok("roadmap broken", rc=2)
+        return _ok("{}", rc=0)
+
+    monkeypatch.setattr(mod, "_orch", fake_orch)
+    monkeypatch.setenv("RQ_ROADMAP_DRIVER", "1")
+
+    assert mod.main() == 1
+    assert recorder["dispatched"] == []
 
 
 def test_main_fails_when_roadmap_mark_fails(monkeypatch) -> None:
