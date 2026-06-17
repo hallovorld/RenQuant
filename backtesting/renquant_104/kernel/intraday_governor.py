@@ -50,6 +50,7 @@ snapshot from a previous day starts clean without an explicit reset call.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -98,10 +99,22 @@ class IntradayGovernor:
         cfg = cfg or {}
         return cls(
             enabled=bool(cfg.get("enabled", False)),
-            per_symbol_cooldown_seconds=float(cfg.get("per_symbol_cooldown_seconds", 0) or 0),
-            global_cooldown_seconds=float(cfg.get("global_cooldown_seconds", 0) or 0),
-            per_symbol_session_cap=int(cfg.get("per_symbol_session_cap", 0) or 0),
-            global_session_cap=int(cfg.get("global_session_cap", 0) or 0),
+            per_symbol_cooldown_seconds=_non_negative_float(
+                cfg.get("per_symbol_cooldown_seconds", 0) or 0,
+                "per_symbol_cooldown_seconds",
+            ),
+            global_cooldown_seconds=_non_negative_float(
+                cfg.get("global_cooldown_seconds", 0) or 0,
+                "global_cooldown_seconds",
+            ),
+            per_symbol_session_cap=_non_negative_int(
+                cfg.get("per_symbol_session_cap", 0) or 0,
+                "per_symbol_session_cap",
+            ),
+            global_session_cap=_non_negative_int(
+                cfg.get("global_session_cap", 0) or 0,
+                "global_session_cap",
+            ),
         )
 
     def load_state(self, state: dict[str, Any] | None) -> "IntradayGovernor":
@@ -109,14 +122,19 @@ class IntradayGovernor:
         state = state or {}
         self.session_date = str(state.get("session_date", "") or "")
         self.last_action_epoch = {
-            str(k): float(v) for k, v in (state.get("last_action_epoch") or {}).items()
+            str(k): _non_negative_float(v, f"last_action_epoch[{k!r}]")
+            for k, v in (state.get("last_action_epoch") or {}).items()
         }
         self.symbol_counts = {
-            str(k): int(v) for k, v in (state.get("symbol_counts") or {}).items()
+            str(k): _non_negative_int(v, f"symbol_counts[{k!r}]")
+            for k, v in (state.get("symbol_counts") or {}).items()
         }
-        self.global_count = int(state.get("global_count", 0) or 0)
+        self.global_count = _non_negative_int(state.get("global_count", 0) or 0, "global_count")
         lge = state.get("last_global_action_epoch", None)
-        self.last_global_action_epoch = float(lge) if lge is not None else None
+        self.last_global_action_epoch = (
+            _non_negative_float(lge, "last_global_action_epoch")
+            if lge is not None else None
+        )
         return self
 
     def to_state(self) -> dict[str, Any]:
@@ -215,3 +233,17 @@ class IntradayGovernor:
         self.last_global_action_epoch = now_epoch
         self.symbol_counts[sym] = self.symbol_counts.get(sym, 0) + 1
         self.global_count += 1
+
+
+def _non_negative_float(value: Any, name: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError(f"{name} must be a finite non-negative number")
+    return parsed
+
+
+def _non_negative_int(value: Any, name: str) -> int:
+    as_float = float(value)
+    if not math.isfinite(as_float) or as_float < 0 or not as_float.is_integer():
+        raise ValueError(f"{name} must be a non-negative integer")
+    return int(as_float)
