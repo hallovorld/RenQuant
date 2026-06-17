@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 
@@ -174,6 +176,30 @@ class TestPersistence:
             "global_count": 0, "last_global_action_epoch": None,
         }
 
+    def test_negative_state_counters_rejected(self):
+        with pytest.raises(ValueError, match="global_count"):
+            _gov(global_session_cap=1).load_state({
+                "session_date": DAY,
+                "global_count": -7,
+            })
+        with pytest.raises(ValueError, match="symbol_counts"):
+            _gov(per_symbol_session_cap=1).load_state({
+                "session_date": DAY,
+                "symbol_counts": {"MU": -1},
+            })
+
+    def test_negative_state_epochs_rejected(self):
+        with pytest.raises(ValueError, match="last_action_epoch"):
+            _gov(per_symbol_cooldown_seconds=60).load_state({
+                "session_date": DAY,
+                "last_action_epoch": {"MU": -1.0},
+            })
+        with pytest.raises(ValueError, match="last_global_action_epoch"):
+            _gov(global_cooldown_seconds=60).load_state({
+                "session_date": DAY,
+                "last_global_action_epoch": -1.0,
+            })
+
 
 # ── from_config parsing ──────────────────────────────────────────────────────
 class TestFromConfig:
@@ -193,6 +219,21 @@ class TestFromConfig:
     def test_none_config_is_disabled_defaults(self):
         g = IntradayGovernor.from_config(None)
         assert g == IntradayGovernor()
+
+    def test_negative_config_values_rejected(self):
+        for key in (
+            "per_symbol_cooldown_seconds",
+            "global_cooldown_seconds",
+            "per_symbol_session_cap",
+            "global_session_cap",
+        ):
+            with pytest.raises(ValueError, match=key):
+                IntradayGovernor.from_config({"enabled": True, key: -1})
+
+    def test_fractional_caps_rejected(self):
+        for key in ("per_symbol_session_cap", "global_session_cap"):
+            with pytest.raises(ValueError, match=key):
+                IntradayGovernor.from_config({"enabled": True, key: 1.5})
 
 
 def test_decision_dataclass_is_frozen():
