@@ -105,6 +105,55 @@ def _quantile_or_nan(vals: list[float], q: float) -> float:
     return float(np.quantile(vals, q)) if vals else float("nan")
 
 
+def activity_streak_stats(
+    trade_log: list[dict[str, Any]],
+    equity_df: pd.DataFrame,
+) -> dict[str, Any]:
+    """Activity-monitoring stats from the trade log + equity-curve dates.
+
+    EXTRACTED 2026-06-16 from adapters/sim.py build_result (eng plan S2 item 5
+    decomposition slice). Pure post-hoc reporting over the whole OOS window —
+    no SimAdapter state, no I/O.
+
+    Returns three fields consumed by SimResult / the monitor pipeline:
+
+    * ``longest_no_trade_streak`` — the longest run of consecutive trading
+      days (equity-curve bars) with no order (buy or sell).
+    * ``first_trade_date`` — stringified date of the first bar that carried an
+      order, or None if the window was idle.
+    * ``last_activity_date`` — stringified date of the most recent bar that
+      carried an order, or None.
+
+    Date keys are normalized to ``.date()`` where the source carries a
+    timestamp, matching the legacy in-line behavior byte-for-byte.
+    """
+    trade_dates = {
+        (t["date"].date() if hasattr(t["date"], "date") else t["date"])
+        for t in trade_log
+    }
+    eq_dates = [
+        (d.date() if hasattr(d, "date") else d) for d in equity_df.index
+    ] if not equity_df.empty else []
+    longest_streak = 0
+    current_streak = 0
+    first_trade: "str | None" = None
+    last_activity: "str | None" = None
+    for d in eq_dates:
+        if d in trade_dates:
+            current_streak = 0
+            last_activity = str(d)
+            if first_trade is None:
+                first_trade = str(d)
+        else:
+            current_streak += 1
+            longest_streak = max(longest_streak, current_streak)
+    return {
+        "longest_no_trade_streak": longest_streak,
+        "first_trade_date": first_trade,
+        "last_activity_date": last_activity,
+    }
+
+
 def _tax_cash_debit_mode(config: dict | None) -> str:
     """Return how estimated capital-gains tax should affect sim cash.
 
