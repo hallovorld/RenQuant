@@ -65,6 +65,7 @@ class TestLoad:
         src = (REPO / "backtesting" / "renquant_104" / "adapters" / "runner.py").read_text()
         assert "from adapters.state_store import load_live_state" in src
         assert "load_live_state(state_file, config, self._strategy_dir)" in src
+        assert "save_live_state_atomic(state_file, self._state, config)" in src
 
     def test_json_first(self, tmp_path):
         sf = tmp_path / "live_state.alpaca.json"
