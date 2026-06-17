@@ -127,6 +127,7 @@ from adapters.sim_metrics import (  # noqa: F401,E402
     _quantile_or_nan,
     _tax_cash_debit_amount,
     _tax_cash_debit_mode,
+    activity_streak_stats,
 )
 
 
@@ -2326,26 +2327,12 @@ class SimAdapter:
         # Activity-monitoring stats: longest run of consecutive trading days
         # without any order (buy or sell). Computed post-hoc from the equity
         # curve + trade log so it always reflects the whole OOS window.
-        trade_dates = {
-            (t["date"].date() if hasattr(t["date"], "date") else t["date"])
-            for t in self._trade_log
-        }
-        eq_dates = [
-            (d.date() if hasattr(d, "date") else d) for d in equity_df.index
-        ] if not equity_df.empty else []
-        longest_streak = 0
-        current_streak = 0
-        first_trade: "str | None" = None
-        last_activity: "str | None" = None
-        for d in eq_dates:
-            if d in trade_dates:
-                current_streak = 0
-                last_activity = str(d)
-                if first_trade is None:
-                    first_trade = str(d)
-            else:
-                current_streak += 1
-                longest_streak = max(longest_streak, current_streak)
+        # Logic EXTRACTED to adapters.sim_metrics.activity_streak_stats
+        # (S2 item 5 decomposition slice) — behavior unchanged.
+        _activity = activity_streak_stats(self._trade_log, equity_df)
+        longest_streak = _activity["longest_no_trade_streak"]
+        first_trade = _activity["first_trade_date"]
+        last_activity = _activity["last_activity_date"]
 
         # Risk-adjusted metrics (2026-05-02 §3 instrumentation). Computed
         # from the equity curve so they reflect the full OOS window. NaN
