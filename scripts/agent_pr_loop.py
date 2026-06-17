@@ -246,8 +246,11 @@ def _run_roadmap_driver(agent: str) -> dict[str, Any]:
         env=_agent_gh_env(agent),
         stdin_text=prompt,
     )
-    step["dispatched"] = True
+    if int(step["exec"].get("rc", 0)) != 0:
+        step["dispatched"] = False
+        return step
     step["mark"] = _orch(["roadmap", "mark", item_id, "in_progress"])
+    step["dispatched"] = int(step["mark"].get("rc", 0)) == 0
     return step
 
 
@@ -329,6 +332,9 @@ def main() -> int:
             exec_result = roadmap_step.get("exec") or {}
             if exec_result and exec_result.get("rc", 0) != 0:
                 raise RuntimeError("roadmap implementation dispatch failed")
+            mark_result = roadmap_step.get("mark") or {}
+            if mark_result and mark_result.get("rc", 0) != 0:
+                raise RuntimeError("roadmap item mark failed")
 
         status["ok"] = True
         status["finished_at"] = _now()
