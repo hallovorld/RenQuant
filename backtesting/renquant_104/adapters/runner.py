@@ -1689,7 +1689,7 @@ class RunnerAdapter:
         state_file = live_state_path(self._strategy_dir, self._broker_name)
         from adapters.state_store import save_live_state_atomic  # noqa: PLC0415
 
-        save_live_state_atomic(state_file, self._state)
+        save_live_state_atomic(state_file, self._state, config)
         log.info("State saved → %s (atomic, broker=%s)",
                  state_file, self._broker_name)
 
