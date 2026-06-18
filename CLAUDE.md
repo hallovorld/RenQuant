@@ -109,6 +109,22 @@ shipped even if you're on a feature branch or your local `main` is stale.
 Applies to ALL 13 renquant repos: umbrella `RenQuant` + 12 subrepos under
 `hallovorld/`.
 
+### 3.0 · Agent control contract (read first)
+
+The recurring systemic agent failure is contained by **external controls**, defined once in
+`renquant-orchestrator` and inherited cross-repo:
+- [`doc/AGENT-RETROSPECTIVE.md`](https://github.com/hallovorld/renquant-orchestrator/blob/main/doc/AGENT-RETROSPECTIVE.md)
+  — controls C1–C5 + §7.1, the per-PR Codex review checklist.
+- [`doc/memory/`](https://github.com/hallovorld/renquant-orchestrator/tree/main/doc/memory)
+  — externalised executive memory: **LONG** (binding ledger) · **MID** (plan) · **SHORT** (state); read LONG→MID→SHORT before acting.
+
+Non-negotiable for every agent: **report bottom-line-first** (conclusion + the decision needed
++ one number + `[VERIFIED]`/`[GUESS]`); **no "X works/fails" without the §4(b) evidence block**;
+**never write production paths** (data/parquet, strategy configs, live artifacts/state, committed
+WF corpora) — experiments in isolated worktrees only; **every PR carries `doc/progress/<date>-<slug>.md`**;
+**Codex review approval is the merge gate for agent PRs** (an `APPROVED` review by the *other*
+agent — consistent with §3.1 #5). Enforcement = Codex review + mechanical hooks, **not** this doc.
+
 ### 3.1 · PR-based workflow — STRICT
 
 **User mandate** (2026-05-30): *"future code changes should be PR based! this
