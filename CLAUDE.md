@@ -122,8 +122,10 @@ Non-negotiable for every agent: **report bottom-line-first** (conclusion + the d
 + one number + `[VERIFIED]`/`[GUESS]`); **no "X works/fails" without the §4(b) evidence block**;
 **never write production paths** (data/parquet, strategy configs, live artifacts/state, committed
 WF corpora) — experiments in isolated worktrees only; **every PR carries `doc/progress/<date>-<slug>.md`**;
-**Codex review approval is the merge gate for agent PRs** (an `APPROVED` review by the *other*
-agent — consistent with §3.1 #5). Enforcement = Codex review + mechanical hooks, **not** this doc.
+**never self-merge**; Codex review approval is the *intended* merge gate for agent PRs (an
+`APPROVED` review by the *other* agent — consistent with §3.1 #5; today rulesets require only
+1 approval from any actor, so "Codex specifically" is convention until a required-reviewer rule
+lands). Enforcement = Codex review + mechanical hooks, **not** this doc.
 
 ### 3.1 · PR-based workflow — STRICT
 

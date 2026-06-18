@@ -11,3 +11,8 @@ WHY/DIR:   The systemic agent failure (renquant-orchestrator retrospective) is r
            (agent auto-merge already requires an APPROVED review).
 EVIDENCE:  n/a (docs/process; no model or data claim).
 NEXT:      Codex review of this PR; if approved, all repos' agents inherit the contract.
+
+UPDATE (consistency with orchestrator #153 Codex review):
+  Qualified the merge-gate wording — "Codex review approval is the *intended* gate;
+  today rulesets require 1 approval from any actor, so 'Codex specifically' is convention
+  until a required-reviewer rule lands." Matches the enforcement-honesty fix in #153.
