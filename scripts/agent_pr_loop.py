@@ -37,6 +37,8 @@ if not PYTHON.exists():
 LOG_DIR = REPO_ROOT / "logs" / "agent_pr_loop"
 STATUS_PATH = LOG_DIR / "status.json"
 MAX_MERGES = 20
+SHORT_TERM_TEMPLATE = ORCH_ROOT / "doc" / "memory" / "short-term-state.template.md"
+SHORT_TERM_LOCAL = ORCH_ROOT / "doc" / "memory" / "short-term-state.md"
 
 
 def _now() -> str:
@@ -113,6 +115,30 @@ def _queue_total(plan_bundle: dict[str, Any]) -> int:
     return total
 
 
+def _bootstrap_short_term_state() -> dict[str, Any]:
+    step = {
+        "template": str(SHORT_TERM_TEMPLATE),
+        "target": str(SHORT_TERM_LOCAL),
+        "template_exists": SHORT_TERM_TEMPLATE.exists(),
+        "target_exists": SHORT_TERM_LOCAL.exists(),
+        "bootstrapped": False,
+        "skipped": False,
+    }
+    if not SHORT_TERM_TEMPLATE.exists():
+        step["skipped"] = True
+        return step
+    if SHORT_TERM_LOCAL.exists():
+        return step
+    SHORT_TERM_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+    SHORT_TERM_LOCAL.write_text(
+        SHORT_TERM_TEMPLATE.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    step["target_exists"] = True
+    step["bootstrapped"] = True
+    return step
+
+
 def build_agent_prompt(agent: str, workflow: str) -> str:
     orch_cmd = (
         f"PYTHONPATH={ORCH_ROOT / 'src'} {PYTHON} -m renquant_orchestrator "
@@ -123,18 +149,27 @@ def build_agent_prompt(agent: str, workflow: str) -> str:
         f"Workspace root: {REPO_ROOT}\n"
         f"Sibling repo root: {GITHUB_ROOT}\n"
         f"Use only the PR queue from this command:\n{orch_cmd}\n\n"
+        "Before acting, load the orchestrator control contract from the repo front door: "
+        "`CLAUDE.md`, `doc/AGENT-RETROSPECTIVE.md`, `doc/AGENT-STATE.md`, "
+        "`doc/memory/README.md`, and `doc/memory/long-term-agreements.md` when present.\n"
         "Fail closed. Do not touch PRs outside that queue. If the queue is empty, stop.\n"
     )
     if workflow == "review":
         return common + (
             f"For each queued PR, inspect the diff, run focused validation as needed, and post one "
-            f"consolidated GitHub review. The review text must include visible text `reviewed by {agent}`. "
+            f"consolidated GitHub review. Verify the committed `doc/progress/<date>-<slug>.md`, "
+            "reject production-path writes (`data/*.parquet`, `strategy_config.json`, live state, "
+            "prod artifacts, committed WF corpora), and do not accept model/data conclusions without "
+            "the documented evidence block. The review text must include visible text "
+            f"`reviewed by {agent}`. "
             "Approve only when there is no blocking issue. Use request-changes only for BLOCKER/HIGH/MED findings. "
             "Do not merge anything in this step. Return a concise summary."
         )
     if workflow == "fix":
         return common + (
             f"For each queued PR authored by {agent}, make the smallest correct fix, run focused tests, "
+            "repair the committed `doc/progress/<date>-<slug>.md` when required, keep SHORT memory "
+            "local/gitignored, never touch protected production paths, then "
             f"comment `fixed by {agent}`, commit, and push. Do not merge anything in this step. "
             "Return a concise summary with files changed and tests run."
         )
@@ -302,6 +337,9 @@ def main() -> int:
         if sync["rc"] != 0:
             raise RuntimeError("repo sync failed")
 
+        short_bootstrap = _bootstrap_short_term_state()
+        status["steps"].append({"name": "short-term-state-bootstrap", "result": short_bootstrap})
+
         did_work = False
         for agent, workflow in (
             ("codex", "review"),
@@ -340,6 +378,11 @@ def main() -> int:
             mark_result = roadmap_step.get("mark") or {}
             if mark_result and mark_result.get("rc", 0) != 0:
                 raise RuntimeError("roadmap item mark failed")
+
+        merge_audit = _orch(["repos", "merge-audit", "--repo", "all", "--strict"])
+        status["steps"].append({"name": "merge-audit", "result": merge_audit})
+        if merge_audit["rc"] != 0:
+            raise RuntimeError("merge audit failed")
 
         status["ok"] = True
         status["finished_at"] = _now()

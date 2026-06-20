@@ -64,6 +64,8 @@ def test_build_agent_prompt_review_mentions_visible_review_marker() -> None:
     assert "reviewed by codex" in prompt
     assert "repos agent --as codex --workflow review --repo all" in prompt
     assert "Do not touch PRs outside that queue." in prompt
+    assert "doc/progress/<date>-<slug>.md" in prompt
+    assert "doc/AGENT-RETROSPECTIVE.md" in prompt
 
 
 def test_build_agent_prompt_fix_mentions_visible_fix_marker() -> None:
@@ -73,6 +75,35 @@ def test_build_agent_prompt_fix_mentions_visible_fix_marker() -> None:
 
     assert "fixed by claude" in prompt
     assert "repos agent --as claude --workflow fix --repo all" in prompt
+    assert "SHORT memory local/gitignored" in prompt or "SHORT memory" in prompt
+
+
+def test_bootstrap_short_term_state_copies_template_when_missing(tmp_path, monkeypatch) -> None:
+    mod = _load_module()
+    template = tmp_path / "doc" / "memory" / "short-term-state.template.md"
+    target = tmp_path / "doc" / "memory" / "short-term-state.md"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text("template body\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "SHORT_TERM_TEMPLATE", template)
+    monkeypatch.setattr(mod, "SHORT_TERM_LOCAL", target)
+
+    result = mod._bootstrap_short_term_state()
+
+    assert result["bootstrapped"] is True
+    assert target.read_text(encoding="utf-8") == "template body\n"
+
+
+def test_bootstrap_short_term_state_skips_when_template_absent(tmp_path, monkeypatch) -> None:
+    mod = _load_module()
+    template = tmp_path / "doc" / "memory" / "short-term-state.template.md"
+    target = tmp_path / "doc" / "memory" / "short-term-state.md"
+    monkeypatch.setattr(mod, "SHORT_TERM_TEMPLATE", template)
+    monkeypatch.setattr(mod, "SHORT_TERM_LOCAL", target)
+
+    result = mod._bootstrap_short_term_state()
+
+    assert result["skipped"] is True
+    assert result["bootstrapped"] is False
 
 
 def test_queue_total_sums_cross_repo_plan_rows() -> None:
