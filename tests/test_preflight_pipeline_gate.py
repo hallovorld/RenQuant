@@ -280,3 +280,65 @@ class TestExtendedPipeline:
         regime_idx = names.index("P-REGIME-IC")
         state_idx = names.index("P-STATE-FILE")
         assert artifact_end_idx < wf_idx < regime_idx < state_idx
+
+
+# ─── WF-gate hysteresis (forgive undefined-Sharpe / zero-trades only) ─────────
+
+def _undefined_sharpe_payload(reason: str = "FAIL: zero trades across all WF cuts; Sharpe undefined"):
+    """A WF-FAILED artifact whose Sharpe is NON-finite (zero-trades measurement gap)."""
+    p = _wf_passing_payload()
+    wf = p["metadata"]["wf_gate_metadata"]
+    wf["passed"] = False
+    wf["wf_3cut_sharpe_mean"] = None  # non-finite -> "undefined"
+    wf["wf_reason"] = reason
+    return p
+
+
+def _finite_negative_payload():
+    """A WF-FAILED artifact with a FINITE negative Sharpe — a real loss, never forgiven."""
+    p = _wf_passing_payload()
+    wf = p["metadata"]["wf_gate_metadata"]
+    wf["passed"] = False
+    wf["wf_3cut_sharpe_mean"] = -1.323
+    wf["wf_reason"] = "FAIL: beat SPY 0/3 cuts; negative Sharpe"
+    return p
+
+
+class TestWfGateHysteresis:
+    """Default OFF -> no behaviour change. When enabled, ONLY the undefined-Sharpe /
+    zero-trades measurement failure is forgiven; a finite-negative-Sharpe loss never is."""
+
+    def test_undefined_sharpe_flag_off_still_hard(self, tmp_path):
+        sd, cfg = _make_strategy_dir(tmp_path, artifact_payload=_undefined_sharpe_payload())
+        ctx = _ctx(sd, cfg, run_mode="full")  # no wf_gate flag -> default off
+        WfGateMetadataTask().run(ctx)
+        r = ctx.results[-1]
+        assert r.severity == "hard" and r.ok is False
+
+    def test_undefined_sharpe_flag_on_soft_pass(self, tmp_path):
+        sd, cfg = _make_strategy_dir(tmp_path, artifact_payload=_undefined_sharpe_payload())
+        cfg = dict(cfg); cfg["wf_gate"] = {"forgive_undefined_sharpe_when_zero_trades": True}
+        ctx = _ctx(sd, cfg, run_mode="full")
+        WfGateMetadataTask().run(ctx)
+        r = ctx.results[-1]
+        assert r.severity == "soft" and r.ok is True
+        assert r.details.get("wf_gate_hysteresis_forgiven") == "undefined_sharpe_zero_trades"
+
+    def test_finite_negative_sharpe_never_forgiven_even_with_flag(self, tmp_path):
+        # THE safety test: a real (finite-negative) loss must HARD-block even with the flag on.
+        sd, cfg = _make_strategy_dir(tmp_path, artifact_payload=_finite_negative_payload())
+        cfg = dict(cfg); cfg["wf_gate"] = {"forgive_undefined_sharpe_when_zero_trades": True}
+        ctx = _ctx(sd, cfg, run_mode="full")
+        WfGateMetadataTask().run(ctx)
+        r = ctx.results[-1]
+        assert r.severity == "hard" and r.ok is False
+
+    def test_undefined_sharpe_unrelated_reason_not_forgiven(self, tmp_path):
+        # non-finite Sharpe but the reason is NOT a zero-trades/undefined gap -> not forgiven
+        sd, cfg = _make_strategy_dir(tmp_path,
+                                     artifact_payload=_undefined_sharpe_payload(reason="data corruption"))
+        cfg = dict(cfg); cfg["wf_gate"] = {"forgive_undefined_sharpe_when_zero_trades": True}
+        ctx = _ctx(sd, cfg, run_mode="full")
+        WfGateMetadataTask().run(ctx)
+        r = ctx.results[-1]
+        assert r.severity == "hard" and r.ok is False
