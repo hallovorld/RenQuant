@@ -91,7 +91,7 @@ class WfGateMetadataTask(PreflightTask):
             "run_at": wf.get("run_at"),
         }
         if passed is False:
-            return self._fail_with_evidence(wf, details, ctx.run_mode)
+            return self._fail_with_evidence(wf, details, ctx)
         if passed is True:
             return self._validate_passed(wf, details, ctx)
         return _soft_for_sell_only(
@@ -102,14 +102,42 @@ class WfGateMetadataTask(PreflightTask):
             details=details,
         )
 
+    @staticmethod
+    def _is_undefined_sharpe_zero_trades(wf: dict) -> bool:
+        """True iff the WF failure is a MEASUREMENT gap (the backtest produced zero trades,
+        so Sharpe is undefined/non-finite) rather than a finite-negative-Sharpe LOSS. A
+        finite negative Sharpe (e.g. -1.323) is a real underperformance and returns False."""
+        if _finite_float(wf.get("wf_3cut_sharpe_mean")) is not None:
+            return False  # finite Sharpe -> a measured result, never "undefined"
+        reason = str(wf.get("wf_reason") or "").lower()
+        return ("zero trade" in reason) or ("no buys" in reason) or ("undefined" in reason)
+
     def _fail_with_evidence(self, wf: dict, details: dict,
-                            run_mode: str | None) -> PreflightCheck:
+                            ctx: PreflightContext) -> PreflightCheck:
+        run_mode = ctx.run_mode
         if _is_sell_only_run(run_mode):
             return PreflightCheck(
                 self.check_name, "soft", True,
                 "active panel artifact carries failed WF gate evidence; "
                 "sell-only risk exits are allowed, but new buys remain blocked "
                 "until a WF-passing artifact is promoted.",
+                details=details,
+            )
+        # Hysteresis (default OFF): forgive ONLY the undefined-Sharpe / zero-trades MEASUREMENT
+        # failure so a single transient flicker does not HARD-stop the buy phase. A
+        # finite-negative-Sharpe loss is NEVER forgiven. Enable with
+        # config.wf_gate.forgive_undefined_sharpe_when_zero_trades = true.
+        forgive = bool((ctx.config.get("wf_gate") or {}).get(
+            "forgive_undefined_sharpe_when_zero_trades", False))
+        if forgive and self._is_undefined_sharpe_zero_trades(wf):
+            details["wf_gate_hysteresis_forgiven"] = "undefined_sharpe_zero_trades"
+            return PreflightCheck(
+                self.check_name, "soft", True,
+                "WF gate failed only because the walk-forward backtest produced ZERO trades "
+                f"(Sharpe undefined; reason={wf.get('wf_reason')}) — a measurement gap, NOT a "
+                "finite-negative-Sharpe loss. Forgiven by "
+                "wf_gate.forgive_undefined_sharpe_when_zero_trades: buys allowed this run with "
+                "a warning. A finite-negative-Sharpe failure is never forgiven.",
                 details=details,
             )
         return PreflightCheck(
