@@ -169,8 +169,17 @@ PY
 echo "[$(date '+%H:%M:%S')] Freshness: $GATE_REPORT" | tee -a "$LOG"
 
 # ── Step 5: ntfy summary ────────────────────────────────────────────
+# 2026-06-23 silent-degradation fix: the freshness GATE_REPORT (computed above
+# as "STALE_>Nd|..." when any source exceeds the recency gate) was logged but
+# IGNORED by the ✓/✗ decision, which only looked at the fetch return codes. So a
+# run that "succeeded" (RC=0) but produced stale output sent "DATA REFRESH ✓" —
+# exactly how fund_daily sat 121d stale on 2026-06-11 with no alert. Treat a
+# STALE freshness gate as a failure: alert ✗ and exit non-zero so launchd /
+# the operator see it.
 RCS="step1=$STEP1_RC step2=$STEP2_RC step3=$STEP3_RC"
-if [[ $STEP1_RC -ne 0 || $STEP2_RC -ne 0 || $STEP3_RC -ne 0 ]]; then
+FRESH_STALE=0
+case "$GATE_REPORT" in STALE*) FRESH_STALE=1 ;; esac
+if [[ $STEP1_RC -ne 0 || $STEP2_RC -ne 0 || $STEP3_RC -ne 0 || $FRESH_STALE -ne 0 ]]; then
     notify "DATA REFRESH ✗" "$DATE  $RCS  $GATE_REPORT"
     exit 1
 fi
