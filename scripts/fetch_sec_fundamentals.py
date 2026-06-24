@@ -206,6 +206,34 @@ def build_quarterly_panel(raw: pd.DataFrame, cik_to_ticker: dict[int, str]) -> p
     return panel.sort_values(["ticker", "end"]).reset_index(drop=True)
 
 
+def build_daily_index(hist_dates, repo_root, today=None) -> pd.DatetimeIndex:
+    """Daily trading-day index for the fundamentals panel, extended to today.
+
+    2026-06-23 incident: the index was sourced ONLY from
+    ``alpha158_816_dataset.parquet`` — a separately-rebuilt artifact. When THAT
+    dataset went stale (stopped mid-Feb) it silently capped this panel's end
+    date, so a "refresh" produced a fundamentals file that ended weeks in the
+    past and tripped the freshness gate. Always extend the index to the latest
+    trading day so the panel + price-normalised ratios + forward-fill reach the
+    present. Prefers real trading days from the benchmark's fresh ohlcv; falls
+    back to business days if SPY ohlcv is unavailable.
+    """
+    hist = pd.DatetimeIndex(sorted(pd.to_datetime(list(hist_dates)))).normalize()
+    today = (pd.Timestamp(today) if today is not None
+             else pd.Timestamp.today()).normalize()
+    start = hist.max() if len(hist) else today
+    recent = None
+    spy = Path(repo_root) / "data" / "ohlcv" / "SPY" / "1d.parquet"
+    if spy.exists():
+        df = pd.read_parquet(spy)
+        col = df["date"] if "date" in df.columns else df.index
+        d = pd.DatetimeIndex(pd.to_datetime(col)).normalize()
+        recent = d[(d >= start) & (d <= today)]
+    if recent is None or len(recent) == 0:
+        recent = pd.bdate_range(start, today)
+    return hist.union(recent)
+
+
 def forward_fill_to_daily(quarterly: pd.DataFrame,
                           daily_index: pd.DatetimeIndex,
                           tickers: list[str]) -> pd.DataFrame:
@@ -341,10 +369,13 @@ def main():
 
     # Forward fill to daily
     log.info("Forward-filling to daily frequency...")
-    # Use dates from the alpha158 dataset
+    # Historical trading days come from the alpha158 dataset; the END of the
+    # index is extended to today (see build_daily_index docstring).
     alpha158 = pd.read_parquet("data/alpha158_816_dataset.parquet",
                                columns=["date"]).drop_duplicates()
-    daily_index = pd.DatetimeIndex(sorted(alpha158["date"].unique()))
+    daily_index = build_daily_index(alpha158["date"].unique(), REPO_ROOT)
+    log.info("Daily index: %d days, %s .. %s",
+             len(daily_index), daily_index.min().date(), daily_index.max().date())
 
     daily = forward_fill_to_daily(quarterly, daily_index, universe)
     log.info("Daily panel: %d rows, %d tickers", len(daily), daily["ticker"].nunique())
