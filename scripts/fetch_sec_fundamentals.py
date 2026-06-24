@@ -274,11 +274,22 @@ def compute_derived_features(daily: pd.DataFrame,
         result = pd.DataFrame(index=merged.index)
         result["ticker"] = ticker
 
+        # 2026-06-24 BUG FIX: the prior denominator guard `(mktcap + 1e-9)`
+        # turned a divide-by-ZERO (when CommonStockSharesOutstanding is missing
+        # → mktcap ≈ 0) into a HUGE finite value: NetIncome / 1e-9 ≈ 2.7e16. That
+        # poisoned earnings_yield / book_to_price for ~45 tickers (incl. NVDA,
+        # CRWD, SPG, ZS) and, after feature clipping, distorted scoring. A
+        # near-zero / NaN denominator must yield NaN (cleanly imputed
+        # downstream), not 1e16. `_safe_ratio` masks |denom| <= eps → NaN while
+        # leaving every legit (millions-to-trillions $) value intact.
+        def _safe_ratio(num, denom, eps=1.0):
+            return num / denom.where(denom.abs() > eps)
+
         with np.errstate(invalid="ignore", divide="ignore"):
-            result["earnings_yield"]      = ni  / (mktcap + 1e-9)   # E/P, Gu et al. top feature
-            result["book_to_price"]       = eq  / (mktcap + 1e-9)   # B/M, Fama-French
-            result["gross_profitability"] = gp  / (ast    + 1e-9)   # Novy-Marx (2013)
-            result["roe"]                 = ni  / (eq     + 1e-9)   # profitability
+            result["earnings_yield"]      = _safe_ratio(ni, mktcap)  # E/P, Gu et al. top feature
+            result["book_to_price"]       = _safe_ratio(eq, mktcap)  # B/M, Fama-French
+            result["gross_profitability"] = _safe_ratio(gp, ast)     # Novy-Marx (2013)
+            result["roe"]                 = _safe_ratio(ni, eq)      # profitability
             # 2026-05-09 BUG #5 FIX: pct_change(periods=4) on a daily forward-
             # filled series computed change over 4 DAYS (not 4 quarters). On
             # a ffill'd daily series, consecutive days have identical values
