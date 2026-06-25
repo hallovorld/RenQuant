@@ -10,7 +10,12 @@ ifneq ($(strip $(EXECUTE)),)
 SUBREPO_DAILY_ARGS += --execute
 endif
 
-.PHONY: subrepo-doctor subrepo-test subrepo-assemble subrepo-runtime-root subrepo-runtime-sanity subrepo-smoke subrepo-daily-contract subrepo-ops-contract subrepo-pin-ci-green ops-preinstall-ready ops-install-launchagents ops-deployment-ready
+.PHONY: doctor subrepo-doctor subrepo-test subrepo-assemble subrepo-runtime-root subrepo-runtime-sanity subrepo-smoke subrepo-daily-contract subrepo-ops-contract subrepo-pin-ci-green ops-preinstall-ready ops-install-launchagents ops-deployment-ready
+
+# One-command live-system health check: pin/runtime drift, lock integrity,
+# bundle self-consistency, promote-backup hygiene. Exit non-zero on any RED.
+doctor:
+	$(PYTHON) scripts/system_doctor.py
 
 subrepo-doctor:
 	$(PYTHON) scripts/subrepo_doctor.py
