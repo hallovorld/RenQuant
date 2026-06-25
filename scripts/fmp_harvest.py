@@ -8,19 +8,28 @@ Auditable + fail-closed + resumable:
   (with the HTTP code / error type), endpoint URL template, universe hash, started/finished,
   row+ticker counts, and the output sha256.
 - Resumable on the MANIFEST, content/config aware: an endpoint is skipped only when its
-  manifest status == "ok" AND its recorded `path_template` matches the current endpoint
-  AND its recorded `universe_hash` matches the current target list AND either (a) the
-  parquet exists and its sha256 matches the recorded sha256 (data completion) or (b) the
-  manifest is a valid ZERO-DATA record (output == null, rows == 0) — which skips WITHOUT
-  needing a parquet. A partial/errored run, a tampered/stale/missing parquet, or a changed
-  endpoint/universe all re-pull on the next invocation.
-- A re-pull that returns zero rows atomically RETIRES any older parquet (-> `.parquet.retired`)
-  so a later run can never skip on a stale parquet paired with an `output: null` manifest.
+  manifest status == "ok" AND its `manifest_version` matches AND its recorded `path_template`
+  matches the current endpoint AND its recorded `universe_hash` matches the current target
+  list AND either (a) the parquet exists and its sha256 matches the recorded sha256 (data
+  completion) or (b) the manifest is a valid ALLOWED ZERO-DATA record (the full zero-data
+  invariant holds: with_data/errors/tickers/rows all 0, output/sha256 null) — which skips
+  WITHOUT needing a parquet. A partial/errored run, a tampered/stale/missing parquet, or a
+  changed endpoint/universe all re-pull on the next invocation.
+- FAIL-CLOSED on all-target zero data by DEFAULT: an endpoint where every target returns an
+  empty payload (with_data == 0, no errors) is `zero_data_unexpected` — it counts toward the
+  non-zero exit and is NOT accepted as a completion, because an entitlement change, a
+  vendor/schema failure returning empty lists, a wrong endpoint param, or a systemic outage
+  must not silently burn the only paid collection window. Only endpoints explicitly marked
+  `allow_zero_data=True` may record a valid empty completion (none currently are).
+- Preserve the last verified artifact: a suspicious refresh (zero_data_unexpected, or any
+  http/fetch error) NEVER retires the existing good parquet/manifest — the prior verified
+  state stands until a replacement passes its acceptance rule. Only an ALLOWED zero-data
+  completion atomically RETIRES an older parquet (-> `.parquet.retired`).
 - Writes are atomic (tmp file -> os.replace) so an interruption never leaves a half file
   that a later run would trust.
-- Fail-closed: any http_error/fetch_error makes the run exit non-zero unless --allow-errors.
-  `no_data` (e.g. an ETF with no fundamentals, a name with no dividends) is EXPECTED and
-  does not fail the run.
+- Fail-closed: any http_error/fetch_error OR unexpected all-target zero data makes the run
+  exit non-zero unless --allow-errors. Per-symbol `no_data` (e.g. an ETF with no fundamentals,
+  a name with no dividends) mixed with real data is EXPECTED and does not fail the run.
 - Bounded retry/backoff on 429/5xx/timeouts.
 
 Per-ticker endpoints are pulled for the alpha158 training universe (291); treasury is
@@ -43,41 +52,54 @@ from pathlib import Path
 BASE = "https://financialmodelingprep.com/stable"
 RETRY_CODES = {429, 500, 502, 503, 504}
 
+# Schema / state-machine version stamped into every manifest. A zero-data
+# completion is only honored as a valid skip when this matches (so a manifest
+# written by an older state machine is re-pulled, never silently trusted).
+MANIFEST_VERSION = 2
+
 # Macro indicators verified available on Starter 2026-06-25 (each a single call;
 # rows already carry a `name` field, so we stamp ticker=<indicator>).
 ECON_NAMES = ("GDP", "realGDP", "CPI", "inflationRate", "unemploymentRate",
               "federalFunds", "retailSales", "consumerSentiment")
 
-# (endpoint_key, path_template, per_ticker?) — path uses {sym} for per-ticker.
+# (endpoint_key, path_template, per_ticker?, allow_zero_data) — path uses {sym}
+# for per-ticker. `allow_zero_data`: when True an all-target-empty pull is a VALID
+# completion (skip on rerun); when False (the DEFAULT) an all-target-empty pull is
+# treated as `zero_data_unexpected` and FAILS CLOSED — an entitlement change, a
+# vendor/schema failure returning empty lists, a wrong endpoint param, or a systemic
+# outage must NOT be silently accepted during the one-month paid window.
 # NOTE: institutional-ownership is intentionally omitted — verified 2026-06-25 to be
 # plan-locked above Starter (402 "Restricted Endpoint"); keeping it would always fail-close.
+# NOTE: every shipped endpoint is allow_zero_data=False — none is known to legitimately
+# return all-empty across the whole 291 universe (each has broad real coverage). If a
+# future endpoint is genuinely all-empty by design, mark it True with a justification.
 ENDPOINTS = [
     # A. analyst (high value — feeds the retrain)
-    ("grades_historical", "grades-historical?symbol={sym}", True),
-    ("grades_consensus", "grades-consensus?symbol={sym}", True),
-    ("analyst_estimates", "analyst-estimates?symbol={sym}&period=annual", True),
-    ("price_target_consensus", "price-target-consensus?symbol={sym}", True),
-    ("price_target_summary", "price-target-summary?symbol={sym}", True),
+    ("grades_historical", "grades-historical?symbol={sym}", True, False),
+    ("grades_consensus", "grades-consensus?symbol={sym}", True, False),
+    ("analyst_estimates", "analyst-estimates?symbol={sym}&period=annual", True, False),
+    ("price_target_consensus", "price-target-consensus?symbol={sym}", True, False),
+    ("price_target_summary", "price-target-summary?symbol={sym}", True, False),
     # B. fundamentals
-    ("income_statement", "income-statement?symbol={sym}&period=annual&limit=20", True),
-    ("balance_sheet", "balance-sheet-statement?symbol={sym}&period=annual&limit=20", True),
-    ("cash_flow", "cash-flow-statement?symbol={sym}&period=annual&limit=20", True),
-    ("ratios", "ratios?symbol={sym}&period=annual&limit=20", True),
-    ("key_metrics", "key-metrics?symbol={sym}&period=annual&limit=20", True),
-    ("financial_growth", "financial-growth?symbol={sym}&period=annual&limit=20", True),
-    ("enterprise_values", "enterprise-values?symbol={sym}&limit=20", True),
-    ("market_cap", "historical-market-capitalization?symbol={sym}", True),
+    ("income_statement", "income-statement?symbol={sym}&period=annual&limit=20", True, False),
+    ("balance_sheet", "balance-sheet-statement?symbol={sym}&period=annual&limit=20", True, False),
+    ("cash_flow", "cash-flow-statement?symbol={sym}&period=annual&limit=20", True, False),
+    ("ratios", "ratios?symbol={sym}&period=annual&limit=20", True, False),
+    ("key_metrics", "key-metrics?symbol={sym}&period=annual&limit=20", True, False),
+    ("financial_growth", "financial-growth?symbol={sym}&period=annual&limit=20", True, False),
+    ("enterprise_values", "enterprise-values?symbol={sym}&limit=20", True, False),
+    ("market_cap", "historical-market-capitalization?symbol={sym}", True, False),
     # C. earnings & events
-    ("earnings", "earnings?symbol={sym}", True),
-    ("dividends", "dividends?symbol={sym}", True),
-    ("splits", "splits?symbol={sym}", True),
+    ("earnings", "earnings?symbol={sym}", True, False),
+    ("dividends", "dividends?symbol={sym}", True, False),
+    ("splits", "splits?symbol={sym}", True, False),
     # D. ownership & flow
-    ("insider_trading", "insider-trading/search?symbol={sym}", True),
-    ("shares_float", "shares-float?symbol={sym}", True),
+    ("insider_trading", "insider-trading/search?symbol={sym}", True, False),
+    ("shares_float", "shares-float?symbol={sym}", True, False),
     # F. macro (universe-agnostic). A tuple/list `targets` iterates those values as
     # {sym} instead of the ticker universe — economic_indicators is one call per name.
-    ("treasury_rates", "treasury-rates", False),
-    ("economic_indicators", "economic-indicators?name={sym}", ECON_NAMES),
+    ("treasury_rates", "treasury-rates", False, False),
+    ("economic_indicators", "economic-indicators?name={sym}", ECON_NAMES, False),
 ]
 
 
@@ -165,12 +187,50 @@ def _universe_hash(targets) -> str:
     return h.hexdigest()
 
 
+def _is_valid_zero_data_completion(man, *, tmpl=None, targets=None) -> bool:
+    """Full ZERO-DATA invariant: only an explicitly-allowed, internally-consistent,
+    config-matched empty completion may be honored as a skippable state.
+
+    EVERY clause must hold (any inconsistency → re-pull, never silently trusted):
+      * manifest_version matches the current state machine; AND
+      * allow_zero_data is True (endpoint explicitly permitted to be all-empty); AND
+      * status == "ok"; AND
+      * with_data == 0 AND errors == 0 (http_error + fetch_error) AND tickers == 0
+        AND rows == 0 (truly empty, no partial/errored residue); AND
+      * requested == no_data (every target classified as no_data, none unaccounted); AND
+      * output is None AND sha256 is None (no parquet, no checksum); AND
+      * path_template / universe_hash match the current endpoint + target list.
+    """
+    if man.get("manifest_version") != MANIFEST_VERSION:
+        return False
+    if not man.get("allow_zero_data"):
+        return False
+    if man.get("status") != "ok":
+        return False
+    if man.get("output") is not None or man.get("sha256") is not None:
+        return False
+    counts = (int(man.get("with_data") or 0), int(man.get("http_error") or 0),
+              int(man.get("fetch_error") or 0), int(man.get("tickers") or 0),
+              int(man.get("rows") or 0))
+    if any(counts):
+        return False
+    requested = int(man.get("requested") or 0)
+    if requested == 0 or int(man.get("no_data") or 0) != requested:
+        return False
+    if tmpl is not None and man.get("path_template") != tmpl:
+        return False
+    if targets is not None and man.get("universe_hash") != _universe_hash(targets):
+        return False
+    return True
+
+
 def _manifest_ok(manifest_path: Path, *, tmpl=None, targets=None,
                  parquet_path: Path | None = None) -> bool:
     """Decide whether a recorded manifest lets us SKIP a re-pull.
 
     Content/config aware — a manifest is "ok to skip" only when ALL hold:
       * status == "ok"; AND
+      * its recorded `manifest_version` matches the current state machine; AND
       * its recorded `path_template` matches the current endpoint template (request
         config / endpoint changed → re-pull); AND
       * its recorded `universe_hash` matches the current target list (universe
@@ -178,9 +238,11 @@ def _manifest_ok(manifest_path: Path, *, tmpl=None, targets=None,
       * the data-vs-zero-data shape is internally consistent and verified:
           - DATA completion  (output set): the parquet must exist AND its sha256
             must equal the recorded sha256 (missing/tampered/stale parquet → re-pull);
-          - ZERO-DATA completion (output is null, rows == 0): a VALID completed
-            state — the manifest itself is the completion record, so we skip WITHOUT
-            requiring any parquet.
+          - ZERO-DATA completion (output is null): honored ONLY when the FULL allowed
+            zero-data invariant holds (see `_is_valid_zero_data_completion`) — an
+            explicitly-allowed, internally-consistent, config-matched empty record.
+            An unexpected all-empty pull is `zero_data_unexpected` (not "ok") so it
+            never reaches here.
 
     When called with only a path (no tmpl/targets) it falls back to a pure status
     check (used by the unit gate test); the harvest loop always passes config.
@@ -195,14 +257,16 @@ def _manifest_ok(manifest_path: Path, *, tmpl=None, targets=None,
         return False
     if tmpl is None and targets is None:
         return True  # pure status gate (no config to validate against)
+    if man.get("manifest_version") != MANIFEST_VERSION:
+        return False
     if tmpl is not None and man.get("path_template") != tmpl:
         return False
     if targets is not None and man.get("universe_hash") != _universe_hash(targets):
         return False
     output = man.get("output")
     if output is None:
-        # Zero-data completion: manifest is the record; rows must be 0, no parquet needed.
-        return int(man.get("rows") or 0) == 0
+        # Zero-data completion: honor ONLY a fully valid allowed-empty record.
+        return _is_valid_zero_data_completion(man, tmpl=tmpl, targets=targets)
     # Data completion: the parquet must exist and match the recorded sha256.
     if parquet_path is None:
         parquet_path = manifest_path.parent / output
@@ -212,11 +276,17 @@ def _manifest_ok(manifest_path: Path, *, tmpl=None, targets=None,
 
 
 def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
-                     retries, backoff, get=None):
+                     retries, backoff, get=None, allow_zero_data=False):
     """Pull one endpoint, write parquet + manifest atomically, return the manifest.
 
     `get` is injectable so tests can drive the classify/write/manifest path offline.
     Resolved at call time (not bound as a default) so a monkeypatched `_get` is honored.
+
+    `allow_zero_data`: when False (the DEFAULT) an all-target-empty pull is treated as
+    `zero_data_unexpected` — it FAILS CLOSED (counts toward the non-zero exit) and the
+    existing verified parquet is PRESERVED (a suspicious refresh must not retire the last
+    good artifact). When True an all-empty pull is a valid zero-data completion (status
+    "ok", output null) and any older parquet is atomically retired.
     """
     import pandas as pd  # noqa: PLC0415
 
@@ -246,19 +316,37 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
 
     df = pd.DataFrame(rows)
     dst = out / f"{key_name}_291.parquet"
+    bad = counts["http_error"] + counts["fetch_error"]
+    # All-target zero data with no errors: legitimate only if this endpoint is
+    # explicitly allowed to be all-empty; otherwise it is SUSPICIOUS (entitlement
+    # change / vendor-schema failure / wrong param / outage) → fail closed.
+    zero_data = (not len(df)) and bad == 0
+    zero_data_unexpected = zero_data and not allow_zero_data
+
     if len(df):
         df["fetched_at"] = fetched
         df["source"] = f"fmp_{key_name}"
         _atomic_write_parquet(df, dst)
-    elif dst.exists():
-        # Zero-data this run but an OLDER parquet is on disk: atomically RETIRE it so
-        # a later run can't skip on a stale parquet + an output==null manifest.
+    elif zero_data and allow_zero_data and dst.exists():
+        # ALLOWED zero-data completion while an OLDER parquet is on disk: atomically
+        # RETIRE it so a later run can't skip on a stale parquet + an output==null
+        # manifest. (Only an accepted-legitimate empty result may retire.)
         os.replace(dst, dst.with_suffix(".parquet.retired"))
-    bad = counts["http_error"] + counts["fetch_error"]
+    # else (zero_data_unexpected OR errors): PRESERVE the last verified parquet —
+    # a suspicious/failed refresh must not retire the prior good artifact.
+
+    if bad:
+        status = "errors"
+    elif zero_data_unexpected:
+        status = "zero_data_unexpected"
+    else:
+        status = "ok"
     manifest = {
+        "manifest_version": MANIFEST_VERSION,
         "endpoint": key_name,
         "path_template": tmpl,
         "url_base": BASE,
+        "allow_zero_data": bool(allow_zero_data),
         "requested": len(targets),
         "universe_hash": _universe_hash(targets),
         **counts,
@@ -269,7 +357,7 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
         "sha256": _sha256(dst) if len(df) else None,
         "started_at": started,
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "status": "errors" if bad else "ok",
+        "status": status,
     }
     _atomic_write_json(manifest, out / f"{key_name}_291.manifest.json")
     return manifest
@@ -293,25 +381,27 @@ def harvest(out: Path, rate: float, only, key, repo, retries, backoff,
     eps = [e for e in ENDPOINTS if (only is None or only in e[0])]
     print(f"universe={len(uni)} endpoints={len(eps)} → {out}", flush=True)
     failed = []
-    for key_name, tmpl, per_ticker in eps:
+    for key_name, tmpl, per_ticker, allow_zero in eps:
         manifest_path = out / f"{key_name}_291.manifest.json"
         targets = _targets_for(per_ticker, uni)
-        # Content/config-aware skip: ok manifest + matching template + matching
-        # universe + (verified parquet sha256 OR a valid zero-data record).
+        # Content/config-aware skip: ok manifest + matching version + matching
+        # template + matching universe + (verified parquet sha256 OR a valid
+        # allowed zero-data record).
         if _manifest_ok(manifest_path, tmpl=tmpl, targets=targets,
                         parquet_path=out / f"{key_name}_291.parquet"):
             print(f"  skip {key_name} (manifest ok, verified)", flush=True)
             continue
         m = harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key,
-                             fetched, retries, backoff)
+                             fetched, retries, backoff, allow_zero_data=allow_zero)
         print(f"  {key_name}: tickers={m['tickers']} rows={m['rows']} "
               f"no_data={m['no_data']} http_err={m['http_error']} "
               f"fetch_err={m['fetch_error']} → {m['status']}", flush=True)
         if m["status"] != "ok":
             failed.append(key_name)
     if failed and not allow_errors:
-        print(f"HARVEST FAILED — endpoints with errors: {failed} "
-              f"(rerun re-pulls them; --allow-errors to tolerate)", flush=True)
+        print(f"HARVEST FAILED — endpoints with errors/unexpected-zero-data: {failed} "
+              f"(rerun re-pulls them; verified artifacts preserved; "
+              f"--allow-errors to tolerate)", flush=True)
         return 1
     print(f"HARVEST DONE (errored={failed or 'none'})", flush=True)
     return 0

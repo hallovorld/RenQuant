@@ -77,15 +77,54 @@ def test_harvest_endpoint_list_targets_iterates_names(tmp_path):
     assert set(df["ticker"]) == {"GDP", "CPI"}      # stamped by indicator name, not AAA/BBB
 
 
-def test_harvest_endpoint_no_data_is_ok_no_parquet(tmp_path):
+def test_harvest_endpoint_partial_no_data_is_ok(tmp_path):
+    # Per-symbol no_data MIXED with real data does NOT fail — only ALL-target zero
+    # data is suspicious. AAA has data, BBB is empty → status ok, BBB just absent.
+    uni = ["AAA", "BBB"]
+    get = _fake_get({"AAA": [{"x": 1}]}, [])  # BBB → empty list (no_data)
+    m = fh.harvest_endpoint("mixed", "mixed?symbol={sym}", True, uni, tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    assert m["status"] == "ok"
+    assert m["with_data"] == 1 and m["no_data"] == 1 and m["rows"] == 1
+    assert m["output"] == "mixed_291.parquet"
+    assert (tmp_path / "mixed_291.parquet").exists()
+
+
+def test_harvest_endpoint_all_zero_data_default_fails_closed(tmp_path):
+    # DEFAULT (allow_zero_data=False): every target empty → NOT a success.
+    # An entitlement change / vendor-schema failure / wrong param / outage must
+    # fail closed, not be permanently accepted as ok during the paid window.
     uni = ["AAA", "BBB"]
     get = _fake_get({}, [])  # every symbol returns empty list
     m = fh.harvest_endpoint("none", "none?symbol={sym}", True, uni, tmp_path,
                             0.0, "k", "2026-06-25", 0, 0.0, get=get)
-    assert m["status"] == "ok"          # no_data does NOT fail
-    assert m["no_data"] == 2 and m["rows"] == 0
+    assert m["status"] == "zero_data_unexpected"   # fails closed
+    assert m["allow_zero_data"] is False
+    assert m["no_data"] == 2 and m["rows"] == 0 and m["with_data"] == 0
     assert m["output"] is None and m["sha256"] is None
     assert not (tmp_path / "none_291.parquet").exists()
+    # NOT a skippable state: the loop must re-pull it next run.
+    assert fh._manifest_ok(tmp_path / "none_291.manifest.json",
+                           tmpl="none?symbol={sym}", targets=["AAA", "BBB"]) is False
+
+
+def test_harvest_endpoint_all_zero_data_allowed_is_ok(tmp_path):
+    # EXPLICITLY allowed empty endpoint → valid zero-data completion (status ok,
+    # full invariant satisfied), and a later run SKIPS it (no re-pull forever).
+    uni = ["AAA", "BBB"]
+    get = _fake_get({}, [])  # every symbol returns empty list
+    m = fh.harvest_endpoint("ok_empty", "ok_empty?symbol={sym}", True, uni, tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get,
+                            allow_zero_data=True)
+    assert m["status"] == "ok"
+    assert m["allow_zero_data"] is True
+    assert m["no_data"] == 2 and m["requested"] == 2 and m["rows"] == 0
+    assert m["with_data"] == 0 and m["tickers"] == 0
+    assert m["output"] is None and m["sha256"] is None
+    assert m["manifest_version"] == fh.MANIFEST_VERSION
+    assert not (tmp_path / "ok_empty_291.parquet").exists()
+    assert fh._manifest_ok(tmp_path / "ok_empty_291.manifest.json",
+                           tmpl="ok_empty?symbol={sym}", targets=["AAA", "BBB"]) is True
 
 
 def test_harvest_endpoint_http_error_sets_errors_status(tmp_path):
@@ -122,10 +161,11 @@ def test_manifest_ok_gate(tmp_path):
     assert fh._manifest_ok(p) is True                  # ok → skip (pure status gate)
 
 
-def _write_endpoint(tmp_path, key, tmpl, targets, get):
-    """Run one endpoint offline and return (manifest_path, parquet_path)."""
+def _write_endpoint(tmp_path, key, tmpl, targets, get, allow_zero_data=False):
+    """Run one endpoint offline and return (manifest_path, parquet_path, manifest)."""
     m = fh.harvest_endpoint(key, tmpl, list(targets), [], tmp_path,
-                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get,
+                            allow_zero_data=allow_zero_data)
     return (tmp_path / f"{key}_291.manifest.json",
             tmp_path / f"{key}_291.parquet", m)
 
@@ -164,10 +204,11 @@ def test_skip_invalidated_by_changed_template_or_universe(tmp_path):
 
 
 def test_zero_data_is_valid_completion_and_skips_without_parquet(tmp_path):
-    # A legitimately empty endpoint writes ok + output null + no parquet, and a
+    # An EXPLICITLY-ALLOWED empty endpoint writes ok + output null + no parquet, and a
     # later run must SKIP it (manifest is the completion record) — not re-pull forever.
     get = _fake_get({}, [])  # every symbol returns empty list
-    mp, pp, m = _write_endpoint(tmp_path, "none", "none?symbol={sym}", ("AAA", "BBB"), get)
+    mp, pp, m = _write_endpoint(tmp_path, "none", "none?symbol={sym}", ("AAA", "BBB"),
+                                get, allow_zero_data=True)
     assert m["status"] == "ok" and m["output"] is None and m["rows"] == 0
     assert not pp.exists()
     assert fh._manifest_ok(mp, tmpl="none?symbol={sym}",
@@ -177,38 +218,111 @@ def test_zero_data_is_valid_completion_and_skips_without_parquet(tmp_path):
                            targets=["AAA", "CCC"], parquet_path=pp) is False
 
 
-def test_zero_data_rerun_retires_stale_parquet(tmp_path):
-    # First run has data → parquet written.
+def test_zero_data_manifest_invariant_rejects_inconsistent_records(tmp_path):
+    # A valid allowed-empty manifest must satisfy the FULL invariant. Mutating any
+    # field that breaks internal consistency makes it a NON-skippable (re-pull) state,
+    # so a corrupt/forged/stale "successful empty" record is never silently trusted.
+    get = _fake_get({}, [])
+    mp, pp, m = _write_endpoint(tmp_path, "inv", "inv?symbol={sym}", ("AAA", "BBB"),
+                                get, allow_zero_data=True)
+    base = json.loads(mp.read_text())
+    assert fh._manifest_ok(mp, tmpl="inv?symbol={sym}", targets=["AAA", "BBB"]) is True
+
+    def _check_rejected(**override):
+        man = dict(base, **override)
+        mp.write_text(json.dumps(man))
+        assert fh._manifest_ok(mp, tmpl="inv?symbol={sym}", targets=["AAA", "BBB"]) is False
+
+    _check_rejected(allow_zero_data=False)        # not actually allowed
+    _check_rejected(manifest_version=999)         # wrong/old state-machine version
+    _check_rejected(with_data=1)                  # claims data but output null
+    _check_rejected(rows=5)                        # nonzero rows with null output
+    _check_rejected(tickers=3)                     # nonzero tickers
+    _check_rejected(http_error=1)                  # an error slipped in
+    _check_rejected(fetch_error=1)
+    _check_rejected(no_data=1)                     # no_data != requested (unaccounted)
+    _check_rejected(output="inv_291.parquet")     # output set but no sha → inconsistent
+    _check_rejected(sha256="deadbeef")             # sha set with null output
+    _check_rejected(requested=0, no_data=0)        # nothing requested → not a completion
+
+
+def test_unexpected_zero_data_preserves_last_verified_parquet(tmp_path):
+    # First run has data → verified parquet written.
     get1 = _fake_get({"AAA": [{"x": 1}]}, [])
     _, pp, m1 = _write_endpoint(tmp_path, "ev", "ev?symbol={sym}", ("AAA", "BBB"), get1)
     assert pp.exists() and m1["output"] == "ev_291.parquet"
-    # Second run returns zero rows for everyone → old parquet must be RETIRED, not left
-    # behind to let a future run skip on a stale parquet + output:null manifest.
+    sha_first = m1["sha256"]
+    # Second run returns zero rows for everyone on a NON-allowed endpoint → suspicious.
+    # The last verified parquet must be PRESERVED (NOT retired), and the run fails closed
+    # so the next invocation re-pulls instead of canonicalizing a suspicious empty state.
     get2 = _fake_get({}, [])
     mp, pp2, m2 = _write_endpoint(tmp_path, "ev", "ev?symbol={sym}", ("AAA", "BBB"), get2)
+    assert m2["status"] == "zero_data_unexpected"
+    assert pp2.exists()                                       # verified parquet preserved
+    assert not (tmp_path / "ev_291.parquet.retired").exists() # NOT retired
+    assert fh._sha256(pp2) == sha_first                       # untouched
+    # The unexpected-empty manifest is NOT a skippable state → re-pull next run.
+    assert fh._manifest_ok(mp, tmpl="ev?symbol={sym}",
+                           targets=["AAA", "BBB"], parquet_path=pp2) is False
+
+
+def test_allowed_zero_data_rerun_retires_stale_parquet(tmp_path):
+    # First run has data → parquet written.
+    get1 = _fake_get({"AAA": [{"x": 1}]}, [])
+    _, pp, m1 = _write_endpoint(tmp_path, "ev", "ev?symbol={sym}", ("AAA", "BBB"),
+                                get1, allow_zero_data=True)
+    assert pp.exists() and m1["output"] == "ev_291.parquet"
+    # Second run returns zero rows for everyone on an ALLOWED-empty endpoint → the
+    # replacement state is accepted, so the old parquet is RETIRED (not deleted), and
+    # the zero-data record becomes a valid skip.
+    get2 = _fake_get({}, [])
+    mp, pp2, m2 = _write_endpoint(tmp_path, "ev", "ev?symbol={sym}", ("AAA", "BBB"),
+                                  get2, allow_zero_data=True)
     assert m2["status"] == "ok" and m2["output"] is None and m2["rows"] == 0
     assert not pp2.exists()                              # stale parquet gone
     assert (tmp_path / "ev_291.parquet.retired").exists()  # retired, not deleted
-    # And the resulting zero-data manifest is a valid skip (no parquet required).
     assert fh._manifest_ok(mp, tmpl="ev?symbol={sym}",
                            targets=["AAA", "BBB"], parquet_path=pp2) is True
 
 
-def test_harvest_loop_skips_zero_data_endpoint_without_repull(tmp_path, monkeypatch):
-    # End-to-end through harvest(): a zero-data endpoint completes ok once, then a
-    # second harvest() must SKIP it (no second pull), proving no "re-pull forever".
+def test_harvest_loop_systemic_empty_fails_closed_and_repulls(tmp_path, monkeypatch):
+    # End-to-end through harvest(): with EVERY target returning empty on a non-allowed
+    # endpoint (systemic empty), the run must FAIL CLOSED (non-zero rc) and the next
+    # run must RE-PULL — never accept the suspicious empty as a permanent completion.
     monkeypatch.setattr(fh, "_universe", lambda repo: ["AAA", "BBB"])
     pulls = {"n": 0}
 
     def counting_get(path, key, retries, backoff):
         pulls["n"] += 1
-        return []   # always empty → no_data
+        return []   # always empty → no_data across the whole universe
+
+    monkeypatch.setattr(fh, "_get", counting_get)
+    # "treasury" matches the treasury_rates endpoint (allow_zero_data=False).
+    rc1 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
+    assert rc1 == 1                                      # fails closed
+    after_first = pulls["n"]
+    assert after_first >= 1                              # it pulled once
+    rc2 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
+    assert rc2 == 1                                      # still fails closed
+    assert pulls["n"] > after_first                      # second run DID re-pull (not skipped)
+
+
+def test_harvest_loop_skips_verified_data_endpoint_without_repull(tmp_path, monkeypatch):
+    # End-to-end: a data endpoint completes ok once, then a second harvest() SKIPS it
+    # (no second pull) on the verified parquet sha256 — proving valid completions don't
+    # re-pull while suspicious empties (above) do.
+    monkeypatch.setattr(fh, "_universe", lambda repo: ["AAA", "BBB"])
+    pulls = {"n": 0}
+
+    def counting_get(path, key, retries, backoff):
+        pulls["n"] += 1
+        return [{"v": 1}]   # always returns data
 
     monkeypatch.setattr(fh, "_get", counting_get)
     rc1 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
     assert rc1 == 0
     after_first = pulls["n"]
-    assert after_first >= 1                              # it pulled once
+    assert after_first >= 1
     rc2 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
     assert rc2 == 0
     assert pulls["n"] == after_first                     # second run did NOT re-pull

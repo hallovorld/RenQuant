@@ -18,20 +18,29 @@ pull. This PR is the plan to discuss before the broad pull, plus the resumable h
   8-name list call). One tidy parquet + sidecar `<endpoint>_291.manifest.json` per endpoint
   under `data/fmp_harvest/`, every row stamped `ticker`/`fetched_at`/`source`. Atomic writes
   (tmp→replace). **Content/config-aware skip**: an endpoint is skipped only when its manifest
-  `status: ok` AND its recorded `path_template` matches the current endpoint AND its recorded
-  `universe_hash` matches the current target list AND **either** the parquet exists with a
-  matching sha256 (data completion) **or** it is a valid ZERO-DATA record (`output: null`,
-  `rows: 0`) — which skips without needing a parquet (manifest is the completion record).
-  A tampered/stale/missing parquet, a changed endpoint/config, or a changed universe re-pull.
-  A re-pull returning zero rows atomically **retires** any older parquet (→ `.parquet.retired`)
-  so a later run can't skip on a stale parquet. Error samples record the **HTTP code / error
-  type**, not just the ticker. Bounded retry/backoff on 429/5xx/timeout. Exits non-zero on any
-  http/fetch error unless `--allow-errors`. Key from `FMP_API_KEY` (`.env`, never committed).
-- `tests/test_fmp_harvest.py` — 18 unit tests (classify list/dict/empty/http/fetch; atomic
-  write+manifest; no_data≠failure + valid zero-data completion; errors→non-ok status; error
-  samples carry http code / err type; content/config-aware skip — sha256 match/mismatch,
-  changed-template & changed-universe invalidation; zero-data rerun retires stale parquet;
-  end-to-end loop skips a zero-data endpoint without re-pulling; bounded retry).
+  `status: ok` AND its `manifest_version` matches AND its recorded `path_template` matches the
+  current endpoint AND its recorded `universe_hash` matches the current target list AND
+  **either** the parquet exists with a matching sha256 (data completion) **or** it is a valid
+  ALLOWED zero-data record satisfying the full invariant (`output`/`sha256` null,
+  `with_data`/`errors`/`tickers`/`rows` all 0, `requested == no_data`, `allow_zero_data: true`)
+  — which skips without needing a parquet. A tampered/stale/missing parquet, a changed
+  endpoint/config, a changed universe, or an inconsistent/forged zero-data record re-pull.
+  **All-target zero data FAILS CLOSED by default** (`zero_data_unexpected`, non-zero exit) —
+  per-endpoint `allow_zero_data` policy gates the only legitimate empty-completion path, and
+  every shipped endpoint is `False`. A **suspicious refresh preserves the last verified
+  parquet/manifest** (no retire on `zero_data_unexpected`/errors); only an accepted allowed
+  zero-data completion atomically **retires** an older parquet (→ `.parquet.retired`). Error
+  samples record the **HTTP code / error type**, not just the ticker. Bounded retry/backoff on
+  429/5xx/timeout. Exits non-zero on any http/fetch error **or** unexpected all-target zero
+  data unless `--allow-errors`. Key from `FMP_API_KEY` (`.env`, never committed).
+- `tests/test_fmp_harvest.py` — 23 unit tests (classify list/dict/empty/http/fetch; atomic
+  write+manifest; partial no_data≠failure; **all-target zero-data default fail-closed** +
+  **explicit allow_zero_data success**; errors→non-ok status; error samples carry http code /
+  err type; content/config-aware skip — sha256 match/mismatch, changed-template &
+  changed-universe invalidation; **full zero-data manifest-invariant rejection** of
+  inconsistent/forged empties; **preservation of the last verified parquet on a rejected
+  empty refresh** vs. retire-on-allowed-empty; end-to-end loop — systemic-empty fails closed &
+  re-pulls, verified-data endpoint skips without re-pull; bounded retry).
 
 ## Status (as of this PR)
 - **Analyst (A) already harvested** full 291: `grades_historical` 283/291 (23,931 rows,
@@ -65,8 +74,29 @@ Round 2 (this revision):
 4. **Richer error samples** — each sample now records the HTTP code (`http`) or error type
    (`err`) alongside the ticker, threaded from `_get`'s `{"_http"}/{"_err"}` sentinels.
 5. **Counts reconciled** — script has **20 endpoints** (18 per-ticker + treasury +
-   economic-indicators); tests are **18** (matches `test_fmp_harvest.py`); docs updated
-   to match the code.
+   economic-indicators); docs updated to match the code.
+
+Round 3 (this revision) — *new fail-open blocker: all-target zero data must not be silently
+accepted (missingness is data; measure & gate it per endpoint)*:
+1. **Per-endpoint completion policy** — each endpoint carries an `allow_zero_data` flag;
+   **default `False`**. An all-target-empty pull (no errors) on a `False` endpoint is now
+   `zero_data_unexpected` → counts toward the non-zero exit (fail closed). Every shipped
+   endpoint is `False` (none is known to legitimately return all-empty across the 291
+   universe); a future genuinely-empty endpoint can opt in with a justification.
+2. **Last verified artifact preserved** — a suspicious refresh (`zero_data_unexpected`, or
+   any http/fetch error) **no longer retires** the existing good parquet/manifest. The prior
+   verified state stands; only an *accepted allowed* zero-data completion retires the old
+   parquet (→ `.parquet.retired`). This stops a suspicious empty from becoming canonical.
+3. **Full zero-data invariant + schema version** — added `manifest_version` (=2) and an
+   `allow_zero_data` field to every manifest. A zero-data record is honored as a skip ONLY
+   when the whole invariant holds: `manifest_version` matches, `allow_zero_data: true`,
+   `status: ok`, `with_data == http_error == fetch_error == tickers == rows == 0`,
+   `requested == no_data`, and `output`/`sha256` both null, with matching template/universe.
+   Any inconsistency (forged/stale/corrupt) re-pulls instead of being trusted.
+4. **Tests** — the 4 required cases: systemic-empty default failure (+ loop re-pull),
+   explicit allowed-empty success (+ skip-on-rerun), preservation of the last verified
+   parquet on a rejected empty refresh, and invalid/inconsistent zero-data manifest
+   rejection. Suite is now **23 tests** (was 18); all pass.
 
 ## Scope discipline
 `/data/` is already gitignored (`.gitignore:41`) → the parquet inventory stays local;

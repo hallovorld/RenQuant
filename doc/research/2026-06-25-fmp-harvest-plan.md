@@ -65,16 +65,34 @@ is least clear; opt-in via a follow-up, flagged not silently dropped.
 
 ## Execution & state
 `scripts/fmp_harvest.py --out data/fmp_harvest --rate 0.2`. **Manifest-resumable, content/
-config aware** — an endpoint is skipped only when its manifest `status: ok` AND its recorded
-`path_template` matches the current endpoint AND its recorded `universe_hash` matches the
-current target list AND **either** (a) the parquet exists and its sha256 equals the recorded
-sha256 (data completion) **or** (b) it is a valid ZERO-DATA record (`output: null`, `rows: 0`),
-which skips *without* needing a parquet. A tampered/stale/missing parquet, a changed
-endpoint/request-config, or a changed universe all re-pull. A re-pull that returns zero rows
-atomically **retires** any older parquet (→ `.parquet.retired`) so a later run can't skip on a
-stale parquet paired with an `output: null` manifest. `--only <substr>` targets one group;
-fail-closed by default — any http/fetch error exits non-zero unless `--allow-errors`. Run once
-this month; then cancel the paid plan and let Finnhub (#408) carry the free daily deltas.
+config aware** — an endpoint is skipped only when its manifest `status: ok` AND its
+`manifest_version` matches AND its recorded `path_template` matches the current endpoint AND
+its recorded `universe_hash` matches the current target list AND **either** (a) the parquet
+exists and its sha256 equals the recorded sha256 (data completion) **or** (b) it is a valid
+ALLOWED ZERO-DATA record satisfying the full invariant (`output: null`, `sha256: null`,
+`with_data`/`http_error`/`fetch_error`/`tickers`/`rows` all 0, `requested == no_data`,
+`allow_zero_data: true`), which skips *without* needing a parquet. A tampered/stale/missing
+parquet, a changed endpoint/request-config, a changed universe, or an inconsistent/forged
+zero-data record all re-pull.
+
+**All-target zero data FAILS CLOSED by default** (*missingness is data*). Per-symbol
+`no_data` mixed with real data is expected, but an endpoint where **every** target returns
+empty is `zero_data_unexpected` — it counts toward the non-zero exit and is **not** accepted
+as a completion, because that can mean an entitlement change, a vendor/schema failure
+returning empty lists, a wrong endpoint param, or a systemic outage, and permanently
+accepting it would burn the only paid collection window while reporting success. Each
+endpoint carries an `allow_zero_data` flag (per-endpoint completion policy); **every shipped
+endpoint is `False`** — none is known to legitimately return all-empty across the 291
+universe. Only an explicitly `allow_zero_data: true` endpoint may record a valid empty
+completion (after the full-invariant check above).
+
+**The last verified artifact is preserved.** A suspicious refresh (`zero_data_unexpected`,
+or any http/fetch error) **never** retires the existing good parquet/manifest — the prior
+verified state stands until a replacement passes its acceptance rule. Only an accepted
+*allowed* zero-data completion atomically **retires** an older parquet (→ `.parquet.retired`).
+`--only <substr>` targets one group; fail-closed by default — any http/fetch error **or**
+unexpected all-target zero data exits non-zero unless `--allow-errors`. Run once this month;
+then cancel the paid plan and let Finnhub (#408) carry the free daily deltas.
 
 **Execution state (honest):** under the paid-window time pressure, a first-pass pull of
 A–D + treasury already ran (local-only, gitignored, ~13 MB). That output is **NOT
