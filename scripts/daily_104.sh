@@ -216,6 +216,20 @@ else
     echo "Config drift OK."
 fi
 
+# System health heartbeat (2026-06-25): run system_doctor — pin/runtime drift,
+# lock integrity, bundle self-consistency, promote-backup hygiene. NON-FATAL:
+# ntfy on RED so drift is caught the day it happens, but never block trading on
+# it (the preflight pin-align above already fail-closes on a broken runtime; a
+# README smudge shouldn't halt the book). Defensive: skip if not present yet.
+if [ -f "$REPO_DIR/scripts/system_doctor.py" ]; then
+    DOCTOR_OUT=$("$PYTHON" "$REPO_DIR/scripts/system_doctor.py" 2>&1)
+    if [ "$?" -ne 0 ]; then
+        DOCTOR_RED=$(echo "$DOCTOR_OUT" | grep -E "RED|✗" | head -4)
+        notify "RenQuant 104 DOCTOR" "system health RED (non-fatal): $DOCTOR_RED"
+    fi
+    echo "$DOCTOR_OUT" | tail -3
+fi
+
 # Step 1: SMOKE TEST — pipeline heartbeat (replaces daily retrain).
 # 2026-05-09 audit FIX-C: retrain moved to weekly_wf_promote.sh.
 # Daily smoke test verifies the model artifact loads + scores correctly
