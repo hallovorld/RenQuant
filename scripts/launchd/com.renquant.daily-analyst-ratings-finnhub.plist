@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily analyst-ratings refresh — every day 04:20 PT.
+
+  Incremental FMP `/stable/grades-historical` pull: a SMALL batch
+  (--max-pull 40) each day rather than one weekly burst, because the
+  free BASIC tier caps both daily (250) and per-minute calls — a
+  one-shot watchlist backfill tripped the per-minute limit (104/142
+  missed). select_to_refresh rotates the ~142-name watchlist (oldest
+  fetched_at first) every ~4 days, always under both caps. Ratings
+  update monthly, so a few-day rotation keeps the consensus-revision
+  signal fresh.
+
+  Fails closed: --fail-on-error exits non-zero on ANY quota/fetch
+  error (no per-429 tolerance); --min-coverage-pct is a secondary
+  floor on the COVERABLE (non-premium) set. The ntfy reports active
+  vs coverable coverage so a high coverable % is never read as full
+  active coverage. Free-tier SUBSET-ONLY (~30% active); no model
+  decision rides on it. HOLD — do NOT load from this PR: a follow-up
+  PR bumps the base-data pin first; until then the wrapper reports
+  "module unavailable" rather than crashing.
+
+  Install (only AFTER #24 merges + base-data pin bump):
+    cp scripts/launchd/com.renquant.daily-analyst-ratings-finnhub.plist \
+       ~/Library/LaunchAgents/
+    launchctl load \
+       ~/Library/LaunchAgents/com.renquant.daily-analyst-ratings-finnhub.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.daily-analyst-ratings-finnhub</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/daily_analyst_ratings_finnhub_refresh.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Daily 04:20 PT — offline hours, 20 min after the weekly
+             fundamental-refresh slot so they never overlap. -->
+        <key>Hour</key><integer>4</integer>
+        <key>Minute</key><integer>25</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/daily_analyst_ratings_finnhub/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/daily_analyst_ratings_finnhub/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
