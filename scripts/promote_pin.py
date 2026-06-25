@@ -145,11 +145,19 @@ def main(argv=None) -> int:
         print(out)
         if rc != 0:
             return rollback("subrepo_assemble --sync")
-    if args.verify_cmd:
-        v = subprocess.run(args.verify_cmd, shell=True, capture_output=True, text=True)
+    # Default verify (no explicit --verify-cmd): the still-buys guard, so any
+    # promote that would zero out admissions (the sell-only footgun) auto-reverts.
+    verify_cmd = args.verify_cmd
+    if verify_cmd is None:
+        default_check = REPO / "scripts" / "check_conviction_admits.py"
+        if default_check.exists():
+            verify_cmd = f"{args.python} {default_check} --min-admits 1"
+            print("  default verify: check_conviction_admits (still-buys guard)")
+    if verify_cmd:
+        v = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True)
         print(v.stdout[-800:])
         if v.returncode != 0:
-            return rollback(f"verify ({args.verify_cmd!r})")
+            return rollback(f"verify ({verify_cmd!r})")
     print(f"  OK. revert with:  promote_pin.py revert --apply   "
           f"(or restore {bak.name})")
     return 0
