@@ -26,6 +26,12 @@
 # So a transient 429 or a creeping breakage trips ✗ instead of passing as "no
 # coverage"; the per-outcome counts are also surfaced in the ntfy body.
 #
+# SCOPE (free tier ~30% active): --min-coverage-pct gates the COVERABLE subset
+# (the only fraction a free key can move). The ntfy body ALSO reports active=%
+# (with_data/requested) and premium_locked=% so a high coverable cov is never
+# misread as full active-watchlist coverage. This is subset-only ingestion infra,
+# NOT a production analyst feature — no model/retrain decision rides on it.
+#
 # INERT UNTIL DEPLOYED: this calls `renquant_base_data.fmp_analyst_ratings_refresh`
 # (base-data PR #24). Until that merges and the base-data pin is bumped, the
 # module import fails — the wrapper reports that explicitly (✗ "module
@@ -116,8 +122,11 @@ try:
 except Exception as e:
     print(f"PARSE_ERR|{e}"); raise SystemExit(0)
 ok = "OK" if s.get("with_data", 0) > 0 else "ZERO_DATA"
-print("{}|with_data={} cov={}% quota_err={} fetch_err={} store={}names rows={}".format(
-    ok, s.get("with_data"), s.get("coverage_pct"), s.get("quota_error"),
+# Show coverable cov (what the gate moves) AND active cov + premium-lock so a
+# high coverable % is never read as full active-watchlist coverage (Codex #402).
+print("{}|with_data={} cov(coverable)={}% active={}% premium_locked={}% quota_err={} fetch_err={} store={}names rows={}".format(
+    ok, s.get("with_data"), s.get("coverage_pct"), s.get("active_coverage_pct"),
+    s.get("premium_restricted_pct"), s.get("quota_error"),
     s.get("fetch_error"), s.get("tickers_in_store"), s.get("total_rows")))
 PY
 )

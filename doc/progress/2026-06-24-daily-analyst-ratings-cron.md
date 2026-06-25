@@ -15,10 +15,12 @@ WHY-DIR:  the free BASIC tier caps BOTH daily (250) and per-minute calls; a one-
           alpha) fresh enough.
 FAIL-CLOSED: applies the 2026-06-24 silent-degradation lesson (same bug fixed in
           weekly_fundamental_refresh): a quota hit / bad key / schema break / 0-data run ntfy's ✗ and
-          exits non-zero via the CLI's `--min-coverage-pct 75` gate (catches a SYSTEMIC break — all
-          errors → 0% — while tolerating one transient 429 in a 40-name batch). quota_error/fetch_err
-          counts are surfaced in the ✓ ntfy body too, so a creeping problem is visible before it
-          becomes systemic.
+          exits non-zero via `--fail-on-error` (any quota/fetch error) AND `--min-coverage-pct 75`
+          on the COVERABLE set (catches a SYSTEMIC break — all errors → 0% — while tolerating one
+          transient 429 in a 40-name batch). The ntfy body now reports `active=%` (with_data/requested)
+          and `premium_locked=%` alongside coverable `cov=%`, so a high coverable cov is never misread
+          as full active-watchlist coverage (Codex #402). Subset-only infra (free tier ~30% active);
+          no production/model decision rides on it.
 EVIDENCE: `bash -n` + shellcheck clean (bar the two SC warnings the sibling weekly script also
           carries); `plutil -lint` OK; env resolution verified live (SUBREPO_ROOT, STRATEGY_CONFIG
           → 145-name watchlist parse, PYTHONPATH); inert-guard verified — import currently
