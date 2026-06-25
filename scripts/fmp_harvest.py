@@ -4,10 +4,18 @@ is active (see doc/research/2026-06-25-fmp-harvest-plan.md).
 
 Auditable + fail-closed + resumable:
 - Every endpoint writes a parquet AND a sidecar manifest (`<key>_291.manifest.json`)
-  recording requested/with_data/no_data/http_error/fetch_error counts, error samples,
-  endpoint URL template, started/finished, row+ticker counts, and the output sha256.
-- Resumable on the MANIFEST, not just the parquet: an endpoint is skipped only when its
-  manifest exists AND status == "ok". A partial/errored run re-pulls on the next invocation.
+  recording requested/with_data/no_data/http_error/fetch_error counts, error samples
+  (with the HTTP code / error type), endpoint URL template, universe hash, started/finished,
+  row+ticker counts, and the output sha256.
+- Resumable on the MANIFEST, content/config aware: an endpoint is skipped only when its
+  manifest status == "ok" AND its recorded `path_template` matches the current endpoint
+  AND its recorded `universe_hash` matches the current target list AND either (a) the
+  parquet exists and its sha256 matches the recorded sha256 (data completion) or (b) the
+  manifest is a valid ZERO-DATA record (output == null, rows == 0) — which skips WITHOUT
+  needing a parquet. A partial/errored run, a tampered/stale/missing parquet, or a changed
+  endpoint/universe all re-pull on the next invocation.
+- A re-pull that returns zero rows atomically RETIRES any older parquet (-> `.parquet.retired`)
+  so a later run can never skip on a stale parquet paired with an `output: null` manifest.
 - Writes are atomic (tmp file -> os.replace) so an interruption never leaves a half file
   that a later run would trust.
 - Fail-closed: any http_error/fetch_error makes the run exit non-zero unless --allow-errors.
@@ -136,40 +144,104 @@ def _atomic_write_json(obj, dst: Path) -> None:
     os.replace(tmp, dst)
 
 
-def _manifest_ok(manifest_path: Path) -> bool:
+def _targets_for(per_ticker, uni) -> list[str]:
+    """Resolve the {sym} iteration list for an endpoint.
+
+    per_ticker: True → the ticker universe; a tuple/list → those exact {sym} values
+    (e.g. macro indicator names); falsy → a single universe-agnostic call.
+    """
+    if per_ticker is True:
+        return list(uni)
+    if isinstance(per_ticker, (list, tuple)):
+        return list(per_ticker)
+    return ["_"]
+
+
+def _universe_hash(targets) -> str:
+    """Identity of the exact target list (order-independent), so a changed
+    universe (added/removed/renamed names) invalidates a stale manifest."""
+    h = hashlib.sha256()
+    h.update("\n".join(sorted(str(t) for t in targets)).encode("utf-8"))
+    return h.hexdigest()
+
+
+def _manifest_ok(manifest_path: Path, *, tmpl=None, targets=None,
+                 parquet_path: Path | None = None) -> bool:
+    """Decide whether a recorded manifest lets us SKIP a re-pull.
+
+    Content/config aware — a manifest is "ok to skip" only when ALL hold:
+      * status == "ok"; AND
+      * its recorded `path_template` matches the current endpoint template (request
+        config / endpoint changed → re-pull); AND
+      * its recorded `universe_hash` matches the current target list (universe
+        added/removed/renamed → re-pull); AND
+      * the data-vs-zero-data shape is internally consistent and verified:
+          - DATA completion  (output set): the parquet must exist AND its sha256
+            must equal the recorded sha256 (missing/tampered/stale parquet → re-pull);
+          - ZERO-DATA completion (output is null, rows == 0): a VALID completed
+            state — the manifest itself is the completion record, so we skip WITHOUT
+            requiring any parquet.
+
+    When called with only a path (no tmpl/targets) it falls back to a pure status
+    check (used by the unit gate test); the harvest loop always passes config.
+    """
     if not manifest_path.exists():
         return False
     try:
-        return json.loads(manifest_path.read_text()).get("status") == "ok"
+        man = json.loads(manifest_path.read_text())
     except (ValueError, OSError):
         return False
+    if man.get("status") != "ok":
+        return False
+    if tmpl is None and targets is None:
+        return True  # pure status gate (no config to validate against)
+    if tmpl is not None and man.get("path_template") != tmpl:
+        return False
+    if targets is not None and man.get("universe_hash") != _universe_hash(targets):
+        return False
+    output = man.get("output")
+    if output is None:
+        # Zero-data completion: manifest is the record; rows must be 0, no parquet needed.
+        return int(man.get("rows") or 0) == 0
+    # Data completion: the parquet must exist and match the recorded sha256.
+    if parquet_path is None:
+        parquet_path = manifest_path.parent / output
+    if not parquet_path.exists():
+        return False
+    return _sha256(parquet_path) == man.get("sha256")
 
 
 def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
-                     retries, backoff, get=_get):
+                     retries, backoff, get=None):
     """Pull one endpoint, write parquet + manifest atomically, return the manifest.
 
     `get` is injectable so tests can drive the classify/write/manifest path offline.
+    Resolved at call time (not bound as a default) so a monkeypatched `_get` is honored.
     """
     import pandas as pd  # noqa: PLC0415
 
-    # per_ticker: True → the ticker universe; a tuple/list → those exact {sym} values
-    # (e.g. macro indicator names); falsy → a single universe-agnostic call.
-    if per_ticker is True:
-        targets = uni
-    elif isinstance(per_ticker, (list, tuple)):
-        targets = list(per_ticker)
-    else:
-        targets = ["_"]
+    if get is None:
+        get = _get
+    targets = _targets_for(per_ticker, uni)
     rows, counts, errs = [], {"with_data": 0, "no_data": 0, "http_error": 0, "fetch_error": 0}, []
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     for sym in targets:
-        status, recs = classify(get(tmpl.format(sym=sym), key, retries, backoff))
+        payload = get(tmpl.format(sym=sym), key, retries, backoff)
+        status, recs = classify(payload)
         counts[status] += 1
         if status == "with_data":
             rows.extend({**r, "ticker": sym} for r in recs)
         elif status in ("http_error", "fetch_error") and len(errs) < 10:
-            errs.append({"ticker": sym})
+            # Record the HTTP code / error type, not just the ticker, so the audit
+            # trail says *why* a name failed. `_get` returns {"_http": code} /
+            # {"_err": name} sentinels — thread them through.
+            sample = {"ticker": sym}
+            if isinstance(payload, dict):
+                if "_http" in payload:
+                    sample["http"] = payload["_http"]
+                elif "_err" in payload:
+                    sample["err"] = payload["_err"]
+            errs.append(sample)
         time.sleep(rate)
 
     df = pd.DataFrame(rows)
@@ -178,12 +250,17 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
         df["fetched_at"] = fetched
         df["source"] = f"fmp_{key_name}"
         _atomic_write_parquet(df, dst)
+    elif dst.exists():
+        # Zero-data this run but an OLDER parquet is on disk: atomically RETIRE it so
+        # a later run can't skip on a stale parquet + an output==null manifest.
+        os.replace(dst, dst.with_suffix(".parquet.retired"))
     bad = counts["http_error"] + counts["fetch_error"]
     manifest = {
         "endpoint": key_name,
         "path_template": tmpl,
         "url_base": BASE,
         "requested": len(targets),
+        "universe_hash": _universe_hash(targets),
         **counts,
         "error_samples": errs,
         "rows": int(len(df)),
@@ -218,8 +295,12 @@ def harvest(out: Path, rate: float, only, key, repo, retries, backoff,
     failed = []
     for key_name, tmpl, per_ticker in eps:
         manifest_path = out / f"{key_name}_291.manifest.json"
-        if (out / f"{key_name}_291.parquet").exists() and _manifest_ok(manifest_path):
-            print(f"  skip {key_name} (manifest ok)", flush=True)
+        targets = _targets_for(per_ticker, uni)
+        # Content/config-aware skip: ok manifest + matching template + matching
+        # universe + (verified parquet sha256 OR a valid zero-data record).
+        if _manifest_ok(manifest_path, tmpl=tmpl, targets=targets,
+                        parquet_path=out / f"{key_name}_291.parquet"):
+            print(f"  skip {key_name} (manifest ok, verified)", flush=True)
             continue
         m = harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key,
                              fetched, retries, backoff)

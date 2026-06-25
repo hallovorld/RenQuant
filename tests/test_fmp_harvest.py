@@ -95,9 +95,21 @@ def test_harvest_endpoint_http_error_sets_errors_status(tmp_path):
                             0.0, "k", "2026-06-25", 0, 0.0, get=get)
     assert m["status"] == "errors"
     assert m["http_error"] == 1
-    assert m["error_samples"] == [{"ticker": "BBB"}]
+    # error sample carries the HTTP code, not just the ticker (audit record)
+    assert m["error_samples"] == [{"ticker": "BBB", "http": 402}]
     man = json.loads((tmp_path / "locked_291.manifest.json").read_text())
     assert man["status"] == "errors"
+    assert man["error_samples"][0]["http"] == 402
+
+
+def test_harvest_endpoint_fetch_error_sample_carries_err_type(tmp_path):
+    uni = ["AAA", "BBB"]
+    get = _fake_get({"AAA": [{"x": 1}]}, {"_err": "TimeoutError"})  # BBB → transport error
+    m = fh.harvest_endpoint("flaky", "flaky?symbol={sym}", True, uni, tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    assert m["status"] == "errors"
+    assert m["fetch_error"] == 1
+    assert m["error_samples"] == [{"ticker": "BBB", "err": "TimeoutError"}]
 
 
 # ---- skip / rerun on manifest ----------------------------------------------
@@ -107,7 +119,99 @@ def test_manifest_ok_gate(tmp_path):
     p.write_text(json.dumps({"status": "errors"}))
     assert fh._manifest_ok(p) is False                 # errored → re-pull
     p.write_text(json.dumps({"status": "ok"}))
-    assert fh._manifest_ok(p) is True                  # ok → skip
+    assert fh._manifest_ok(p) is True                  # ok → skip (pure status gate)
+
+
+def _write_endpoint(tmp_path, key, tmpl, targets, get):
+    """Run one endpoint offline and return (manifest_path, parquet_path)."""
+    m = fh.harvest_endpoint(key, tmpl, list(targets), [], tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    return (tmp_path / f"{key}_291.manifest.json",
+            tmp_path / f"{key}_291.parquet", m)
+
+
+def test_skip_requires_matching_sha256(tmp_path):
+    # A data endpoint: ok-manifest + parquet present + sha256 match → skip.
+    get = _fake_get({"AAA": [{"x": 1}], "BBB": [{"x": 2}]}, [])
+    mp, pp, _ = _write_endpoint(tmp_path, "demo", "demo?symbol={sym}", ("AAA", "BBB"), get)
+    assert fh._manifest_ok(mp, tmpl="demo?symbol={sym}", targets=["AAA", "BBB"],
+                           parquet_path=pp) is True
+    # Tamper the parquet → sha256 no longer matches → must re-pull.
+    pp.write_bytes(pp.read_bytes() + b"corrupt")
+    assert fh._manifest_ok(mp, tmpl="demo?symbol={sym}", targets=["AAA", "BBB"],
+                           parquet_path=pp) is False
+    # Missing parquet → must re-pull.
+    pp.unlink()
+    assert fh._manifest_ok(mp, tmpl="demo?symbol={sym}", targets=["AAA", "BBB"],
+                           parquet_path=pp) is False
+
+
+def test_skip_invalidated_by_changed_template_or_universe(tmp_path):
+    get = _fake_get({"AAA": [{"x": 1}], "BBB": [{"x": 2}]}, [])
+    mp, pp, _ = _write_endpoint(tmp_path, "demo", "demo?symbol={sym}", ("AAA", "BBB"), get)
+    # Same template + universe → skip.
+    assert fh._manifest_ok(mp, tmpl="demo?symbol={sym}",
+                           targets=["AAA", "BBB"], parquet_path=pp) is True
+    # Endpoint/request-config changed (e.g. period/limit) → NOT skipped.
+    assert fh._manifest_ok(mp, tmpl="demo?symbol={sym}&limit=20",
+                           targets=["AAA", "BBB"], parquet_path=pp) is False
+    # Universe changed (CCC added) → NOT skipped.
+    assert fh._manifest_ok(mp, tmpl="demo?symbol={sym}",
+                           targets=["AAA", "BBB", "CCC"], parquet_path=pp) is False
+    # Universe changed (BBB renamed) → NOT skipped.
+    assert fh._manifest_ok(mp, tmpl="demo?symbol={sym}",
+                           targets=["AAA", "ZZZ"], parquet_path=pp) is False
+
+
+def test_zero_data_is_valid_completion_and_skips_without_parquet(tmp_path):
+    # A legitimately empty endpoint writes ok + output null + no parquet, and a
+    # later run must SKIP it (manifest is the completion record) — not re-pull forever.
+    get = _fake_get({}, [])  # every symbol returns empty list
+    mp, pp, m = _write_endpoint(tmp_path, "none", "none?symbol={sym}", ("AAA", "BBB"), get)
+    assert m["status"] == "ok" and m["output"] is None and m["rows"] == 0
+    assert not pp.exists()
+    assert fh._manifest_ok(mp, tmpl="none?symbol={sym}",
+                           targets=["AAA", "BBB"], parquet_path=pp) is True   # skip, no parquet
+    # But a changed universe still invalidates the zero-data record.
+    assert fh._manifest_ok(mp, tmpl="none?symbol={sym}",
+                           targets=["AAA", "CCC"], parquet_path=pp) is False
+
+
+def test_zero_data_rerun_retires_stale_parquet(tmp_path):
+    # First run has data → parquet written.
+    get1 = _fake_get({"AAA": [{"x": 1}]}, [])
+    _, pp, m1 = _write_endpoint(tmp_path, "ev", "ev?symbol={sym}", ("AAA", "BBB"), get1)
+    assert pp.exists() and m1["output"] == "ev_291.parquet"
+    # Second run returns zero rows for everyone → old parquet must be RETIRED, not left
+    # behind to let a future run skip on a stale parquet + output:null manifest.
+    get2 = _fake_get({}, [])
+    mp, pp2, m2 = _write_endpoint(tmp_path, "ev", "ev?symbol={sym}", ("AAA", "BBB"), get2)
+    assert m2["status"] == "ok" and m2["output"] is None and m2["rows"] == 0
+    assert not pp2.exists()                              # stale parquet gone
+    assert (tmp_path / "ev_291.parquet.retired").exists()  # retired, not deleted
+    # And the resulting zero-data manifest is a valid skip (no parquet required).
+    assert fh._manifest_ok(mp, tmpl="ev?symbol={sym}",
+                           targets=["AAA", "BBB"], parquet_path=pp2) is True
+
+
+def test_harvest_loop_skips_zero_data_endpoint_without_repull(tmp_path, monkeypatch):
+    # End-to-end through harvest(): a zero-data endpoint completes ok once, then a
+    # second harvest() must SKIP it (no second pull), proving no "re-pull forever".
+    monkeypatch.setattr(fh, "_universe", lambda repo: ["AAA", "BBB"])
+    pulls = {"n": 0}
+
+    def counting_get(path, key, retries, backoff):
+        pulls["n"] += 1
+        return []   # always empty → no_data
+
+    monkeypatch.setattr(fh, "_get", counting_get)
+    rc1 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
+    assert rc1 == 0
+    after_first = pulls["n"]
+    assert after_first >= 1                              # it pulled once
+    rc2 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
+    assert rc2 == 0
+    assert pulls["n"] == after_first                     # second run did NOT re-pull
 
 
 # ---- bounded retry ---------------------------------------------------------

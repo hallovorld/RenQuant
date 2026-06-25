@@ -9,15 +9,18 @@ deltas can come from the free Finnhub cron (#408) and we cancel the paid plan.
 - **300 API calls / min**, **20 GB / 30-day** trailing bandwidth, **5-year** history depth.
 - Universe = the **291 alpha158 training tickers** (superset of the 145 watchlist), so
   every harvested series can become a model feature aligned to the training panel.
-- ~291 tickers × ~19 endpoints ≈ 5–6k calls ≈ ~18 min at 300/min; measured data ≈ **13 MB**
-  (far under 20 GB — bandwidth is not the binding constraint). Throttle 0.2 s (≈300/min),
-  bounded retry/backoff on 429/5xx/timeout, manifest-resumable, fail-closed.
+- ~291 tickers × ~18 per-ticker endpoints ≈ 5–6k calls ≈ ~18 min at 300/min; measured
+  data ≈ **13 MB** (far under 20 GB — bandwidth is not the binding constraint). The script
+  ships **20 endpoints** total (18 per-ticker + `treasury-rates` + `economic-indicators`,
+  the latter an 8-name list call). Throttle 0.2 s (≈300/min), bounded retry/backoff on
+  429/5xx/timeout, manifest-resumable, fail-closed.
 
 ## Storage
 `data/fmp_harvest/<endpoint>_291.parquet` + a sidecar `<endpoint>_291.manifest.json`,
 one tidy frame per endpoint, every row stamped `ticker` + `fetched_at` + `source`. The
 **manifest** is the audit record: requested/with_data/no_data/http_error/fetch_error counts,
-error samples, endpoint URL template, started/finished, row+ticker counts, and the output
+error samples (each carrying the **HTTP code / error type**, not just the ticker), endpoint
+URL template, **universe hash**, started/finished, row+ticker counts, and the output
 sha256. (Raw, un-joined — feature engineering is a separate, later step.) Keys never
 committed; the whole `/data/` tree is already gitignored (`.gitignore:41`), so parquet +
 manifest stay local automatically — no new ignore rule needed.
@@ -61,11 +64,17 @@ one-time harvest is built for, it's the one bandwidth-heavy series, and its mode
 is least clear; opt-in via a follow-up, flagged not silently dropped.
 
 ## Execution & state
-`scripts/fmp_harvest.py --out data/fmp_harvest --rate 0.2` (manifest-resumable: skips an
-endpoint only when its parquet AND an `status: ok` manifest both exist; `--only <substr>`
-targets one group; fail-closed by default — any http/fetch error exits non-zero unless
-`--allow-errors`). Run once this month; then cancel the paid plan and let Finnhub (#408)
-carry the free daily deltas.
+`scripts/fmp_harvest.py --out data/fmp_harvest --rate 0.2`. **Manifest-resumable, content/
+config aware** — an endpoint is skipped only when its manifest `status: ok` AND its recorded
+`path_template` matches the current endpoint AND its recorded `universe_hash` matches the
+current target list AND **either** (a) the parquet exists and its sha256 equals the recorded
+sha256 (data completion) **or** (b) it is a valid ZERO-DATA record (`output: null`, `rows: 0`),
+which skips *without* needing a parquet. A tampered/stale/missing parquet, a changed
+endpoint/request-config, or a changed universe all re-pull. A re-pull that returns zero rows
+atomically **retires** any older parquet (→ `.parquet.retired`) so a later run can't skip on a
+stale parquet paired with an `output: null` manifest. `--only <substr>` targets one group;
+fail-closed by default — any http/fetch error exits non-zero unless `--allow-errors`. Run once
+this month; then cancel the paid plan and let Finnhub (#408) carry the free daily deltas.
 
 **Execution state (honest):** under the paid-window time pressure, a first-pass pull of
 A–D + treasury already ran (local-only, gitignored, ~13 MB). That output is **NOT
