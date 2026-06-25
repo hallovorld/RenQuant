@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# daily_analyst_ratings_finnhub_refresh.sh — daily FULL-coverage Finnhub pull.
+# daily_analyst_ratings_finnhub_refresh.sh — daily broad-coverage Finnhub pull.
 #
 # WHY FINNHUB + DAILY FULL (2026-06-25):
 # Finnhub's free `/stock/recommendation` gives monthly analyst recommendation
-# distributions with FULL US-stock coverage — unlike FMP free's ~30% plan-lock
-# (HTTP 402). Verified 136/145 (the 9 missing are ETFs/indices = no analysts).
+# distributions with broad US-stock coverage — unlike FMP free's ~30% plan-lock
+# (HTTP 402). Live probe: 136/145 returned data; the 9 empty (no_coverage) were
+# ETFs/indices in that probe, but an empty response is AMBIGUOUS (ETF/index,
+# uncovered/delisted, or outage) — surfaced via active_coverage_pct +
+# no_coverage_samples, never assumed to be ETFs.
 # Free tier is 60 calls/min, so the whole ~145-name watchlist fits in one daily
 # pass (~2.5 min at ~1s throttle) — no rotation needed (MAX_PULL=0 = all). The
 # free window is only ~4 months, so DAILY accumulation (dedup by (ticker,period))
@@ -12,11 +15,12 @@
 #
 # FAIL-CLOSED (silent-degradation lesson): a quota hit / bad key / schema break
 # must ntfy ✗ and exit non-zero, NOT pass as "no coverage". The refresh CLI
-# distinguishes with_data / no_coverage[ETF] / quota_error[429] / fetch_error and
+# distinguishes with_data / no_coverage / quota_error[429] / fetch_error and
 # we gate on BOTH:
 #   * --fail-on-error    → exit non-zero on ANY quota/fetch error;
 #   * --min-coverage-pct → exit non-zero on a SYSTEMIC coverage collapse over the
-#                          COVERABLE set (ETFs excluded — they have no analysts).
+#                          COVERABLE set (excludes the ambiguous no_coverage;
+#                          active_coverage_pct reports the full-set view).
 #
 # INERT UNTIL DEPLOYED: calls `renquant_base_data.finnhub_analyst_ratings_refresh`
 # (base-data #25). Until that merges + the base-data pin is bumped, the import
@@ -104,9 +108,10 @@ try:
 except Exception as e:
     print(f"PARSE_ERR|{e}"); raise SystemExit(0)
 ok = "OK" if s.get("with_data", 0) > 0 else "ZERO_DATA"
-print("{}|with_data={} cov(coverable)={}% etf_no_cov={} quota_err={} fetch_err={} store={}names rows={}".format(
-    ok, s.get("with_data"), s.get("coverage_pct"), s.get("no_coverage"),
-    s.get("quota_error"), s.get("fetch_error"), s.get("tickers_in_store"), s.get("total_rows")))
+print("{}|with_data={} cov(coverable)={}% active={}% no_cov={}%({}) quota_err={} fetch_err={} store={}names rows={}".format(
+    ok, s.get("with_data"), s.get("coverage_pct"), s.get("active_coverage_pct"),
+    s.get("no_coverage_pct"), s.get("no_coverage"), s.get("quota_error"),
+    s.get("fetch_error"), s.get("tickers_in_store"), s.get("total_rows")))
 PY
 )
 STATE="${READOUT%%|*}"; BODY="${READOUT#*|}"
