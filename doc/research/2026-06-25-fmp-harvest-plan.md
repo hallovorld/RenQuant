@@ -9,15 +9,18 @@ deltas can come from the free Finnhub cron (#408) and we cancel the paid plan.
 - **300 API calls / min**, **20 GB / 30-day** trailing bandwidth, **5-year** history depth.
 - Universe = the **291 alpha158 training tickers** (superset of the 145 watchlist), so
   every harvested series can become a model feature aligned to the training panel.
-- ~291 tickers × ~18 endpoints ≈ 5–6k calls ≈ ~20 min at 300/min; data ≈ a few GB
-  (well under 20 GB). Throttle 0.2 s (≈300/min), retry-on-error, resumable.
+- ~291 tickers × ~19 endpoints ≈ 5–6k calls ≈ ~18 min at 300/min; measured data ≈ **13 MB**
+  (far under 20 GB — bandwidth is not the binding constraint). Throttle 0.2 s (≈300/min),
+  bounded retry/backoff on 429/5xx/timeout, manifest-resumable, fail-closed.
 
 ## Storage
-`data/fmp_harvest/<endpoint>_291.parquet`, one tidy frame per endpoint, every row
-stamped `ticker` + `fetched_at` + `source`. (Raw, un-joined — feature engineering
-is a separate, later step.) Keys never committed; the whole `/data/` tree is already
-gitignored (`.gitignore:41`), so the parquet files stay local automatically — no new
-ignore rule needed.
+`data/fmp_harvest/<endpoint>_291.parquet` + a sidecar `<endpoint>_291.manifest.json`,
+one tidy frame per endpoint, every row stamped `ticker` + `fetched_at` + `source`. The
+**manifest** is the audit record: requested/with_data/no_data/http_error/fetch_error counts,
+error samples, endpoint URL template, started/finished, row+ticker counts, and the output
+sha256. (Raw, un-joined — feature engineering is a separate, later step.) Keys never
+committed; the whole `/data/` tree is already gitignored (`.gitignore:41`), so parquet +
+manifest stay local automatically — no new ignore rule needed.
 
 ## Endpoints to harvest (priority order)
 **A. Analyst (HIGH — feeds the immediate retrain; already pulling):**
@@ -32,7 +35,8 @@ ignore rule needed.
 - `earnings` (historical surprises) · `earnings-calendar` · `dividends` · `splits`.
 
 **D. Ownership & flow:**
-- `institutional-ownership` · `insider-trading` · `shares-float`.
+- ~~`institutional-ownership`~~ (verified 2026-06-25 **plan-locked above Starter** — 402
+  "Restricted Endpoint"; omitted) · `insider-trading` · `shares-float`.
 
 **E. Sentiment / news (if quota allows):**
 - `stock-news` (per ticker, recent) · `historical-social-sentiment`.
@@ -55,7 +59,18 @@ pending this discussion:** E (per-ticker `stock-news` / `historical-social-senti
 the 20 GB cap) and its modelling value is least clear, so it's opt-in via a follow-up, not
 in the default sweep. Flagging explicitly rather than silently dropping it.
 
-## Execution
-`scripts/fmp_harvest.py --out data/fmp_harvest --rate 0.2` (resumable: skips endpoints
-already saved; `--only <substr>` to target one group). Run once this month; then cancel
-the paid plan and let Finnhub (#408) carry the free daily deltas.
+## Execution & state
+`scripts/fmp_harvest.py --out data/fmp_harvest --rate 0.2` (manifest-resumable: skips an
+endpoint only when its parquet AND an `status: ok` manifest both exist; `--only <substr>`
+targets one group; fail-closed by default — any http/fetch error exits non-zero unless
+`--allow-errors`). Run once this month; then cancel the paid plan and let Finnhub (#408)
+carry the free daily deltas.
+
+**Execution state (honest):** under the paid-window time pressure, a first-pass pull of
+A–D + treasury already ran (local-only, gitignored, ~13 MB). That output is **NOT
+experiment-ready** — it is raw inventory behind this review gate. The canonical, auditable
+harvest is the one produced by the hardened script in *this* PR (with per-endpoint
+manifests); nothing here feeds a model until it passes a feature-eng PR → placebo-clean WF
+([[deployed-but-dark-is-not-done]]). The analyst go/no-go ablation is the only thing already
+acted on, and its verdict was **regime-split → no global retrain** (BULL_CALM adds,
+BULL_VOLATILE hurts).
