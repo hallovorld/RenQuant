@@ -41,7 +41,7 @@ def _fake_get(mapping, default):
     """Return a get(path,key,retries,backoff) that looks payloads up by ticker substring."""
     def get(path, key, retries, backoff):
         for sym, payload in mapping.items():
-            if f"symbol={sym}" in path or path == sym:
+            if f"={sym}" in path or path == sym:   # matches symbol=X and name=X
                 return payload
         return default
     return get
@@ -62,6 +62,19 @@ def test_harvest_endpoint_writes_parquet_and_ok_manifest(tmp_path):
     import pandas as pd
     df = pd.read_parquet(tmp_path / "demo_291.parquet")
     assert set(df["ticker"]) == {"AAA", "BBB"} and (df["source"] == "fmp_demo").all()
+
+
+def test_harvest_endpoint_list_targets_iterates_names(tmp_path):
+    # per_ticker as a tuple → iterate those exact {sym} values (macro indicators),
+    # NOT the ticker universe.
+    get = _fake_get({"GDP": [{"value": 1}], "CPI": [{"value": 2}]}, [])
+    m = fh.harvest_endpoint("econ", "econ?name={sym}", ("GDP", "CPI"), ["AAA", "BBB"],
+                            tmp_path, 0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    assert m["status"] == "ok"
+    assert m["requested"] == 2 and m["with_data"] == 2
+    import pandas as pd
+    df = pd.read_parquet(tmp_path / "econ_291.parquet")
+    assert set(df["ticker"]) == {"GDP", "CPI"}      # stamped by indicator name, not AAA/BBB
 
 
 def test_harvest_endpoint_no_data_is_ok_no_parquet(tmp_path):

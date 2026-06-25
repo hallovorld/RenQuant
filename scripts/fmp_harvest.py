@@ -35,6 +35,11 @@ from pathlib import Path
 BASE = "https://financialmodelingprep.com/stable"
 RETRY_CODES = {429, 500, 502, 503, 504}
 
+# Macro indicators verified available on Starter 2026-06-25 (each a single call;
+# rows already carry a `name` field, so we stamp ticker=<indicator>).
+ECON_NAMES = ("GDP", "realGDP", "CPI", "inflationRate", "unemploymentRate",
+              "federalFunds", "retailSales", "consumerSentiment")
+
 # (endpoint_key, path_template, per_ticker?) — path uses {sym} for per-ticker.
 # NOTE: institutional-ownership is intentionally omitted — verified 2026-06-25 to be
 # plan-locked above Starter (402 "Restricted Endpoint"); keeping it would always fail-close.
@@ -61,8 +66,10 @@ ENDPOINTS = [
     # D. ownership & flow
     ("insider_trading", "insider-trading/search?symbol={sym}", True),
     ("shares_float", "shares-float?symbol={sym}", True),
-    # F. macro (universe-agnostic)
+    # F. macro (universe-agnostic). A tuple/list `targets` iterates those values as
+    # {sym} instead of the ticker universe — economic_indicators is one call per name.
     ("treasury_rates", "treasury-rates", False),
+    ("economic_indicators", "economic-indicators?name={sym}", ECON_NAMES),
 ]
 
 
@@ -146,7 +153,14 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
     """
     import pandas as pd  # noqa: PLC0415
 
-    targets = uni if per_ticker else ["_"]
+    # per_ticker: True → the ticker universe; a tuple/list → those exact {sym} values
+    # (e.g. macro indicator names); falsy → a single universe-agnostic call.
+    if per_ticker is True:
+        targets = uni
+    elif isinstance(per_ticker, (list, tuple)):
+        targets = list(per_ticker)
+    else:
+        targets = ["_"]
     rows, counts, errs = [], {"with_data": 0, "no_data": 0, "http_error": 0, "fetch_error": 0}, []
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     for sym in targets:
