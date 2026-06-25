@@ -36,10 +36,17 @@
   INERT until base-data #25 merges + the base-data pin is bumped —
   until then the wrapper reports "module unavailable" and exits
   non-zero. Do NOT load from this PR. ACTIVATION ORDER: (1) base-data
-  #25 merged + the base-data pin bumped; (2) one-shot dry-run proving
-  BOTH the pass path (healthy active coverage → ✓) AND the fail-closed
-  path (low floor / simulated error → ✗, exit non-zero) on today's
-  watchlist; (3) THEN install + load:
+  #25 merged + the base-data pin bumped; (2) one-shot dry-run on
+  today's watchlist proving BOTH paths WITHOUT editing committed
+  source — the PASS path
+    bash scripts/daily_analyst_ratings_finnhub_refresh.sh
+  (healthy active coverage clears the default 88% floor → ✓) AND the
+  fail-closed path
+    MIN_ACTIVE_COVERAGE_PCT=99 bash scripts/daily_analyst_ratings_finnhub_refresh.sh
+  (a deliberately HIGH floor is breached by a normal ~94% day → ✗,
+  exit non-zero; the floor is read from an env var, so no code edit is
+  needed — a simulated low-coverage/quota-error response also works);
+  (3) THEN install + load:
     cp scripts/launchd/com.renquant.daily-analyst-ratings-finnhub.plist \
        ~/Library/LaunchAgents/
     launchctl load \

@@ -31,24 +31,38 @@
 # This wrapper is intentionally THIN: it invokes the CLI (which fail-closes on
 # active coverage + errors and exits non-zero), then reports the summary to ntfy.
 # It does NOT re-implement the coverage gate in bash — that gate is the tested
-# Python one (base-data #25 added boundary tests for 0%, at-floor, below-floor,
-# missing-metric, and quota/fetch-error interactions).
+# Python one. base-data #25 ships Python tests for the active gate: widespread-empty
+# (gate fails while the coverable metric reads full), a healthy baseline (passes),
+# the threshold boundary (exactly-at-floor PASSES, just-below FAILS), default-off
+# (the active gate is inert when the floor is unset), one main-path failure (the CLI
+# trips a non-zero exit on a widespread-empty run), and a diagnostic test proving
+# --min-coverage-pct can NEVER change the exit status.
 #
 # THRESHOLD (provisional, pre-registered — see the progress doc): the 88% active
 # floor is a COARSE systemic-collapse guard derived from a SINGLE 136/145 probe
-# (active ≈ 93.8%), not a tuned threshold. During a baseline window (first ~10
-# daily cron runs) we record active_coverage_pct, then re-set the floor at the
-# observed lower-tail (min / 5th-pct) minus explicit headroom. Until then treat 88
-# as a placeholder that catches a real collapse, not a calibrated bound.
+# (active ≈ 93.8%), NOT a tuned threshold and NOT a statistical estimate. During a
+# baseline window (first ~10 daily cron runs) we record the EMPIRICAL RANGE of
+# active_coverage_pct (min/max observed) plus per-symbol missingness; only an
+# explicit, human-reviewed change then re-sets the floor below the observed range
+# minus headroom. We do NOT treat the ~10 daily observations as independent samples
+# or estimate a percentile from them (they are serially/vendor-correlated and n is
+# far too small). Until that reviewed change, treat 88 as a placeholder that catches
+# a real collapse, not a calibrated bound.
 #
 # INERT UNTIL DEPLOYED: calls `renquant_base_data.finnhub_analyst_ratings_refresh`
 # (base-data #25). Until that merges + the base-data pin is bumped, the import
 # fails — the wrapper reports ✗ "module unavailable" rather than crashing.
 # ACTIVATION ORDER (do NOT load this plist before): (1) base-data #25 merged +
-# the base-data pin bumped; (2) a one-shot dry-run
-# (`bash scripts/daily_analyst_ratings_finnhub_refresh.sh`) proving BOTH paths on
-# today's watchlist — the PASS path (healthy active coverage → ntfy ✓) AND the
-# fail-closed path (force a low floor / simulated error → ✗, exit non-zero);
+# the base-data pin bumped; (2) a one-shot dry-run on today's watchlist proving
+# BOTH paths WITHOUT editing this committed source —
+#   PASS path: `bash scripts/daily_analyst_ratings_finnhub_refresh.sh`
+#              → healthy active coverage clears the default 88% floor → ntfy ✓.
+#   FAIL path: `MIN_ACTIVE_COVERAGE_PCT=99 bash scripts/daily_analyst_ratings_finnhub_refresh.sh`
+#              → a deliberately HIGH floor is breached by a normal ~94% day, so the
+#                CLI's active gate trips → ntfy ✗, exit non-zero. (A high floor —
+#                NOT a low one — is what forces the fail path; the floor is read
+#                from the MIN_ACTIVE_COVERAGE_PCT env var, so no code edit is needed.
+#                A simulated low-coverage / quota-error response also exercises it.)
 # (3) THEN `launchctl load` the plist.
 #
 # Schedule: daily 04:25 PT (offline hours). Plist:
@@ -63,11 +77,15 @@ NTFY_TOPIC="renquant"
 OUTPUT="$REPO_DIR/data/analyst_ratings_finnhub.parquet"
 MAX_PULL=0                  # 0 = whole watchlist daily (60/min fits ~145 in one pass)
 SLEEP_SEC=1.1               # throttle for the free 60/min cap
-MIN_ACTIVE_COVERAGE_PCT=88  # provisional fail-closed floor on active_coverage_pct
+MIN_ACTIVE_COVERAGE_PCT="${MIN_ACTIVE_COVERAGE_PCT:-88}"
+                            # provisional fail-closed floor on active_coverage_pct
                             # (with_data/requested, the FULL requested set), enforced
                             # by the CLI. Coarse collapse guard from one 136/145 probe
                             # (active ≈94%); to be recalibrated over a baseline window
                             # (see the progress doc). 88 catches a real collapse.
+                            # Env-overridable so the activation dry-run can prove the
+                            # FAIL path with a HIGH floor (MIN_ACTIVE_COVERAGE_PCT=99)
+                            # WITHOUT editing this committed source.
 mkdir -p "$LOG_DIR"
 
 DATE=$(date +%Y-%m-%d)
