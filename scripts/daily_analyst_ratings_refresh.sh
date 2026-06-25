@@ -49,7 +49,7 @@ NTFY_TOPIC="renquant"
 OUTPUT="$REPO_DIR/data/analyst_ratings_fmp.parquet"
 MAX_PULL=40            # names per run; rotates the ~142 watchlist every ~4 days
 SLEEP_SEC=1            # throttle for the free per-minute cap
-MIN_COVERAGE_PCT=75    # systemic-break floor (one transient 429 in 40 ≈ 97% still passes)
+MIN_COVERAGE_PCT=75    # secondary floor on the COVERABLE set; --fail-on-error already fails on ANY quota/fetch error (no per-429 tolerance)
 mkdir -p "$LOG_DIR"
 
 DATE=$(date +%Y-%m-%d)
