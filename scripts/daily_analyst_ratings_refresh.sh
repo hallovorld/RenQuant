@@ -15,11 +15,16 @@
 # FAIL-CLOSED (2026-06-24 silent-degradation lesson, same bug fixed in
 # weekly_fundamental_refresh): a quota hit / bad key / schema break must ntfy ✗
 # and exit non-zero, NOT pass silently as "no coverage". The refresh CLI
-# distinguishes with_data / no_coverage / quota_error / fetch_error and we gate
-# on `--min-coverage-pct` (catches a SYSTEMIC break — e.g. all-errors → 0% —
-# while tolerating a single transient 429 in a 40-name batch). Any non-zero
-# error count is surfaced in the ntfy body even on a ✓ run so a creeping
-# problem is visible before it becomes systemic.
+# distinguishes with_data / no_coverage / premium_restricted / quota_error /
+# fetch_error, and we gate on BOTH:
+#   * --fail-on-error   → exit non-zero if ANY quota_error/fetch_error occurs
+#                         (the true fail-closed contract; premium_restricted is
+#                         the permanent free-tier plan ceiling and is EXCLUDED
+#                         from the error count, so it never false-alarms);
+#   * --min-coverage-pct → exit non-zero on a SYSTEMIC coverage collapse over the
+#                         *coverable* (non-premium) set.
+# So a transient 429 or a creeping breakage trips ✗ instead of passing as "no
+# coverage"; the per-outcome counts are also surfaced in the ntfy body.
 #
 # INERT UNTIL DEPLOYED: this calls `renquant_base_data.fmp_analyst_ratings_refresh`
 # (base-data PR #24). Until that merges and the base-data pin is bumped, the
@@ -96,6 +101,7 @@ SUMMARY=$("$PYTHON" -m renquant_base_data.fmp_analyst_ratings_refresh \
     --max-pull "$MAX_PULL" \
     --sleep-sec "$SLEEP_SEC" \
     --min-coverage-pct "$MIN_COVERAGE_PCT" \
+    --fail-on-error \
     2>>"$LOG")
 RC=$?
 echo "[$(date '+%H:%M:%S')] summary: ${SUMMARY:-<none>}" | tee -a "$LOG"
