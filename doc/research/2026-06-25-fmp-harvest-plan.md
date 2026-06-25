@@ -53,11 +53,12 @@ manifest stay local automatically — no new ignore rule needed.
 
 ## What the harvester ships now vs defers
 `scripts/fmp_harvest.py` implements **A (analyst), B (fundamentals), C (earnings/events),
-D (ownership), and F-treasury** — ~19 endpoints, all per-ticker except treasury. **Deferred
-pending this discussion:** E (per-ticker `stock-news` / `historical-social-sentiment`) and
-`economic-indicators` — per-ticker news is the one bandwidth-heavy series (could approach
-the 20 GB cap) and its modelling value is least clear, so it's opt-in via a follow-up, not
-in the default sweep. Flagging explicitly rather than silently dropping it.
+D (ownership minus institutional), and F-macro** — `treasury-rates` + `economic-indicators`
+(8 macro series: GDP/realGDP/CPI/inflationRate/unemploymentRate/federalFunds/retailSales/
+consumerSentiment). **Still deferred:** E (per-ticker `stock-news` /
+`historical-social-sentiment`) — news is a *stream*, not the static deep history this
+one-time harvest is built for, it's the one bandwidth-heavy series, and its modelling value
+is least clear; opt-in via a follow-up, flagged not silently dropped.
 
 ## Execution & state
 `scripts/fmp_harvest.py --out data/fmp_harvest --rate 0.2` (manifest-resumable: skips an
