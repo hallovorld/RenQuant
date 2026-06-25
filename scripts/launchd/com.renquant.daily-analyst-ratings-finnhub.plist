@@ -39,7 +39,7 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- Daily 04:20 PT — offline hours, 20 min after the weekly
+        <!-- Daily 04:25 PT — offline hours, 25 min after the weekly
              fundamental-refresh slot so they never overlap. -->
         <key>Hour</key><integer>4</integer>
         <key>Minute</key><integer>25</integer>
