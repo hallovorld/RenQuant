@@ -11,7 +11,10 @@ sees runtime==lockfile (both wrong) → green. The later hard gates (P-CONFIG-FP
 WITH the checkout, not that it is the stable `main` interface.
 
 ## Fix (this PR)
-A guard BEFORE pin-align: if the umbrella checkout is not on `main`, **abort (exit 1) by default**
+A guard BEFORE pin-align: if the umbrella checkout is **not on `main`, OR local `main` has been
+moved off the `origin/main` lineage** (the incident moved local main to a feature/harvest commit —
+branch-name-only would miss that; HEAD must be an *ancestor* of origin/main = legitimately behind,
+not divergent), **abort (exit 1) by default**
 so a stray branch's pins can't deploy — WITH an explicit operator escape hatch
 `RENQUANT_ALLOW_NONMAIN_CHECKOUT=1` to proceed anyway. So it never permanently halts you (you can
 always force a run), while refusing to silently deploy a stray branch's pins. Both paths ntfy.
