@@ -169,21 +169,30 @@ sys.exit(0 if len(sched) > 0 else 1)
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
 
-# ── Live-checkout heads-up (2026-06-25 incident, postmortem #412) ─────────────
-# The umbrella checkout is normally on `main`. A stray git op — or a sub-agent
-# operating in this shared live tree instead of its own worktree — can leave it on
-# a feature branch, whose committed `subrepos.lock.json` pins preflight_pin_align
-# would then deploy. NON-FATAL by design: this only ntfy's a heads-up and lets the
-# run continue — it must NEVER halt trading on its own (a too-aggressive guard is a
-# worse failure mode than the rare drift it watches for). The real fail-closed
-# protection stays the hard preflight gates below (pin-align + P-CONFIG-FP).
+# ── Live-checkout guard (2026-06-25 incident, postmortem #412) ────────────────
+# The umbrella checkout MUST be on `main` before pin-align. A stray git op — or a
+# sub-agent operating in this shared live tree instead of its own worktree — can
+# leave it on a feature branch whose committed `subrepos.lock.json` pins are
+# internally valid but WRONG; pin-align would then deploy those branch pins (the
+# later hard gates only prove consistency-with-checkout, not that it's the stable
+# main interface). So this is FATAL by default — but with an explicit operator
+# escape hatch: set RENQUANT_ALLOW_NONMAIN_CHECKOUT=1 to proceed anyway. That keeps
+# it from ever permanently halting you (you can always force a run) while still
+# refusing to silently deploy a stray branch's pins.
 LIVE_BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
 if [ "$LIVE_BRANCH" != "main" ]; then
-    notify "RenQuant 104 CHECKOUT-HEADSUP ⚠" \
-        "live umbrella checkout on '$LIVE_BRANCH' (normally main) — run CONTINUES (not blocked). If unexpected: cd $REPO_DIR && git checkout main, then make doctor. The hard preflight gates still fail-close a genuinely broken state."
-    echo "HEADS-UP (non-fatal): live checkout on '$LIVE_BRANCH', not main — continuing."
+    if [ "${RENQUANT_ALLOW_NONMAIN_CHECKOUT:-0}" = "1" ]; then
+        notify "RenQuant 104 CHECKOUT-OVERRIDE ⚠" \
+            "live checkout on '$LIVE_BRANCH' but RENQUANT_ALLOW_NONMAIN_CHECKOUT=1 — proceeding (operator override)."
+        echo "OVERRIDE: non-main checkout '$LIVE_BRANCH' allowed by RENQUANT_ALLOW_NONMAIN_CHECKOUT=1 — continuing."
+    else
+        notify "RenQuant 104 CHECKOUT-GUARD ✗" \
+            "live umbrella checkout on '$LIVE_BRANCH' (expected main) — ABORTED before pin-align so a stray branch's pins can't deploy. Force a run: RENQUANT_ALLOW_NONMAIN_CHECKOUT=1. Fix: cd $REPO_DIR && git checkout main, then make doctor."
+        echo "FATAL: live checkout on '$LIVE_BRANCH', not main — aborting before pin-align (override: RENQUANT_ALLOW_NONMAIN_CHECKOUT=1)."
+        exit 1
+    fi
 else
-    echo "Live-checkout heads-up: on main ✓"
+    echo "Live-checkout guard: on main ✓"
 fi
 
 # ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
