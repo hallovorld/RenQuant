@@ -169,6 +169,41 @@ sys.exit(0 if len(sched) > 0 else 1)
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
 
+# ── Live-checkout guard (2026-06-25 incident, postmortem #412) ────────────────
+# The umbrella checkout MUST be the stable `main` interface before pin-align. A
+# stray git op — or a sub-agent operating in this shared live tree instead of its
+# own worktree — can (a) leave it on a feature branch, or (b) MOVE local `main`
+# itself to a feature/stale commit (the incident did exactly this). pin-align would
+# then materialize runtime repos from that checkout's `subrepos.lock.json`, silently
+# deploying the wrong pins (the later hard gates only prove consistency WITH the
+# checkout, not that it's the stable interface). So we require BOTH: branch == main
+# AND HEAD is on the origin/main lineage (= legitimately behind origin, NOT moved to
+# a divergent commit — the live tree is deliberately behind origin/main). FATAL by
+# default, with an explicit operator escape hatch RENQUANT_ALLOW_NONMAIN_CHECKOUT=1
+# so it can never permanently halt you while still refusing to deploy a stray state.
+LIVE_BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+CHECKOUT_BAD=""
+if [ "$LIVE_BRANCH" != "main" ]; then
+    CHECKOUT_BAD="on '$LIVE_BRANCH' (expected main)"
+elif git -C "$REPO_DIR" rev-parse origin/main >/dev/null 2>&1 \
+     && ! git -C "$REPO_DIR" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    CHECKOUT_BAD="local main @ $(git -C "$REPO_DIR" rev-parse --short HEAD) is NOT on the origin/main lineage (moved to a divergent commit)"
+fi
+if [ -n "$CHECKOUT_BAD" ]; then
+    if [ "${RENQUANT_ALLOW_NONMAIN_CHECKOUT:-0}" = "1" ]; then
+        notify "RenQuant 104 CHECKOUT-OVERRIDE ⚠" \
+            "live checkout bad ($CHECKOUT_BAD) but RENQUANT_ALLOW_NONMAIN_CHECKOUT=1 — proceeding (operator override)."
+        echo "OVERRIDE: bad checkout ($CHECKOUT_BAD) allowed by RENQUANT_ALLOW_NONMAIN_CHECKOUT=1 — continuing."
+    else
+        notify "RenQuant 104 CHECKOUT-GUARD ✗" \
+            "live umbrella checkout bad: $CHECKOUT_BAD — ABORTED before pin-align so a stray state's pins can't deploy. Force a run: RENQUANT_ALLOW_NONMAIN_CHECKOUT=1. Fix: cd $REPO_DIR && git checkout main && git reset --hard origin/main (only if safe), then make doctor."
+        echo "FATAL: $CHECKOUT_BAD — aborting before pin-align (override: RENQUANT_ALLOW_NONMAIN_CHECKOUT=1)."
+        exit 1
+    fi
+else
+    echo "Live-checkout guard: on main, on origin/main lineage ✓"
+fi
+
 # ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
 # Run only after duplicate/holiday exits so sync checkout is serialized and only
 # happens for a real trading run. Once-daily also warns if umbrella main lags.
