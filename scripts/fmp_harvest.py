@@ -4,8 +4,9 @@ is active (see doc/research/2026-06-25-fmp-harvest-plan.md).
 
 Auditable + fail-closed + resumable:
 - Every endpoint writes a parquet AND a sidecar manifest (`<key>_291.manifest.json`)
-  recording requested/with_data/no_data/http_error/fetch_error counts, error samples
-  (with the HTTP code / error type), endpoint URL template, universe hash, started/finished,
+  recording requested/with_data/no_data/http_error/fetch_error/app_error counts, error
+  samples (HTTP code / error type / app-error key+message), endpoint URL template, universe
+  hash, started/finished,
   row+ticker counts, and the output sha256.
 - Resumable on the MANIFEST, content/config aware: an endpoint is skipped only when its
   manifest status == "ok" AND its `manifest_version` matches AND its recorded `path_template`
@@ -27,9 +28,12 @@ Auditable + fail-closed + resumable:
   completion atomically RETIRES an older parquet (-> `.parquet.retired`).
 - Writes are atomic (tmp file -> os.replace) so an interruption never leaves a half file
   that a later run would trust.
-- Fail-closed: any http_error/fetch_error OR unexpected all-target zero data makes the run
-  exit non-zero unless --allow-errors. Per-symbol `no_data` (e.g. an ETF with no fundamentals,
-  a name with no dividends) mixed with real data is EXPECTED and does not fail the run.
+- Fail-closed: any http_error/fetch_error/app_error OR unexpected all-target zero data makes
+  the run exit non-zero unless --allow-errors. `app_error` is an FMP HTTP-200 error body
+  (e.g. {"Error Message": ...} entitlement/plan/schema message) — caught BEFORE the
+  dict-as-data path so it never writes an ok-skip manifest. Per-symbol `no_data` (e.g. an ETF
+  with no fundamentals, a name with no dividends) mixed with real data is EXPECTED and does
+  not fail the run.
 - Bounded retry/backoff on 429/5xx/timeouts.
 
 Per-ticker endpoints are pulled for the alpha158 training universe (291); treasury is
@@ -103,22 +107,86 @@ ENDPOINTS = [
 ]
 
 
+# App-level error keys FMP uses to deliver entitlement/plan/schema messages with an
+# HTTP 200 body (e.g. {"Error Message": ...}, {"error": ...}, {"message": ...}).
+# Matched case-insensitively, whitespace-folded ("error message" == "errormessage").
+_APP_ERROR_KEYS = frozenset({"error", "errormessage", "error message", "message"})
+
+
+def _norm_key(k) -> str:
+    """Lowercase + strip + drop interior whitespace so 'Error Message' == 'errormessage'."""
+    return "".join(str(k).split()).lower()
+
+
+def _is_app_error(rec) -> bool:
+    """True when a parsed dict is an FMP application-level error (HTTP 200 + error body).
+
+    Heuristic (deliberately conservative — must NOT swallow a real data row that merely
+    carries a 'message' column):
+      * `{"Error Message": ...}` / `{"error": ...}` — FMP's canonical error shapes:
+        the presence of an explicit error/error-message key marks the record an error,
+        even alongside other keys; AND
+      * a SINGLE-key dict whose only key is an error-signal key (incl. a bare
+        `{"message": ...}` — a lone message with no data fields is an error payload,
+        but a data row that also has a 'message' field is NOT, because it has other
+        keys too).
+    A legitimate endpoint row (symbol/date/value/… possibly *plus* a message field) has
+    a non-error key set and is left as data.
+    """
+    if not isinstance(rec, dict) or not rec:
+        return False
+    norm = {_norm_key(k) for k in rec}
+    # Canonical FMP error shapes: explicit error / error-message key anywhere.
+    if "error" in norm or "errormessage" in norm or "error message" in norm:
+        return True
+    # Otherwise only a dict whose SOLE content is an error-signal key (e.g. a bare
+    # {"message": ...}) is an error; a multi-field data row is not.
+    return len(norm) == 1 and norm <= _APP_ERROR_KEYS
+
+
+def _app_error_sample(rec) -> dict:
+    """Audit sample for an app-error record: the offending error key + its message."""
+    for k, v in rec.items():
+        if _norm_key(k) in _APP_ERROR_KEYS:
+            return {"key": str(k), "message": str(v)}
+    # Fallback (shouldn't happen): record the first key/value.
+    k, v = next(iter(rec.items()))
+    return {"key": str(k), "message": str(v)}
+
+
 def classify(payload):
     """Pure classifier of a parsed FMP response → (status, rows).
 
-    status ∈ {with_data, no_data, http_error, fetch_error}. `_get` returns
+    status ∈ {with_data, no_data, http_error, fetch_error, app_error}. `_get` returns
     {"_http": code} / {"_err": name} sentinels for transport failures; a real
     list/dict payload is data. An empty list is legitimate no-coverage (no_data).
+
+    App-level errors (entitlement/plan/schema messages FMP returns with HTTP 200,
+    e.g. {"Error Message": ...}) are detected BEFORE the generic dict-as-data path and
+    classified `app_error` so they FAIL CLOSED — accepting one as a single data row would
+    write an `ok` manifest and skip the endpoint forever, defeating the paid-window audit.
+    For a list, an all-error-dict response (every element an app-error) is `app_error`;
+    a list with any real data row passes as data. The `rows` returned for an app_error are
+    the offending error dicts, so the caller can attach the message/key to the audit trail.
     """
     if isinstance(payload, dict):
         if "_http" in payload:
             return "http_error", []
         if "_err" in payload:
             return "fetch_error", []
+        # App-level error BEFORE treating a dict as one data row (fail closed).
+        if _is_app_error(payload):
+            return "app_error", [payload]
         return "with_data", [payload]
     if isinstance(payload, list):
         rows = [r for r in payload if isinstance(r, dict)]
-        return ("with_data", rows) if rows else ("no_data", [])
+        if not rows:
+            return "no_data", []
+        # A list whose every dict element is an app-error is a wholesale error body
+        # (e.g. [{"Error Message": ...}]); a list with any real data row passes.
+        if all(_is_app_error(r) for r in rows):
+            return "app_error", rows
+        return "with_data", rows
     return "no_data", []
 
 
@@ -293,7 +361,8 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
     if get is None:
         get = _get
     targets = _targets_for(per_ticker, uni)
-    rows, counts, errs = [], {"with_data": 0, "no_data": 0, "http_error": 0, "fetch_error": 0}, []
+    rows, counts, errs = [], {"with_data": 0, "no_data": 0, "http_error": 0,
+                              "fetch_error": 0, "app_error": 0}, []
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     for sym in targets:
         payload = get(tmpl.format(sym=sym), key, retries, backoff)
@@ -301,12 +370,15 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
         counts[status] += 1
         if status == "with_data":
             rows.extend({**r, "ticker": sym} for r in recs)
-        elif status in ("http_error", "fetch_error") and len(errs) < 10:
-            # Record the HTTP code / error type, not just the ticker, so the audit
-            # trail says *why* a name failed. `_get` returns {"_http": code} /
-            # {"_err": name} sentinels — thread them through.
+        elif status in ("http_error", "fetch_error", "app_error") and len(errs) < 10:
+            # Record *why* a name failed, not just the ticker, so the audit trail is
+            # actionable. `_get` returns {"_http": code} / {"_err": name} sentinels for
+            # transport failures; an app_error carries the offending error key/message
+            # from the HTTP-200 body — thread the relevant detail through.
             sample = {"ticker": sym}
-            if isinstance(payload, dict):
+            if status == "app_error":
+                sample.update(_app_error_sample(recs[0]) if recs else {})
+            elif isinstance(payload, dict):
                 if "_http" in payload:
                     sample["http"] = payload["_http"]
                 elif "_err" in payload:
@@ -316,7 +388,9 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
 
     df = pd.DataFrame(rows)
     dst = out / f"{key_name}_291.parquet"
-    bad = counts["http_error"] + counts["fetch_error"]
+    # app_error folds into the error bucket so an HTTP-200 error body FAILS CLOSED
+    # exactly like an http/fetch error (never written as an ok-skip manifest).
+    bad = counts["http_error"] + counts["fetch_error"] + counts["app_error"]
     # All-target zero data with no errors: legitimate only if this endpoint is
     # explicitly allowed to be all-empty; otherwise it is SUSPICIOUS (entitlement
     # change / vendor-schema failure / wrong param / outage) → fail closed.

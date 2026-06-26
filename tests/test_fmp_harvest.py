@@ -36,6 +36,47 @@ def test_classify_garbage_is_no_data():
     assert fh.classify("oops") == ("no_data", [])
 
 
+# ---- classify: app-level error bodies (HTTP 200 + error payload) ------------
+def test_classify_error_message_dict_is_app_error():
+    # FMP's canonical entitlement/schema error shape, returned with HTTP 200.
+    payload = {"Error Message": "This endpoint is not available under your plan."}
+    assert fh.classify(payload) == ("app_error", [payload])
+
+
+def test_classify_error_and_message_dicts_are_app_error():
+    # `{"error": ...}` (explicit error key) and a BARE `{"message": ...}`.
+    assert fh.classify({"error": "Invalid API KEY."}) == ("app_error", [{"error": "Invalid API KEY."}])
+    assert fh.classify({"message": "Limit Reach."}) == ("app_error", [{"message": "Limit Reach."}])
+
+
+def test_classify_data_row_with_message_field_is_data():
+    # A legitimate data row that merely CONTAINS a 'message' field (alongside real
+    # columns) must NOT be misclassified as an error.
+    row = {"symbol": "AAPL", "date": "2026-01-01", "value": 1.0, "message": "ok"}
+    assert fh.classify(row) == ("with_data", [row])
+
+
+def test_classify_data_dict_with_error_substring_key_is_data():
+    # A key that merely contains 'error' as a substring (e.g. 'errorRate') is NOT an
+    # error-signal key — a real metric row stays data.
+    row = {"symbol": "AAPL", "errorRate": 0.02}
+    assert fh.classify(row) == ("with_data", [row])
+
+
+def test_classify_list_of_only_error_dicts_is_app_error():
+    # A list whose every element is an app-error (e.g. [{"Error Message": ...}]).
+    payload = [{"Error Message": "Restricted Endpoint"}]
+    assert fh.classify(payload) == ("app_error", payload)
+
+
+def test_classify_list_with_real_rows_passes_despite_error_dict():
+    # A list with a real data row passes as data even if an error-ish dict is mixed in
+    # (any real row → the response carried data).
+    payload = [{"symbol": "AAPL", "v": 1}, {"Error Message": "partial"}]
+    status, rows = fh.classify(payload)
+    assert status == "with_data" and rows == payload
+
+
 # ---- harvest_endpoint: write + manifest ------------------------------------
 def _fake_get(mapping, default):
     """Return a get(path,key,retries,backoff) that looks payloads up by ticker substring."""
@@ -149,6 +190,75 @@ def test_harvest_endpoint_fetch_error_sample_carries_err_type(tmp_path):
     assert m["status"] == "errors"
     assert m["fetch_error"] == 1
     assert m["error_samples"] == [{"ticker": "BBB", "err": "TimeoutError"}]
+
+
+def test_harvest_endpoint_app_error_body_fails_closed(tmp_path):
+    # An HTTP-200 error body ({"Error Message": ...}) on every target must FAIL CLOSED:
+    # status "errors" (NOT ok), no parquet written, and the sample carries the message
+    # so the audit trail says *why*. Accepting it as a data row would write an ok-skip
+    # manifest and burn the paid window silently.
+    uni = ["AAA", "BBB"]
+    get = _fake_get(
+        {"AAA": {"Error Message": "Restricted under your plan."}},
+        {"Error Message": "Restricted under your plan."})  # both targets → error body
+    m = fh.harvest_endpoint("locked200", "locked200?symbol={sym}", True, uni, tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    assert m["status"] == "errors"
+    assert m["app_error"] == 2 and m["with_data"] == 0 and m["rows"] == 0
+    assert m["output"] is None and m["sha256"] is None
+    assert not (tmp_path / "locked200_291.parquet").exists()
+    assert m["error_samples"][0] == {
+        "ticker": "AAA", "key": "Error Message", "message": "Restricted under your plan."}
+    # Not a skippable state — must re-pull next run.
+    assert fh._manifest_ok(tmp_path / "locked200_291.manifest.json",
+                           tmpl="locked200?symbol={sym}", targets=["AAA", "BBB"]) is False
+
+
+def test_harvest_endpoint_list_of_error_dicts_fails_closed(tmp_path):
+    # A LIST containing only error dicts (e.g. [{"error": ...}]) is a wholesale error
+    # body → app_error → fail closed, just like a bare error dict.
+    uni = ["AAA", "BBB"]
+    get = _fake_get({}, [{"error": "Invalid API KEY."}])  # every target → list-of-error
+    m = fh.harvest_endpoint("listerr", "listerr?symbol={sym}", True, uni, tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    assert m["status"] == "errors"
+    assert m["app_error"] == 2 and m["rows"] == 0
+    assert not (tmp_path / "listerr_291.parquet").exists()
+    assert m["error_samples"][0] == {"ticker": "AAA", "key": "error", "message": "Invalid API KEY."}
+
+
+def test_harvest_endpoint_real_data_dict_still_passes(tmp_path):
+    # A legitimate single-dict endpoint row (price-target-consensus shape) that has no
+    # error key must still be written as data — the app-error guard must not over-trip.
+    uni = ["AAA", "BBB"]
+    get = _fake_get({"AAA": {"symbol": "AAA", "targetConsensus": 210.0},
+                     "BBB": {"symbol": "BBB", "targetConsensus": 95.0}}, [])
+    m = fh.harvest_endpoint("consensus", "consensus?symbol={sym}", True, uni, tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    assert m["status"] == "ok"
+    assert m["with_data"] == 2 and m["app_error"] == 0 and m["rows"] == 2
+    assert (tmp_path / "consensus_291.parquet").exists()
+
+
+def test_harvest_loop_app_error_endpoint_fails_closed_and_repulls(tmp_path, monkeypatch):
+    # End-to-end through harvest(): every target returns an HTTP-200 error body on a
+    # non-allowed endpoint → the run FAILS CLOSED (rc 1) and the next run RE-PULLS
+    # (never canonicalizes the error body as a permanent ok completion).
+    monkeypatch.setattr(fh, "_universe", lambda repo: ["AAA", "BBB"])
+    pulls = {"n": 0}
+
+    def err_get(path, key, retries, backoff):
+        pulls["n"] += 1
+        return {"Error Message": "Restricted Endpoint"}   # HTTP-200 error body
+
+    monkeypatch.setattr(fh, "_get", err_get)
+    rc1 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
+    assert rc1 == 1                                      # fails closed
+    after_first = pulls["n"]
+    assert after_first >= 1
+    rc2 = fh.harvest(tmp_path, 0.0, "treasury", "k", Path("/repo"), 0, 0.0, False)
+    assert rc2 == 1                                      # still fails closed
+    assert pulls["n"] > after_first                      # second run DID re-pull
 
 
 # ---- skip / rerun on manifest ----------------------------------------------
