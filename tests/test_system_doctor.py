@@ -40,10 +40,16 @@ def _init_repo_on_branch(tmp_path, branch):
     return r
 
 
-def test_live_checkout_branch_flags_non_main(tmp_path):
-    on_main = sd.check_live_checkout_branch(_init_repo_on_branch(tmp_path / "a", "main"))
+def test_live_checkout_branch_opt_in_skips_without_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("RENQUANT_DOCTOR_EXPECT_BRANCH", raising=False)
+    res = sd.check_live_checkout_branch(_init_repo_on_branch(tmp_path / "x", "feat/whatever"))
+    assert res.get("skip") and res["ok"]                            # opt-in: not RED on a PR worktree
+
+
+def test_live_checkout_branch_flags_non_main_when_active(tmp_path):
+    on_main = sd.check_live_checkout_branch(_init_repo_on_branch(tmp_path / "a", "main"), expected="main")
     assert on_main["ok"] and "on main" in on_main["detail"]
-    stray = sd.check_live_checkout_branch(_init_repo_on_branch(tmp_path / "b", "feat/finnhub-analyst-cron"))
+    stray = sd.check_live_checkout_branch(_init_repo_on_branch(tmp_path / "b", "feat/finnhub-analyst-cron"), expected="main")
     assert not stray["ok"] and "EXPECTED main" in stray["detail"]   # the 2026-06-25 incident class
 
 
