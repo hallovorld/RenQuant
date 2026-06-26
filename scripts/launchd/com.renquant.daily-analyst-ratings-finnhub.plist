@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily Finnhub analyst-ratings refresh — every day 04:25 PT.
+
+  Finnhub free `/stock/recommendation` pull: the WHOLE watchlist each
+  day (--max-pull 0), throttled ~1s (free tier 60 calls/min, ~145
+  names ≈ 2.5 min). Broad US-stock coverage (live probe 136/145 with
+  data; the rest returned no_coverage). The free window is only ~4
+  months, so daily accumulation (dedup by (ticker, period)) grows the
+  multi-month series the 3-month revision signal needs.
+
+  Fails closed (gating lives in the base-data CLI, tested Python —
+  base-data #25 — NOT in the shell wrapper):
+    * --fail-on-error            → exit non-zero on ANY quota/fetch
+                                   error (no per-429 tolerance);
+    * --min-active-coverage-pct  → THE fail-closed coverage control:
+                                   floors active_coverage_pct
+                                   (with_data/requested, the FULL
+                                   requested set), so the ambiguous
+                                   no_coverage bucket counts AGAINST it
+                                   and a widespread-empty run cannot
+                                   pass. Wrapper passes 88 (provisional;
+                                   see the progress doc for calibration).
+    * --min-coverage-pct         → DIAGNOSTIC ONLY (coverage over the
+                                   coverable set, which excludes the
+                                   ambiguous no_coverage); passed as 0,
+                                   so it is NOT a safety gate here.
+  The CLI prints active_coverage_pct + no_coverage_pct + coverable cov,
+  so a high coverable % is never read as full active coverage and the
+  gap stays visible. no_coverage is NOT assumed to be ETFs/indices — an
+  empty response is ambiguous (ETF/index, delisted/unsupported,
+  vendor-empty, or a real stock with no current recommendations).
+
+  INERT until base-data #25 merges + the base-data pin is bumped —
+  until then the wrapper reports "module unavailable" and exits
+  non-zero. Do NOT load from this PR. ACTIVATION ORDER: (1) base-data
+  #25 merged + the base-data pin bumped; (2) one-shot dry-run on
+  today's watchlist proving BOTH paths WITHOUT editing committed
+  source — the PASS path
+    bash scripts/daily_analyst_ratings_finnhub_refresh.sh
+  (healthy active coverage clears the default 88% floor → ✓) AND the
+  fail-closed path
+    MIN_ACTIVE_COVERAGE_PCT=99 bash scripts/daily_analyst_ratings_finnhub_refresh.sh
+  (a deliberately HIGH floor is breached by a normal ~94% day → ✗,
+  exit non-zero; the floor is read from an env var, so no code edit is
+  needed — a simulated low-coverage/quota-error response also works);
+  (3) THEN install + load:
+    cp scripts/launchd/com.renquant.daily-analyst-ratings-finnhub.plist \
+       ~/Library/LaunchAgents/
+    launchctl load \
+       ~/Library/LaunchAgents/com.renquant.daily-analyst-ratings-finnhub.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.daily-analyst-ratings-finnhub</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/daily_analyst_ratings_finnhub_refresh.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Daily 04:25 PT — offline hours, 25 min after the weekly
+             fundamental-refresh slot so they never overlap. -->
+        <key>Hour</key><integer>4</integer>
+        <key>Minute</key><integer>25</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/daily_analyst_ratings_finnhub/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/daily_analyst_ratings_finnhub/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
