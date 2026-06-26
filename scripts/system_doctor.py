@@ -81,6 +81,21 @@ def check_promote_backups(lock_path: Path, warn_above: int = 3) -> list[dict]:
              "detail": f"{len(baks)} stale backup(s)" + (f" (>{warn_above}, prune)" if len(baks) > warn_above else "")}]
 
 
+def check_live_checkout_branch(repo: Path = REPO, expected: str = "main") -> dict:
+    """The live umbrella checkout must stay on ``main``. A stray git op / a sub-agent
+    operating in this shared tree instead of an isolated worktree can leave it on a
+    feature branch or detached HEAD — the 2026-06-25 incident class. A feature-branch
+    checkout carries that branch's committed pins, which the next ``preflight_pin_align``
+    would deploy, silently reverting the live model. Catch it before the next run."""
+    try:
+        branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    except Exception as exc:  # noqa: BLE001
+        return {"check": "live_checkout_branch", "ok": False, "detail": f"git error: {exc}"}
+    ok = branch == expected
+    return {"check": "live_checkout_branch", "ok": ok,
+            "detail": f"on {branch}" + ("" if ok else f" — EXPECTED {expected} (stray checkout?)")}
+
+
 def check_bundle(python: str | None = None) -> dict:
     checker = REPO / ".subrepo_runtime" / "repos" / "renquant-orchestrator" / "scripts" / "check_model_bundle_consistency.py"
     if not checker.exists():
@@ -98,6 +113,7 @@ def run_all(lock_path: Path = LOCK, runtime_root: Path = RUNTIME_ROOT) -> dict:
     lock = load_lock(lock_path)
     checks: list[dict] = []
     checks += check_lock_integrity(lock)
+    checks.append(check_live_checkout_branch())
     checks += check_pin_runtime_drift(lock, runtime_root)
     checks += check_promote_backups(lock_path)
     checks.append(check_bundle())
