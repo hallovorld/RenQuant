@@ -169,6 +169,21 @@ sys.exit(0 if len(sched) > 0 else 1)
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
 
+# ── Live-checkout guard (2026-06-25 incident, postmortem #412) ────────────────
+# The umbrella checkout MUST be on `main` before pin-align. A stray git op — or a
+# sub-agent operating in this shared live tree instead of its own worktree — can
+# leave it on a feature branch, whose committed `subrepos.lock.json` pins
+# preflight_pin_align would then DEPLOY, silently reverting the live model. Catch
+# it BEFORE align. FATAL: trading on a stray branch's pins is worse than not trading.
+LIVE_BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+if [ "$LIVE_BRANCH" != "main" ]; then
+    notify "RenQuant 104 CHECKOUT-GUARD ✗" \
+        "live umbrella checkout on '$LIVE_BRANCH' (expected main) — ABORTED before pin-align so a stray branch's pins can't deploy. Fix: cd $REPO_DIR && git checkout main, then run make doctor."
+    echo "FATAL: live checkout on '$LIVE_BRANCH', not main — aborting before pin-align."
+    exit 1
+fi
+echo "Live-checkout guard: on main ✓"
+
 # ── Preflight: align subrepo checkouts to the audited pins, fail-closed ────────
 # Run only after duplicate/holiday exits so sync checkout is serialized and only
 # happens for a real trading run. Once-daily also warns if umbrella main lags.
