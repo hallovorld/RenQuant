@@ -69,12 +69,15 @@ def test_classify_list_of_only_error_dicts_is_app_error():
     assert fh.classify(payload) == ("app_error", payload)
 
 
-def test_classify_list_with_real_rows_passes_despite_error_dict():
-    # A list with a real data row passes as data even if an error-ish dict is mixed in
-    # (any real row → the response carried data).
+def test_classify_mixed_list_with_error_dict_fails_closed():
+    # FAIL CLOSED: a list with ANY app-error element is untrustworthy as a whole — a
+    # top-level FMP error object must not be canonicalized into the parquet as data just
+    # because a sibling row is real. classify() returns app_error with ONLY the offending
+    # error dict(s) as the sample; no real row is written for that target.
     payload = [{"symbol": "AAPL", "v": 1}, {"Error Message": "partial"}]
     status, rows = fh.classify(payload)
-    assert status == "with_data" and rows == payload
+    assert status == "app_error"
+    assert rows == [{"Error Message": "partial"}]   # only the error object, not the data row
 
 
 # ---- harvest_endpoint: write + manifest ------------------------------------
@@ -227,6 +230,30 @@ def test_harvest_endpoint_list_of_error_dicts_fails_closed(tmp_path):
     assert m["error_samples"][0] == {"ticker": "AAA", "key": "error", "message": "Invalid API KEY."}
 
 
+def test_harvest_endpoint_mixed_list_with_error_object_fails_closed(tmp_path):
+    # A target whose list response mixes a real row with an FMP top-level error object
+    # must FAIL CLOSED — the real row is NOT written to the parquet. AAA returns a mixed
+    # list (real + error), BBB returns clean data. The mixed target is app_error, so on a
+    # partial-error run the canonical parquet is NOT replaced and the partial BBB rows are
+    # quarantined to staging (preserving the last-verified contract).
+    uni = ["AAA", "BBB"]
+    get = _fake_get(
+        {"AAA": [{"symbol": "AAA", "v": 1}, {"Error Message": "Restricted under your plan."}],
+         "BBB": [{"symbol": "BBB", "v": 2}]}, [])
+    m = fh.harvest_endpoint("mixedlist", "mixedlist?symbol={sym}", True, uni, tmp_path,
+                            0.0, "k", "2026-06-25", 0, 0.0, get=get)
+    assert m["status"] == "errors"
+    assert m["app_error"] == 1 and m["with_data"] == 1
+    # Canonical parquet not replaced; partial BBB row quarantined to staging.
+    assert m["output"] is None and m["rows"] == 0
+    assert not (tmp_path / "mixedlist_291.parquet").exists()
+    assert (tmp_path / "mixedlist_291.parquet.staging").exists()
+    assert m["staged_rows"] == 1
+    # The error sample carries the offending error message, not the real AAA row.
+    assert m["error_samples"][0] == {
+        "ticker": "AAA", "key": "Error Message", "message": "Restricted under your plan."}
+
+
 def test_harvest_endpoint_real_data_dict_still_passes(tmp_path):
     # A legitimate single-dict endpoint row (price-target-consensus shape) that has no
     # error key must still be written as data — the app-error guard must not over-trip.
@@ -350,6 +377,7 @@ def test_zero_data_manifest_invariant_rejects_inconsistent_records(tmp_path):
     _check_rejected(tickers=3)                     # nonzero tickers
     _check_rejected(http_error=1)                  # an error slipped in
     _check_rejected(fetch_error=1)
+    _check_rejected(app_error=1)                    # an HTTP-200 app-error slipped in
     _check_rejected(no_data=1)                     # no_data != requested (unaccounted)
     _check_rejected(output="inv_291.parquet")     # output set but no sha → inconsistent
     _check_rejected(sha256="deadbeef")             # sha set with null output
@@ -374,6 +402,43 @@ def test_unexpected_zero_data_preserves_last_verified_parquet(tmp_path):
     # The unexpected-empty manifest is NOT a skippable state → re-pull next run.
     assert fh._manifest_ok(mp, tmpl="ev?symbol={sym}",
                            targets=["AAA", "BBB"], parquet_path=pp2) is False
+
+
+def test_partial_error_refresh_preserves_canonical_parquet(tmp_path):
+    # A refresh where SOME targets return data and SOME error must NOT replace the last
+    # verified canonical parquet. First run is clean (2 rows → verified). Second run has
+    # AAA=data but BBB=402 (partial error): the canonical parquet's sha256/rows must be
+    # UNCHANGED, the partial rows are quarantined to .parquet.staging, the manifest says
+    # status "errors" with output null, and it is NOT skippable (the next run re-pulls).
+    get1 = _fake_get({"AAA": [{"x": 1}], "BBB": [{"x": 2}]}, [])
+    mp, pp, m1 = _write_endpoint(tmp_path, "pe", "pe?symbol={sym}", ("AAA", "BBB"), get1)
+    assert m1["status"] == "ok" and m1["rows"] == 2
+    sha_first = m1["sha256"]
+    assert pp.exists() and fh._sha256(pp) == sha_first
+
+    # Partial-error refresh: AAA returns NEW data, BBB returns a 402 app/http error.
+    get2 = _fake_get({"AAA": [{"x": 99}]}, {"_http": 402})  # BBB → 402
+    mp2, pp2, m2 = _write_endpoint(tmp_path, "pe", "pe?symbol={sym}", ("AAA", "BBB"), get2)
+    assert m2["status"] == "errors" and m2["http_error"] == 1
+    # Canonical parquet UNCHANGED — old verified rows/sha preserved.
+    assert pp2.exists() and fh._sha256(pp2) == sha_first
+    assert m2["output"] is None and m2["sha256"] is None and m2["rows"] == 0
+    # The partial AAA-only rows were quarantined to staging, not canonicalized.
+    staging = tmp_path / "pe_291.parquet.staging"
+    assert staging.exists() and m2["staging"] == "pe_291.parquet.staging"
+    assert m2["staged_rows"] == 1
+    import pandas as pd
+    assert fh._sha256(staging) != sha_first   # staged partial differs from canonical
+    # The errored manifest is NOT skippable — next run must re-pull.
+    assert fh._manifest_ok(mp2, tmpl="pe?symbol={sym}", targets=["AAA", "BBB"],
+                           parquet_path=pp2) is False
+    # A subsequent CLEAN full pull supersedes both the canonical parquet and the staging.
+    get3 = _fake_get({"AAA": [{"x": 7}], "BBB": [{"x": 8}]}, [])
+    mp3, pp3, m3 = _write_endpoint(tmp_path, "pe", "pe?symbol={sym}", ("AAA", "BBB"), get3)
+    assert m3["status"] == "ok" and m3["rows"] == 2
+    assert not staging.exists()                # staging cleared on clean replacement
+    assert fh._manifest_ok(mp3, tmpl="pe?symbol={sym}", targets=["AAA", "BBB"],
+                           parquet_path=pp3) is True
 
 
 def test_allowed_zero_data_rerun_retires_stale_parquet(tmp_path):

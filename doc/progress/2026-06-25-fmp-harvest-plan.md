@@ -33,14 +33,18 @@ pull. This PR is the plan to discuss before the broad pull, plus the resumable h
   samples record the **HTTP code / error type**, not just the ticker. Bounded retry/backoff on
   429/5xx/timeout. Exits non-zero on any http/fetch error **or** unexpected all-target zero
   data unless `--allow-errors`. Key from `FMP_API_KEY` (`.env`, never committed).
-- `tests/test_fmp_harvest.py` — 23 unit tests (classify list/dict/empty/http/fetch; atomic
+- `tests/test_fmp_harvest.py` — 35 unit tests (classify list/dict/empty/http/fetch; atomic
   write+manifest; partial no_data≠failure; **all-target zero-data default fail-closed** +
   **explicit allow_zero_data success**; errors→non-ok status; error samples carry http code /
   err type; content/config-aware skip — sha256 match/mismatch, changed-template &
   changed-universe invalidation; **full zero-data manifest-invariant rejection** of
   inconsistent/forged empties; **preservation of the last verified parquet on a rejected
-  empty refresh** vs. retire-on-allowed-empty; end-to-end loop — systemic-empty fails closed &
-  re-pulls, verified-data endpoint skips without re-pull; bounded retry).
+  empty refresh** vs. retire-on-allowed-empty; **HTTP-200 app-error fail-closed** (bare
+  dict, list-of-errors, AND mixed real+error lists → fail closed, real row never written);
+  **partial-error refresh preserves the canonical parquet** (partial rows quarantined to
+  `.parquet.staging`, errored manifest not skippable); **app_error in the zero-data
+  invariant**; end-to-end loop — systemic-empty fails closed & re-pulls, verified-data
+  endpoint skips without re-pull; bounded retry).
 
 ## Status (as of this PR)
 - **Analyst (A) already harvested** full 291: `grades_historical` 283/291 (23,931 rows,
@@ -97,6 +101,24 @@ accepted (missingness is data; measure & gate it per endpoint)*:
    explicit allowed-empty success (+ skip-on-rerun), preservation of the last verified
    parquet on a rejected empty refresh, and invalid/inconsistent zero-data manifest
    rejection. Suite is now **23 tests** (was 18); all pass.
+
+Round 4 (this revision) — *HTTP-200 app-error bodies + partial-error preservation*:
+1. **Partial-error refresh preserves the canonical parquet** — `harvest_endpoint` no longer
+   replaces `<key>_291.parquet` when ANY target errors (`bad > 0`), even if other targets
+   returned real rows. Partial rows are quarantined to `<key>_291.parquet.staging`; the
+   manifest records `output:null, status:"errors"` + a `staging`/`staged_rows` audit pointer.
+   The last-verified canonical parquet+manifest only advance on a CLEAN full replacement, so
+   an AAA-data + BBB-402 refresh can't clobber the prior good artifact and can't be skipped.
+2. **`classify()` fails closed on mixed real+error lists** — a list containing ANY FMP
+   top-level error object is `app_error` (not `with_data`); the real sibling row is NOT
+   written to the parquet, and the offending error dict is returned as the error sample.
+3. **`app_error` added to the zero-data invariant** — `_is_valid_zero_data_completion`
+   now requires `app_error == 0`, so a crafted `status:ok, allow_zero_data:true, output:null,
+   app_error:1` manifest can no longer be accepted by `_manifest_ok`.
+4. **Tests** — updated the mixed-list classify test to expect fail-closed; added a
+   harvest-level mixed-list fail-closed case, a partial-error canonical-preservation
+   regression (verified sha/rows UNCHANGED, manifest not skippable, staging quarantine),
+   and an `app_error:1` zero-data-invariant mutation. Suite is now **35 tests**; all pass.
 
 ## Scope discipline
 `/data/` is already gitignored (`.gitignore:41`) → the parquet inventory stays local;

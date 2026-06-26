@@ -23,9 +23,12 @@ Auditable + fail-closed + resumable:
   must not silently burn the only paid collection window. Only endpoints explicitly marked
   `allow_zero_data=True` may record a valid empty completion (none currently are).
 - Preserve the last verified artifact: a suspicious refresh (zero_data_unexpected, or any
-  http/fetch error) NEVER retires the existing good parquet/manifest — the prior verified
-  state stands until a replacement passes its acceptance rule. Only an ALLOWED zero-data
-  completion atomically RETIRES an older parquet (-> `.parquet.retired`).
+  http/fetch/app error) NEVER replaces or retires the existing good parquet/manifest — the
+  prior verified state stands until a CLEAN full replacement passes its acceptance rule. A
+  PARTIAL-error pull (some targets data, some errored) does NOT overwrite the canonical
+  parquet: its partial rows are quarantined to `<key>_291.parquet.staging` and the manifest
+  records `output:null, status:"errors"` (so a later run re-pulls, never skips on the partial).
+  Only an ALLOWED zero-data completion atomically RETIRES an older parquet (-> `.parquet.retired`).
 - Writes are atomic (tmp file -> os.replace) so an interruption never leaves a half file
   that a later run would trust.
 - Fail-closed: any http_error/fetch_error/app_error OR unexpected all-target zero data makes
@@ -165,9 +168,11 @@ def classify(payload):
     e.g. {"Error Message": ...}) are detected BEFORE the generic dict-as-data path and
     classified `app_error` so they FAIL CLOSED — accepting one as a single data row would
     write an `ok` manifest and skip the endpoint forever, defeating the paid-window audit.
-    For a list, an all-error-dict response (every element an app-error) is `app_error`;
-    a list with any real data row passes as data. The `rows` returned for an app_error are
-    the offending error dicts, so the caller can attach the message/key to the audit trail.
+    For a list, ANY app-error element makes the whole response `app_error` (fail closed):
+    a paid harvest must not canonicalize an FMP top-level error object into the parquet as a
+    data row just because another element happens to be real. The `rows` returned for an
+    app_error are the offending error dicts ONLY, so the caller attaches the message/key to
+    the audit trail and writes no data for that target.
     """
     if isinstance(payload, dict):
         if "_http" in payload:
@@ -182,10 +187,13 @@ def classify(payload):
         rows = [r for r in payload if isinstance(r, dict)]
         if not rows:
             return "no_data", []
-        # A list whose every dict element is an app-error is a wholesale error body
-        # (e.g. [{"Error Message": ...}]); a list with any real data row passes.
-        if all(_is_app_error(r) for r in rows):
-            return "app_error", rows
+        # FAIL CLOSED on a mixed list: if ANY element is an app-error, the response is
+        # untrustworthy — a top-level FMP error object must not be written as data just
+        # because a sibling row is real. Return only the offending error dicts as the
+        # error sample; no data is written for this target.
+        errs = [r for r in rows if _is_app_error(r)]
+        if errs:
+            return "app_error", errs
         return "with_data", rows
     return "no_data", []
 
@@ -263,8 +271,8 @@ def _is_valid_zero_data_completion(man, *, tmpl=None, targets=None) -> bool:
       * manifest_version matches the current state machine; AND
       * allow_zero_data is True (endpoint explicitly permitted to be all-empty); AND
       * status == "ok"; AND
-      * with_data == 0 AND errors == 0 (http_error + fetch_error) AND tickers == 0
-        AND rows == 0 (truly empty, no partial/errored residue); AND
+      * with_data == 0 AND errors == 0 (http_error + fetch_error + app_error) AND
+        tickers == 0 AND rows == 0 (truly empty, no partial/errored residue); AND
       * requested == no_data (every target classified as no_data, none unaccounted); AND
       * output is None AND sha256 is None (no parquet, no checksum); AND
       * path_template / universe_hash match the current endpoint + target list.
@@ -278,8 +286,8 @@ def _is_valid_zero_data_completion(man, *, tmpl=None, targets=None) -> bool:
     if man.get("output") is not None or man.get("sha256") is not None:
         return False
     counts = (int(man.get("with_data") or 0), int(man.get("http_error") or 0),
-              int(man.get("fetch_error") or 0), int(man.get("tickers") or 0),
-              int(man.get("rows") or 0))
+              int(man.get("fetch_error") or 0), int(man.get("app_error") or 0),
+              int(man.get("tickers") or 0), int(man.get("rows") or 0))
     if any(counts):
         return False
     requested = int(man.get("requested") or 0)
@@ -355,6 +363,13 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
     existing verified parquet is PRESERVED (a suspicious refresh must not retire the last
     good artifact). When True an all-empty pull is a valid zero-data completion (status
     "ok", output null) and any older parquet is atomically retired.
+
+    PARTIAL-ERROR PRESERVATION: when ANY target errors (`bad > 0`) the canonical parquet
+    is NEVER replaced, even if other targets returned real rows. The partial rows are
+    quarantined to `<key>_291.parquet.staging` and the manifest records `output: null`
+    (canonical untouched), `status: "errors"`, and a `staging`/`staged_rows` pointer for
+    audit. The "last verified" canonical parquet+manifest only advance when a full
+    replacement passes the endpoint acceptance rule (all targets data/no_data, no errors).
     """
     import pandas as pd  # noqa: PLC0415
 
@@ -388,6 +403,7 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
 
     df = pd.DataFrame(rows)
     dst = out / f"{key_name}_291.parquet"
+    staging = dst.with_suffix(".parquet.staging")
     # app_error folds into the error bucket so an HTTP-200 error body FAILS CLOSED
     # exactly like an http/fetch error (never written as an ok-skip manifest).
     bad = counts["http_error"] + counts["fetch_error"] + counts["app_error"]
@@ -400,15 +416,37 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
     if len(df):
         df["fetched_at"] = fetched
         df["source"] = f"fmp_{key_name}"
+    staged = None
+    if bad:
+        # PARTIAL ERROR: do NOT replace the canonical parquet (preserve the last
+        # verified artifact). Quarantine any partial rows to a staging path for audit;
+        # the canonical dst/manifest only advance on a clean full replacement.
+        if len(df):
+            _atomic_write_parquet(df, staging)
+            staged = staging.name
+        elif staging.exists():
+            staging.unlink()   # no partial rows this run → clear a prior staging file
+    elif len(df):
+        # Clean replacement: every target was data/no_data, no errors.
         _atomic_write_parquet(df, dst)
-    elif zero_data and allow_zero_data and dst.exists():
-        # ALLOWED zero-data completion while an OLDER parquet is on disk: atomically
+        if staging.exists():
+            staging.unlink()   # supersede any earlier quarantined partial
+    elif zero_data and allow_zero_data:
+        # ALLOWED zero-data completion (a clean run, no errors): a prior quarantined
+        # partial is now stale → clear it. If an OLDER parquet is on disk, atomically
         # RETIRE it so a later run can't skip on a stale parquet + an output==null
         # manifest. (Only an accepted-legitimate empty result may retire.)
-        os.replace(dst, dst.with_suffix(".parquet.retired"))
-    # else (zero_data_unexpected OR errors): PRESERVE the last verified parquet —
+        if staging.exists():
+            staging.unlink()
+        if dst.exists():
+            os.replace(dst, dst.with_suffix(".parquet.retired"))
+    # else (zero_data_unexpected): PRESERVE the last verified parquet —
     # a suspicious/failed refresh must not retire the prior good artifact.
 
+    # On a clean run the canonical parquet reflects this pull; on an errored run the
+    # canonical parquet is whatever (verified) state was already on disk — manifest
+    # output/rows/sha reference ONLY the canonical artifact, never the staged partial.
+    canonical_written = bool(len(df)) and not bad
     if bad:
         status = "errors"
     elif zero_data_unexpected:
@@ -425,10 +463,13 @@ def harvest_endpoint(key_name, tmpl, per_ticker, uni, out, rate, key, fetched,
         "universe_hash": _universe_hash(targets),
         **counts,
         "error_samples": errs,
-        "rows": int(len(df)),
-        "tickers": int(df["ticker"].nunique()) if len(df) else 0,
-        "output": dst.name if len(df) else None,
-        "sha256": _sha256(dst) if len(df) else None,
+        "rows": int(len(df)) if canonical_written else 0,
+        "tickers": int(df["ticker"].nunique()) if canonical_written else 0,
+        "output": dst.name if canonical_written else None,
+        "sha256": _sha256(dst) if canonical_written else None,
+        # Audit pointer for a quarantined partial-error pull (NOT a skippable artifact).
+        "staging": staged,
+        "staged_rows": int(len(df)) if (bad and staged) else 0,
         "started_at": started,
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "status": status,
