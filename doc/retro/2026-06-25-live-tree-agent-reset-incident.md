@@ -43,11 +43,12 @@ live state** (pins, artifact stamps, `live_state.alpaca.json`) that `git reset -
 4. `live_state.alpaca.json` self-heals from the broker on the next run.
 
 ## Prevention (this PR)
-- **`system_doctor` now checks `live_checkout_branch`** — RED if the umbrella checkout is not on
-  `main` (the symptom this incident left that nothing flagged). `runtime_at_pin` already catches a
-  reverted lockfile (runtime≠pin), so doctor now covers both halves of this incident class.
-- **Run `make doctor` in the daily preflight and ntfy on RED** (follow-up) so a stray checkout /
-  pin drift is alerted before the next trade, not discovered by hand.
+- **`system_doctor` gains an OPT-IN `live_checkout_branch` check** — SKIPs by default (so
+  `make doctor` on a PR/worktree branch isn't RED); REDs off-main only when the live path sets
+  `RENQUANT_DOCTOR_EXPECT_BRANCH=main`. `runtime_at_pin` separately catches a reverted lockfile.
+- **The active off-main protection is the daily pre-pin-align guard (#414)** — fatal-by-default
+  with an explicit `RENQUANT_ALLOW_NONMAIN_CHECKOUT=1` override, so a stray checkout can't silently
+  deploy a branch's pins, while the operator can always force a run.
 - **Agent rule**: sub-agents MUST operate only in their isolated worktree and NEVER run git in
   `/Users/renhao/git/github/RenQuant`. Agent prompts that touch git now state this explicitly.
 

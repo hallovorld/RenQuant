@@ -10,9 +10,11 @@ the next run), but it was a P0 near-miss. Recovered to ✓ system green. This PR
 guard + records the postmortem.
 
 ## Deliverables
-- `scripts/system_doctor.py` — new **`check_live_checkout_branch`**: RED if the umbrella checkout
-  is not on `main`. `runtime_at_pin` already flags a reverted lockfile (runtime≠pin), so doctor
-  now detects both halves of this incident class.
+- `scripts/system_doctor.py` — new **`check_live_checkout_branch`**, **opt-in**: it SKIPs unless
+  `RENQUANT_DOCTOR_EXPECT_BRANCH` is set (so running `make doctor` on a PR/worktree feature branch
+  stays green); when the live path sets `RENQUANT_DOCTOR_EXPECT_BRANCH=main` it REDs off-main.
+  By default the **active** off-main protection is the pre-pin-align daily guard (#414), not this
+  heartbeat. `runtime_at_pin` separately flags a reverted lockfile (runtime≠pin).
 - `tests/test_system_doctor.py` — test that a `feat/*` checkout trips the guard while `main`
   passes. 5 tests pass.
 - `doc/retro/2026-06-25-live-tree-agent-reset-incident.md` — the full postmortem (timeline, why
