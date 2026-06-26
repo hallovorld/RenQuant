@@ -577,6 +577,7 @@
       "COST",
       "CRM",
       "CRWD",
+      "CRWV",
       "CSCO",
       "CVS",
       "CVX",
@@ -651,6 +652,7 @@
       "PYPL",
       "QCOM",
       "RBLX",
+      "RKLB",
       "ROST",
       "RTX",
       "SCHW",
@@ -658,6 +660,7 @@
       "SNOW",
       "SO",
       "SOFI",
+      "SPCX",
       "SPG",
       "SPOT",
       "SPY",
@@ -727,6 +730,7 @@
       "COST": "consumer",
       "CRM": "software",
       "CRWD": "software",
+      "CRWV": "datacenter_hw",
       "CSCO": "datacenter_hw",
       "CVS": "healthcare",
       "CVX": "energy",
@@ -801,6 +805,7 @@
       "PYPL": "finance",
       "QCOM": "ai_chip",
       "RBLX": "software",
+      "RKLB": "industrial",
       "ROST": "consumer",
       "RTX": "industrial",
       "SCHW": "finance",
@@ -808,6 +813,7 @@
       "SNOW": "software",
       "SO": "utility",
       "SOFI": "finance",
+      "SPCX": "industrial",
       "SPG": "real_estate",
       "SPOT": "software",
       "T": "telecom",
@@ -855,7 +861,7 @@
       "utility": "XLU"
     }
   },
-  "config_fingerprint": "sha256:14586756d4f67691",
+  "config_fingerprint": "sha256:f8fb2259b2bf1537",
   "metadata": {
     "wf_gate_metadata": {
       "passed": true,
