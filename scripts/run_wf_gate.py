@@ -41,6 +41,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,97 @@ CUTS = [
     ("2024-07-01", "2025-06-30"),
     ("2025-04-01", "2026-03-28"),
 ]
+
+
+# Scorer-kind vocabulary + production reference mapping, kept aligned with the
+# parity guard (``wf_config_parity._normalize_kind`` / ``PATCHTST_KINDS``) and
+# with the active package path (renquant-backtesting #58:
+# ``wf_config_builder.select_prod_reference_for_candidate``). This is the ONE
+# converged contract: a candidate is compared against the production semantics
+# that actually run its scorer kind, NOT against a kind-mutated config.
+_PATCHTST_KIND = "hf_patchtst"
+_GBDT_KIND = "xgb"
+_PATCHTST_KINDS = {"hf_patchtst", "patchtst", "patchtst_panel"}
+PROD_REFERENCE_BY_KIND = {
+    _PATCHTST_KIND: "strategy_config.json",
+    _GBDT_KIND: "strategy_config.shadow.json",
+}
+
+
+def _normalize_scorer_kind(kind) -> str:
+    """Collapse a scorer kind to the parity-guard vocabulary (``""`` if empty)."""
+    value = str(kind or "").lower()
+    if value in _PATCHTST_KINDS:
+        return _PATCHTST_KIND
+    return {"panel_ltr_xgboost": _GBDT_KIND, "xgboost": _GBDT_KIND}.get(value, value)
+
+
+def _prod_config_path(candidate_kind=None) -> Path:
+    """Resolve the kind-matched production reference for derive/parity.
+
+    ONE parity contract shared with renquant-backtesting #58
+    (``select_prod_reference_for_candidate``): select the production config whose
+    scorer kind MATCHES the candidate's declared kind (read from artifact
+    metadata, never a path suffix). A GBDT/xgb candidate is compared against the
+    GBDT/shadow config (``strategy_config.shadow.json``, ``kind=xgb``); a PatchTST
+    candidate against the PatchTST primary (``strategy_config.json``).
+
+    Selection precedence (when ``candidate_kind`` is known):
+      1. ``RENQUANT_STRATEGY_CONFIG`` env — honored, but its declared
+         ``panel_scoring.kind`` is validated against the candidate kind; a
+         mismatch FAILS CLOSED so the env cannot smuggle a wrong reference past
+         parity. ``weekly_wf_promote.sh`` exports this for GBDT candidates.
+      2. the built-in ``PROD_REFERENCE_BY_KIND`` mapping.
+
+    Raises ``ValueError`` (fail closed) on an unknown/unmatched kind. When
+    ``candidate_kind`` is ``None`` (legacy/no-artifact callers), fall back to the
+    env value or the PatchTST primary so existing behaviour is preserved.
+    """
+    raw = os.environ.get("RENQUANT_STRATEGY_CONFIG")
+
+    if candidate_kind is None:
+        if raw:
+            p = Path(raw)
+            return p if p.is_absolute() else STRATEGY_DIR / p
+        return STRATEGY_DIR / "strategy_config.json"
+
+    kind = _normalize_scorer_kind(candidate_kind)
+    if not kind:
+        raise ValueError(
+            "cannot select a production reference: candidate artifact has no "
+            "declared scorer kind (load it from artifact metadata, not a path "
+            "suffix); fail closed."
+        )
+
+    if raw:
+        p = Path(raw)
+        p = (p if p.is_absolute() else STRATEGY_DIR / p)
+        if not p.exists():
+            raise ValueError(
+                f"RENQUANT_STRATEGY_CONFIG points at a missing prod config: {p}"
+            )
+        ref_kind = _normalize_scorer_kind(
+            ((json.loads(p.read_text()).get("ranking") or {})
+             .get("panel_scoring") or {}).get("kind")
+        )
+        if ref_kind != kind:
+            raise ValueError(
+                "RENQUANT_STRATEGY_CONFIG selects a production reference whose "
+                f"scorer kind ({ref_kind!r}) does not match the candidate kind "
+                f"({kind!r}); refusing to compare a candidate against a "
+                "non-matching production reference. Fail closed."
+            )
+        return p
+
+    ref_name = PROD_REFERENCE_BY_KIND.get(kind)
+    if not ref_name:
+        raise ValueError(
+            f"no production reference config is registered for candidate kind "
+            f"{kind!r}; known kinds: {sorted(PROD_REFERENCE_BY_KIND)}. Fail "
+            "closed — a candidate cannot be promoted without a kind-matched "
+            "production reference."
+        )
+    return STRATEGY_DIR / ref_name
 
 
 def _required_validation_skip_reasons(args) -> list[str]:
@@ -2363,7 +2455,22 @@ def main():
         if not base_cfg_path.exists():
             log.error("base strategy config not found: %s", base_cfg_path)
             sys.exit(2)
-        prod_cfg_path = STRATEGY_DIR / "strategy_config.json"
+        try:
+            prod_cfg_path = _prod_config_path(candidate_kind=artifact.get("kind"))
+        except ValueError as exc:
+            log.error(
+                "WF config parity reference selection FAILED (fail closed): %s",
+                exc,
+            )
+            sys.exit(2)
+        if not prod_cfg_path.exists():
+            log.error("prod strategy config not found: %s", prod_cfg_path)
+            sys.exit(2)
+        log.info(
+            "Deriving WF config from kind-matched prod config (candidate kind=%s): %s",
+            artifact.get("kind"),
+            prod_cfg_path,
+        )
         prod_cfg = json.loads(prod_cfg_path.read_text())
         base_cfg = json.loads(base_cfg_path.read_text())
         manifest_path = ((base_cfg.get("walkforward") or {}).get("manifest_path"))
@@ -2414,16 +2521,24 @@ def main():
     log.info("Artifact usage: %s", artifact_usage)
     cfg_path = STRATEGY_DIR / args.strategy_config
     gate_config = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
-    parity_result = (
-        {"passed": True, "reason": "skipped"}
-        if args.skip_config_parity or not cfg_path.exists()
-        else evaluate_wf_config_parity(
-            STRATEGY_DIR / "strategy_config.json",
+    if args.skip_config_parity or not cfg_path.exists():
+        parity_result = {"passed": True, "reason": "skipped"}
+    else:
+        try:
+            # Same kind-matched production reference used for derivation above.
+            parity_prod_cfg = _prod_config_path(candidate_kind=artifact.get("kind"))
+        except ValueError as exc:
+            log.error(
+                "WF config parity reference selection FAILED (fail closed): %s",
+                exc,
+            )
+            sys.exit(2)
+        parity_result = evaluate_wf_config_parity(
+            parity_prod_cfg,
             cfg_path,
             candidate_artifact=artifact_path,
             strategy_dir=STRATEGY_DIR,
         )
-    )
     if not parity_result.get("passed", True):
         log.error(
             "WF config parity FAILED with %d issue(s)",
