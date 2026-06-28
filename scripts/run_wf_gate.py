@@ -41,6 +41,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,25 @@ CUTS = [
     ("2024-07-01", "2025-06-30"),
     ("2025-04-01", "2026-03-28"),
 ]
+
+
+def _prod_config_path() -> Path:
+    """Resolve the production config used as the parity/derivation reference.
+
+    Defaults to the PatchTST PRIMARY ``strategy_config.json``, but honors the
+    ``RENQUANT_STRATEGY_CONFIG`` env var so a non-PatchTST candidate (e.g. a
+    GBDT/shadow scorer) derives and parity-checks against the matching prod
+    config. ``weekly_wf_promote.sh`` already exports this var to the GBDT/shadow
+    config when evaluating GBDT candidates; without honoring it here the derived
+    eval config kept ``ranking.panel_scoring.kind=hf_patchtst`` while pointing at
+    a GBDT artifact, so the scorer-kind/artifact parity guard fired on every
+    GBDT candidate. The env value may be absolute or relative to STRATEGY_DIR.
+    """
+    raw = os.environ.get("RENQUANT_STRATEGY_CONFIG")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else STRATEGY_DIR / p
+    return STRATEGY_DIR / "strategy_config.json"
 
 
 def _required_validation_skip_reasons(args) -> list[str]:
@@ -2363,7 +2383,11 @@ def main():
         if not base_cfg_path.exists():
             log.error("base strategy config not found: %s", base_cfg_path)
             sys.exit(2)
-        prod_cfg_path = STRATEGY_DIR / "strategy_config.json"
+        prod_cfg_path = _prod_config_path()
+        if not prod_cfg_path.exists():
+            log.error("prod strategy config not found: %s", prod_cfg_path)
+            sys.exit(2)
+        log.info("Deriving WF config from prod config: %s", prod_cfg_path)
         prod_cfg = json.loads(prod_cfg_path.read_text())
         base_cfg = json.loads(base_cfg_path.read_text())
         manifest_path = ((base_cfg.get("walkforward") or {}).get("manifest_path"))
@@ -2418,7 +2442,7 @@ def main():
         {"passed": True, "reason": "skipped"}
         if args.skip_config_parity or not cfg_path.exists()
         else evaluate_wf_config_parity(
-            STRATEGY_DIR / "strategy_config.json",
+            _prod_config_path(),
             cfg_path,
             candidate_artifact=artifact_path,
             strategy_dir=STRATEGY_DIR,
