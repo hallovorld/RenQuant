@@ -1,11 +1,14 @@
 """Guards for run_wf_gate's prod-config selection in --derive-config-from-prod.
 
-The weekly WF-promote wrapper evaluates non-PatchTST candidates (e.g. GBDT)
-by exporting RENQUANT_STRATEGY_CONFIG to the GBDT/shadow prod config. The
-derive + parity path in run_wf_gate.py must honor that env var; otherwise it
-derives from the PatchTST PRIMARY config and the derived eval config keeps
-ranking.panel_scoring.kind=hf_patchtst while pointing at a GBDT artifact, so the
-scorer-kind/artifact parity guard fires on every GBDT candidate.
+The ONE converged parity contract (shared with renquant-backtesting #58's
+``wf_config_builder.select_prod_reference_for_candidate``): select the
+production reference whose scorer kind MATCHES the candidate's declared kind
+(read from artifact metadata, never a path suffix), and use that SAME reference
+for BOTH derivation and the parity check. A GBDT/xgb candidate is compared
+against the GBDT/shadow config; a PatchTST candidate against the PatchTST
+primary. ``RENQUANT_STRATEGY_CONFIG`` is honored but validated against the
+candidate kind — a mismatch (or an unknown kind) FAILS CLOSED, so a genuine
+prod-vs-candidate mismatch never passes.
 """
 from __future__ import annotations
 
@@ -25,24 +28,69 @@ from wf_config_builder import build_wf_config_from_prod  # noqa: E402
 from wf_config_parity import evaluate_wf_config_parity  # noqa: E402
 
 
-def test_prod_config_path_defaults_to_primary(monkeypatch: pytest.MonkeyPatch) -> None:
+# ── candidate-matched reference selection ─────────────────────────────────────
+
+
+def test_prod_config_path_defaults_to_primary_without_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy callers (no candidate kind) keep the env/primary fallback."""
     monkeypatch.delenv("RENQUANT_STRATEGY_CONFIG", raising=False)
-    assert run_wf_gate._prod_config_path() == run_wf_gate.STRATEGY_DIR / "strategy_config.json"
-
-
-def test_prod_config_path_honors_relative_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RENQUANT_STRATEGY_CONFIG", "strategy_config.shadow.json")
     assert run_wf_gate._prod_config_path() == (
+        run_wf_gate.STRATEGY_DIR / "strategy_config.json"
+    )
+
+
+def test_prod_config_path_maps_gbdt_kind_to_shadow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RENQUANT_STRATEGY_CONFIG", raising=False)
+    assert run_wf_gate._prod_config_path(candidate_kind="panel_ltr_xgboost") == (
         run_wf_gate.STRATEGY_DIR / "strategy_config.shadow.json"
     )
 
 
-def test_prod_config_path_honors_absolute_env(
+def test_prod_config_path_maps_patchtst_kind_to_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RENQUANT_STRATEGY_CONFIG", raising=False)
+    assert run_wf_gate._prod_config_path(candidate_kind="hf_patchtst") == (
+        run_wf_gate.STRATEGY_DIR / "strategy_config.json"
+    )
+
+
+def test_prod_config_path_unknown_kind_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RENQUANT_STRATEGY_CONFIG", raising=False)
+    with pytest.raises(ValueError, match="no production reference"):
+        run_wf_gate._prod_config_path(candidate_kind="some_unknown_scorer")
+
+
+def test_prod_config_path_env_validated_against_candidate_kind(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    abs_cfg = tmp_path / "gbdt_prod.json"
-    monkeypatch.setenv("RENQUANT_STRATEGY_CONFIG", str(abs_cfg))
-    assert run_wf_gate._prod_config_path() == abs_cfg
+    """A validated env override matching the candidate kind is honored."""
+    shadow = tmp_path / "shadow.json"
+    shadow.write_text(json.dumps({"ranking": {"panel_scoring": {"kind": "xgb"}}}))
+    monkeypatch.setenv("RENQUANT_STRATEGY_CONFIG", str(shadow))
+    assert run_wf_gate._prod_config_path(candidate_kind="panel_ltr_xgboost") == shadow
+
+
+def test_prod_config_path_env_kind_mismatch_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An env override whose kind != candidate kind FAILS CLOSED (no smuggling)."""
+    primary = tmp_path / "primary.json"
+    primary.write_text(
+        json.dumps({"ranking": {"panel_scoring": {"kind": "hf_patchtst"}}})
+    )
+    monkeypatch.setenv("RENQUANT_STRATEGY_CONFIG", str(primary))
+    with pytest.raises(ValueError, match="does not match the candidate kind"):
+        run_wf_gate._prod_config_path(candidate_kind="panel_ltr_xgboost")
+
+
+# ── same-selected-reference contract: positive then negative ──────────────────
 
 
 def _artifact(path: Path, cols: list[str]) -> Path:
@@ -52,7 +100,6 @@ def _artifact(path: Path, cols: list[str]) -> Path:
 
 
 def _prod_config(artifact_path: str, *, kind: str) -> dict:
-    """Minimal prod config sufficient for the kind/feature parity checks."""
     return {
         "ranking": {
             "panel_scoring": {
@@ -66,12 +113,11 @@ def _prod_config(artifact_path: str, *, kind: str) -> dict:
     }
 
 
-def test_gbdt_prod_config_derives_xgb_kind_and_parity_passes(tmp_path: Path) -> None:
-    """End-to-end: deriving from the GBDT prod config keeps kind=xgb -> parity ok.
+def test_gbdt_candidate_with_gbdt_reference_passes(tmp_path: Path) -> None:
+    """POSITIVE: GBDT candidate derived from the GBDT/shadow reference passes.
 
-    Mirrors what _prod_config_path() now selects when RENQUANT_STRATEGY_CONFIG
-    points at the GBDT/shadow config: the derived eval config inherits the GBDT
-    scorer kind, so it matches the GBDT (panel_ltr_xgboost) candidate artifact.
+    Same selected reference for derivation and parity; the GBDT/shadow config
+    already declares kind=xgb so no mutation is needed.
     """
     candidate = _artifact(tmp_path / "artifacts/prod/panel-ltr.json", ["f1", "f2"])
     wf_art = _artifact(tmp_path / "artifacts/wf/cut/panel-ltr.json", ["f1", "f2"])
@@ -93,7 +139,7 @@ def test_gbdt_prod_config_derives_xgb_kind_and_parity_passes(tmp_path: Path) -> 
         base_wf_config=base_wf,
         strategy_dir=tmp_path,
     )
-    # kind is inherited from the (GBDT) prod config, not the base/placeholder.
+    # kind inherited from the (GBDT) prod config — NOT mutated.
     assert derived["ranking"]["panel_scoring"]["kind"] == "xgb"
 
     prod_path = tmp_path / "gbdt_prod.json"
@@ -102,7 +148,7 @@ def test_gbdt_prod_config_derives_xgb_kind_and_parity_passes(tmp_path: Path) -> 
     derived_path.write_text(json.dumps(derived, indent=2))
 
     result = evaluate_wf_config_parity(
-        prod_path,
+        prod_path,  # SAME selected reference used for derivation
         derived_path,
         candidate_artifact=candidate,
         strategy_dir=tmp_path,
@@ -110,14 +156,18 @@ def test_gbdt_prod_config_derives_xgb_kind_and_parity_passes(tmp_path: Path) -> 
     assert result["passed"] is True, result["issues"]
 
 
-def test_mismatched_prod_kind_fails_kind_parity(tmp_path: Path) -> None:
-    """Regression: deriving a GBDT candidate from the PatchTST prod -> kind drift.
+def test_gbdt_candidate_against_patchtst_reference_stays_non_promotable(
+    tmp_path: Path,
+) -> None:
+    """NEGATIVE (parity layer): derived PatchTST kind vs the correct GBDT
+    reference → ``ranking.panel_scoring.kind`` diverges and parity FAILS.
 
-    Reproduces the bug at the parity layer: when the derived eval config is
-    built from the PatchTST PRIMARY (kind=hf_patchtst) but the GBDT/shadow config
-    (kind=xgb) is the correct production reference for a GBDT candidate, the
-    ranking.panel_scoring.kind semantic path diverges and parity fails. The env
-    fix keeps both sides on the same (GBDT) prod config so this can't happen.
+    Reproduces the bug shape the converged selection now prevents: a GBDT
+    candidate whose derived config kept ``kind=hf_patchtst`` (inherited from the
+    PatchTST primary), compared against the GBDT/shadow reference that is the
+    correct production semantics for that candidate (``kind=xgb``). The semantic
+    kind path diverges, so the run is non-promotable. The selection-layer
+    fail-closed test below stops this from ever reaching parity in practice.
     """
     candidate = _artifact(tmp_path / "artifacts/prod/panel-ltr.json", ["f1", "f2"])
     wf_art = _artifact(tmp_path / "artifacts/wf/cut/panel-ltr.json", ["f1", "f2"])
@@ -127,8 +177,6 @@ def test_mismatched_prod_kind_fails_kind_parity(tmp_path: Path) -> None:
         "retrains": [{"artifact_uri": str(wf_art), "cutoff_date": "2024-01-01"}]
     }))
 
-    # Bug shape: derived config built from PatchTST prod keeps kind=hf_patchtst,
-    # but the correct GBDT prod reference declares kind=xgb for this candidate.
     patchtst_prod = _prod_config(str(candidate), kind="hf_patchtst")
     gbdt_prod = _prod_config(str(candidate), kind="xgb")
     base_wf = {
@@ -136,6 +184,7 @@ def test_mismatched_prod_kind_fails_kind_parity(tmp_path: Path) -> None:
         "walkforward": {"enabled": True, "manifest_path": str(manifest)},
     }
 
+    # Bug shape: derived from the PatchTST primary keeps kind=hf_patchtst.
     derived = build_wf_config_from_prod(
         patchtst_prod,
         manifest_path=str(manifest),
@@ -150,20 +199,42 @@ def test_mismatched_prod_kind_fails_kind_parity(tmp_path: Path) -> None:
     derived_path.write_text(json.dumps(derived, indent=2))
 
     result = evaluate_wf_config_parity(
-        gbdt_prod_path,
+        gbdt_prod_path,  # the correct GBDT reference for this candidate
         derived_path,
         candidate_artifact=candidate,
         strategy_dir=tmp_path,
     )
     assert result["passed"] is False
     assert any(
-        i["path"] == "ranking.panel_scoring.kind" for i in result["issues"]
+        i.get("path") == "ranking.panel_scoring.kind" for i in result["issues"]
     ), result["issues"]
 
 
+def test_selection_layer_blocks_mismatch_before_parity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """NEGATIVE (selection layer): the converged contract refuses to compare a
+    GBDT candidate against a PatchTST reference at all — fail closed.
+
+    This is the real-world defense: ``weekly_wf_promote.sh`` must export the
+    GBDT/shadow config for a GBDT candidate; if it points at (or defaults to)
+    the PatchTST primary, ``_prod_config_path`` raises rather than silently
+    deriving a non-production-equivalent config.
+    """
+    primary = tmp_path / "primary.json"
+    primary.write_text(
+        json.dumps({"ranking": {"panel_scoring": {"kind": "hf_patchtst"}}})
+    )
+    monkeypatch.setenv("RENQUANT_STRATEGY_CONFIG", str(primary))
+    with pytest.raises(ValueError):
+        run_wf_gate._prod_config_path(candidate_kind="panel_ltr_xgboost")
+
+
 def test_run_wf_gate_uses_prod_config_helper_at_both_sites() -> None:
-    """Both the derive site and the parity site must route through the helper."""
+    """Both the derive site and the parity site must route through the helper,
+    passing the candidate kind so the kind-matched reference is selected."""
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     # The hardcoded primary literal must no longer be used to pick the prod ref.
     assert 'prod_cfg_path = STRATEGY_DIR / "strategy_config.json"' not in src
-    assert src.count("_prod_config_path()") >= 2
+    # Both sites pass the candidate kind into the selector.
+    assert src.count("_prod_config_path(candidate_kind=artifact.get(\"kind\"))") >= 2

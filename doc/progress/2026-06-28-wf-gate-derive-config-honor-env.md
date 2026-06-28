@@ -1,63 +1,64 @@
-# WF-gate `--derive-config-from-prod` honors `RENQUANT_STRATEGY_CONFIG` (GBDT parity)
+# WF-gate prod-reference selection (rollback/umbrella path) — converged parity contract
 
-2026-06-28. Severity: P2 (weekly automation, not live trading). Customer impact:
-the weekly WF-promote gate could never admit a GBDT/XGBoost candidate — every
-GBDT run fail-closed on a config parity guard — so the GBDT shadow track had no
-path to graduation. No bad orders, no capital impact.
+STATUS: open PR (fix/wf-gate-derive-config-honor-env). Code + tests done; awaiting
+review. Severity P2 (weekly automation, not live trading): the GBDT/XGBoost
+shadow track had no path through the weekly WF-promote gate. No bad orders, no
+capital impact.
 
-## Symptom
-`scripts/weekly_wf_promote.sh` evaluates a GBDT candidate by exporting
-`RENQUANT_STRATEGY_CONFIG=$GBDT_PROD_CONFIG`
-(`backtesting/renquant_104/strategy_config.shadow.json`, `kind=xgb`) and calling
-`scripts/run_wf_gate.py … --derive-config-from-prod`. The run fail-closed on the
-WF config parity guard with a scorer-kind/artifact mismatch
-(`ranking.panel_scoring.kind=hf_patchtst` vs a GBDT `panel-ltr*.json` artifact).
+WHAT: `scripts/run_wf_gate.py::_prod_config_path()` now SELECTS the production
+reference whose scorer kind MATCHES the candidate's declared kind (read from
+artifact metadata), and routes BOTH the `--derive-config-from-prod` derivation
+site and the parity-check site through it. A GBDT/xgb candidate is compared
+against the GBDT/shadow config (`strategy_config.shadow.json`, `kind=xgb`); a
+PatchTST candidate against the PatchTST primary (`strategy_config.json`,
+`kind=hf_patchtst`). `RENQUANT_STRATEGY_CONFIG` (exported by
+`weekly_wf_promote.sh`) is honored but VALIDATED against the candidate kind; a
+mismatch or an unknown kind FAILS CLOSED. No mutation of
+`ranking.panel_scoring.kind` (that would defeat parity). No retrain.
 
-## Root cause
-The Python derive path ignored the env var the wrapper set. In
-`scripts/run_wf_gate.py::main()`, `--derive-config-from-prod` hardcoded the
-production reference as `STRATEGY_DIR / "strategy_config.json"` — the PatchTST
-PRIMARY config (`kind=hf_patchtst`) — at two sites:
+WHY/DIR: the Python derive path hardcoded the prod reference as the PatchTST
+PRIMARY at two sites, so a GBDT candidate derived an eval config with
+`kind=hf_patchtst` pointing at a GBDT JSON artifact and the scorer-kind/artifact
+parity guard fired on every GBDT run — the GBDT shadow track could never
+graduate. Selecting the kind-matched reference (rather than forcing kind to
+match) keeps a genuine prod-vs-candidate mismatch failing, as it should.
 
-- the config-derivation site (feeds `build_wf_config_from_prod`), and
-- the parity-check site (`evaluate_wf_config_parity(prod, derived, …)`).
+EVIDENCE:
+  §4(b)
+  - artifact: `scripts/run_wf_gate.py` (`_prod_config_path`, both derive +
+    parity sites); `tests/test_wf_gate_derive_prod_config_env.py` (10 passed);
+    real configs `backtesting/renquant_104/strategy_config.json` (hf_patchtst)
+    and `strategy_config.shadow.json` (xgb, artifact
+    `artifacts/prod/panel-ltr.alpha158_fund.json`).
+  - prod or exp: ROLLBACK / umbrella-of-record path (`scripts/run_wf_gate.py`,
+    invoked by `scripts/weekly_wf_promote.sh`). The ACTIVE package path
+    (`renquant_backtesting.wf_gate.runner` /`pipelines`) is fixed separately in
+    renquant-backtesting #58. Same selection contract on both.
+  - existing data: env unset → `strategy_config.json` (hf_patchtst); env=
+    `strategy_config.shadow.json` → kind=xgb, artifact
+    `artifacts/prod/panel-ltr.alpha158_fund.json` — exactly the GBDT pairing the
+    weekly wrapper expects. Branch `fix/wf-gate-derive-config-honor-env` off
+    `main`.
+  - best-known?: this fixes ONLY the rollback/umbrella path. renquant-backtesting
+    #58 separately claims (and fixes) that the active package path is the live
+    failure; both now share one candidate-matched selection contract. Merge #58
+    first (active path), then #417 (rollback path).
+  - scope: no gate-threshold change, no promotion, no retrain. Selection +
+    fail-closed validation only; the builder/parity helpers are unchanged.
 
-`build_wf_config_from_prod` (`scripts/wf_config_builder.py`) deep-copies the prod
-config and overwrites `walkforward` + `ranking.panel_scoring.artifact_path`, but
-**not** `ranking.panel_scoring.kind`. So when the candidate is GBDT, the derived
-eval config kept `kind=hf_patchtst` (inherited from the PatchTST primary) while
-`artifact_path` pointed at a GBDT JSON — the parity guard correctly fired. The
-wrapper had already pointed `RENQUANT_STRATEGY_CONFIG` at the GBDT/shadow config
-(`kind=xgb`), but `run_wf_gate.py` never read it.
+  Verification:
+  - `tests/test_wf_gate_derive_prod_config_env.py`: kind→reference mapping
+    (gbdt→shadow, patchtst→primary); validated env override; unknown kind and
+    env-kind mismatch FAIL CLOSED; POSITIVE same-reference (GBDT candidate +
+    GBDT reference) passes; NEGATIVE (derived PatchTST kind vs the correct GBDT
+    reference) diverges on `ranking.panel_scoring.kind` and fails; the
+    selection-layer blocks a GBDT-vs-PatchTST mismatch before parity; AST guard
+    pins both call sites to the helper with the candidate kind.
+  - Existing suites pass: `test_wf_config_parity`,
+    `test_wf_config_builder_propagation`, `test_wf_gate_cli_contract`,
+    `test_weekly_wf_promote_wrapper_guard`, `test_weekly_wf_recipe_guard`
+    (60 passed). `git diff --check` clean.
 
-## Fix
-`scripts/run_wf_gate.py`:
-- Add `_prod_config_path()` — returns `RENQUANT_STRATEGY_CONFIG` (absolute, or
-  relative to `STRATEGY_DIR`) when set, else the hardcoded PatchTST
-  `strategy_config.json`. Default behaviour is unchanged when the env is unset.
-- Route both the derivation site and the parity site through it (and fail-closed
-  with a clear error if the resolved prod config is missing).
-
-Minimal and orchestrator-of-record-side only: the builder still copies `kind`
-from whatever prod config it is given, so selecting the GBDT prod config is
-sufficient — the derived `kind` becomes `xgb`, matching the GBDT candidate, and
-parity (prod `xgb` vs derived `xgb`) passes. No change to
-`wf_config_builder.py`/`wf_config_parity.py` was needed; no retrain.
-
-## Verification
-- `tests/test_wf_gate_derive_prod_config_env.py` (new): env-unset falls back to
-  the primary; relative/absolute env values resolve correctly; an end-to-end
-  derive+parity over a GBDT (`xgb`) prod config + `panel_ltr_xgboost` candidate
-  **passes**; a regression case proves that deriving from the PatchTST prod while
-  the correct reference is the GBDT prod makes `ranking.panel_scoring.kind`
-  diverge and parity **fail**; AST guard pins both call sites to the helper.
-- Against the real config files: env unset → `strategy_config.json`
-  (`hf_patchtst`); env=`strategy_config.shadow.json` → `kind=xgb`, artifact
-  `artifacts/prod/panel-ltr.alpha158_fund.json` — exactly the GBDT pairing the
-  weekly wrapper expects.
-- Existing parity/builder/wrapper suites pass (`test_wf_config_parity`,
-  `test_wf_config_builder_propagation`, `test_wf_gate_cli_contract`,
-  `test_weekly_wf_promote_wrapper_guard`, `test_weekly_wf_recipe_guard`). The 4
-  `test_wf_gate_recipe_scope.py` failures in this sandbox are a pre-existing
-  `pyarrow`-not-installed environment issue (identical on stock `origin/main`),
-  unrelated to this change.
+NEXT: merge #58 (active path) first, then #417 (rollback path); both carry the
+identical selection contract so the GBDT shadow track can graduate through both
+the active and rollback gate entry points. No further change required here.
