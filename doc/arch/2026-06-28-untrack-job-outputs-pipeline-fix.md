@@ -41,17 +41,24 @@ is not tracked.)
 
 ## What this PR untracks (and why each is safe)
 
-Each was verified read-only against the umbrella sources and the pinned subrepo
-runtime sources (`.subrepo_runtime/repos/*`) to confirm **no consumer reads it
-from the committed git path**. These are also exactly the paths the existing
+Each was verified against the umbrella sources and the pinned subrepo runtime
+sources (`.subrepo_runtime/repos/*`). The precise safety claim is **NOT "no
+consumer reads it"** — the live-state files have real runtime readers:
+`live/stream_watchdog.py`, `scripts/execute_shadow_orders.py`,
+`scripts/daily_104.sh`, `scripts/build_dashboard.py`, and various diagnostics.
+The safe claim is **"no consumer should depend on a COMMITTED git snapshot in a
+fresh clone; runtime consumers require the runtime/backup-restored file"** —
+i.e. these are *runtime state*, not a *clone-time dependency*, so untracking is
+safe as long as the live tree carries the runtime/backup-restored file (see the
+first-rollout runbook below). These are also exactly the paths the existing
 `scripts/check_ops_deployment_ready.py::RUNTIME_DIRTY_PATTERNS` already
 classifies as non-blocking runtime output — untracking is the durable form of
 that classification.
 
 | Path | Producer | Consumed from committed path? | Action |
 | --- | --- | --- | --- |
-| `backtesting/renquant_104/live_state.alpaca.json` | `adapters/runner.py` (every run) | No. Only `tests/test_live_state_v2.py::test_roundtrip_byte_identical_real_committed_snapshot` read it — now guarded to skip when absent; the lossless contract is still proved unconditionally against `REPRESENTATIVE_STATE`. | `git rm --cached` + ignore `backtesting/*/live_state.*.json` |
-| `backtesting/renquant_104/live_state.alpaca_shadow.json` | shadow run | No. | same |
+| `backtesting/renquant_104/live_state.alpaca.json` | `adapters/runner.py` (every run) | No clone-time dependency. Runtime readers exist (`live/stream_watchdog.py`, `scripts/execute_shadow_orders.py`, `scripts/daily_104.sh`, `scripts/build_dashboard.py`, diagnostics) but they all require the *runtime/backup-restored* file, never a committed git snapshot. The only committed-snapshot reader was `tests/test_live_state_v2.py::test_roundtrip_byte_identical_real_committed_snapshot` — now guarded to skip when absent; the lossless contract is still proved unconditionally against `REPRESENTATIVE_STATE`. | `git rm --cached` + ignore `backtesting/*/live_state.*.json` |
+| `backtesting/renquant_104/live_state.alpaca_shadow.json` | shadow run | No clone-time dependency (same runtime-reader caveat as above). | same |
 | `doc/dashboard.md` | `scripts/build_dashboard.py` (regenerated every run; described in `doc/STATUS.md` as an "auto-generated per-build artifact") | No code parses it; no CI/README link depends on it. | `git rm --cached` + ignore `doc/dashboard.md` |
 | `subrepos.lock.json.promote-bak.<ts>` | `scripts/promote_pin.py` rollback snapshots | No (only re-read by an explicit `promote_pin.py revert`; `system_doctor.py` only *counts* stale ones). Not tracked in `main`. | ignore `subrepos.lock.json.promote-bak.*` (no `rm` needed) |
 
@@ -127,6 +134,85 @@ update always lands with its untracking):
    from the daily-export target. Point `export_lean_watchlist.py` and
    `data_scan.py` at a git-ignored data dir; keep only the minimal frozen sample
    needed by tests under a non-job-written path.
+
+## First-rollout runbook + evidence (MANDATORY before live sync)
+
+**The live sync is NOT "just pull main".** `git rm --cached` keeps the working
+copy **only in the author's tree at commit creation time**. When a *production*
+checkout pulls/merges this PR, git sees a **tracked-file deletion**, not a
+no-op:
+
+- **If `backtesting/renquant_104/live_state.alpaca.json` is clean relative to the
+  old committed snapshot, the merge DELETES it from the working tree.**
+- **If it has local modifications, the merge ABORTS** with
+  `Your local changes to the following files would be overwritten by merge`, and
+  the file is kept.
+
+Either way, pulling this PR on the live tree can remove the live trading-state
+working file — which is the exact operator trap this PR exists to remove. So the
+first rollout MUST follow this runbook, in order:
+
+1. **BACKUP FIRST.** Before pulling this PR / `main` on the live tree, run the
+   real backup mechanism and VERIFY the backup exists:
+
+   ```bash
+   scripts/backup_state.sh --all     # snapshots every backtesting/renquant_104/live_state.*.json
+   ls -la data/state_backups/        # confirm a fresh timestamped backup dir was written
+   ```
+
+   (`backup_state.sh --all` writes a read-only per-broker snapshot under
+   `data/state_backups/<YYYY-MM-DD_HHMM>/`; do not proceed until you have
+   confirmed the snapshot for `live_state.alpaca.json` /
+   `live_state.alpaca_shadow.json` is present.)
+
+2. **After merge/pull, verify the files are now untracked** (expect EMPTY
+   output):
+
+   ```bash
+   git ls-files -- backtesting/renquant_104/live_state.alpaca.json \
+                    backtesting/renquant_104/live_state.alpaca_shadow.json \
+                    doc/dashboard.md
+   ```
+
+3. **Verify the new ignore rules hit** (each path should report the rule + line):
+
+   ```bash
+   git check-ignore -v backtesting/renquant_104/live_state.alpaca.json \
+                       backtesting/renquant_104/live_state.alpaca_shadow.json \
+                       doc/dashboard.md
+   ```
+
+4. **If the first merge REMOVED a clean-but-needed state file, RESTORE it from
+   the step-1 backup BEFORE any live/shadow run.** Copy the backed-up
+   `live_state.alpaca.json` / `live_state.alpaca_shadow.json` back into
+   `backtesting/renquant_104/`. A live/shadow run that starts without the
+   restored state file would lose regime cooldowns, sell streaks, high-water
+   marks, last-sell and entry dates — never run before the restore is verified.
+
+5. **Run the ops-readiness check + dashboard build and record the expected
+   output:**
+
+   ```bash
+   python scripts/check_ops_deployment_ready.py   # the untracked live-state / dashboard paths
+                                                  # must classify as non-blocking runtime output (RUNTIME_DIRTY_PATTERNS)
+   python scripts/build_dashboard.py              # regenerates doc/dashboard.md as an untracked artifact
+   ```
+
+   Expected: ops-readiness passes (the now-untracked paths are runtime output,
+   not a blocking dirty-tree condition), and `doc/dashboard.md` is regenerated
+   on disk as an untracked file (not re-added to the index).
+
+### Pre-merge validation evidence (PR head `2927cf78`)
+
+- `git apply --check --cached` against current `main`: clean.
+- `git check-ignore -v` confirms the new patterns match `live_state.alpaca.json`,
+  `live_state.alpaca_shadow.json`, `live_state.alpaca-shorts.json`,
+  `doc/dashboard.md`, and `subrepos.lock.json.promote-bak.20260628`.
+- `git ls-files` confirms the two live-state files and `doc/dashboard.md` are no
+  longer tracked on the PR head.
+- `pytest -q tests/test_live_state_v2.py tests/test_ops_deployment_ready.py
+  tests/test_dashboard.py`: `42 passed, 1 skipped`.
+- `git diff --check origin/main...HEAD`: clean.
 
 ## runner.py durability note
 
