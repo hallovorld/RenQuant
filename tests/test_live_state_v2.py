@@ -19,6 +19,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 STRAT = REPO / "backtesting" / "renquant_104"
 sys.path.insert(0, str(STRAT))
@@ -90,8 +92,18 @@ def test_roundtrip_byte_identical_indent2_representative():
 
 
 def test_roundtrip_byte_identical_real_committed_snapshot():
-    """Round-trips the REAL committed live_state.alpaca.json byte-for-byte."""
-    raw_text = (STRAT / "live_state.alpaca.json").read_text()
+    """Round-trips the REAL live_state.alpaca.json byte-for-byte.
+
+    live_state.alpaca.json is now a job-written, git-ignored runtime output
+    (untracked so a git checkout/reset can no longer clobber live trading
+    state). It is therefore absent in a fresh clone / CI; skip when missing.
+    The lossless contract is still proved unconditionally against
+    REPRESENTATIVE_STATE in test_roundtrip_byte_identical_indent2_representative.
+    """
+    snapshot = STRAT / "live_state.alpaca.json"
+    if not snapshot.exists():
+        pytest.skip("live_state.alpaca.json absent (git-ignored runtime output)")
+    raw_text = snapshot.read_text()
     state = json.loads(raw_text)
     rt = LiveStateV2.parse(state).to_v1_dict()
     # dict equality + serialised-byte equality at the production indent.
