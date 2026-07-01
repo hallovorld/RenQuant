@@ -234,67 +234,105 @@ class TestArtifactStampedCutoff:
 
 
 class TestFullHistoryDataCutoffStamp:
-    """#210/#212 — the full-history production panel must stamp its binding
-    DATA cutoff (max labeled date), NOT wall-clock ``trained_date``, so the
-    freshness monitor (orch #213) + P-MODEL-STALENESS gate can measure panel
-    staleness instead of soft-skipping on a provenance gap.
+    """#423 — the full-history production panel stamps TWO DISTINCT
+    information-set fields so the freshness monitor (orch #213) can key
+    staleness on the right axis:
+
+      * ``max_feature_anchor_date`` — the RAW feature/data frontier (FRESHNESS).
+      * ``label_observation_cutoff`` — the fwd-clipped max labeled row
+        (PROVENANCE; structurally ~60 BD behind the frontier).
+
+    Neither is wall-clock ``trained_date``; ``effective_selection_cutoff_date``
+    is never fabricated, and the full-history path never overloads the
+    exclusive-bound ``effective_train_cutoff_date`` with the observed-max label.
     """
 
     def _train_df_with_known_max(self, tail_null: int = 40):
         """Panel (all 2024 dates) whose fwd_60d label is nulled for the last
         ``tail_null`` trading days, so after ``dropna`` the max labeled date is
         a controlled 2024 business day — well before wall-clock
-        ``trained_date`` (>= 2025). Deriving ``cut`` from the panel keeps it
-        in-range and on a real trading day."""
+        ``trained_date`` (>= 2025). ``feature_frontier`` is the pre-``dropna``
+        panel max (the nulled tail) and leads the labeled max."""
         panel = _make_synthetic_panel(n_tickers=4, n_dates=200, start="2024-01-01")
         dates = pd.Index(sorted(panel["date"].unique()))
         cut = pd.Timestamp(dates[-(tail_null + 1)])
+        feature_frontier = pd.Timestamp(dates[-1])
         panel.loc[panel["date"] > cut, "fwd_60d_excess"] = np.nan
         train = panel.dropna(subset=["fwd_60d_excess"])
         assert train["date"].max() == cut  # fixture sanity
-        return train, cut
+        assert feature_frontier > cut       # frontier leads the labeled max
+        return train, cut, feature_frontier
 
-    def _build(self, train):
+    def _build(self, train, max_feature_anchor_date=None):
         booster = mock.MagicMock()
         booster.save_raw.return_value = b"{}"
         return TPM.build_artifact(
             booster, ["feat_a", "feat_b"], np.zeros(2), np.ones(2), train,
             cutoff_date=None, side_label=None, train_run_id="abc12345",
+            max_feature_anchor_date=max_feature_anchor_date,
         )
 
-    def test_stamps_effective_train_cutoff_from_max_labeled_date(self):
-        train, cut = self._train_df_with_known_max()
+    def test_stamps_label_observation_cutoff_from_max_labeled_date(self):
+        train, cut, _ = self._train_df_with_known_max()
         art = self._build(train)
-        assert art["effective_train_cutoff_date"] == cut.isoformat()
+        assert art["label_observation_cutoff"] == cut.isoformat()
 
-    def test_stamps_selection_cutoff_alias_equal_to_train_cutoff(self):
-        train, cut = self._train_df_with_known_max()
-        art = self._build(train)
-        # Panel has no separate held-out selection window → alias == train
-        # cutoff (the field the freshness monitor's _selection_anchor reads
-        # first).
-        assert art["effective_selection_cutoff_date"] == cut.isoformat()
-        assert (
-            art["effective_selection_cutoff_date"]
-            == art["effective_train_cutoff_date"]
-        )
-
-    def test_cutoff_is_data_not_wall_clock(self):
+    def test_label_observation_cutoff_is_data_not_wall_clock(self):
         """A fresh trained_date over stale labeled data must NOT masquerade as
-        fresh: the stamped cutoff is the DATA max, not today's date."""
-        train, cut = self._train_df_with_known_max()
+        fresh: the stamped label cutoff is the DATA max, not today's date."""
+        train, cut, _ = self._train_df_with_known_max()
         art = self._build(train)
-        stamped = pd.Timestamp(art["effective_train_cutoff_date"])
+        stamped = pd.Timestamp(art["label_observation_cutoff"])
         assert stamped == cut
         # Derived from the frame, NOT datetime.now(): a 2024 data cutoff on an
         # artifact trained "today" (>= 2025) proves it is not wall-clock.
         assert stamped < pd.Timestamp(art["trained_date"])
         assert stamped.year == 2024
 
-    def test_walkforward_path_also_stamps_selection_cutoff(self):
-        """The walk-forward branch keeps its pre-embargo boundary for
-        ``effective_train_cutoff_date`` and mirrors it into the selection
-        alias so both paths expose the field the monitor reads."""
+    def test_feature_anchor_is_distinct_and_leads_label_cutoff(self):
+        """The freshness axis (max_feature_anchor_date) is the raw frontier and
+        LEADS the label-observation cutoff by the label horizon — keying #213
+        freshness on it (not the label max) is what stops a fresh retrain being
+        born permanently BREACH."""
+        train, cut, frontier = self._train_df_with_known_max()
+        art = self._build(train, max_feature_anchor_date=frontier)
+        assert art["max_feature_anchor_date"] == frontier.isoformat()
+        assert art["label_observation_cutoff"] == cut.isoformat()
+        assert (
+            pd.Timestamp(art["max_feature_anchor_date"])
+            > pd.Timestamp(art["label_observation_cutoff"])
+        )
+
+    def test_feature_anchor_falls_back_to_label_cutoff_when_absent(self):
+        """When no frontier is threaded in (per-regime / legacy callers) the
+        freshness axis conservatively defaults to the label max — a model is
+        never fresher than the labeled rows it trained on."""
+        train, cut, _ = self._train_df_with_known_max()
+        art = self._build(train)  # no max_feature_anchor_date
+        assert art["max_feature_anchor_date"] == cut.isoformat()
+        assert art["max_feature_anchor_date"] == art["label_observation_cutoff"]
+
+    def test_selection_cutoff_never_fabricated_full_history(self):
+        """effective_selection_cutoff_date must NOT be copied from the train
+        cutoff (Codex #423): omitting it lets lean_guard._selection_anchor fall
+        through to the conservative trained_date."""
+        train, _, frontier = self._train_df_with_known_max()
+        art = self._build(train, max_feature_anchor_date=frontier)
+        assert "effective_selection_cutoff_date" not in art
+
+    def test_full_history_omits_exclusive_train_cutoff(self):
+        """The full-history path has no --train-cutoff bounding feature rows, so
+        the exclusive-bound effective_train_cutoff_date is OMITTED — never
+        overloaded with the observed-max label."""
+        train, _, frontier = self._train_df_with_known_max()
+        art = self._build(train, max_feature_anchor_date=frontier)
+        assert "effective_train_cutoff_date" not in art
+
+    def test_walkforward_stamps_exclusive_cutoff_not_selection(self):
+        """The walk-forward branch keeps effective_train_cutoff_date as the
+        pre-embargo EXCLUSIVE boundary (its documented contract) and still does
+        NOT fabricate a selection cutoff. label_observation_cutoff is the
+        observed max labeled row on this path too (consistent meaning)."""
         train = _make_synthetic_panel(
             n_tickers=3, n_dates=30, start="2023-06-01"
         ).dropna(subset=["fwd_60d_excess"])
@@ -308,15 +346,17 @@ class TestFullHistoryDataCutoffStamp:
         )
         expected = (pd.Timestamp("2024-01-01") - pd.offsets.BDay(60)).isoformat()
         assert art["effective_train_cutoff_date"] == expected
-        assert art["effective_selection_cutoff_date"] == expected
+        assert "effective_selection_cutoff_date" not in art
+        assert art["label_observation_cutoff"] == pd.Timestamp(
+            train["date"].max()).isoformat()
 
 
 class TestPromotePreservesDataCutoff:
-    """The active-swap promote() must not drop the DATA-cutoff provenance —
-    it copies the whole artifact, so a promoted panel keeps the field the
+    """The active-swap promote() must not drop the freshness/provenance fields
+    — it copies the whole artifact, so a promoted panel keeps the fields the
     freshness monitor + P-MODEL-STALENESS gate rely on."""
 
-    def test_promote_preserves_effective_cutoff_fields(self, tmp_path, monkeypatch):
+    def test_promote_preserves_freshness_provenance_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RQ_ALLOW_NO_WF", "1")  # bypass WF gate; test swap
         staging = tmp_path / "panel-ltr.staging.json"
         active = tmp_path / "panel-ltr.alpha158_fund.json"
@@ -324,34 +364,34 @@ class TestPromotePreservesDataCutoff:
             "kind": "panel_ltr_xgboost",
             "feature_cols": ["a", "b"],
             "trained_date": "2026-05-18",
-            "effective_train_cutoff_date": "2024-11-13T00:00:00",
-            "effective_selection_cutoff_date": "2024-11-13T00:00:00",
+            "max_feature_anchor_date": "2026-05-15T00:00:00",
+            "label_observation_cutoff": "2024-11-13T00:00:00",
         }))
         promote(staging, active)
         promoted = json.loads(active.read_text())
-        assert promoted["effective_train_cutoff_date"] == "2024-11-13T00:00:00"
-        assert promoted["effective_selection_cutoff_date"] == "2024-11-13T00:00:00"
+        assert promoted["max_feature_anchor_date"] == "2026-05-15T00:00:00"
+        assert promoted["label_observation_cutoff"] == "2024-11-13T00:00:00"
 
 
 class TestRestampPreservesDataCutoff:
     """The sector_map re-stamp repair tool rewrites the WHOLE artifact dict
     (mutating only fingerprint fields), so a re-stamp must NOT drop the
-    DATA-cutoff provenance."""
+    freshness/provenance fields."""
 
-    def test_restamp_preserves_effective_cutoff_fields(self, tmp_path, monkeypatch):
+    def test_restamp_preserves_freshness_provenance_fields(self, tmp_path, monkeypatch):
         repo = tmp_path
         strat = repo / "backtesting" / "renquant_104"
         (strat / "artifacts" / "prod").mkdir(parents=True)
         art_rel = "artifacts/prod/panel-ltr.alpha158_fund.json"
         art_path = strat / art_rel
-        # Artifact carries the DATA-cutoff fields + a legacy fingerprint whose
-        # sector_map is None (the exact re-stamp trigger).
+        # Artifact carries the freshness/provenance fields + a legacy
+        # fingerprint whose sector_map is None (the exact re-stamp trigger).
         art_path.write_text(json.dumps({
             "kind": "panel_ltr_xgboost",
             "feature_cols": ["a"],
             "trained_date": "2026-05-18",
-            "effective_train_cutoff_date": "2024-11-13T00:00:00",
-            "effective_selection_cutoff_date": "2024-11-13T00:00:00",
+            "max_feature_anchor_date": "2026-05-15T00:00:00",
+            "label_observation_cutoff": "2024-11-13T00:00:00",
             "config_fingerprint": "sha256:old",
             "config_fingerprint_fields": {"watchlist": ["AAA"], "sector_map": None},
         }))
@@ -375,9 +415,94 @@ class TestRestampPreservesDataCutoff:
         # Fingerprint was updated (proves the re-stamp ran)...
         assert restamped["config_fingerprint"] == "sha256:new"
         assert restamped["config_fingerprint_fields"]["sector_map"] == {"AAA": "tech"}
-        # ...and the DATA-cutoff provenance survived the rewrite.
-        assert restamped["effective_train_cutoff_date"] == "2024-11-13T00:00:00"
-        assert restamped["effective_selection_cutoff_date"] == "2024-11-13T00:00:00"
+        # ...and the freshness/provenance fields survived the rewrite.
+        assert restamped["max_feature_anchor_date"] == "2026-05-15T00:00:00"
+        assert restamped["label_observation_cutoff"] == "2024-11-13T00:00:00"
+
+
+class TestFreshnessAxisIntegration:
+    """INTEGRATION (#423) — producer + monitor together. The stamped
+    ``max_feature_anchor_date`` (raw frontier) must make a retrain from a
+    CURRENT panel read HEALTHY under orch #213's fast-axis policy, while a
+    globally FROZEN panel reads BREACH. Keying on ``label_observation_cutoff``
+    instead would make even the current panel BREACH (the bug #423 fixes)."""
+
+    @staticmethod
+    def _fast_axis_state(anchor_iso: str, today: pd.Timestamp) -> str:
+        """orch #213 prod fast-axis policy: HEALTHY <=14 cal days, BREACH >28."""
+        age = (today - pd.Timestamp(anchor_iso)).days
+        if age <= 14:
+            return "HEALTHY"
+        if age > 28:
+            return "BREACH"
+        return "WARN"
+
+    @staticmethod
+    def _panel_ending(end: pd.Timestamp, n_dates: int, tail_null: int,
+                      n_tickers: int = 4) -> pd.DataFrame:
+        """alpha158-shaped panel whose FEATURE rows end at ``end`` but whose
+        fwd_60d label is nulled for the last ``tail_null`` business days (the
+        unobservable-forward-return frontier)."""
+        dates = pd.bdate_range(end=end, periods=n_dates)
+        rng = np.random.default_rng(7)
+        rows = []
+        for t in range(n_tickers):
+            for d in dates:
+                rows.append({
+                    "ticker": f"T{t:02d}", "date": d, "split_label": "train",
+                    "feat_a": rng.normal(), "feat_b": rng.normal(),
+                    "earnings_yield": rng.normal(),
+                    "fwd_5d_excess": rng.normal() * 0.01,
+                    "fwd_20d_excess": rng.normal() * 0.02,
+                    "fwd_60d_excess": rng.normal() * 0.03,
+                })
+        panel = pd.DataFrame(rows)
+        cut = pd.Timestamp(dates[-(tail_null + 1)])
+        panel.loc[panel["date"] > cut, "fwd_60d_excess"] = np.nan
+        return panel
+
+    def _build_from_panel(self, panel, tmp_path, monkeypatch):
+        (tmp_path / "data").mkdir(exist_ok=True)
+        panel.to_parquet(
+            tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet"
+        )
+        monkeypatch.chdir(tmp_path)
+        train, feat_cols, _label, frontier = TPM.load_and_slice_panel(
+            None, return_feature_frontier=True,
+        )
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        return TPM.build_artifact(
+            booster, feat_cols,
+            np.zeros(len(feat_cols)), np.ones(len(feat_cols)), train,
+            cutoff_date=None, side_label=None, train_run_id="int00001",
+            max_feature_anchor_date=frontier,
+        )
+
+    def test_current_panel_is_fresh_on_feature_axis(self, tmp_path, monkeypatch):
+        today = pd.Timestamp.today().normalize()
+        panel = self._panel_ending(end=today, n_dates=200, tail_null=60)
+        art = self._build_from_panel(panel, tmp_path, monkeypatch)
+        # Feature frontier ≈ today → HEALTHY on the freshness axis...
+        assert self._fast_axis_state(
+            art["max_feature_anchor_date"], today) == "HEALTHY"
+        # ...but the label-observation cutoff lags ~60 BD → keying freshness on
+        # IT would (wrongly) BREACH. This is exactly the bug #423 fixes.
+        assert self._fast_axis_state(
+            art["label_observation_cutoff"], today) == "BREACH"
+        assert (
+            pd.Timestamp(art["max_feature_anchor_date"])
+            > pd.Timestamp(art["label_observation_cutoff"])
+        )
+
+    def test_frozen_panel_breaches_on_feature_axis(self, tmp_path, monkeypatch):
+        today = pd.Timestamp.today().normalize()
+        frozen_end = today - pd.Timedelta(days=400)
+        panel = self._panel_ending(end=frozen_end, n_dates=200, tail_null=60)
+        art = self._build_from_panel(panel, tmp_path, monkeypatch)
+        # A globally stale panel is correctly caught on the freshness axis.
+        assert self._fast_axis_state(
+            art["max_feature_anchor_date"], today) == "BREACH"
 
 
 class TestSideLabelInArtifact:
