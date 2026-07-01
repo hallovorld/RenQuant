@@ -235,16 +235,20 @@ class TestArtifactStampedCutoff:
 
 class TestFullHistoryDataCutoffStamp:
     """#423 — the full-history production panel stamps TWO DISTINCT
-    information-set fields so the freshness monitor (orch #213) can key
-    staleness on the right axis:
+    information-set fields so the freshness monitor (orch #213) +
+    P-MODEL-STALENESS gate can key staleness on the right axis:
 
-      * ``max_feature_anchor_date`` — the RAW feature/data frontier (FRESHNESS).
-      * ``label_observation_cutoff`` — the fwd-clipped max labeled row
-        (PROVENANCE; structurally ~60 BD behind the frontier).
+      * ``label_observation_cutoff`` — the fwd-clipped max labeled row. THIS is
+        the MODEL-FRESHNESS axis (latest information that affected fitting).
+      * ``max_feature_anchor_date`` — the RAW feature/data frontier. This is
+        DATA-PIPELINE HEALTH provenance only (leads the label axis by ~60 BD);
+        it is NOT model freshness — unused trailing rows cannot refresh weights.
 
     Neither is wall-clock ``trained_date``; ``effective_selection_cutoff_date``
-    is never fabricated, and the full-history path never overloads the
-    exclusive-bound ``effective_train_cutoff_date`` with the observed-max label.
+    is never fabricated; the full-history path never overloads the
+    exclusive-bound ``effective_train_cutoff_date`` with the observed-max label;
+    and a missing raw frontier stays missing (never backfilled from the label
+    cutoff — one field, one meaning).
     """
 
     def _train_df_with_known_max(self, tail_null: int = 40):
@@ -290,10 +294,10 @@ class TestFullHistoryDataCutoffStamp:
         assert stamped.year == 2024
 
     def test_feature_anchor_is_distinct_and_leads_label_cutoff(self):
-        """The freshness axis (max_feature_anchor_date) is the raw frontier and
-        LEADS the label-observation cutoff by the label horizon — keying #213
-        freshness on it (not the label max) is what stops a fresh retrain being
-        born permanently BREACH."""
+        """``max_feature_anchor_date`` (data-pipeline health provenance) is the
+        raw frontier and LEADS the label-observation cutoff (the actual
+        model-freshness axis) by the label horizon — the two fields are
+        distinct and must never be conflated (Codex #423 round-3 review)."""
         train, cut, frontier = self._train_df_with_known_max()
         art = self._build(train, max_feature_anchor_date=frontier)
         assert art["max_feature_anchor_date"] == frontier.isoformat()
@@ -303,14 +307,18 @@ class TestFullHistoryDataCutoffStamp:
             > pd.Timestamp(art["label_observation_cutoff"])
         )
 
-    def test_feature_anchor_falls_back_to_label_cutoff_when_absent(self):
+    def test_feature_anchor_omitted_when_absent(self):
         """When no frontier is threaded in (per-regime / legacy callers) the
-        freshness axis conservatively defaults to the label max — a model is
-        never fresher than the labeled rows it trained on."""
+        field is OMITTED — never silently backfilled from the label cutoff.
+        Falling back would give ``max_feature_anchor_date`` one meaning
+        (independently observed raw frontier) on one caller path and another
+        (copy of the label max) on another, and a caller checking data-pipeline
+        health could misread the fallback as a fresh frontier (Codex #423
+        round-3 review)."""
         train, cut, _ = self._train_df_with_known_max()
         art = self._build(train)  # no max_feature_anchor_date
-        assert art["max_feature_anchor_date"] == cut.isoformat()
-        assert art["max_feature_anchor_date"] == art["label_observation_cutoff"]
+        assert "max_feature_anchor_date" not in art
+        assert art["label_observation_cutoff"] == cut.isoformat()
 
     def test_selection_cutoff_never_fabricated_full_history(self):
         """effective_selection_cutoff_date must NOT be copied from the train
@@ -420,17 +428,31 @@ class TestRestampPreservesDataCutoff:
         assert restamped["label_observation_cutoff"] == "2024-11-13T00:00:00"
 
 
-class TestFreshnessAxisIntegration:
-    """INTEGRATION (#423) — producer + monitor together. The stamped
-    ``max_feature_anchor_date`` (raw frontier) must make a retrain from a
-    CURRENT panel read HEALTHY under orch #213's fast-axis policy, while a
-    globally FROZEN panel reads BREACH. Keying on ``label_observation_cutoff``
-    instead would make even the current panel BREACH (the bug #423 fixes)."""
+class TestModelFreshnessAxisIntegration:
+    """INTEGRATION (#423 round-3) — producer + monitor together. Model
+    freshness MUST key on ``label_observation_cutoff`` (the latest information
+    that actually affected fitting), with the ~60 BD fwd-label horizon lag
+    accounted for EXPLICITLY, never on ``max_feature_anchor_date`` (the raw
+    feature/data frontier). Keying on the raw frontier would let fresh
+    UNLABELED rows — which the model never trained on — make a frozen model
+    read healthy: "fresh metadata over stale trained information" under a new
+    field name (Codex #423 round-3 review). This class also pins the explicit
+    anti-regression the review asked for: appending fresh unlabeled rows
+    without changing the labeled training frame must not improve the
+    model-freshness read."""
 
-    @staticmethod
-    def _fast_axis_state(anchor_iso: str, today: pd.Timestamp) -> str:
-        """orch #213 prod fast-axis policy: HEALTHY <=14 cal days, BREACH >28."""
-        age = (today - pd.Timestamp(anchor_iso)).days
+    LOOKAHEAD_BD = 60  # matches fwd_60d_excess
+
+    @classmethod
+    def _model_freshness_state(cls, label_cutoff_iso: str, today: pd.Timestamp) -> str:
+        """orch #213 prod fast-axis policy keyed on the LABEL axis, with the
+        expected fwd-label horizon lag subtracted out explicitly: a labeled
+        row can never be more recent than ``today - LOOKAHEAD_BD`` business
+        days, so age is measured from THAT expected frontier, not from
+        ``today`` directly. HEALTHY <=14 cal days beyond expectation,
+        BREACH >28."""
+        expected_max = today - pd.offsets.BDay(cls.LOOKAHEAD_BD)
+        age = (expected_max - pd.Timestamp(label_cutoff_iso)).days
         if age <= 14:
             return "HEALTHY"
         if age > 28:
@@ -461,7 +483,7 @@ class TestFreshnessAxisIntegration:
         panel.loc[panel["date"] > cut, "fwd_60d_excess"] = np.nan
         return panel
 
-    def _build_from_panel(self, panel, tmp_path, monkeypatch):
+    def _build_from_panel(self, panel, tmp_path, monkeypatch, booster=None):
         (tmp_path / "data").mkdir(exist_ok=True)
         panel.to_parquet(
             tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet"
@@ -470,39 +492,106 @@ class TestFreshnessAxisIntegration:
         train, feat_cols, _label, frontier = TPM.load_and_slice_panel(
             None, return_feature_frontier=True,
         )
-        booster = mock.MagicMock()
-        booster.save_raw.return_value = b"{}"
-        return TPM.build_artifact(
+        if booster is None:
+            booster = mock.MagicMock()
+            booster.save_raw.return_value = b"{}"
+        art = TPM.build_artifact(
             booster, feat_cols,
             np.zeros(len(feat_cols)), np.ones(len(feat_cols)), train,
             cutoff_date=None, side_label=None, train_run_id="int00001",
             max_feature_anchor_date=frontier,
         )
+        return art, train
 
-    def test_current_panel_is_fresh_on_feature_axis(self, tmp_path, monkeypatch):
+    def test_current_panel_is_healthy_on_label_axis_with_lag_accounted(
+            self, tmp_path, monkeypatch):
         today = pd.Timestamp.today().normalize()
-        panel = self._panel_ending(end=today, n_dates=200, tail_null=60)
-        art = self._build_from_panel(panel, tmp_path, monkeypatch)
-        # Feature frontier ≈ today → HEALTHY on the freshness axis...
-        assert self._fast_axis_state(
-            art["max_feature_anchor_date"], today) == "HEALTHY"
-        # ...but the label-observation cutoff lags ~60 BD → keying freshness on
-        # IT would (wrongly) BREACH. This is exactly the bug #423 fixes.
-        assert self._fast_axis_state(
-            art["label_observation_cutoff"], today) == "BREACH"
-        assert (
-            pd.Timestamp(art["max_feature_anchor_date"])
-            > pd.Timestamp(art["label_observation_cutoff"])
-        )
+        panel = self._panel_ending(end=today, n_dates=200, tail_null=self.LOOKAHEAD_BD)
+        art, _train = self._build_from_panel(panel, tmp_path, monkeypatch)
+        # Raw frontier ≈ today (data-pipeline health provenance, NOT model
+        # freshness)...
+        assert pd.Timestamp(art["max_feature_anchor_date"]) >= today - pd.Timedelta(days=3)
+        # ...and the LABEL axis, once the expected ~60 BD horizon lag is
+        # accounted for explicitly, reads HEALTHY for a genuinely fresh
+        # retrain — the monitor must not need the raw frontier to avoid a
+        # false BREACH.
+        assert self._model_freshness_state(
+            art["label_observation_cutoff"], today) == "HEALTHY"
 
-    def test_frozen_panel_breaches_on_feature_axis(self, tmp_path, monkeypatch):
+    def test_frozen_panel_breaches_on_label_axis(self, tmp_path, monkeypatch):
         today = pd.Timestamp.today().normalize()
         frozen_end = today - pd.Timedelta(days=400)
-        panel = self._panel_ending(end=frozen_end, n_dates=200, tail_null=60)
-        art = self._build_from_panel(panel, tmp_path, monkeypatch)
-        # A globally stale panel is correctly caught on the freshness axis.
-        assert self._fast_axis_state(
-            art["max_feature_anchor_date"], today) == "BREACH"
+        panel = self._panel_ending(end=frozen_end, n_dates=200, tail_null=self.LOOKAHEAD_BD)
+        art, _train = self._build_from_panel(panel, tmp_path, monkeypatch)
+        assert self._model_freshness_state(
+            art["label_observation_cutoff"], today) == "BREACH"
+
+    def test_fresh_unlabeled_rows_do_not_improve_model_freshness(
+            self, tmp_path, monkeypatch):
+        """Regression for the Codex #423 round-3 review: appending fresh
+        UNLABELED feature rows to a frozen panel — without changing the
+        labeled training frame the model actually fit on — must NOT move
+        ``label_observation_cutoff`` and must NOT improve the model-freshness
+        read, even though it correctly advances ``max_feature_anchor_date``
+        (a genuine, separate data-pipeline-health signal)."""
+        today = pd.Timestamp.today().normalize()
+        frozen_end = today - pd.Timedelta(days=400)
+        frozen_panel = self._panel_ending(
+            end=frozen_end, n_dates=200, tail_null=self.LOOKAHEAD_BD)
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+
+        art_frozen, train_frozen = self._build_from_panel(
+            frozen_panel, tmp_path, monkeypatch, booster=booster)
+
+        # Simulate the data pipeline catching up to today WITHOUT any new
+        # labels existing yet (fresh rows can't have an observable fwd_60d
+        # label): append feature-only rows out to `today`, all unlabeled.
+        extra_dates = pd.bdate_range(
+            start=frozen_end + pd.Timedelta(days=1), end=today)
+        rng = np.random.default_rng(11)
+        extra_rows = []
+        for t in range(4):
+            for d in extra_dates:
+                extra_rows.append({
+                    "ticker": f"T{t:02d}", "date": d, "split_label": "train",
+                    "feat_a": rng.normal(), "feat_b": rng.normal(),
+                    "earnings_yield": rng.normal(),
+                    "fwd_5d_excess": np.nan,
+                    "fwd_20d_excess": np.nan,
+                    "fwd_60d_excess": np.nan,
+                })
+        extended_panel = pd.concat(
+            [frozen_panel, pd.DataFrame(extra_rows)], ignore_index=True)
+
+        # Rebuild from the SAME (mocked) trained booster — the model itself
+        # did not retrain — over the extended panel.
+        art_extended, train_extended = self._build_from_panel(
+            extended_panel, tmp_path, monkeypatch, booster=booster)
+
+        # The labeled training frame the model actually fit on is UNCHANGED...
+        assert len(train_extended) == len(train_frozen)
+        assert train_extended["date"].max() == train_frozen["date"].max()
+        assert (
+            art_extended["label_observation_cutoff"]
+            == art_frozen["label_observation_cutoff"]
+        )
+
+        # ...so the model-freshness read must be IDENTICAL (still BREACH) —
+        # NOT improved to HEALTHY/WARN just because the raw frontier moved.
+        state_frozen = self._model_freshness_state(
+            art_frozen["label_observation_cutoff"], today)
+        state_extended = self._model_freshness_state(
+            art_extended["label_observation_cutoff"], today)
+        assert state_frozen == state_extended == "BREACH"
+
+        # Meanwhile the raw frontier DID advance (genuine data-pipeline-health
+        # signal) — proving the two fields really are decoupled, not that the
+        # extension silently no-opped.
+        assert (
+            pd.Timestamp(art_extended["max_feature_anchor_date"])
+            > pd.Timestamp(art_frozen["max_feature_anchor_date"])
+        )
 
 
 class TestSideLabelInArtifact:

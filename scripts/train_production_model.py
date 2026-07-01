@@ -202,9 +202,12 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     the fwd-label ``dropna`` clip. Because the frontier rows carry valid
     features but no observable forward label yet, this frontier leads
     ``train["date"].max()`` (the labeled-row max) by ~lookahead business days.
-    It is the FRESHNESS axis the monitor (orchestrator #213) must key on; the
-    labeled-row max is provenance, not staleness. Default (False) preserves the
-    legacy 3-tuple return for existing callers.
+    It is DATA-PIPELINE HEALTH provenance (proof the feed is current) — NOT the
+    model-freshness axis: those trailing rows were excluded from training, so
+    the weights/normalization/CV never consumed them and they cannot make a
+    frozen model look fresh (Codex #423). Model freshness keys on the labeled
+    max (``label_observation_cutoff``). Default (False) preserves the legacy
+    3-tuple return for existing callers.
 
     ``include_features``: opt-in list for Track B addendum columns. When None
     (default) any Track B column present in the panel is dropped, preserving
@@ -268,7 +271,8 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
 
     # ``panel`` here is watchlist-filtered but PRE-``dropna`` — it retains the
     # raw feature frontier (recent rows whose forward label is not yet
-    # observable). Keep a handle so the freshness axis can be derived below.
+    # observable). Keep a handle so the data-pipeline health provenance
+    # (``max_feature_anchor_date``) can be derived below.
     feature_panel = panel
     effective_cutoff: Optional[pd.Timestamp] = None
     train = panel.dropna(subset=[label_used])
@@ -307,7 +311,7 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     if not return_feature_frontier:
         return train, feat_cols, label_used
 
-    # ── Raw feature/data frontier (freshness axis) ──
+    # ── Raw feature/data frontier (data-pipeline health provenance) ──
     # The frontier = max feature-row date BEFORE the label ``dropna``, honouring
     # the SAME window filters (train-start lower bound, cutoff exclusive upper
     # bound) applied to the training rows. On the full-history prod path this is
@@ -785,17 +789,22 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
     (orchestrator #213) + renquant-pipeline P-MODEL-STALENESS gate can measure
     panel staleness on the correct axis instead of soft-skipping:
 
-    - ``max_feature_anchor_date`` — the RAW feature/data frontier (latest date
-      with feature rows, INCLUDING rows whose fwd label is not yet observable).
-      For a fresh retrain this is ≈ today-1: it is THE freshness axis. Threaded
-      in from ``load_and_slice_panel`` (pre-``dropna`` frontier); when not
-      supplied it falls back to ``label_observation_cutoff`` (a model can be no
-      fresher than the labeled rows it actually trained on).
     - ``label_observation_cutoff`` — the fwd-label-clipped max FULLY-LABELED
       training row (``train["date"].max()``, the observed max on BOTH paths).
-      This is PROVENANCE (which labels the model saw), NOT freshness: with
-      fwd_60d it structurally lags the feature frontier by ~60 business days.
-      Derived from the frame, never wall-clock ``trained_date`` (#210/#212).
+      THIS is the MODEL-FRESHNESS axis: it is the latest information that
+      actually affected fitting, and moves only when the labeled training frame
+      moves. The monitor keys P-MODEL-STALENESS on it and accounts for the
+      expected ~60 BD fwd-label horizon lag EXPLICITLY. Derived from the frame,
+      never wall-clock ``trained_date`` (#210/#212).
+    - ``max_feature_anchor_date`` — the RAW feature/data frontier (latest date
+      with feature rows, INCLUDING rows whose fwd label is not yet observable,
+      ≈ today−1 for fresh data). DATA-PIPELINE HEALTH provenance ONLY — it
+      confirms the feed is current but is NOT model freshness: those trailing
+      rows were excluded from training, so appending fresh unlabeled rows must
+      not make a stale model read fresh (Codex #423). Threaded in from
+      ``load_and_slice_panel`` (pre-``dropna`` frontier); when not supplied it
+      is OMITTED (missing/unknown stays missing/unknown — never backfilled from
+      the label cutoff).
 
     ``effective_train_cutoff_date`` keeps its EXISTING contract — the upper
     *exclusive* feature-row cutoff (see kernel/walk_forward/loader.py) consumed
@@ -886,29 +895,38 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["feature_raw_clip_high"] = list(feature_raw_clip_high)
         artifact["feature_raw_clip_fit_split"] = "train"
         artifact["feature_preprocess_version"] = 2
-    # ── Freshness axis vs label-observation provenance ──
-    # Two DISTINCT, unambiguous fields (Codex #423 review). The staleness rail
-    # MUST key on the FEATURE frontier, never the wall-clock ``trained_date``
-    # (a fresh trained_date over stale data is NOT fresh, #210/#212) and never
-    # the label-observation max (which structurally lags the frontier by the
-    # ~60 BD fwd label horizon — keying freshness on it makes every fresh
-    # retrain born permanently BREACH under orch #213's fast-axis policy).
+    # ── Model-freshness axis vs data-pipeline health provenance ──
+    # Two DISTINCT, unambiguous fields (Codex #423). MODEL freshness (the
+    # renquant-pipeline P-MODEL-STALENESS gate + orch #213 rail) MUST key on the
+    # latest information that ACTUALLY affected fitting — the labeled training
+    # anchor — never the wall-clock ``trained_date`` (a fresh trained_date over
+    # stale data is NOT fresh, #210/#212) and never the raw feature frontier.
+    # The trailing frontier rows were excluded from ``train`` because their fwd
+    # labels are unobservable: the weights, normalization, and CV never consumed
+    # them, so appending fresh unlabeled feature rows to a frozen panel must NOT
+    # make an unchanged/stale model read fresh (Codex #423 — that is "fresh
+    # metadata over stale trained information" under a new field name).
     #
     #   * ``label_observation_cutoff`` — the fwd-label-clipped max FULLY-LABELED
-    #     training row. ALWAYS the observed max on BOTH paths (consistent
-    #     meaning, no path overloading). PROVENANCE, not freshness. Derived from
-    #     the training frame, never ``datetime.now()``/``trained_date``.
+    #     training row (``train["date"].max()``, the observed max on BOTH
+    #     paths; consistent meaning, no path overloading). THIS is the
+    #     model-freshness axis: it moves only when the labeled frame the model
+    #     trained on moves. The monitor keys staleness on it and accounts for
+    #     the expected ~60 BD fwd-label horizon lag EXPLICITLY (a fresh retrain,
+    #     labeled anchor ≈ today − horizon, is HEALTHY; a globally frozen panel
+    #     BREACHES). Derived from the frame, never ``datetime.now()``.
     #   * ``max_feature_anchor_date`` — the RAW feature/data frontier: latest
-    #     feature-row date INCLUDING not-yet-labelable rows (≈ today-1 for fresh
-    #     data). THE freshness axis; the ~60 BD label lag is EXPECTED, not
-    #     staleness. Threaded from ``load_and_slice_panel``; falls back to the
-    #     label max when unavailable (per-regime / test callers).
+    #     feature-row date INCLUDING not-yet-labelable rows (≈ today−1 for fresh
+    #     data). DATA-PIPELINE HEALTH provenance ONLY (proof the feed is
+    #     current); NOT model freshness. Stamped ONLY when the frontier is known
+    #     (threaded from ``load_and_slice_panel``); when a caller does not supply
+    #     it the field is OMITTED — a missing raw frontier stays missing/unknown
+    #     and is NEVER silently backfilled from the label cutoff (that would give
+    #     one field two meanings depending on caller, Codex #423).
     label_observation_cutoff_iso = pd.Timestamp(train["date"].max()).isoformat()
     artifact["label_observation_cutoff"] = label_observation_cutoff_iso
     if max_feature_anchor_date is not None:
         artifact["max_feature_anchor_date"] = pd.Timestamp(max_feature_anchor_date).isoformat()
-    else:
-        artifact["max_feature_anchor_date"] = label_observation_cutoff_iso
     # ``effective_train_cutoff_date`` keeps its EXISTING documented contract —
     # the upper *exclusive* feature-row cutoff (kernel/walk_forward/loader.py:
     # "upper exclusive feature-row cutoff"), consumed by the manifest/loader
