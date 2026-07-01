@@ -426,10 +426,25 @@ def _run_once_multi_pipeline(
     log.info(sep)
     label = strategy_dir.name.upper().replace("_", "-")
     # 2026-05-19: shadow run uses ReadOnlyBrokerWrapper (broker_name=alpaca_shadow).
-    # Prefix label with [SHADOW] so log + ntfy + state-file path all carry the
-    # distinction. Hard isolation per user mandate "隔离干净".
+    # Prefix label so log + ntfy title carry the broker-mode distinction. Hard
+    # isolation per user mandate "隔离干净" (actual state-file isolation is
+    # driven by broker_name, threaded separately into _load_strategy_multi —
+    # this label only affects the human-facing log/ntfy prefix).
+    #
+    # 2026-07-01 RENAMED from "[SHADOW]" to "[READONLY]" (operator incident:
+    # a "[SHADOW]...BUY OXY" ntfy title was misread as "the shadow PatchTST
+    # MODEL recommends OXY" — the [SHADOW] title actually only meant "this
+    # run executed via the readonly/shadow BROKER", completely orthogonal to
+    # which scoring model was primary; the decision was made by the
+    # production XGB model, echoed through the readonly broker). The ntfy
+    # BODY's per-model "SHADOW[name]"/"SHADOW-PICKS[name]" segments are an
+    # unrelated concept (an alternate model's own view). Renaming the
+    # title token removes the collision. Repo-wide grep on 2026-07-01 found
+    # no consumer that pattern-matches the literal "[SHADOW]" title
+    # substring outside this module's own `is_shadow` check below and this
+    # module's own tests — safe to rename outright (Option A).
     if getattr(broker, "broker_name", "") == "alpaca_shadow":
-        label = f"[SHADOW]{label}"
+        label = f"[READONLY]{label}"
     log.info("%s  %s  [%s]", label, datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
@@ -531,6 +546,40 @@ def _run_once_multi_pipeline(
     # nothing actionable — keep ntfy for actual trades + failed exits.
     silent_if_quiet = bool(sell_only and use_intraday_prices)
     _notify_decision(label, run_mode, ctx, silent_if_quiet=silent_if_quiet)
+
+
+# ntfy's documented practical message-body limit is ~4096 bytes (the
+# server-side default; see ntfy.sh docs). No truncation guard previously
+# existed anywhere in this module — bodies just grew unboundedly with the
+# number of orders/exits/shadow segments and risked a SILENT server-side
+# cut mid-word (worse than an explicit, honest truncation marker). Added
+# 2026-07-01 alongside the new per-shadow-model SHADOW-PICKS[...] segments,
+# which can add several hundred bytes per configured shadow model. Budget
+# leaves headroom under 4096 for title + ntfy's own framing overhead.
+_NTFY_BODY_MAX_BYTES = 3800
+
+
+def _truncate_ntfy_body(body: str, max_bytes: int = _NTFY_BODY_MAX_BYTES) -> str:
+    """Truncate ``body`` to a UTF-8-safe byte budget, appending a marker.
+
+    Prefer an explicit, honest "...[truncated]" suffix over letting ntfy's
+    own transport silently cut the message off mid-word.
+    """
+    encoded = body.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return body
+    suffix = " …[truncated]"
+    budget = max(max_bytes - len(suffix.encode("utf-8")), 0)
+    truncated = encoded[:budget]
+    while truncated:
+        try:
+            text = truncated.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            truncated = truncated[:-1]
+    else:
+        text = ""
+    return text + suffix
 
 
 def _post_ntfy_with_retries(
@@ -662,7 +711,12 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     # 21:22 — a pending pre-market order from 21:04 caused a repeat
     # pipeline cycle to emit a second BUY TSM which the guard correctly
     # skipped, but the old ntfy misreported it as a trade).
-    is_shadow      = label.startswith("[SHADOW]")
+    # is_shadow == "this cycle ran via the readonly/shadow BROKER" (no live
+    # orders reach Alpaca). Renamed from "[SHADOW]" to "[READONLY]" 2026-07-01
+    # to stop it colliding with the unrelated per-model "SHADOW[name]" /
+    # "SHADOW-PICKS[name]" body segments below (an alternate scoring MODEL's
+    # own view, orthogonal to broker mode — see module docstring incident).
+    is_shadow      = label.startswith("[READONLY]")
     orders         = list(getattr(ctx, "orders_placed",  []) or [])
     orders_pending = list(getattr(ctx, "orders_pending", []) or [])
     orders_skipped = list(getattr(ctx, "orders_skipped", []) or [])
@@ -835,6 +889,17 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     # primary. Compact: one segment per comparison with top-3
     # picks, top-10 overlap, and Spearman vs primary.
     shadow_summary = list(getattr(ctx, "_shadow_summary", []) or [])
+    # in_primary_admitted overlay (2026-07-01): shadow_scoring.py leaves
+    # top_picks[*]["in_primary_admitted"] as None because ApplyShadowScoringTask
+    # runs inside PanelScoringJob (Phase 3), BEFORE RankingJob/SelectionJob
+    # populate ctx.orders. By the time _notify_decision runs, the full
+    # pipeline + adapter.commit HAVE run, so `orders` (broker-confirmed
+    # orders_placed, extracted above) tells us which tickers primary
+    # actually bought today. Compute that set once here.
+    admitted_tickers = {
+        (o.get("ticker") if isinstance(o, dict) else getattr(o, "ticker", None))
+        for o in orders
+    }
     for ss in shadow_summary:
         try:
             top3 = "/".join(ss.get("top3", [])[:3]) or "?"
@@ -845,12 +910,47 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
                 rho_str = f"{float(rho):+.2f}" if rho == rho else "n/a"  # NaN check
             except (TypeError, ValueError):
                 rho_str = "n/a"
+            # KEPT byte-for-byte (backward compat — may be parsed by log
+            # tooling/dashboards downstream of this repo).
             parts.append(
                 f"SHADOW[{ss.get('name','?')}] top3={top3} "
                 f"top10∩prim={overlap}/10 ρ={rho_str} n={n_cand}"
             )
         except Exception as exc:
             log.warning("ntfy shadow segment failed: %s", exc)
+
+        # NEW 2026-07-01 (operator incident: a "[SHADOW]...BUY OXY" ntfy was
+        # misread as "the shadow PatchTST model recommends OXY" when it was
+        # actually the primary XGB decision echoed through the readonly
+        # broker; PatchTST's own view of OXY that day was rank 15/83,
+        # z≈+0.88 — not a top pick. Operator mandate: "shadow的message应该
+        # 给出带有信心指数的推荐" — give a genuine, actionable
+        # recommendation with an HONEST confidence indicator). Additive
+        # line, separate from SHADOW[...] above. Confidence here is
+        # RELATIVE RANK / Z-SCORE ONLY (see shadow_scoring.py) — never a
+        # fabricated probability. The trailing bracketed tag makes that
+        # explicit in the message text itself, not just in code comments.
+        try:
+            picks = ss.get("top_picks") or []
+            if picks:
+                pick_strs = []
+                for p in picks:
+                    t = p.get("ticker", "?")
+                    r = p.get("shadow_rank", "?")
+                    z = p.get("shadow_zscore", float("nan"))
+                    try:
+                        z_str = f"{float(z):+.2f}" if z == z else "n/a"  # NaN check
+                    except (TypeError, ValueError):
+                        z_str = "n/a"
+                    also_bought = ", ALSO-BOUGHT" if t in admitted_tickers else ""
+                    pick_strs.append(f"{t}(rank {r}/{n_cand}, z={z_str}{also_bought})")
+                parts.append(
+                    f"SHADOW-PICKS[{ss.get('name', '?')}]: "
+                    + " ".join(pick_strs)
+                    + " [relative rank, not a validated confidence score]"
+                )
+        except Exception as exc:
+            log.warning("ntfy shadow-picks segment failed: %s", exc)
 
     topic    = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
     if is_shadow:
@@ -870,7 +970,7 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
             "high" if (has_trade or has_pending) else "default"
         )
     title    = f"{label} [{run_mode}] {tag}"
-    body     = " | ".join(parts)
+    body     = _truncate_ntfy_body(" | ".join(parts))
     url      = f"https://ntfy.sh/{topic}"
     actionable = bool(
         has_trade or has_pending or exits_failed or non_wl_holds or rot_blocked
@@ -935,7 +1035,8 @@ def _resolve_strategy_config_name(
     """Resolve the strategy config file for CLI runs.
 
     Read-only Alpaca is the renquant_104 shadow e2e path. Letting it default
-    to production config makes logs say "[SHADOW]" while scoring with prod XGB.
+    to production config makes logs say "[READONLY]" (broker-mode prefix,
+    renamed from "[SHADOW]" 2026-07-01) while scoring with prod XGB.
     Keep explicit overrides possible for read-only prod rehearsals.
     """
     if requested_config_name:

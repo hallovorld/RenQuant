@@ -61,6 +61,15 @@ _DEFAULT_TRACKING_URI = "file:" + str(Path(__file__).resolve().parents[4] / "mlr
 _DEFAULT_EXPERIMENT = "renquant_104_shadow"
 _SCORER_CACHE: dict[tuple[str, str], object] = {}
 
+# 2026-07-01 (operator incident: "[SHADOW]...BUY OXY" ntfy misread as a
+# PatchTST recommendation — see doc/progress/2026-07-01-shadow-ntfy-top-picks.md):
+# size of the per-shadow-model top-N recommendation list surfaced in
+# ctx._shadow_summary[i]["top_picks"] and rendered as the ntfy
+# "SHADOW-PICKS[name]" line. Configurable via
+# ranking.panel_scoring.shadow_top_n_picks; default kept small for ntfy
+# length budget.
+_DEFAULT_TOP_N_PICKS = 5
+
 
 def _ensure_mlflow_setup(tracking_uri: Optional[str] = None,
                          experiment_name: Optional[str] = None) -> str:
@@ -138,6 +147,100 @@ def _log_shadow_run(experiment_id: str, as_of_date, shadow_name: str,
         mlflow.log_table(comparison, "comparison.json")
 
 
+def _compute_shadow_summary(
+    name: str,
+    kind: str,
+    primary_scores: dict[str, float],
+    sorted_primary: list[tuple[str, float]],
+    primary_ranks: dict[str, int],
+    shadow_dict: dict[str, float],
+    sorted_shadow: list[tuple[str, float]],
+    shadow_ranks: dict[str, int],
+    top_n_picks: int,
+) -> dict:
+    """Build the compact per-shadow-model ntfy/audit summary dict.
+
+    2026-05-19 (user mandate "want to know what shadow will do in ntfy"):
+    single-line-of-ntfy-friendly rollup — shadow top-3 picks, top-10 overlap
+    with primary, Spearman rank correlation.
+
+    2026-07-01 EXTENDED (operator incident: a "[SHADOW]...BUY OXY" ntfy was
+    misread as "the shadow PatchTST model recommends OXY" — see
+    doc/progress/2026-07-01-shadow-ntfy-top-picks.md; operator mandate
+    "shadow的message应该给出带有信心指数的推荐"): adds a top-N recommendation
+    list (``top_picks``) with an HONEST, relative-only confidence indicator
+    (rank / percentile / z-score within today's scored universe). Shadow
+    scorers have NO fitted probability calibrator — only
+    ApplyGlobalCalibrationTask calibrates the PRIMARY score — so this
+    deliberately never emits a fabricated "% confidence" number.
+
+    Pulled out of ``ApplyShadowScoringTask.run`` as a pure function (no I/O,
+    no ctx access) so it is unit-testable against a small hand-computed
+    fixture without mocking MLflow / the model registry / scorer loading.
+    Callers MUST pass in the SAME score/rank arrays already used elsewhere
+    for this shadow model (``sorted_primary``/``primary_ranks`` from the
+    primary panel score, ``shadow_dict``/``sorted_shadow``/``shadow_ranks``
+    from this shadow model's own score) — this function never re-scores or
+    recomputes those arrays from scratch.
+    """
+    import numpy as _np  # noqa: PLC0415
+
+    top10_primary = set(t for t, _ in sorted_primary[:10])
+    top10_shadow = set(t for t, _ in sorted_shadow[:10])
+    overlap = len(top10_primary & top10_shadow)
+    common = sorted(set(primary_scores) & set(shadow_dict))
+    if len(common) >= 5:
+        pr = _np.array([primary_ranks[t] for t in common])
+        sr = _np.array([shadow_ranks[t] for t in common])
+        from scipy.stats import spearmanr as _sp  # noqa: PLC0415
+        rho, _ = _sp(pr, sr)
+        rho = float(rho) if _np.isfinite(rho) else float("nan")
+    else:
+        rho = float("nan")
+    top3 = [t for t, _ in sorted_shadow[:3]]
+
+    primary_top_n_set = {t for t, _ in sorted_primary[:top_n_picks]}
+    shadow_vals = _np.array(list(shadow_dict.values()), dtype=float)
+    shadow_mean = float(_np.mean(shadow_vals)) if shadow_vals.size else float("nan")
+    shadow_std = float(_np.std(shadow_vals)) if shadow_vals.size else float("nan")
+    n_universe = len(shadow_dict)
+    top_picks = []
+    for t, sc in sorted_shadow[:top_n_picks]:
+        rank = shadow_ranks[t]
+        pct = (rank / n_universe * 100.0) if n_universe else float("nan")
+        if shadow_std and shadow_std > 1e-12:
+            z = (float(sc) - shadow_mean) / shadow_std
+        else:
+            z = float("nan")
+        top_picks.append({
+            "ticker": t,
+            "shadow_score": float(sc),
+            "shadow_rank": rank,
+            "shadow_percentile": round(pct, 1) if pct == pct else float("nan"),
+            "shadow_zscore": round(z, 2) if z == z else float("nan"),
+            # NOT determinable here: ApplyShadowScoringTask runs inside
+            # PanelScoringJob (Phase 3), which executes BEFORE
+            # RankingJob/SelectionJob populate ctx.ranked / ctx.orders.
+            # Whether primary actually SELECTED/BOUGHT this ticker today is
+            # unknown at this point in the pipeline — left None rather than
+            # guessed. live/runner.py overlays the real value from
+            # ctx.orders_placed at ntfy-render time, once the full pipeline
+            # + adapter.commit has run.
+            "in_primary_admitted": None,
+            "in_primary_topN": t in primary_top_n_set,
+        })
+
+    return {
+        "name": name, "kind": kind,
+        "top3": top3,
+        "top10_overlap": overlap,
+        "n_candidates": len(shadow_dict),
+        "spearman_vs_primary": rho,
+        "top_picks": top_picks,
+        "top_picks_n": top_n_picks,
+    }
+
+
 class ApplyShadowScoringTask(Task):
     """Run each configured shadow model on the SAME candidates as primary,
     record scores via MLflow tracking. Read-only — no order submission.
@@ -178,6 +281,8 @@ class ApplyShadowScoringTask(Task):
         sorted_primary = sorted(primary_scores.items(), key=lambda x: -x[1])
         primary_ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_primary)}
         primary_kind = panel_cfg.get("kind", "xgb")
+        top_n_picks = int(panel_cfg.get("shadow_top_n_picks", _DEFAULT_TOP_N_PICKS) or
+                          _DEFAULT_TOP_N_PICKS)
 
         shadow_log_mlflow = bool(panel_cfg.get("shadow_log_mlflow", True))
         exp_id = None
@@ -281,30 +386,18 @@ class ApplyShadowScoringTask(Task):
 
             # 2026-05-19 (user mandate "want to know what shadow will do in
             # ntfy"): stash a compact summary on ctx so live.runner can
-            # surface it. Single-line-of-ntfy friendly: shadow top-3 picks,
-            # top-10 overlap with primary, Spearman rank correlation.
+            # surface it — see _compute_shadow_summary docstring for the
+            # 2026-07-01 top-N recommendation extension. REUSES the exact
+            # same primary_scores/sorted_primary/primary_ranks and
+            # shadow_dict/sorted_shadow/shadow_ranks arrays already built
+            # above — no re-scoring, no second pass.
             try:
-                import numpy as _np  # noqa: PLC0415
-                top10_primary = set(t for t, _ in sorted_primary[:10])
-                top10_shadow = set(t for t, _ in sorted_shadow[:10])
-                overlap = len(top10_primary & top10_shadow)
-                common = sorted(set(primary_scores) & set(shadow_dict))
-                if len(common) >= 5:
-                    pr = _np.array([primary_ranks[t] for t in common])
-                    sr = _np.array([shadow_ranks[t] for t in common])
-                    from scipy.stats import spearmanr as _sp  # noqa: PLC0415
-                    rho, _ = _sp(pr, sr)
-                    rho = float(rho) if _np.isfinite(rho) else float("nan")
-                else:
-                    rho = float("nan")
-                top3 = [t for t, _ in sorted_shadow[:3]]
-                summary = {
-                    "name": name, "kind": kind,
-                    "top3": top3,
-                    "top10_overlap": overlap,
-                    "n_candidates": len(shadow_dict),
-                    "spearman_vs_primary": rho,
-                }
+                summary = _compute_shadow_summary(
+                    name, kind,
+                    primary_scores, sorted_primary, primary_ranks,
+                    shadow_dict, sorted_shadow, shadow_ranks,
+                    top_n_picks,
+                )
                 if not hasattr(ctx, "_shadow_summary"):
                     ctx._shadow_summary = []  # noqa: SLF001
                 ctx._shadow_summary.append(summary)  # noqa: SLF001

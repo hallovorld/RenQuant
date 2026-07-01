@@ -207,15 +207,20 @@ class TestAlwaysFiresOnCycle:
         assert req.headers.get("Title") == "RENQUANT-104 [sell-only] TRADE"
 
     def test_shadow_exit_is_marked_hypothetical_not_live_trade(self):
+        """2026-07-01: title prefix renamed [SHADOW] -> [READONLY] so the
+        broker-mode title token no longer collides with the per-model
+        SHADOW[name]/SHADOW-PICKS[name] body segments (see
+        TestShadowRecommendations below and the title-prefix disambiguation
+        tests)."""
         notify = self._import()
         exit_sig = SimpleNamespace(ticker="FTNT", exit_type="qp_sell")
         ctx = _stub_ctx(exits=[exit_sig])
         with patch("urllib.request.urlopen") as m:
-            notify("[SHADOW]RENQUANT-104", "full", ctx)
+            notify("[READONLY]RENQUANT-104", "full", ctx)
         req = m.call_args[0][0]
         body = req.data.decode()
         assert req.headers.get("Title") == (
-            "[SHADOW]RENQUANT-104 [full] SHADOW-ACTION"
+            "[READONLY]RENQUANT-104 [full] SHADOW-ACTION"
         )
         assert req.headers.get("Priority") == "default"
         assert "SHADOW/HYPOTHETICAL (no live orders)" in body
@@ -612,6 +617,248 @@ class TestFailSafe:
                 notify("RENQUANT-104", "sell-only", ctx)
                 notify("RENQUANT-104", "sell-only", ctx)
         assert m.call_count == 2
+
+
+def _shadow_summary_entry(name="patchtst_v1", picks=None, **overrides):
+    """Build a ctx._shadow_summary entry matching the shape produced by
+    kernel.panel_pipeline.shadow_scoring._compute_shadow_summary."""
+    entry = dict(
+        name=name, kind="patchtst",
+        top3=["OXY", "OKE", "CVX"],
+        top10_overlap=4,
+        n_candidates=83,
+        spearman_vs_primary=0.42,
+        top_picks=picks if picks is not None else [
+            {"ticker": "NVDA", "shadow_score": 0.05, "shadow_rank": 1,
+             "shadow_percentile": 1.2, "shadow_zscore": 2.10,
+             "in_primary_admitted": None, "in_primary_topN": True},
+            {"ticker": "OXY", "shadow_score": -0.15, "shadow_rank": 15,
+             "shadow_percentile": 18.1, "shadow_zscore": 0.88,
+             "in_primary_admitted": None, "in_primary_topN": False},
+        ],
+        top_picks_n=5,
+    )
+    entry.update(overrides)
+    return entry
+
+
+class TestShadowTopPicksNtfy:
+    """2026-07-01: genuine, actionable shadow-model recommendation with an
+    HONEST relative-rank indicator (operator incident: a
+    "[SHADOW]...BUY OXY" ntfy was misread as "the shadow PatchTST model
+    recommends OXY" — see doc/progress/2026-07-01-shadow-ntfy-top-picks.md).
+    """
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def test_shadow_picks_segment_rendered_with_rank_and_zscore(self):
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]:" in body
+        assert "OXY(rank 15/83, z=+0.88)" in body
+        assert "NVDA(rank 1/83, z=+2.10" in body
+
+    def test_shadow_picks_segment_is_labeled_relative_not_confidence(self):
+        """The message TEXT itself (not just a code comment) must say this
+        is a relative-rank indicator, not a validated confidence score."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "[relative rank, not a validated confidence score]" in body
+
+    def test_no_fabricated_probability_confidence_wording(self):
+        """Must never render a bare '%' confidence claim (e.g. '73%
+        confidence') — only rank/percentile/z-score, always honestly
+        labeled. shadow_percentile itself is NOT rendered as a standalone
+        '%' claim in the compact ntfy line (only rank + z-score are)."""
+        import re
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert re.search(r"\d+(\.\d+)?%\s*confidence", body) is None
+        assert "confidence=" not in body
+
+    def test_legacy_shadow_line_kept_byte_for_byte_backward_compat(self):
+        """The pre-existing SHADOW[name] top3=.../top10.../ρ=... line must
+        be unchanged — some downstream tooling may parse this exact
+        format."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW[patchtst_v1] top3=OXY/OKE/CVX top10∩prim=4/10 ρ=+0.42 n=83" in body
+
+    def test_also_bought_tag_when_primary_actually_bought_the_pick(self):
+        """in_primary_admitted is None at shadow_scoring.py build time (not
+        determinable — SelectionJob hasn't run yet). live/runner.py must
+        overlay the REAL value from ctx.orders_placed at ntfy-render time,
+        since the full pipeline has run by _notify_decision."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            orders=[{"ticker": "NVDA", "shares": 2, "price": 900.0}],
+            orders_placed=[{"ticker": "NVDA", "shares": 2, "price": 900.0}],
+            _shadow_summary=[_shadow_summary_entry()],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "NVDA(rank 1/83, z=+2.10, ALSO-BOUGHT)" in body
+        # OXY was NOT bought today — must not carry the ALSO-BOUGHT tag.
+        assert "OXY(rank 15/83, z=+0.88, ALSO-BOUGHT)" not in body
+        assert "OXY(rank 15/83, z=+0.88)" in body
+
+    def test_no_also_bought_tag_when_primary_bought_nothing(self):
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "ALSO-BOUGHT" not in body
+
+    def test_multiple_shadow_models_each_get_own_picks_segment(self):
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(name="patchtst_v1"),
+            _shadow_summary_entry(name="ngboost_v2", top3=["MU", "AMD", "TSM"]),
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]:" in body
+        assert "SHADOW-PICKS[ngboost_v2]:" in body
+
+    def test_missing_top_picks_does_not_break_legacy_line(self):
+        """Older/degenerate summary dicts without top_picks (e.g. from a
+        stale cached run) must not raise — legacy SHADOW[...] line still
+        renders, SHADOW-PICKS[...] segment simply omitted."""
+        notify = self._import()
+        legacy_entry = _shadow_summary_entry()
+        del legacy_entry["top_picks"]
+        ctx = _stub_ctx(_shadow_summary=[legacy_entry])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW[patchtst_v1]" in body
+        assert "SHADOW-PICKS[patchtst_v1]" not in body
+
+
+class TestNtfyBodyLengthBudget:
+    """ntfy's practical body limit is ~4096 bytes. No truncation guard
+    existed before 2026-07-01; the new SHADOW-PICKS segments (one per
+    configured shadow model) made an unbounded body more likely, so an
+    explicit, honest truncation was added rather than letting the
+    transport silently cut the message."""
+
+    def test_truncate_helper_noop_under_budget(self):
+        from live.runner import _truncate_ntfy_body
+        assert _truncate_ntfy_body("short body") == "short body"
+
+    def test_truncate_helper_caps_and_marks_long_body(self):
+        from live.runner import _truncate_ntfy_body, _NTFY_BODY_MAX_BYTES
+        body = "x" * (_NTFY_BODY_MAX_BYTES * 2)
+        out = _truncate_ntfy_body(body)
+        assert len(out.encode("utf-8")) <= _NTFY_BODY_MAX_BYTES
+        assert out.endswith("…[truncated]")
+
+    def test_truncate_helper_is_utf8_safe(self):
+        """Must not cut in the middle of a multi-byte character (ρ is used
+        throughout the shadow segments)."""
+        from live.runner import _truncate_ntfy_body
+        body = "ρ" * 5000
+        out = _truncate_ntfy_body(body, max_bytes=101)
+        # Must decode cleanly (no UnicodeDecodeError) and respect budget.
+        assert len(out.encode("utf-8")) <= 101
+        out.encode("utf-8").decode("utf-8")  # raises if a char was split
+
+    def test_many_shadow_models_still_yields_bounded_body(self):
+        """End-to-end: enough shadow models/picks to blow past budget if
+        unbounded must still respect the byte cap."""
+        from live.runner import _NTFY_BODY_MAX_BYTES
+        from live.runner import _notify_decision
+        picks = [
+            {"ticker": f"TCK{i:03d}", "shadow_score": 0.01 * i, "shadow_rank": i + 1,
+             "shadow_percentile": 1.0, "shadow_zscore": 0.12,
+             "in_primary_admitted": None, "in_primary_topN": False}
+            for i in range(20)
+        ]
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(name=f"shadow_model_{i}", picks=picks)
+            for i in range(10)
+        ])
+        with patch("urllib.request.urlopen") as m:
+            _notify_decision("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert len(body.encode("utf-8")) <= _NTFY_BODY_MAX_BYTES
+
+
+class TestTitlePrefixDisambiguation:
+    """2026-07-01 fix: [SHADOW] title prefix ("this ran via the readonly
+    broker") was colliding with the unrelated body segments SHADOW[name] /
+    SHADOW-PICKS[name] ("this alternate MODEL's own view"), which is what
+    caused the operator to misread a "[SHADOW]...BUY OXY" ntfy as a
+    PatchTST recommendation. Renamed the broker-mode title token to
+    [READONLY] (Option A — repo-wide grep found no external consumer
+    pattern-matching the literal "[SHADOW]" title substring)."""
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def test_readonly_prefix_triggers_shadow_broker_behavior(self):
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch("urllib.request.urlopen") as m:
+            notify("[READONLY]RENQUANT-104", "full", ctx)
+        req = m.call_args[0][0]
+        # is_shadow=True (readonly broker) still tags SHADOW-DECISION /
+        # SHADOW-ACTION — that classification is unaffected by the rename,
+        # only the title token changed from [SHADOW] to [READONLY].
+        assert req.headers.get("Title") == "[READONLY]RENQUANT-104 [full] SHADOW-DECISION"
+        body = req.data.decode()
+        assert "SHADOW/HYPOTHETICAL (no live orders)" in body
+
+    def test_legacy_shadow_prefix_no_longer_treated_as_readonly_broker(self):
+        """Documents the intentional behavior change: an old caller passing
+        the stale "[SHADOW]" prefix is NOT treated as a readonly-broker run
+        any more — is_shadow now keys off "[READONLY]" only."""
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch("urllib.request.urlopen") as m:
+            notify("[SHADOW]RENQUANT-104", "full", ctx)
+        req = m.call_args[0][0]
+        body = req.data.decode()
+        assert req.headers.get("Title") == "[SHADOW]RENQUANT-104 [full] DECISION"
+        assert "SHADOW/HYPOTHETICAL (no live orders)" not in body
+
+    def test_title_prefix_token_distinct_from_body_shadow_model_segments(self):
+        """The title prefix (broker mode) and the body's per-model labels
+        (alternate MODEL's own view) must not share the same ambiguous
+        "[SHADOW]" token any more."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("[READONLY]RENQUANT-104", "full", ctx)
+        req = m.call_args[0][0]
+        title = req.headers.get("Title")
+        body = req.data.decode()
+        assert title.startswith("[READONLY]")
+        assert "[SHADOW]" not in title
+        # Body segments use the OTHER concept (alternate model's own view) —
+        # still literally "SHADOW[...]" / "SHADOW-PICKS[...]", but no longer
+        # colliding with the title's broker-mode meaning since the title no
+        # longer uses that token at all.
+        assert "SHADOW[patchtst_v1]" in body
+        assert "SHADOW-PICKS[patchtst_v1]" in body
 
 
 if __name__ == "__main__":
