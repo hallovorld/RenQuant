@@ -26,6 +26,30 @@ Walk-forward criteria (default):
   - time-shift placebo IC: ratio < 0.5 × aligned real IC (placebo should not
     capture the same signal on the same evaluable rows)
 
+Placebo evaluation mode (opt-in, OFF BY DEFAULT):
+  The default ``absolute`` mode uses the ceiling above. It is structurally
+  unsatisfiable for the daily-sampled 60-day-horizon label: the overlapping
+  label is autocorrelated at the 2×horizon gate shift, so the time-shift
+  placebo carries a ~+0.04 persistence floor that exceeds 0.5×aligned_real_ic
+  regardless of model quality (see doc/research/2026-06-10-m6-placebo-gate-verdict.md).
+  An opt-in ``difference`` mode instead requires a genuine edge ABOVE that
+  floor. It PASSES only when BOTH pre-registered criteria hold:
+    (a) a POSITIVE real-IC floor: ``aligned_real_ic > real_ic_floor``
+        (default +0.01, the M6 genuine_ic_floor) — a non-positive / below-floor
+        real IC FAILS regardless of the difference, so a directionally harmful
+        model (e.g. real −0.01, placebo −0.03, diff +0.02) can never pass; AND
+    (b) the incremental criterion: ``aligned_real_ic - placebo_ic > margin``
+        (pre-registered margin, default +0.01) — genuine edge above the floor.
+  The per-regime diagnostic uses the SAME combined placebo policy, but the mode
+  replaces ONLY the placebo sub-verdict: every original regime quality/coverage
+  condition (``n_dates >= min_dates``, ``mean_ic >= min_mean_ic``) still applies
+  in BOTH modes, so a regime with poor full-regime ``mean_ic`` cannot pass on the
+  60-shift aligned subset alone.
+  Invalid / non-finite config (margin, floor) or IC inputs FAIL CLOSED. Selected
+  only via ``strategy_config.wf_gate.placebo_mode`` / ``--placebo-mode
+  difference``. BOTH verdicts are always computed and logged (shadow/dual-
+  logging) so the authoritative-mode flip can be justified on real runs first.
+
 References:
 - Lopez de Prado AFML §7 + §11 (walk-forward + cross-validation in finance)
 - Bailey-Lopez de Prado 2014 "Pseudo-Mathematics and Financial Charlatanism"
@@ -234,6 +258,303 @@ def _placebo_ic_requirement_text(aligned_real_ic: float) -> str:
     return (
         f"threshold={threshold:+.4f} "
         f"(0.5×|aligned_real_ic|, aligned_real_ic={aligned_real_ic:+.4f})"
+    )
+
+
+# --- Placebo evaluation mode (additive, opt-in, OFF BY DEFAULT) --------------
+# ``absolute`` reproduces the current §5.2 ceiling exactly. ``difference`` is the
+# opt-in placebo-clean difference test. Passing it requires BOTH a pre-registered
+# POSITIVE real-IC floor (``aligned_real_ic > real_ic_floor``) AND a genuine edge
+# ABOVE the embargo-leakage placebo floor (``aligned_real_ic - placebo_ic >
+# margin``). The incremental criterion ALONE is unsafe: it would pass a model with
+# NEGATIVE predictive IC whenever the placebo is even more negative (e.g. real
+# −0.01 − placebo −0.03 = +0.02 > margin), deploying a directionally harmful
+# signal. The floor makes non-positive real IC FAIL regardless of the difference.
+# Both the margin and the floor are pre-registered config values; each default
+# matches the M6 genuine_ic_floor positive value
+# (doc/research/2026-06-10-m6-placebo-gate-verdict.md §5, "+0.01").
+DEFAULT_PLACEBO_MODE = "absolute"
+DEFAULT_PLACEBO_DIFFERENCE_MARGIN = 0.01
+DEFAULT_PLACEBO_REAL_IC_FLOOR = 0.01
+_VALID_PLACEBO_MODES = ("absolute", "difference")
+
+
+def _is_number(x) -> bool:
+    """True iff x is a real (non-NaN) number (accepts +/-inf)."""
+    return isinstance(x, (int, float)) and (x == x)
+
+
+def _is_finite_number(x) -> bool:
+    """True iff x is a finite real number (rejects NaN and +/-inf).
+
+    Used to FAIL CLOSED on invalid/non-finite config (margin, real_ic_floor)
+    and on non-finite IC inputs, rather than letting them silently pass.
+    """
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _as_float_or_nan(x) -> float:
+    """Coerce ``x`` to float, returning NaN on unparseable/None input.
+
+    Used so a non-finite IC lands as NaN and is rejected by the fail-closed
+    finiteness checks rather than raising mid-verdict.
+    """
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _placebo_difference_pass(
+    aligned_real_ic,
+    placebo_ic,
+    margin,
+    real_ic_floor,
+) -> bool:
+    """Combined placebo-clean difference policy — the single source of truth.
+
+    PASS iff ALL hold (any non-finite input or config FAILS CLOSED):
+      * ``aligned_real_ic`` and ``placebo_ic`` are finite numbers;
+      * ``margin`` and ``real_ic_floor`` are finite config (invalid → FAIL);
+      * ``aligned_real_ic > real_ic_floor`` — pre-registered POSITIVE real-IC
+        floor; NON-POSITIVE / below-floor real IC FAILS regardless of the diff;
+      * ``aligned_real_ic - placebo_ic > margin`` — incremental edge above the
+        embargo-leakage placebo floor.
+
+    The floor closes the reviewer's blocking hole: real=−0.01 vs placebo=−0.03
+    yields diff +0.02 > margin, but −0.01 is not > a positive floor → FAIL.
+    """
+    if not (_is_finite_number(aligned_real_ic) and _is_finite_number(placebo_ic)):
+        return False
+    if not (_is_finite_number(margin) and _is_finite_number(real_ic_floor)):
+        return False
+    real_floor_ok = aligned_real_ic > real_ic_floor
+    incremental_ok = (aligned_real_ic - placebo_ic) > margin
+    return bool(real_floor_ok and incremental_ok)
+
+
+def _regime_placebo_ok(
+    mean_ic_f: float,
+    aligned_real60,
+    placebo60,
+    *,
+    mode: str,
+    max_placebo_ratio: float,
+    margin,
+    real_ic_floor,
+) -> bool:
+    """Per-regime PLACEBO sub-verdict for the given ``mode`` — placebo only.
+
+    The ``difference`` mode replaces ONLY this placebo evaluation with the
+    combined placebo-clean policy (:func:`_placebo_difference_pass`: positive
+    real-IC floor AND incremental margin, fail-closed on non-finite). The
+    ``absolute`` mode keeps the current §5.2 time-shift ceiling
+    (``|placebo60| <= max(0.005, ratio×|ref|)``) bit-for-bit. The full
+    per-regime verdict (:func:`_regime_sanity_pass`) still ANDs the shared
+    quality conditions on top of this in BOTH modes.
+    """
+    if mode == "difference":
+        return _placebo_difference_pass(
+            _as_float_or_nan(aligned_real60),
+            _as_float_or_nan(placebo60),
+            margin,
+            real_ic_floor,
+        )
+    # absolute ceiling (unchanged live behaviour): a missing placebo or a
+    # non-finite mean_ic leaves the ceiling satisfied — the caller's quality
+    # gate rejects a non-finite mean_ic separately.
+    if placebo60 is None or mean_ic_f != mean_ic_f:
+        return True
+    placebo_ref = mean_ic_f
+    aligned_real60_f = _as_float_or_nan(aligned_real60)
+    if aligned_real60_f == aligned_real60_f:
+        placebo_ref = aligned_real60_f
+    return abs(float(placebo60)) <= max(0.005, max_placebo_ratio * abs(placebo_ref))
+
+
+def _regime_sanity_pass(
+    mean_ic,
+    aligned_real60,
+    placebo60,
+    *,
+    mode: str,
+    min_mean_ic: float,
+    max_placebo_ratio: float,
+    margin,
+    real_ic_floor,
+) -> bool:
+    """Full per-regime sanity verdict for an ELIGIBLE regime (n_dates gate is
+    applied by the caller).
+
+    ALL original quality conditions apply in BOTH modes — ``mean_ic`` must be
+    finite AND ``>= min_mean_ic`` (0.02). The ``mode`` replaces ONLY the placebo
+    sub-verdict (:func:`_regime_placebo_ok`). This closes the PR #422 review
+    hole: a regime with poor/negative full-regime ``mean_ic`` must NOT pass on
+    the 60-shift aligned subset (floor + margin) alone.
+    """
+    mean_ic_f = _as_float_or_nan(mean_ic)
+    if not (mean_ic_f == mean_ic_f and mean_ic_f >= min_mean_ic):
+        return False
+    return bool(
+        _regime_placebo_ok(
+            mean_ic_f,
+            aligned_real60,
+            placebo60,
+            mode=mode,
+            max_placebo_ratio=max_placebo_ratio,
+            margin=margin,
+            real_ic_floor=real_ic_floor,
+        )
+    )
+
+
+def _placebo_absolute_verdict(
+    placebo_ic: float, placebo_aligned_real_ic: float
+) -> dict:
+    """CURRENT §5.2 ceiling: |placebo_ic| < max(0.005, 0.5×|aligned_real_ic|).
+
+    This MUST reproduce the historical ``pass_placebo`` verdict bit-for-bit —
+    it is the default authoritative test and the shadow reference.
+    """
+    available = _is_number(placebo_ic) and _is_number(placebo_aligned_real_ic)
+    threshold = None
+    passed = False
+    if available:
+        threshold = _placebo_ic_threshold(placebo_aligned_real_ic)
+        passed = (
+            abs(placebo_ic) < threshold
+            if placebo_aligned_real_ic != 0
+            else True
+        )
+    return {
+        "mode": "absolute",
+        "available": bool(available),
+        "passed": bool(passed),
+        "placebo_ic": float(placebo_ic) if available else None,
+        "aligned_real_ic": float(placebo_aligned_real_ic) if available else None,
+        "threshold": float(threshold) if threshold is not None else None,
+        "criterion": "abs(placebo_ic) < max(0.005, 0.5*abs(aligned_real_ic))",
+    }
+
+
+def _placebo_difference_verdict(
+    placebo_ic: float,
+    placebo_aligned_real_ic: float,
+    margin: float,
+    real_ic_floor: float = DEFAULT_PLACEBO_REAL_IC_FLOOR,
+) -> dict:
+    """OPT-IN placebo-clean difference test (combined, fail-closed).
+
+    Passing requires BOTH (see :func:`_placebo_difference_pass`):
+      * a pre-registered POSITIVE real-IC floor (``aligned_real_ic >
+        real_ic_floor``) — non-positive / below-floor real IC FAILS; and
+      * a genuine edge above the embargo-leakage placebo floor
+        (``aligned_real_ic - placebo_ic > margin``).
+
+    Invalid/non-finite margin, floor, or IC inputs FAIL CLOSED. The incremental
+    criterion alone is NOT sufficient — that would deploy a directionally
+    harmful (negative-real-IC) signal whenever the placebo is more negative.
+    """
+    available = _is_finite_number(placebo_ic) and _is_finite_number(
+        placebo_aligned_real_ic
+    )
+    config_finite = _is_finite_number(margin) and _is_finite_number(real_ic_floor)
+    diff = None
+    real_floor_ok = None
+    incremental_ok = None
+    if available and config_finite:
+        diff = float(placebo_aligned_real_ic) - float(placebo_ic)
+        real_floor_ok = float(placebo_aligned_real_ic) > float(real_ic_floor)
+        incremental_ok = diff > float(margin)
+    passed = _placebo_difference_pass(
+        placebo_aligned_real_ic, placebo_ic, margin, real_ic_floor
+    )
+    return {
+        "mode": "difference",
+        "available": bool(available),
+        "config_finite": bool(config_finite),
+        "passed": bool(passed),
+        "placebo_ic": float(placebo_ic) if available else None,
+        "aligned_real_ic": (
+            float(placebo_aligned_real_ic) if available else None
+        ),
+        "difference": float(diff) if diff is not None else None,
+        "margin": float(margin) if _is_finite_number(margin) else None,
+        "real_ic_floor": (
+            float(real_ic_floor) if _is_finite_number(real_ic_floor) else None
+        ),
+        "real_ic_floor_ok": (
+            bool(real_floor_ok) if real_floor_ok is not None else None
+        ),
+        "incremental_ok": (
+            bool(incremental_ok) if incremental_ok is not None else None
+        ),
+        "criterion": (
+            "aligned_real_ic > real_ic_floor AND "
+            "aligned_real_ic - placebo_ic > margin"
+        ),
+    }
+
+
+def _evaluate_placebo(
+    placebo_ic: float,
+    placebo_aligned_real_ic: float,
+    mode: str = DEFAULT_PLACEBO_MODE,
+    margin: float = DEFAULT_PLACEBO_DIFFERENCE_MARGIN,
+    real_ic_floor: float = DEFAULT_PLACEBO_REAL_IC_FLOOR,
+) -> dict:
+    """Compute BOTH placebo verdicts; select the authoritative one by ``mode``.
+
+    Always returns both the ``absolute`` and ``difference`` verdicts so the
+    caller can dual-log (shadow) them regardless of which one is authoritative.
+    An unknown ``mode`` falls back to ``absolute`` (default-safe). The
+    ``difference`` verdict enforces the combined positive-real-IC-floor +
+    incremental policy and fails closed on invalid config (see
+    :func:`_placebo_difference_verdict`).
+    """
+    absolute = _placebo_absolute_verdict(placebo_ic, placebo_aligned_real_ic)
+    difference = _placebo_difference_verdict(
+        placebo_ic, placebo_aligned_real_ic, margin, real_ic_floor
+    )
+    authoritative_mode = mode if mode in _VALID_PLACEBO_MODES else DEFAULT_PLACEBO_MODE
+    authoritative = difference if authoritative_mode == "difference" else absolute
+    return {
+        "mode": authoritative_mode,
+        "difference_margin": float(margin) if _is_finite_number(margin) else None,
+        "real_ic_floor": (
+            float(real_ic_floor) if _is_finite_number(real_ic_floor) else None
+        ),
+        "passed": bool(authoritative["passed"]),
+        "available": bool(authoritative["available"]),
+        "absolute": absolute,
+        "difference": difference,
+    }
+
+
+def _placebo_dual_log_message(placebo_eval: dict) -> str:
+    """Human-readable shadow line: BOTH verdicts + numbers, mode-independent."""
+    absolute = placebo_eval["absolute"]
+    difference = placebo_eval["difference"]
+
+    def _verdict(v: dict) -> str:
+        if not v.get("available"):
+            return "N/A(unavailable)"
+        return "PASS" if v.get("passed") else "FAIL"
+
+    def _num(x) -> str:
+        return f"{x:+.4f}" if _is_number(x) else "n/a"
+
+    abs_thr = absolute.get("threshold")
+    return (
+        f"placebo dual-verdict [authoritative={placebo_eval['mode']}] "
+        f"absolute={_verdict(absolute)} "
+        f"(|placebo|={_num(absolute.get('placebo_ic'))} vs "
+        f"thr={_num(abs_thr) if abs_thr is not None else 'n/a'}) | "
+        f"difference={_verdict(difference)} "
+        f"(real−placebo={_num(difference.get('difference'))} vs "
+        f"margin={_num(difference.get('margin'))}; "
+        f"real={_num(difference.get('aligned_real_ic'))} vs "
+        f"floor={_num(difference.get('real_ic_floor'))})"
     )
 
 
@@ -1024,6 +1345,87 @@ def _read_wf_gate_relax(strategy_config: str) -> dict:
         "benchmark_required": bool(block.get("benchmark_required", True)),
         "regime_required": bool(block.get("regime_required", True)),
         "sanity_regime_ic_required": bool(block.get("sanity_regime_ic_required", True)),
+    }
+
+
+def _resolve_placebo_settings(
+    strategy_config: str,
+    cli_mode: str | None = None,
+    cli_margin: float | None = None,
+    cli_real_ic_floor: float | None = None,
+) -> dict:
+    """Resolve placebo mode + margin + real-IC floor (opt-in, off by default).
+
+    Precedence: explicit CLI flag > ``strategy_config.wf_gate.placebo_*`` >
+    module default (``absolute`` / +0.01 margin / +0.01 real-IC floor). Both the
+    margin and floor are pre-registered config values. This ONLY selects which
+    placebo verdict is authoritative — both verdicts are always computed and
+    dual-logged. Absent config + no CLI flag reproduces the historical
+    absolute-ceiling gate, so merging this does not change live promotion.
+
+    An UNSPECIFIED numeric falls back to its pre-registered default. A SPECIFIED
+    but non-finite / unparseable numeric FAILS CLOSED (resolved to NaN) instead
+    of silently converting into a permissive experiment: the difference verdict
+    then fails on that non-finite config rather than passing on a default.
+    """
+    try:
+        cfg_path = STRATEGY_DIR / strategy_config
+        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    except Exception:
+        cfg = {}
+    block = (cfg.get("wf_gate") or {}) if isinstance(cfg, dict) else {}
+
+    cfg_mode = block.get("placebo_mode", DEFAULT_PLACEBO_MODE)
+    mode = cli_mode if cli_mode else cfg_mode
+    if mode not in _VALID_PLACEBO_MODES:
+        log.warning(
+            "unknown placebo_mode=%r — falling back to %r (default-safe)",
+            mode,
+            DEFAULT_PLACEBO_MODE,
+        )
+        mode = DEFAULT_PLACEBO_MODE
+
+    def _resolve_numeric(cli_val, cfg_key, default, label):
+        # Precedence CLI > config > default. Absent → pre-registered default.
+        # Specified-but-invalid (non-finite / unparseable) → FAIL CLOSED (NaN).
+        if cli_val is not None:
+            raw, specified = cli_val, True
+        elif cfg_key in block:
+            raw, specified = block.get(cfg_key), True
+        else:
+            raw, specified = default, False
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            val = float("nan")
+        if specified and not _is_finite_number(val):
+            log.warning(
+                "invalid %s=%r (specified) — FAIL CLOSED (non-finite)",
+                label,
+                raw,
+            )
+            return float("nan")
+        return val
+
+    margin = _resolve_numeric(
+        cli_margin,
+        "placebo_difference_margin",
+        DEFAULT_PLACEBO_DIFFERENCE_MARGIN,
+        "placebo_difference_margin",
+    )
+    real_ic_floor = _resolve_numeric(
+        cli_real_ic_floor,
+        "placebo_real_ic_floor",
+        DEFAULT_PLACEBO_REAL_IC_FLOOR,
+        "placebo_real_ic_floor",
+    )
+
+    return {
+        "mode": mode,
+        "difference_margin": margin,
+        "real_ic_floor": real_ic_floor,
+        "config_mode": cfg_mode,
+        "source": "cli" if cli_mode else ("config" if block.get("placebo_mode") else "default"),
     }
 
 
@@ -1841,9 +2243,40 @@ def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, 
     }
 
 
-def _manifest_uri_to_path(manifest_path: Path, uri: str) -> Path:
-    p = Path(str(uri))
-    return p if p.is_absolute() else manifest_path.parent / p
+def _manifest_uri_to_path(
+    manifest_path: Path,
+    uri: str,
+    *,
+    expected_digest: str | None = None,
+) -> Path:
+    """Resolve a manifest artifact URI via the shared bounded resolver.
+
+    Thin wrapper over ``kernel.manifest_uri_resolver.resolve_manifest_uri`` so
+    the gate's manifest-sanity path shares the single URI contract (bounded
+    known roots, lexical + realpath containment, symlink-escape / external-
+    absolute rejection, ambiguity rejection, digest binding) with the WF loader
+    and the sim adapter, instead of a drifting local copy. Manifest URIs are
+    normally manifest-folder-relative, but orchestrator-built WF manifests emit
+    strategy-dir-relative URIs (``artifacts/walkforward_.../panel-ltr.json``);
+    the shared resolver handles both against an ordered set of known roots.
+
+    This is a model-validation path, so when the manifest entry stamps an
+    ``artifact_sha256`` we bind the resolved file to it, and once the
+    compatibility window closes a missing digest fails closed.
+    """
+    from kernel.manifest_uri_resolver import (  # noqa: PLC0415
+        digest_required,
+        resolve_manifest_uri,
+    )
+
+    return Path(
+        resolve_manifest_uri(
+            manifest_path,
+            uri,
+            expected_digest=expected_digest,
+            require_digest=digest_required(),
+        )
+    )
 
 
 def _manifest_entry_safe_last_label_date(entry) -> pd.Timestamp:
@@ -1914,7 +2347,13 @@ def _score_manifest_sanity(
                 f"+ {entry.lookahead_days}BDay = {safe_last_label.date()} "
                 f">= {d.date()}"
             )
-        date_to_artifact[d] = str(_manifest_uri_to_path(manifest_path, entry.artifact_uri))
+        date_to_artifact[d] = str(
+            _manifest_uri_to_path(
+                manifest_path,
+                entry.artifact_uri,
+                expected_digest=getattr(entry, "artifact_sha256", None),
+            )
+        )
         safe_dates.append(d)
     if not safe_dates:
         raise ValueError(
@@ -1998,6 +2437,9 @@ def _score_manifest_sanity(
 def run_sanity_battery(
     artifact_path: Path,
     artifact_usage: dict | None = None,
+    placebo_mode: str = DEFAULT_PLACEBO_MODE,
+    placebo_difference_margin: float = DEFAULT_PLACEBO_DIFFERENCE_MARGIN,
+    placebo_real_ic_floor: float = DEFAULT_PLACEBO_REAL_IC_FLOOR,
 ) -> dict:
     """§5.2 shuffled-label + time-shift placebo on the artifact's training pipeline.
 
@@ -2289,27 +2731,23 @@ def run_sanity_battery(
             passed = False
             if eligible:
                 eligible_any = True
-                try:
-                    mean_ic_f = float(mean_ic)
-                except (TypeError, ValueError):
-                    mean_ic_f = float("nan")
-                placebo_ok = True
-                if placebo60 is not None and mean_ic_f == mean_ic_f:
-                    placebo_ref = mean_ic_f
-                    try:
-                        aligned_real60_f = float(aligned_real60)
-                        if aligned_real60_f == aligned_real60_f:
-                            placebo_ref = aligned_real60_f
-                    except (TypeError, ValueError):
-                        placebo_ref = mean_ic_f
-                    placebo_ok = abs(float(placebo60)) <= max(
-                        0.005,
-                        max_placebo_ratio * abs(placebo_ref),
-                    )
-                passed = (
-                    mean_ic_f == mean_ic_f
-                    and mean_ic_f >= min_mean_ic
-                    and placebo_ok
+                # ALL original regime quality/coverage conditions apply in BOTH
+                # modes (n_dates >= min_dates above; mean_ic >= min_mean_ic
+                # inside the helper). The ``difference`` mode replaces ONLY the
+                # placebo sub-verdict with the combined placebo-clean policy
+                # (positive real-IC floor AND incremental margin, fail-closed on
+                # non-finite). This prevents a regime with poor/negative
+                # full-regime mean_ic from passing on the 60-shift aligned
+                # subset alone (PR #422 review).
+                passed = _regime_sanity_pass(
+                    mean_ic,
+                    aligned_real60,
+                    placebo60,
+                    mode=placebo_mode,
+                    min_mean_ic=min_mean_ic,
+                    max_placebo_ratio=max_placebo_ratio,
+                    margin=placebo_difference_margin,
+                    real_ic_floor=placebo_real_ic_floor,
                 )
                 if not passed:
                     failed.append(regime)
@@ -2333,6 +2771,17 @@ def run_sanity_battery(
             "min_n_dates": min_dates,
             "min_mean_ic": min_mean_ic,
             "max_placebo_ratio": max_placebo_ratio,
+            "placebo_mode": placebo_mode,
+            "difference_margin": (
+                float(placebo_difference_margin)
+                if _is_finite_number(placebo_difference_margin)
+                else None
+            ),
+            "real_ic_floor": (
+                float(placebo_real_ic_floor)
+                if _is_finite_number(placebo_real_ic_floor)
+                else None
+            ),
             "regimes": regimes_out,
         }
     except Exception as exc:  # noqa: BLE001
@@ -2344,15 +2793,30 @@ def run_sanity_battery(
 
     # Pass criteria
     pass_shuf = abs(shuf_ic) < 0.005
-    pass_placebo = (
-        (placebo_ic == placebo_ic)
-        and (placebo_aligned_real_ic == placebo_aligned_real_ic)
-        and (
-            abs(placebo_ic) < _placebo_ic_threshold(placebo_aligned_real_ic)
-            if placebo_aligned_real_ic != 0 else
-            True
-        )
+
+    # Placebo verdict: compute BOTH the absolute ceiling (current, default
+    # authoritative) AND the opt-in placebo-clean difference test, then select
+    # the authoritative one by ``placebo_mode``. Under the default config
+    # (mode="absolute") this reproduces the historical pass bit-for-bit.
+    placebo_eval = _evaluate_placebo(
+        placebo_ic,
+        placebo_aligned_real_ic,
+        mode=placebo_mode,
+        margin=placebo_difference_margin,
+        real_ic_floor=placebo_real_ic_floor,
     )
+    pass_placebo = bool(placebo_eval["passed"])
+    # Dual-logging (shadow): emit BOTH verdicts + numbers regardless of which is
+    # authoritative, so the mode flip can be justified on real runs later.
+    log.info("  %s", _placebo_dual_log_message(placebo_eval))
+    if placebo_eval["mode"] != DEFAULT_PLACEBO_MODE:
+        log.warning(
+            "  placebo authoritative mode is %r (opt-in) — NOT the default "
+            "%r ceiling; verify this run's config is intended",
+            placebo_eval["mode"],
+            DEFAULT_PLACEBO_MODE,
+        )
+
     sanity_method = (
         "manifest_point_in_time_label_diagnostics"
         if sanity_meta.get("sanity_eval_scope") == "walkforward_manifest"
@@ -2366,6 +2830,31 @@ def run_sanity_battery(
         sanity_reason = (
             "FAIL: regime sanity IC failed: "
             f"{sanity_regime_ic.get('reason', 'unknown')}"
+        )
+    elif placebo_eval["mode"] == "difference":
+        dver = placebo_eval["difference"]
+        diff = dver.get("difference")
+        diff_txt = f"{diff:+.4f}" if _is_number(diff) else "n/a"
+        real_txt = (
+            f"{dver.get('aligned_real_ic'):+.4f}"
+            if _is_number(dver.get("aligned_real_ic"))
+            else "n/a"
+        )
+        floor_txt = (
+            f"{placebo_real_ic_floor:+.4f}"
+            if _is_finite_number(placebo_real_ic_floor)
+            else "invalid"
+        )
+        margin_txt = (
+            f"{placebo_difference_margin:+.4f}"
+            if _is_finite_number(placebo_difference_margin)
+            else "invalid"
+        )
+        sanity_reason = (
+            f"FAIL: shuf_ic={shuf_ic:+.4f} (need |·| < 0.005), "
+            f"placebo difference-test needs BOTH real_ic={real_txt} > "
+            f"floor={floor_txt} AND real−placebo={diff_txt} > "
+            f"margin={margin_txt} (fail-closed on non-finite)"
         )
     else:
         sanity_reason = (
@@ -2388,6 +2877,17 @@ def run_sanity_battery(
         "sanity_method": sanity_method,
         "placebo_shift_diagnostics": placebo_shift_diagnostics,
         "sanity_regime_ic": sanity_regime_ic,
+        # Placebo mode + dual (shadow) verdicts. ``sanity_placebo_mode`` records
+        # the authoritative mode; ``sanity_placebo_verdicts`` carries BOTH the
+        # absolute-ceiling and difference-test outcomes for shadow comparison.
+        "sanity_placebo_mode": placebo_eval["mode"],
+        "sanity_placebo_difference_margin": placebo_eval["difference_margin"],
+        "sanity_placebo_real_ic_floor": placebo_eval["real_ic_floor"],
+        "sanity_placebo_verdicts": {
+            "authoritative_mode": placebo_eval["mode"],
+            "absolute": placebo_eval["absolute"],
+            "difference": placebo_eval["difference"],
+        },
         "reason": sanity_reason,
         **sanity_meta,
     }
@@ -2406,6 +2906,27 @@ def main():
                     help="Skip walk-forward (sanity only) — for emergency / testing")
     ap.add_argument("--skip-sanity", action="store_true",
                     help="Skip sanity battery — for emergency / testing")
+    ap.add_argument("--placebo-mode", choices=list(_VALID_PLACEBO_MODES), default=None,
+                    help="Placebo evaluation mode (OPT-IN, OFF BY DEFAULT). "
+                         "'absolute' (default) = current ceiling "
+                         "|placebo_ic| < 0.5×|aligned_real_ic|. 'difference' = "
+                         "opt-in placebo-clean difference test "
+                         "(aligned_real_ic - placebo_ic > margin), which clears "
+                         "the ~+0.04 embargo-leakage placebo floor. Overrides "
+                         "strategy_config.wf_gate.placebo_mode. Default None → "
+                         "config → 'absolute' (live behaviour unchanged). BOTH "
+                         "verdicts are always dual-logged regardless of mode.")
+    ap.add_argument("--placebo-difference-margin", type=float, default=None,
+                    help="Pre-registered margin for the difference test "
+                         f"(default from config or {DEFAULT_PLACEBO_DIFFERENCE_MARGIN:+.4f}). "
+                         "Only used when placebo mode is 'difference'.")
+    ap.add_argument("--placebo-real-ic-floor", type=float, default=None,
+                    help="Pre-registered POSITIVE real-IC floor for the "
+                         "difference test: aligned_real_ic must exceed this "
+                         f"(default from config or {DEFAULT_PLACEBO_REAL_IC_FLOOR:+.4f}, "
+                         "the M6 genuine_ic_floor). Non-positive / below-floor "
+                         "real IC FAILS regardless of the incremental margin. "
+                         "Only used when placebo mode is 'difference'.")
     ap.add_argument("--jobs", type=int, default=1,
                     help="Number of walk-forward cuts to run concurrently. "
                          "Default 1 preserves the conservative historical path; "
@@ -2648,11 +3169,33 @@ def main():
         log.info("Trade gate result: %s", trade_gate_result["reason"])
         log.info("Alpha economics result: %s", alpha_economics_result["reason"])
 
+    placebo_settings = _resolve_placebo_settings(
+        args.strategy_config,
+        cli_mode=args.placebo_mode,
+        cli_margin=args.placebo_difference_margin,
+        cli_real_ic_floor=args.placebo_real_ic_floor,
+    )
+    if placebo_settings["mode"] != DEFAULT_PLACEBO_MODE:
+        log.warning(
+            "Placebo authoritative mode = %r (source=%s, margin=%+.4f, "
+            "real_ic_floor=%+.4f) — OPT-IN, not the default %r ceiling; "
+            "difference PASS requires BOTH aligned_real_ic > floor AND "
+            "aligned_real_ic - placebo_ic > margin (fail-closed on non-finite)",
+            placebo_settings["mode"],
+            placebo_settings["source"],
+            placebo_settings["difference_margin"],
+            placebo_settings["real_ic_floor"],
+            DEFAULT_PLACEBO_MODE,
+        )
+
     sanity_result = {"passed": True, "reason": "skipped"}
     if not args.skip_sanity:
         sanity_result = run_sanity_battery(
             artifact_path,
             artifact_usage=artifact_usage,
+            placebo_mode=placebo_settings["mode"],
+            placebo_difference_margin=placebo_settings["difference_margin"],
+            placebo_real_ic_floor=placebo_settings["real_ic_floor"],
         )
         log.info("Sanity result: %s", sanity_result["reason"])
 
@@ -2749,6 +3292,14 @@ def main():
         "sanity_n_oos_dates":  sanity_result.get("n_oos_dates"),
         "sanity_cutoff_contract": sanity_result.get("cutoff_contract"),
         "sanity_regime_ic":    sanity_result.get("sanity_regime_ic"),
+        "sanity_placebo_mode": sanity_result.get("sanity_placebo_mode"),
+        "sanity_placebo_difference_margin": (
+            sanity_result.get("sanity_placebo_difference_margin")
+        ),
+        "sanity_placebo_real_ic_floor": (
+            sanity_result.get("sanity_placebo_real_ic_floor")
+        ),
+        "sanity_placebo_verdicts": sanity_result.get("sanity_placebo_verdicts"),
         "placebo_shift_diagnostics": sanity_result.get("placebo_shift_diagnostics"),
         "wf_reason":           wf_result.get("reason"),
         "sanity_reason":       sanity_result.get("reason"),

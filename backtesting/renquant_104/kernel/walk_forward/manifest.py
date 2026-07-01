@@ -53,6 +53,12 @@ class WalkForwardManifest:
             row["effective_train_cutoff_date"] = (
                 e.effective_train_cutoff_date.isoformat()
             )
+        # 2026-07-01 PR #421 review: persist the optional per-entry artifact
+        # digest so the bounded URI resolver can bind the resolved file to the
+        # manifest's expected identity on the model-validation path. Omitted
+        # when absent so pre-digest manifests round-trip unchanged.
+        if e.artifact_sha256:
+            row["artifact_sha256"] = e.artifact_sha256
         return row
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,6 +113,9 @@ def _validate_entry(raw: dict, idx: int) -> RetrainEntry:
             else None
         ),
         effective_train_cutoff_date=effective,
+        artifact_sha256=(
+            str(raw.get("artifact_sha256")) if raw.get("artifact_sha256") else None
+        ),
     )
 
 

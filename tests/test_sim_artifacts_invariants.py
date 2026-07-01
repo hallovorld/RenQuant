@@ -16,8 +16,9 @@ Invariants pinned:
   — the absolute leakage property.
 - every non-forbidden column survives with its data intact.
 - the input frame is not mutated; the op is idempotent.
-- _resolve_manifest_uri: absolute uri kept; relative resolved under the
-  manifest's parent.
+- _resolve_manifest_uri: absolute uri kept when its realpath is under an
+  allowed root, rejected otherwise (PR #421 round 3 — bounded resolver);
+  relative resolved under the manifest's parent.
 - _artifact_kind: metadata.kind preferred over top-level kind; None on
   unreadable / non-dict / missing.
 """
@@ -29,6 +30,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _STRATEGY_DIR = _REPO_ROOT / "backtesting" / "renquant_104"
@@ -41,6 +43,7 @@ from adapters.sim_artifacts import (  # noqa: E402
     _history_seq_len_from_artifact,
     _resolve_manifest_uri,
 )
+from kernel.manifest_uri_resolver import ManifestUriResolutionError  # noqa: E402
 
 SEED = 0x5117
 N = 2000
@@ -121,23 +124,52 @@ class TestLeakageGuard:
 
 
 class TestResolveManifestUri:
-    def test_absolute_uri_kept(self):
-        assert _resolve_manifest_uri(Path("/data/m/manifest.json"),
-                                     "/abs/model.pt") == Path("/abs/model.pt")
+    def test_absolute_uri_within_root_kept(self, tmp_path):
+        # Round 3 (PR #421 review): an absolute URI is no longer returned
+        # unconditionally — only when its realpath is under an allowed root.
+        manifest = tmp_path / "m" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}")
+        abs_uri = str(tmp_path / "m" / "model.pt")
+        assert _resolve_manifest_uri(manifest, abs_uri) == Path(abs_uri)
+
+    def test_absolute_uri_outside_roots_rejected(self, tmp_path):
+        # The bounded contract never returns an external absolute path
+        # blindly (PR #421 review, blocking point 2).
+        manifest = tmp_path / "m" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}")
+        outside = tmp_path / "elsewhere" / "model.pt"
+        with pytest.raises(ManifestUriResolutionError):
+            _resolve_manifest_uri(manifest, str(outside))
 
     def test_relative_resolved_under_manifest_parent(self):
         assert _resolve_manifest_uri(Path("/data/m/manifest.json"),
                                      "sub/model.pt") == Path("/data/m/sub/model.pt")
 
-    def test_result_absolute_iff_inputs_make_it_so(self):
+    def test_result_absolute_or_rejected(self, tmp_path):
+        """Property: for any (manifest, uri) pair the bounded resolver either
+        raises ManifestUriResolutionError (absolute-outside-root or ``..``
+        traversal escaping every allowed root) or returns an absolute path.
+
+        Pre-round-3 this asserted the old unconditional-passthrough contract;
+        the bounded resolver (PR #421 review) rejects escapes instead of
+        returning them, so escaping choices are expected to raise here.
+        """
         rng = random.Random(SEED + 3)
+        manifest = tmp_path / "root" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}")
         for _ in range(500):
-            manifest = Path(f"/root/{rng.randint(0,9)}/manifest.json")
             uri = rng.choice(["/abs/x", "rel/x", "x.json", "../y/z"])
-            out = _resolve_manifest_uri(manifest, uri)
+            try:
+                out = _resolve_manifest_uri(manifest, uri)
+            except ManifestUriResolutionError:
+                # "/abs/x" (outside root) and "../y/z" (traversal) are
+                # expected to escape every allowed root and raise.
+                assert uri in ("/abs/x", "../y/z"), uri
+                continue
             assert out.is_absolute()  # manifest is absolute → result always is
-            if Path(uri).is_absolute():
-                assert out == Path(uri)
 
 
 class TestArtifactKind:

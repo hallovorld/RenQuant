@@ -191,8 +191,23 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                          label_override: Optional[str] = None,
                          cutoff_embargo_days: Optional[int] = None,
                          include_features: Optional[list[str]] = None,
-                         train_start_date: Optional[str] = None) -> tuple[pd.DataFrame, list[str], str]:
+                         train_start_date: Optional[str] = None,
+                         return_feature_frontier: bool = False):
     """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used).
+
+    When ``return_feature_frontier`` is True, returns a 4-tuple
+    ``(train_df, feat_cols, label_used, max_feature_anchor_date)`` where
+    ``max_feature_anchor_date`` is the RAW feature/data frontier: the latest
+    date with FEATURE rows in the (watchlist/window-filtered) panel, BEFORE
+    the fwd-label ``dropna`` clip. Because the frontier rows carry valid
+    features but no observable forward label yet, this frontier leads
+    ``train["date"].max()`` (the labeled-row max) by ~lookahead business days.
+    It is DATA-PIPELINE HEALTH provenance (proof the feed is current) — NOT the
+    model-freshness axis: those trailing rows were excluded from training, so
+    the weights/normalization/CV never consumed them and they cannot make a
+    frozen model look fresh (Codex #423). Model freshness keys on the labeled
+    max (``label_observation_cutoff``). Default (False) preserves the legacy
+    3-tuple return for existing callers.
 
     ``include_features``: opt-in list for Track B addendum columns. When None
     (default) any Track B column present in the panel is dropped, preserving
@@ -254,6 +269,12 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                      watchlist_file, n_before, panel["ticker"].nunique(),
                      len(set(wl) & set(panel["ticker"].unique())))
 
+    # ``panel`` here is watchlist-filtered but PRE-``dropna`` — it retains the
+    # raw feature frontier (recent rows whose forward label is not yet
+    # observable). Keep a handle so the data-pipeline health provenance
+    # (``max_feature_anchor_date``) can be derived below.
+    feature_panel = panel
+    effective_cutoff: Optional[pd.Timestamp] = None
     train = panel.dropna(subset=[label_used])
     if train_start_date is not None:
         before = len(train)
@@ -286,7 +307,32 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     log.info("Train rows: %d (panel total: %d), tickers: %d, dates: %s → %s, label: %s",
              len(train), len(panel), train["ticker"].nunique(),
              train["date"].min().date(), train["date"].max().date(), label_used)
-    return train, feat_cols, label_used
+
+    if not return_feature_frontier:
+        return train, feat_cols, label_used
+
+    # ── Raw feature/data frontier (data-pipeline health provenance) ──
+    # The frontier = max feature-row date BEFORE the label ``dropna``, honouring
+    # the SAME window filters (train-start lower bound, cutoff exclusive upper
+    # bound) applied to the training rows. On the full-history prod path this is
+    # ≈ today-1; ``train["date"].max()`` lags it by ~lookahead BD (the trailing
+    # rows have valid features but no observable fwd label yet). On a
+    # walk-forward path both collapse to just below ``effective_cutoff`` because
+    # historical labels are already observed.
+    feature_window = feature_panel
+    if train_start_date is not None:
+        feature_window = feature_window[feature_window["date"] >= pd.Timestamp(train_start_date)]
+    if effective_cutoff is not None:
+        feature_window = feature_window[feature_window["date"] < effective_cutoff]
+    max_feature_anchor_date = (
+        pd.Timestamp(feature_window["date"].max()) if len(feature_window) else None
+    )
+    log.info("Feature frontier: max_feature_anchor_date=%s (labeled max=%s, lag≈%s)",
+             max_feature_anchor_date.date().isoformat() if max_feature_anchor_date is not None else "EMPTY",
+             train["date"].max().date() if len(train) else "EMPTY",
+             (max_feature_anchor_date - pd.Timestamp(train["date"].max())).days
+             if (max_feature_anchor_date is not None and len(train)) else "n/a")
+    return train, feat_cols, label_used, max_feature_anchor_date
 
 
 def build_normalization(
@@ -735,8 +781,37 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    cutoff_embargo_days: int | None = None,
                    train_run_id: str | None = None,
                    sentiment_contract_metadata: dict | None = None,
-                   train_start_date: Optional[str] = None) -> dict:
+                   train_start_date: Optional[str] = None,
+                   max_feature_anchor_date: Optional[pd.Timestamp] = None) -> dict:
     """Build artifact dict, stamping cutoff_date + side_label when set.
+
+    Always stamps TWO DISTINCT information-set fields so the freshness monitor
+    (orchestrator #213) + renquant-pipeline P-MODEL-STALENESS gate can measure
+    panel staleness on the correct axis instead of soft-skipping:
+
+    - ``label_observation_cutoff`` — the fwd-label-clipped max FULLY-LABELED
+      training row (``train["date"].max()``, the observed max on BOTH paths).
+      THIS is the MODEL-FRESHNESS axis: it is the latest information that
+      actually affected fitting, and moves only when the labeled training frame
+      moves. The monitor keys P-MODEL-STALENESS on it and accounts for the
+      expected ~60 BD fwd-label horizon lag EXPLICITLY. Derived from the frame,
+      never wall-clock ``trained_date`` (#210/#212).
+    - ``max_feature_anchor_date`` — the RAW feature/data frontier (latest date
+      with feature rows, INCLUDING rows whose fwd label is not yet observable,
+      ≈ today−1 for fresh data). DATA-PIPELINE HEALTH provenance ONLY — it
+      confirms the feed is current but is NOT model freshness: those trailing
+      rows were excluded from training, so appending fresh unlabeled rows must
+      not make a stale model read fresh (Codex #423). Threaded in from
+      ``load_and_slice_panel`` (pre-``dropna`` frontier); when not supplied it
+      is OMITTED (missing/unknown stays missing/unknown — never backfilled from
+      the label cutoff).
+
+    ``effective_train_cutoff_date`` keeps its EXISTING contract — the upper
+    *exclusive* feature-row cutoff (see kernel/walk_forward/loader.py) consumed
+    by the manifest/loader leakage checks — and is stamped ONLY on the
+    walk-forward (``--train-cutoff``) path. ``effective_selection_cutoff_date``
+    is intentionally NOT stamped (no derivable held-out selection date; see the
+    block below). See the block below for details.
 
     When ``train_start_date`` is provided (Track D regime-drift retrains),
     the artifact additionally stamps a machine-readable lower-bound
@@ -820,6 +895,47 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["feature_raw_clip_high"] = list(feature_raw_clip_high)
         artifact["feature_raw_clip_fit_split"] = "train"
         artifact["feature_preprocess_version"] = 2
+    # ── Model-freshness axis vs data-pipeline health provenance ──
+    # Two DISTINCT, unambiguous fields (Codex #423). MODEL freshness (the
+    # renquant-pipeline P-MODEL-STALENESS gate + orch #213 rail) MUST key on the
+    # latest information that ACTUALLY affected fitting — the labeled training
+    # anchor — never the wall-clock ``trained_date`` (a fresh trained_date over
+    # stale data is NOT fresh, #210/#212) and never the raw feature frontier.
+    # The trailing frontier rows were excluded from ``train`` because their fwd
+    # labels are unobservable: the weights, normalization, and CV never consumed
+    # them, so appending fresh unlabeled feature rows to a frozen panel must NOT
+    # make an unchanged/stale model read fresh (Codex #423 — that is "fresh
+    # metadata over stale trained information" under a new field name).
+    #
+    #   * ``label_observation_cutoff`` — the fwd-label-clipped max FULLY-LABELED
+    #     training row (``train["date"].max()``, the observed max on BOTH
+    #     paths; consistent meaning, no path overloading). THIS is the
+    #     model-freshness axis: it moves only when the labeled frame the model
+    #     trained on moves. The monitor keys staleness on it and accounts for
+    #     the expected ~60 BD fwd-label horizon lag EXPLICITLY (a fresh retrain,
+    #     labeled anchor ≈ today − horizon, is HEALTHY; a globally frozen panel
+    #     BREACHES). Derived from the frame, never ``datetime.now()``.
+    #   * ``max_feature_anchor_date`` — the RAW feature/data frontier: latest
+    #     feature-row date INCLUDING not-yet-labelable rows (≈ today−1 for fresh
+    #     data). DATA-PIPELINE HEALTH provenance ONLY (proof the feed is
+    #     current); NOT model freshness. Stamped ONLY when the frontier is known
+    #     (threaded from ``load_and_slice_panel``); when a caller does not supply
+    #     it the field is OMITTED — a missing raw frontier stays missing/unknown
+    #     and is NEVER silently backfilled from the label cutoff (that would give
+    #     one field two meanings depending on caller, Codex #423).
+    label_observation_cutoff_iso = pd.Timestamp(train["date"].max()).isoformat()
+    artifact["label_observation_cutoff"] = label_observation_cutoff_iso
+    if max_feature_anchor_date is not None:
+        artifact["max_feature_anchor_date"] = pd.Timestamp(max_feature_anchor_date).isoformat()
+    # ``effective_train_cutoff_date`` keeps its EXISTING documented contract —
+    # the upper *exclusive* feature-row cutoff (kernel/walk_forward/loader.py:
+    # "upper exclusive feature-row cutoff"), consumed by the manifest/loader
+    # leakage checks + lean_guard._selection_anchor. Stamp it ONLY on the
+    # walk-forward path (where ``--train-cutoff`` bounds feature rows). It is
+    # NOT overloaded with the observed-max label on the full-history path
+    # (Codex: "Do not overload one field with observed max on one path and an
+    # exclusive boundary on another"); there it is OMITTED so the leakage guard
+    # conservatively anchors on ``trained_date`` rather than an earlier bound.
     if cutoff_date is not None:
         artifact["cutoff_date"] = cutoff_date.isoformat()
         artifact["cutoff_embargo_days"] = int(
@@ -828,6 +944,14 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["effective_train_cutoff_date"] = (
             cutoff_date - pd.offsets.BDay(artifact["cutoff_embargo_days"])
         ).isoformat()
+    # ``effective_selection_cutoff_date`` is intentionally NOT stamped. The
+    # panel has no DERIVABLE held-out model-selection information date: CV
+    # validation, recipe/factor choice, hyperparameter choice, acceptance, and
+    # promotion all use information LATER than the training-row boundary.
+    # Copying the train cutoff would BACKDATE the selection anchor
+    # lean_guard._selection_anchor reads FIRST, making a static backtest appear
+    # point-in-time before the selection evidence existed (Codex #423). Omit →
+    # the guard falls through to the conservative ``trained_date``.
     if train_start_date is not None:
         start_ts = pd.Timestamp(train_start_date)
         effective_start_iso = start_ts.isoformat()
@@ -836,14 +960,13 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         # Kept as a distinct field for symmetry with
         # ``effective_train_cutoff_date`` and future-proofing.
         artifact["effective_train_start_date"] = effective_start_iso
-        # train_window mirrors {effective_start, effective_end} so audits
-        # can read both bounds from one field. ``end`` echoes
-        # ``effective_train_cutoff_date`` when a cutoff is set, else the
-        # observed max train date.
+        # train_window mirrors {effective_start, effective_end} so audits can
+        # read both bounds from one field. ``end`` is the WF exclusive cutoff
+        # when a --train-cutoff is set, else the observed max labeled date.
         if cutoff_date is not None:
             end_iso = artifact["effective_train_cutoff_date"]
         else:
-            end_iso = pd.Timestamp(train["date"].max()).isoformat()
+            end_iso = label_observation_cutoff_iso
         artifact["train_window"] = {
             "start": effective_start_iso,
             "end":   end_iso,
@@ -898,11 +1021,12 @@ def main():
         include_features = [
             c.strip() for c in args.include_features.split(",") if c.strip()
         ]
-    train, feat_cols, label_used = load_and_slice_panel(
+    train, feat_cols, label_used, max_feature_anchor_date = load_and_slice_panel(
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
         cutoff_embargo_days=args.cutoff_embargo_days,
         include_features=include_features,
         train_start_date=args.train_start_date,
+        return_feature_frontier=True,
     )
     fingerprint_cfg = build_fingerprint_config(
         fingerprint_config_path=args.fingerprint_config,
@@ -964,7 +1088,8 @@ def main():
                               cutoff_embargo_days=args.cutoff_embargo_days,
                               train_run_id=str(uuid.uuid4())[:8],
                               sentiment_contract_metadata=sentiment_contract,
-                              train_start_date=args.train_start_date)
+                              train_start_date=args.train_start_date,
+                              max_feature_anchor_date=max_feature_anchor_date)
 
     fp = stamp_fingerprint(
         artifact,
