@@ -50,7 +50,19 @@ NTFY_TOPIC="renquant"
 mkdir -p "$LOG_DIR"
 
 DATE=$(date +%Y-%m-%d)
-RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+# RUN_ID must be a genuinely unique run/attempt id, fresh EVERY invocation
+# (Codex review, PR #420 round 3): a plain second-resolution timestamp could
+# in principle collide between a manual rerun and the cron firing in the same
+# second, and — more importantly — is the exact identity value the marker's
+# no-change attestation envelope is bound to (see tournament_retrain_marker.py
+# _verify_no_change_receipt), so it must not be guessable/reproducible from
+# the artifacts alone. uuidgen (present on macOS by default) is preferred;
+# fall back to timestamp+PID+$RANDOM if unavailable.
+if command -v uuidgen >/dev/null 2>&1; then
+    RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(uuidgen)"
+else
+    RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+fi
 LOG="$LOG_DIR/$DATE.log"
 
 # "last successful tournament retrain" marker — consumed by the model-freshness
@@ -59,24 +71,38 @@ LOG="$LOG_DIR/$DATE.log"
 #
 # The marker is stamped by scripts/tournament_retrain_marker.py, which derives
 # completion evidence from the ARTIFACTS themselves (Codex review, PR #420,
-# both rounds): it freezes the expected watchlist, snapshots a PRE-RUN
+# three rounds): it freezes the expected watchlist, snapshots a PRE-RUN
 # baseline (per-ticker digest + data cutoff) before launch, checks each
 # per-ticker metadata was REWRITTEN this invocation (mtime >= LAUNCH_EPOCH,
 # not a pre-existing orphan dir) AND that its digest actually changed vs the
-# baseline (or carries an explicit no_change_reason — an unexplained
-# byte-identical rewrite does NOT certify), and requires the data cutoff to be
-# non-regressing. Certification also HARD-REQUIRES exit_code == 0 — a train
-# failure can never be overridden by artifact freshness. `trained_date` is
-# bound to the min data cutoff (artifact-derived), NOT the wall clock.
-# Stamped ONLY when certified; on any failure it is left untouched so its data
-# cutoff keeps ageing → the monitor alerts too (belt-and-suspenders with the
-# loud ntfy).
+# baseline, and requires the data cutoff to be non-regressing. Certification
+# also HARD-REQUIRES exit_code == 0 — a train failure can never be overridden
+# by artifact freshness. `trained_date` is bound to the min data cutoff
+# (artifact-derived), NOT the wall clock. Stamped ONLY when certified; on any
+# failure it is left untouched so its data cutoff keeps ageing → the monitor
+# alerts too (belt-and-suspenders with the loud ntfy).
+#
+# Round 3 (Codex review, 2026-07-01): a byte-identical rewrite (idempotent
+# retrain that legitimately reproduces identical output) can ONLY certify via
+# a SEPARATE, out-of-band no-change attestation envelope
+# ($NO_CHANGE_RECEIPTS below) bound to THIS invocation's $RUN_ID + artifact
+# digest — an in-payload `no_change_reason` string was replayable (identical
+# bytes ⇒ the string is necessarily pre-existing, so touching/re-copying an
+# old artifact reproduced it and could pass off a stale corpus as fresh).
+# Nothing on this host mints that envelope today (train_104.py does not yet
+# emit one), so in practice every byte-identical rewrite currently fails
+# certification and must be investigated — the safe, conservative default.
 MARKER="$REPO_DIR/backtesting/renquant_104/models/.last_tournament_retrain.json"
 MODELS_DIR="$REPO_DIR/backtesting/renquant_104/models"
 STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
 EXPECTED_WATCHLIST="$LOG_DIR/$DATE.expected_watchlist.json"
 EXPECTED_NON_TRAINABLE="$LOG_DIR/$DATE.expected_non_trainable.json"
 BASELINE_FILE="$LOG_DIR/$DATE.pre_run_baseline.json"
+# No process on this host writes this file today (see round-3 note above) —
+# tournament_retrain_marker.py treats a missing path as "no attestations",
+# so it is passed unconditionally and simply has no effect until a future
+# training-side change legitimately mints run-bound envelopes here.
+NO_CHANGE_RECEIPTS="$LOG_DIR/$DATE.no_change_receipts.json"
 
 # Coverage policy (Codex review, PR #420 round 2): the hard-coded 0.90 floor
 # was an unregistered magic number that could silently mask up to ~14 missing
@@ -286,6 +312,7 @@ if "$PYTHON" scripts/tournament_retrain_marker.py \
         --watchlist "$EXPECTED_WATCHLIST" \
         --non-trainable "$EXPECTED_NON_TRAINABLE" \
         --baseline "$BASELINE_FILE" \
+        --no-change-receipts "$NO_CHANGE_RECEIPTS" \
         --launch-epoch "$LAUNCH_EPOCH" \
         --run-id "$RUN_ID" \
         --marker "$MARKER" \

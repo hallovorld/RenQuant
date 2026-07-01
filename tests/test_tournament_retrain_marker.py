@@ -1,6 +1,7 @@
 """Regression guard for the per-ticker tournament retrain completion marker.
 
-Source incident: Codex CHANGES_REQUESTED on PR #420 (2026-06-30, two rounds).
+Source incident: Codex CHANGES_REQUESTED on PR #420 (2026-06-30/07-01, three
+rounds).
 
 Round 1 — the first cut of ``scripts/weekly_tournament_retrain.sh`` certified
 completion from process-derived signals — it counted pre-existing
@@ -27,6 +28,22 @@ Round 2 — Codex flagged four residual gaps in that fix, each pinned below:
     non-trained names (benchmark/sector/defensive ETFs); every OTHER expected
     ticker (the "trainable" set) is required at 100% coverage.
 
+Round 3 — Codex flagged that round 2's ``no_change_reason`` escape hatch was
+itself REPLAYABLE: it was just a string field living inside the SAME
+per-ticker metadata JSON whose digest is being compared against the
+baseline. Because the bytes are unchanged by definition, that reason string
+is *necessarily* pre-existing too — reading it back proves nothing about
+THIS invocation. Touching/re-copying the SAME old payload (refreshing its
+mtime past ``launch_epoch`` without running training at all) reproduced the
+exact same ``(digest, no_change_reason)`` pair and could certify a stale
+corpus as a fresh refresh. Fix: a byte-identical rewrite now certifies ONLY
+via a SEPARATE, out-of-band "no-change attestation envelope"
+(``no_change_receipts`` / ``--no-change-receipts``) bound to THIS
+invocation's ``run_id`` (and current digest) — an envelope minted for a past
+run is rejected for a new run even with an identical digest and reason. See
+the ``*replay*`` / ``*receipt*`` tests below for the exact exploit this
+closes and its legitimate counterpart.
+
 Design: pure filesystem fixtures under ``tmp_path``; per-ticker artifact
 mtimes are set explicitly with ``os.utime`` so "rewritten this invocation" is
 deterministic and does not depend on wall-clock timing.
@@ -46,6 +63,8 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "tournament_retrain_marker.py"
 
 LAUNCH = 1_000_000.0  # arbitrary fixed "launch" epoch for deterministic tests
+RUN_ID = "20260701T060000Z-current-run-fixture"  # this invocation's fixed run/attempt id
+OLD_RUN_ID = "20260610T060000Z-three-weeks-ago-fixture"  # a DIFFERENT, PAST run's id
 
 
 def _load_module():
@@ -98,7 +117,7 @@ def test_all_rewritten_certifies_success_with_cutoff_range(tmp_path):
     _write_ticker(models, "BBB", mtime=LAUNCH + 20, live_train_end="2026-06-25")
     _write_ticker(models, "CCC", mtime=LAUNCH + 30, live_train_end="2026-06-22")
 
-    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, exit_code=0)
+    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, run_id=RUN_ID, exit_code=0)
 
     assert ev["certified"] is True
     assert ev["status"] == "success"
@@ -119,7 +138,7 @@ def test_stale_preexisting_dirs_not_rewritten_are_not_fresh(tmp_path):
     for t in ("AAA", "BBB", "CCC"):
         _write_ticker(models, t, mtime=LAUNCH - 500)  # older than launch
 
-    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, exit_code=0)
+    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, run_id=RUN_ID, exit_code=0)
 
     assert ev["certified"] is False
     assert ev["status"] == "failed"
@@ -138,7 +157,7 @@ def test_one_ticker_not_rewritten_is_fail(tmp_path):
     _write_ticker(models, "BBB", mtime=LAUNCH + 10)
     _write_ticker(models, "CCC", mtime=LAUNCH - 10)  # not rewritten this run
 
-    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, exit_code=0)
+    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, run_id=RUN_ID, exit_code=0)
 
     assert ev["certified"] is False
     assert ev["status"] == "failed"
@@ -153,7 +172,7 @@ def test_missing_trainable_ticker_blocks_certification(tmp_path):
     _write_ticker(models, "BBB", mtime=LAUNCH + 10)
     # CCC has no dir at all
 
-    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, exit_code=0)
+    ev = mod.build_marker_evidence(models, ["AAA", "BBB", "CCC"], LAUNCH, run_id=RUN_ID, exit_code=0)
 
     assert ev["certified"] is False
     assert ev["sets"]["trainable_missing"] == ["CCC"]
@@ -169,7 +188,7 @@ def test_orphan_dirs_outside_watchlist_do_not_inflate_coverage(tmp_path):
     for orphan in ("OLD1", "OLD2", "OLD3", "OLD4", "OLD5"):
         _write_ticker(models, orphan, mtime=LAUNCH - 9999)
 
-    ev = mod.build_marker_evidence(models, ["AAA", "BBB"], LAUNCH, exit_code=0)
+    ev = mod.build_marker_evidence(models, ["AAA", "BBB"], LAUNCH, run_id=RUN_ID, exit_code=0)
 
     assert ev["certified"] is True
     assert ev["status"] == "success"
@@ -185,7 +204,7 @@ def test_cutoff_no_longer_falls_back_to_trained_date(tmp_path):
     models = tmp_path / "models"
     _write_ticker(models, "AAA", mtime=LAUNCH + 10, live_train_end=None, trained_date="2026-06-28")
 
-    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, exit_code=0)
+    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0)
 
     assert ev["certified"] is False
     assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_UNPARSEABLE
@@ -195,7 +214,7 @@ def test_cutoff_no_longer_falls_back_to_trained_date(tmp_path):
 
 def test_empty_expected_universe_refused(tmp_path):
     with pytest.raises(ValueError):
-        mod.build_marker_evidence(tmp_path, [], LAUNCH, exit_code=0)
+        mod.build_marker_evidence(tmp_path, [], LAUNCH, run_id=RUN_ID, exit_code=0)
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +228,7 @@ def test_nonzero_exit_code_blocks_certification_even_with_perfect_artifacts(tmp_
     _write_ticker(models, "AAA", mtime=LAUNCH + 10, live_train_end="2026-06-20")
     _write_ticker(models, "BBB", mtime=LAUNCH + 20, live_train_end="2026-06-25")
 
-    ev = mod.build_marker_evidence(models, ["AAA", "BBB"], LAUNCH, exit_code=1)
+    ev = mod.build_marker_evidence(models, ["AAA", "BBB"], LAUNCH, run_id=RUN_ID, exit_code=1)
 
     assert ev["certified"] is False
     assert ev["status"] == "failed"
@@ -224,7 +243,7 @@ def test_zero_exit_code_with_perfect_artifacts_certifies(tmp_path):
     models = tmp_path / "models"
     _write_ticker(models, "AAA", mtime=LAUNCH + 10, live_train_end="2026-06-20")
 
-    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, exit_code=0)
+    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0)
     assert ev["certified"] is True
     assert ev["exit_code_ok"] is True
 
@@ -247,8 +266,8 @@ def test_capture_baseline_snapshots_digest_and_cutoff(tmp_path):
 
 def test_digest_unchanged_from_baseline_without_reason_blocks_certification(tmp_path):
     """A rewritten artifact whose bytes are IDENTICAL to the pre-run baseline
-    (no-op writer / cp -p restamp) with no explicit justification must NOT
-    certify — this is the exact spoof Codex flagged: mtime alone proved
+    (no-op writer / cp -p restamp) with NO attestation envelope at all must
+    NOT certify — this is the exact spoof Codex flagged: mtime alone proved
     nothing about whether training actually ran."""
     models = tmp_path / "models"
     meta = _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
@@ -257,18 +276,22 @@ def test_digest_unchanged_from_baseline_without_reason_blocks_certification(tmp_
     # "Retrain" rewrites the SAME bytes, just touches mtime forward.
     os.utime(meta, (LAUNCH + 10, LAUNCH + 10))
 
-    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, exit_code=0, baseline=baseline)
+    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0, baseline=baseline)
 
     assert ev["certified"] is False
     assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_UNVERIFIED_NO_CHANGE
     assert ev["sets"]["trainable_unverified_no_change"] == ["AAA"]
-    assert "cannot prove training actually ran" in ev["per_ticker"]["AAA"]["reason"]
+    assert "no no-change attestation envelope was found" in ev["per_ticker"]["AAA"]["reason"]
 
 
-def test_digest_unchanged_with_explicit_no_change_reason_certifies(tmp_path):
-    """An idempotent re-run that genuinely produced identical output MAY
-    certify, but only when the artifact itself carries an explicit,
-    non-empty justification — never silently."""
+def test_no_change_reason_embedded_in_payload_alone_does_not_certify(tmp_path):
+    """Codex review #420 round 3: an in-payload ``no_change_reason`` string is
+    NOT trusted for certification anymore, even though round 2 accepted it.
+    It lives inside the SAME bytes being compared for digest-identity, so by
+    definition it is pre-existing whenever the digest is unchanged — reading
+    it back proves nothing about THIS invocation. Only a separate,
+    run-id-bound attestation envelope (see the ``*receipt*`` tests below) can
+    certify a byte-identical rewrite now."""
     models = tmp_path / "models"
     meta = _write_ticker(
         models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20",
@@ -278,10 +301,130 @@ def test_digest_unchanged_with_explicit_no_change_reason_certifies(tmp_path):
 
     os.utime(meta, (LAUNCH + 10, LAUNCH + 10))  # same bytes, fresh mtime
 
-    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, exit_code=0, baseline=baseline)
+    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0, baseline=baseline)
+
+    assert ev["certified"] is False
+    assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_UNVERIFIED_NO_CHANGE
+    assert ev["per_ticker"]["AAA"]["baseline_status"] == "unchanged_unverified"
+
+
+# ---------------------------------------------------------------------------
+# no-change attestation envelope — replay protection (Codex round 3)
+# ---------------------------------------------------------------------------
+def test_no_change_receipt_replay_from_past_run_is_rejected(tmp_path):
+    """THE replay exploit Codex flagged: an OLD unchanged artifact carries an
+    attestation envelope minted for a PRIOR run (OLD_RUN_ID). Reusing that
+    exact (digest, reason) pair — even byte-for-byte identical — under a NEW
+    run's certification call (RUN_ID) must FAIL. This is precisely
+    "touching/re-copying the same payload... allowing a stale corpus to pass
+    as a current refresh", except now it also requires forging a receipt
+    bound to the CURRENT run_id, which a mere file-touch cannot produce."""
+    models = tmp_path / "models"
+    meta = _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
+    digest = _digest_of(meta)
+    baseline = {"AAA": {"digest": digest, "data_cutoff": "2026-06-20"}}
+
+    # Bytes never changed; only the mtime is refreshed to simulate a replay.
+    os.utime(meta, (LAUNCH + 10, LAUNCH + 10))
+
+    # An attestation envelope that genuinely existed — but was minted for a
+    # DIFFERENT, PAST run (OLD_RUN_ID != RUN_ID passed to build_marker_evidence).
+    stale_receipts = {
+        "AAA": {
+            "run_id": OLD_RUN_ID,
+            "digest": digest,
+            "reason": "no new trading bar since last run; retrain reproduced identical policy",
+        }
+    }
+
+    ev = mod.build_marker_evidence(
+        models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0,
+        baseline=baseline, no_change_receipts=stale_receipts,
+    )
+
+    assert ev["certified"] is False
+    assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_UNVERIFIED_NO_CHANGE
+    assert ev["sets"]["trainable_unverified_no_change"] == ["AAA"]
+    reason = ev["per_ticker"]["AAA"]["reason"]
+    assert "REJECTED as a stale/replayed attestation" in reason
+    assert OLD_RUN_ID in reason
+    assert RUN_ID in reason
+    assert ev["per_ticker"]["AAA"]["attestation_run_id"] == OLD_RUN_ID
+
+
+def test_no_change_receipt_fresh_and_correctly_bound_certifies(tmp_path):
+    """The LEGITIMATE case: a real current run validates a genuinely-unchanged
+    artifact WITH a fresh attestation envelope correctly bound to THIS run's
+    run_id and current digest → must certify."""
+    models = tmp_path / "models"
+    meta = _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
+    digest = _digest_of(meta)
+    baseline = {"AAA": {"digest": digest, "data_cutoff": "2026-06-20"}}
+
+    os.utime(meta, (LAUNCH + 10, LAUNCH + 10))  # same bytes, fresh mtime
+
+    fresh_receipts = {
+        "AAA": {
+            "run_id": RUN_ID,  # matches THIS invocation
+            "digest": digest,  # matches the current artifact digest
+            "reason": "no new trading bar since last run; retrain reproduced identical policy",
+        }
+    }
+
+    ev = mod.build_marker_evidence(
+        models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0,
+        baseline=baseline, no_change_receipts=fresh_receipts,
+    )
 
     assert ev["certified"] is True
+    assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_SUCCEEDED
     assert ev["per_ticker"]["AAA"]["baseline_status"] == "unchanged_explicit"
+    assert ev["per_ticker"]["AAA"]["attestation_run_id"] == RUN_ID
+    assert RUN_ID in ev["per_ticker"]["AAA"]["reason"]
+
+
+def test_no_change_receipt_digest_mismatch_is_rejected(tmp_path):
+    """An attestation envelope bound to the right run_id but a DIFFERENT
+    digest (e.g. copy-pasted from another ticker/run) must not certify —
+    the envelope must be bound to THIS artifact's bytes too."""
+    models = tmp_path / "models"
+    meta = _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
+    baseline = {"AAA": {"digest": _digest_of(meta), "data_cutoff": "2026-06-20"}}
+    os.utime(meta, (LAUNCH + 10, LAUNCH + 10))
+
+    mismatched_receipts = {
+        "AAA": {"run_id": RUN_ID, "digest": "deadbeef" * 8, "reason": "reused from another ticker"}
+    }
+
+    ev = mod.build_marker_evidence(
+        models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0,
+        baseline=baseline, no_change_receipts=mismatched_receipts,
+    )
+
+    assert ev["certified"] is False
+    assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_UNVERIFIED_NO_CHANGE
+    assert "does not match the current artifact digest" in ev["per_ticker"]["AAA"]["reason"]
+
+
+def test_no_change_receipt_without_reason_is_rejected(tmp_path):
+    """An envelope correctly bound to run_id + digest but with an empty
+    reason must not certify — silence is never accepted."""
+    models = tmp_path / "models"
+    meta = _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
+    digest = _digest_of(meta)
+    baseline = {"AAA": {"digest": digest, "data_cutoff": "2026-06-20"}}
+    os.utime(meta, (LAUNCH + 10, LAUNCH + 10))
+
+    empty_reason_receipts = {"AAA": {"run_id": RUN_ID, "digest": digest, "reason": "   "}}
+
+    ev = mod.build_marker_evidence(
+        models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0,
+        baseline=baseline, no_change_receipts=empty_reason_receipts,
+    )
+
+    assert ev["certified"] is False
+    assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_UNVERIFIED_NO_CHANGE
+    assert "missing a non-empty reason" in ev["per_ticker"]["AAA"]["reason"]
 
 
 def test_digest_changed_from_baseline_certifies(tmp_path):
@@ -294,7 +437,7 @@ def test_digest_changed_from_baseline_certifies(tmp_path):
     meta.write_text(json.dumps({"model_name": "AAA", "live_train_end": "2026-06-27"}, indent=2))
     os.utime(meta, (LAUNCH + 10, LAUNCH + 10))
 
-    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, exit_code=0, baseline=baseline)
+    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0, baseline=baseline)
 
     assert ev["certified"] is True
     assert ev["per_ticker"]["AAA"]["baseline_status"] == "changed"
@@ -307,7 +450,7 @@ def test_no_baseline_entry_treats_rewrite_as_new_first_training(tmp_path):
     models = tmp_path / "models"
     _write_ticker(models, "AAA", mtime=LAUNCH + 10, live_train_end="2026-06-20")
 
-    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, exit_code=0, baseline={})
+    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0, baseline={})
 
     assert ev["certified"] is True
     assert ev["per_ticker"]["AAA"]["baseline_status"] == "new"
@@ -325,7 +468,7 @@ def test_cutoff_regression_vs_baseline_blocks_certification(tmp_path):
     meta.write_text(json.dumps({"model_name": "AAA", "live_train_end": "2026-06-10"}, indent=2))
     os.utime(meta, (LAUNCH + 10, LAUNCH + 10))
 
-    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, exit_code=0, baseline=baseline)
+    ev = mod.build_marker_evidence(models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0, baseline=baseline)
 
     assert ev["certified"] is False
     assert ev["per_ticker"]["AAA"]["state"] == mod.STATE_CUTOFF_REGRESSED
@@ -341,7 +484,7 @@ def test_non_trainable_missing_is_tolerated_but_trainable_missing_is_not(tmp_pat
         _write_ticker(models, t, mtime=LAUNCH + 10)
     # SPY (benchmark ETF) is expected but the tournament never trains it.
     ev = mod.build_marker_evidence(
-        models, ["AAA", "BBB", "CCC", "SPY"], LAUNCH, exit_code=0,
+        models, ["AAA", "BBB", "CCC", "SPY"], LAUNCH, run_id=RUN_ID, exit_code=0,
         non_trainable={"SPY": "benchmark index — not a per-ticker admission candidate"},
     )
 
@@ -360,7 +503,7 @@ def test_non_trainable_ticker_not_in_expected_set_refused(tmp_path):
     _write_ticker(models, "AAA", mtime=LAUNCH + 10)
     with pytest.raises(ValueError, match="not present in expected_tickers"):
         mod.build_marker_evidence(
-            models, ["AAA"], LAUNCH, exit_code=0,
+            models, ["AAA"], LAUNCH, run_id=RUN_ID, exit_code=0,
             non_trainable={"ZZZ": "not even in the watchlist"},
         )
 
@@ -372,7 +515,7 @@ def test_non_trainable_without_justification_refused(tmp_path):
     for bad_reason in ("", "   ", None):
         with pytest.raises(ValueError, match="non-empty justification"):
             mod.build_marker_evidence(
-                models, ["AAA", "SPY"], LAUNCH, exit_code=0,
+                models, ["AAA", "SPY"], LAUNCH, run_id=RUN_ID, exit_code=0,
                 non_trainable={"SPY": bad_reason},
             )
 
@@ -382,7 +525,7 @@ def test_non_trainable_excluding_entire_watchlist_refused(tmp_path):
     _write_ticker(models, "SPY", mtime=LAUNCH + 10)
     with pytest.raises(ValueError, match="nothing left to certify"):
         mod.build_marker_evidence(
-            models, ["SPY"], LAUNCH, exit_code=0,
+            models, ["SPY"], LAUNCH, run_id=RUN_ID, exit_code=0,
             non_trainable={"SPY": "benchmark"},
         )
 
@@ -395,7 +538,7 @@ def test_non_trainable_ticker_that_does_succeed_is_recorded_but_not_required(tmp
     _write_ticker(models, "SPY", mtime=LAUNCH + 10)
 
     ev = mod.build_marker_evidence(
-        models, ["AAA", "SPY"], LAUNCH, exit_code=0,
+        models, ["AAA", "SPY"], LAUNCH, run_id=RUN_ID, exit_code=0,
         non_trainable={"SPY": "benchmark index"},
     )
     assert ev["certified"] is True
@@ -415,7 +558,14 @@ def test_no_hardcoded_coverage_floor_remains(tmp_path):
 # ---------------------------------------------------------------------------
 # CLI (main) — the artifact the bash wrapper actually calls
 # ---------------------------------------------------------------------------
-def _run_cli(tmp_path, models, expected, *, non_trainable=None, baseline=None, exit_code=0, extra_args=None):
+CLI_RUN_ID = "20260630T060000Z-cli-fixture"
+
+
+def _run_cli(
+    tmp_path, models, expected, *,
+    non_trainable=None, baseline=None, no_change_receipts=None,
+    exit_code=0, run_id=CLI_RUN_ID, extra_args=None,
+):
     wl = tmp_path / "expected_watchlist.json"
     wl.write_text(json.dumps({"watchlist": expected}))
     marker = tmp_path / "marker.json"
@@ -424,7 +574,7 @@ def _run_cli(tmp_path, models, expected, *, non_trainable=None, baseline=None, e
         "--models-dir", str(models),
         "--watchlist", str(wl),
         "--launch-epoch", str(LAUNCH),
-        "--run-id", "20260630T060000Z",
+        "--run-id", run_id,
         "--marker", str(marker),
         "--exit-code", str(exit_code),
         "--date", "2026-06-30",
@@ -438,6 +588,10 @@ def _run_cli(tmp_path, models, expected, *, non_trainable=None, baseline=None, e
         b_path = tmp_path / "baseline.json"
         b_path.write_text(json.dumps(baseline))
         args += ["--baseline", str(b_path)]
+    if no_change_receipts is not None:
+        r_path = tmp_path / "no_change_receipts.json"
+        r_path.write_text(json.dumps(no_change_receipts))
+        args += ["--no-change-receipts", str(r_path)]
     args += extra_args or []
     proc = subprocess.run(args, capture_output=True, text=True)
     return proc, marker
@@ -468,7 +622,7 @@ def test_cli_certified_stamps_artifact_derived_marker(tmp_path):
     payload = json.loads(marker.read_text())
     assert payload["status"] == "success"
     assert payload["certified"] is True
-    assert payload["run_id"] == "20260630T060000Z"
+    assert payload["run_id"] == CLI_RUN_ID
     # trained_date is artifact-derived (min cutoff), NOT the wall clock
     assert payload["trained_date"] == "2026-06-20"
     assert payload["trained_date_source"] == "min_data_cutoff"
@@ -567,6 +721,66 @@ def test_cli_emit_baseline_then_certify_detects_unchanged_no_op(tmp_path):
     assert "NOT CERTIFIED" in certify_proc.stderr
 
 
+def test_cli_no_change_receipt_from_past_run_is_rejected_end_to_end(tmp_path):
+    """CLI-level replay test (Codex review #420 round 3, required test): a
+    no-change attestation envelope minted for a PAST run (a different
+    --run-id than THIS certify invocation) must be rejected end-to-end
+    through the actual CLI the wrapper script drives — not just at the pure
+    build_marker_evidence layer."""
+    models = tmp_path / "models"
+    meta = _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
+    digest = _digest_of(meta)
+    os.utime(meta, (LAUNCH + 10, LAUNCH + 10))  # bytes unchanged, mtime refreshed
+
+    proc, marker = _run_cli(
+        tmp_path, models, ["AAA"],
+        baseline={"AAA": {"digest": digest, "data_cutoff": "2026-06-20"}},
+        no_change_receipts={
+            "AAA": {
+                "run_id": OLD_RUN_ID,  # a PRIOR run's id, NOT this invocation's CLI_RUN_ID
+                "digest": digest,
+                "reason": "no new trading bar since last run; retrain reproduced identical policy",
+            }
+        },
+        run_id=CLI_RUN_ID,
+    )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert not marker.exists(), "a replayed/stale attestation must never certify"
+    assert "NOT CERTIFIED" in proc.stderr
+
+
+def test_cli_no_change_receipt_fresh_and_bound_certifies_end_to_end(tmp_path):
+    """CLI-level legitimate case (Codex review #420 round 3, required test): a
+    real current run validates a genuinely-unchanged artifact WITH a fresh,
+    correctly-bound attestation envelope (run_id == this invocation's
+    --run-id, digest == current artifact digest) → must certify end-to-end."""
+    models = tmp_path / "models"
+    meta = _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
+    digest = _digest_of(meta)
+    os.utime(meta, (LAUNCH + 10, LAUNCH + 10))  # bytes unchanged, mtime refreshed
+
+    proc, marker = _run_cli(
+        tmp_path, models, ["AAA"],
+        baseline={"AAA": {"digest": digest, "data_cutoff": "2026-06-20"}},
+        no_change_receipts={
+            "AAA": {
+                "run_id": CLI_RUN_ID,  # matches THIS invocation's --run-id
+                "digest": digest,
+                "reason": "no new trading bar since last run; retrain reproduced identical policy",
+            }
+        },
+        run_id=CLI_RUN_ID,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert marker.exists()
+    payload = json.loads(marker.read_text())
+    assert payload["certified"] is True
+    assert payload["per_ticker"]["AAA"]["baseline_status"] == "unchanged_explicit"
+    assert payload["per_ticker"]["AAA"]["attestation_run_id"] == CLI_RUN_ID
+
+
 def test_cli_emit_baseline_mode_does_not_require_launch_epoch_or_marker(tmp_path):
     models = tmp_path / "models"
     _write_ticker(models, "AAA", mtime=LAUNCH - 100, live_train_end="2026-06-20")
@@ -596,3 +810,23 @@ def test_cli_certify_mode_without_required_flags_errors(tmp_path):
     )
     assert proc.returncode != 0
     assert "required unless --emit-baseline" in proc.stderr
+
+
+def test_cli_no_change_receipts_flag_pointing_at_missing_file_does_not_crash(tmp_path):
+    """The wrapper script (weekly_tournament_retrain.sh) passes
+    --no-change-receipts unconditionally, pointing at a path nothing writes
+    today (no process yet mints these envelopes). A path that simply does
+    not exist on disk must behave exactly like the flag being omitted — {}
+    (no attestations) — NOT crash with FileNotFoundError."""
+    models = tmp_path / "models"
+    _write_ticker(models, "AAA", mtime=LAUNCH + 10, live_train_end="2026-06-20")
+
+    proc, marker = _run_cli(
+        tmp_path, models, ["AAA"],
+        extra_args=["--no-change-receipts", str(tmp_path / "does_not_exist.json")],
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert marker.exists()
+    payload = json.loads(marker.read_text())
+    assert payload["certified"] is True

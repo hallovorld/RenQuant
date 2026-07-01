@@ -51,6 +51,33 @@ second pass) that round 2 (this version) closes:
      (``expected - non_trainable``); every exclusion must carry a non-empty
      reason and must itself be a member of the frozen watchlist.
 
+Round 3 fix (this version, Codex review 2026-07-01, third pass): the round 2
+``no_change_reason`` escape hatch was itself **replayable**. Because it was
+just a string field living INSIDE the same per-ticker metadata JSON whose
+digest is being compared, an unexplained byte-identical rewrite and an
+*explained* one were indistinguishable from a pure file-replay attack: since
+the bytes are unchanged by definition, the ``no_change_reason`` string is
+*necessarily* pre-existing too — nothing about reading it back proves THIS
+invocation intentionally re-validated the artifact. Simply touching /
+re-copying the SAME old payload (refreshing its mtime past ``launch_epoch``
+without running training at all) reproduced the exact same
+``(digest, no_change_reason)`` pair and certified a stale corpus as a fresh
+refresh.
+
+Fix: the marker no longer trusts ``no_change_reason`` from the mutable
+per-ticker payload for certification. A byte-identical rewrite now certifies
+**only** when a **separate, out-of-band "no-change attestation envelope"**
+(``--no-change-receipts``, a JSON file distinct from ``models/<T>/...json``)
+carries an entry for that ticker whose ``run_id`` and ``digest`` match
+**this specific invocation's** ``run_id`` (bound end-to-end from the caller's
+``--run-id``) and current artifact digest, plus a non-empty ``reason``. An
+attestation minted for a past run — even with an identical digest and an
+identical reason string — is REJECTED for a new run: the verifier requires
+the envelope's ``run_id`` to equal the CURRENT run's id, so an old
+``(digest, reason)`` pair can never be replayed forward. See
+:func:`evaluate_ticker` and ``tests/test_tournament_retrain_marker.py``
+(``*_replay*`` / ``*_attestation*`` tests) for the exact exploit this closes.
+
 Scope: this certifies **cadence coverage only** — that the scheduled retrain
 actually rewrote the trainable population with evidence the bytes moved (or
 an explicitly justified no-op) and the data window did not regress. It says
@@ -76,7 +103,7 @@ from pathlib import Path
 from typing import Iterable
 
 META_SUFFIX = "-policy-metadata.json"
-SCHEMA = "tournament_retrain_marker/v2"
+SCHEMA = "tournament_retrain_marker/v3"
 
 # States a per-ticker artifact can be in relative to this invocation.
 STATE_SUCCEEDED = "succeeded"                  # rewritten, parseable, cutoff present, identity proven
@@ -109,6 +136,7 @@ class TickerEvidence:
     baseline_status: str | None = None  # "new" | "changed" | "unchanged_explicit"
     baseline_digest: str | None = None
     baseline_cutoff: str | None = None
+    attestation_run_id: str | None = None  # run_id found in a no-change receipt envelope, if any
     reason: str | None = None
 
 
@@ -165,11 +193,68 @@ def capture_baseline(models_dir: str | Path, expected_tickers: Iterable[str]) ->
     return snapshot
 
 
+def _verify_no_change_receipt(
+    receipt: dict | None,
+    *,
+    run_id: str,
+    digest: str,
+) -> tuple[bool, str, str | None]:
+    """Verify an out-of-band no-change attestation envelope for THIS invocation.
+
+    Returns ``(ok, reason, attestation_run_id)``. ``ok`` is True only when the
+    envelope exists, is bound to the CURRENT ``run_id`` (not some past run's
+    id — this is the replay check, Codex review #420 round 3), is bound to
+    the CURRENT artifact ``digest``, and carries a non-empty ``reason``.
+
+    A stale envelope minted for a PAST run cannot satisfy a NEW run's
+    certification even when its ``(digest, reason)`` pair looks identical —
+    the whole point is that ``run_id`` is fresh (unique) per invocation, so an
+    attacker who only touches/re-copies the old per-ticker payload (without
+    driving an actual new invocation's attestation step) never produces an
+    envelope whose ``run_id`` matches the new run.
+    """
+    if not receipt:
+        return False, (
+            "post-run artifact is byte-identical to the pre-run baseline and no "
+            "no-change attestation envelope was found for this ticker — an "
+            "in-payload no_change_reason field alone is replayable and is no "
+            "longer trusted (Codex review #420 round 3)"
+        ), None
+
+    receipt_run_id = str(receipt.get("run_id") or "") or None
+    if receipt_run_id != run_id:
+        return False, (
+            "post-run artifact is byte-identical to the pre-run baseline; a "
+            f"no-change attestation envelope exists but is bound to "
+            f"run_id={receipt_run_id!r}, not this invocation's run_id={run_id!r} "
+            "— REJECTED as a stale/replayed attestation (Codex review #420 round 3)"
+        ), receipt_run_id
+
+    receipt_digest = str(receipt.get("digest") or "") or None
+    if receipt_digest != digest:
+        return False, (
+            "no-change attestation envelope's run_id matches this invocation, but "
+            f"its bound digest {receipt_digest!r} does not match the current "
+            f"artifact digest {digest!r} — REJECTED"
+        ), receipt_run_id
+
+    reason = str(receipt.get("reason") or "").strip()
+    if not reason:
+        return False, (
+            "no-change attestation envelope is bound to this invocation's run_id "
+            "and digest but is missing a non-empty reason — REJECTED"
+        ), receipt_run_id
+
+    return True, reason, receipt_run_id
+
+
 def evaluate_ticker(
     models_dir: Path,
     ticker: str,
     launch_epoch: float,
+    run_id: str,
     baseline_entry: dict | None = None,
+    no_change_receipt: dict | None = None,
 ) -> TickerEvidence:
     """Classify one expected ticker's per-ticker artifact against ``launch_epoch``
     and, when available, a pre-run ``baseline_entry`` (see
@@ -179,15 +264,21 @@ def evaluate_ticker(
     training was launched. Any artifact training rewrote will have an
     ``mtime >= launch_epoch``; anything older was not touched this run.
 
+    ``run_id`` is this invocation's unique run/attempt id (the caller's
+    ``--run-id``). It is used ONLY to verify ``no_change_receipt`` — see below.
+
     When ``baseline_entry`` is provided (pre-run digest + data cutoff for this
     ticker), a rewritten artifact must additionally prove **identity change**:
 
       * its data cutoff must not have moved BACKWARD vs the baseline
         (``cutoff_regressed`` otherwise);
-      * its digest must differ from the baseline digest, OR the rewritten
-        payload must carry an explicit, non-empty ``no_change_reason`` string
-        justifying a byte-identical re-write (``unverified_no_change``
-        otherwise — an unexplained no-op cannot certify).
+      * its digest must differ from the baseline digest, OR ``no_change_receipt``
+        (a separate, out-of-band attestation envelope — see
+        :func:`_verify_no_change_receipt`) must be bound to THIS invocation's
+        ``run_id`` and current ``digest`` with a non-empty reason
+        (``unverified_no_change`` otherwise — an unexplained no-op, OR one
+        "explained" only by a string embedded in the same replayable payload,
+        cannot certify: Codex review #420 round 3).
 
     ``baseline_entry is None`` means no pre-run artifact existed to compare
     against (first-ever training for this ticker, or the caller did not
@@ -275,8 +366,16 @@ def evaluate_ticker(
         )
 
     if digest == baseline_digest:
-        no_change_reason = payload.get("no_change_reason")
-        if no_change_reason:
+        # Codex review #420 round 3: a `no_change_reason` string embedded in
+        # THIS SAME (byte-identical, therefore replayable) payload is NOT
+        # trusted for certification — it proves nothing about THIS
+        # invocation. Only a separate, out-of-band attestation envelope
+        # bound to this invocation's run_id + current digest can certify a
+        # byte-identical rewrite.
+        attested, reason_text, attestation_run_id = _verify_no_change_receipt(
+            no_change_receipt, run_id=run_id, digest=digest
+        )
+        if attested:
             return TickerEvidence(
                 ticker,
                 STATE_SUCCEEDED,
@@ -289,7 +388,11 @@ def evaluate_ticker(
                 baseline_status="unchanged_explicit",
                 baseline_digest=baseline_digest,
                 baseline_cutoff=baseline_cutoff,
-                reason=f"digest unchanged from baseline; explicit no_change_reason={no_change_reason!r}",
+                attestation_run_id=attestation_run_id,
+                reason=(
+                    f"digest unchanged from baseline; fresh run-bound attestation "
+                    f"(run_id={run_id!r}) reason={reason_text!r}"
+                ),
             )
         return TickerEvidence(
             ticker,
@@ -303,11 +406,8 @@ def evaluate_ticker(
             baseline_status="unchanged_unverified",
             baseline_digest=baseline_digest,
             baseline_cutoff=baseline_cutoff,
-            reason=(
-                "post-run artifact is byte-identical to the pre-run baseline with no "
-                "explicit no_change_reason — cannot prove training actually ran "
-                "(Codex review #420)"
-            ),
+            attestation_run_id=attestation_run_id,
+            reason=reason_text,
         )
 
     return TickerEvidence(
@@ -330,9 +430,11 @@ def build_marker_evidence(
     expected_tickers: Iterable[str],
     launch_epoch: float,
     *,
+    run_id: str,
     exit_code: int,
     baseline: dict[str, dict] | None = None,
     non_trainable: dict[str, str] | None = None,
+    no_change_receipts: dict[str, dict] | None = None,
 ) -> dict:
     """Build artifact-derived completion evidence for the frozen expected set.
 
@@ -344,11 +446,18 @@ def build_marker_evidence(
       * **100% of the trainable set** (``expected - non_trainable``) is
         ``succeeded`` — rewritten this invocation, parseable, has a
         ``live_train_end`` cutoff, and (when a baseline entry exists) proves
-        digest identity change or an explicit no-change justification, with a
-        non-regressing cutoff. Zero tolerance for stale / missing /
-        unparseable / cutoff-regressed / unverified-no-change among trainable
-        tickers — this is the exact bug Codex flagged, now backed by evidence
-        beyond mtime alone.
+        digest identity change OR a fresh, run-bound no-change attestation
+        (see ``no_change_receipts`` below), with a non-regressing cutoff.
+        Zero tolerance for stale / missing / unparseable / cutoff-regressed /
+        unverified-no-change among trainable tickers — this is the exact bug
+        Codex flagged, now backed by evidence beyond mtime alone.
+
+    ``run_id`` is THIS invocation's unique run/attempt id (the caller's
+    ``--run-id``). It is the binding key that makes a no-change attestation
+    non-replayable (Codex review, PR #420 round 3): a byte-identical rewrite
+    can only certify when ``no_change_receipts[ticker]`` is an envelope whose
+    OWN ``run_id`` equals this parameter — an envelope minted for a past run
+    (even with an identical digest and reason) is rejected for a new run.
 
     ``non_trainable`` enumerates tickers the tournament is not expected to
     train (e.g. benchmark / sector / defensive ETFs) mapped to a
@@ -356,6 +465,12 @@ def build_marker_evidence(
     (no silent scope expansion) and MUST carry a non-empty reason. Excluded
     tickers are informational only — being ``missing`` never blocks
     certification, but being freshly ``succeeded`` is recorded too.
+
+    ``no_change_receipts`` maps ``ticker -> {"run_id": ..., "digest": ...,
+    "reason": ...}`` — a SEPARATE, out-of-band attestation envelope (NOT a
+    field on the mutable per-ticker metadata) proving THIS invocation
+    intentionally re-validated a byte-identical artifact. See
+    :func:`_verify_no_change_receipt`.
     """
     models_dir = Path(models_dir)
     expected = sorted({str(t).strip() for t in expected_tickers if str(t).strip()})
@@ -385,8 +500,13 @@ def build_marker_evidence(
         )
 
     baseline = baseline or {}
+    no_change_receipts = no_change_receipts or {}
     per = [
-        evaluate_ticker(models_dir, t, launch_epoch, baseline.get(t))
+        evaluate_ticker(
+            models_dir, t, launch_epoch, run_id,
+            baseline_entry=baseline.get(t),
+            no_change_receipt=no_change_receipts.get(t),
+        )
         for t in expected
     ]
     by_ticker = {e.ticker: e for e in per}
@@ -497,6 +617,26 @@ def _load_baseline(path: Path | None) -> dict[str, dict]:
     return json.loads(path.read_text())
 
 
+def _load_no_change_receipts(path: Path | None) -> dict[str, dict]:
+    """Load ``{ticker: {"run_id": ..., "digest": ..., "reason": ...}}`` — a
+    SEPARATE, out-of-band no-change attestation envelope (Codex review, PR
+    #420 round 3).
+
+    ``path is None`` (flag not given) OR the path not existing on disk both
+    -> ``{}`` (no attestations; any byte-identical rewrite is then
+    ``unverified_no_change`` and blocks certification — the safe,
+    conservative default until something actually mints run-bound
+    envelopes). A path that DOES exist but is not valid JSON / not an object
+    still raises, so a corrupted envelope file is never silently ignored.
+    """
+    if path is None or not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"no-change receipts file {path} must be a JSON object")
+    return {str(k): dict(v) for k, v in data.items()}
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Stamp artifact-derived per-ticker tournament retrain completion marker."
@@ -524,6 +664,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baseline", default=None,
                    help="path to a pre-run baseline snapshot (from --emit-baseline) used to "
                         "prove post-run artifact identity change / non-regression")
+    p.add_argument("--no-change-receipts", default=None,
+                   help="path to a JSON object of {ticker: {run_id, digest, reason}} — a "
+                        "SEPARATE, out-of-band no-change attestation envelope proving THIS "
+                        "invocation (matched by run_id) intentionally re-validated a "
+                        "byte-identical artifact. NOT a field on the mutable per-ticker "
+                        "metadata (Codex review, PR #420 round 3: that was replayable). "
+                        "Missing/absent entries block certification of any no-op rewrite.")
     p.add_argument("--non-trainable", default=None,
                    help="path to a JSON map/list of {ticker: justification} for intentionally "
                         "non-trained expected tickers (e.g. benchmark/sector ETFs). Every other "
@@ -573,15 +720,20 @@ def main(argv: list[str] | None = None) -> int:
 
     non_trainable = _load_non_trainable(Path(args.non_trainable) if args.non_trainable else None)
     baseline = _load_baseline(Path(args.baseline) if args.baseline else None)
+    no_change_receipts = _load_no_change_receipts(
+        Path(args.no_change_receipts) if args.no_change_receipts else None
+    )
 
     try:
         evidence = build_marker_evidence(
             args.models_dir,
             expected,
             args.launch_epoch,
+            run_id=args.run_id,
             exit_code=args.exit_code,
             baseline=baseline,
             non_trainable=non_trainable,
+            no_change_receipts=no_change_receipts,
         )
     except ValueError as exc:
         print(f"tournament_retrain_marker: REFUSING to certify — {exc}", file=sys.stderr)
