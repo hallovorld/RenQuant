@@ -56,6 +56,28 @@ if ! "$PYTHON" -c "import renquant_orchestrator.build_patchtst_wf_manifest" >/de
     exit 1
 fi
 
+# ── Refresh the PatchTST training corpus BEFORE the WF build ─────────────────
+# transformer_v4_wl200_clean.parquet (the PatchTST/shadow training corpus) is on
+# no refresh cadence and inherits the full-universe OHLCV coverage gap: only the
+# ~142-ticker live watchlist gets fresh daily bars, so the ~150 research tickers
+# (tier_A+tier_B of the transformer inventory) froze the corpus at 2026-02-10.
+# refresh_transformer_corpus.py refreshes the FULL transformer universe's OHLCV
+# (incremental append-merge, non-destructive), fires a loud ntfy + fail-closes on
+# a partial freeze, then rebuilds the corpus to staging and swaps it in only if it
+# advances + passes a row/date sanity vs the prior (keeping a .bak). set -e below
+# then aborts the retrain if it fail-closes; RQ_PATCHTST_REFRESH_CORPUS=0 skips,
+# RQ_PATCHTST_REFRESH_ARGS lets ops relax to warn-and-proceed
+# (--no-freshness-fail-on-stale --no-swap-fail-on-regression).
+if [ "${RQ_PATCHTST_REFRESH_CORPUS:-1}" = "1" ]; then
+    echo "── refreshing transformer_v4 training corpus (full-universe OHLCV + partial-freeze guard) ──"
+    # shellcheck disable=SC2086
+    "$PYTHON" "$REPO_DIR/scripts/refresh_transformer_corpus.py" \
+        --repo-dir "$REPO_DIR" \
+        ${RQ_PATCHTST_REFRESH_ARGS:-}
+else
+    echo "corpus refresh SKIPPED (RQ_PATCHTST_REFRESH_CORPUS=0) — training on the existing corpus"
+fi
+
 SRC_MANIFEST="${RQ_PATCHTST_SOURCE_MANIFEST:-$REPO_DIR/backtesting/renquant_104/artifacts/sim/walkforward_manifest_v2_20260602.json}"
 OUT_DIR="$REPO_DIR/backtesting/renquant_104/artifacts/walkforward_patchtst"
 OUT_MANIFEST="$REPO_DIR/backtesting/renquant_104/artifacts/walkforward_patchtst_manifest.json"
