@@ -5,9 +5,15 @@ made a validated artifact's identity depend on the machine's surrounding
 filesystem. These tests pin the bounded contract the reviewer required:
 
   * resolve only against a small ORDERED set of known roots,
-  * enforce containment (reject traversal outside the roots),
+  * enforce lexical containment (reject ``..`` traversal outside the roots),
+  * enforce realpath containment on existing candidates (reject an in-root
+    symlink whose real target escapes every allowed root — round 3),
+  * reject an absolute path outside every allowed root unless the caller
+    passes ``allow_external=True`` (round 3),
   * reject ambiguity (two existing candidates with different digests),
   * bind the resolved file to an expected digest where present,
+  * fail closed on a missing digest once ``require_digest`` is set, and gate
+    that on the ``digest_required()`` compatibility-window date (round 3),
   * stay deterministic across checkout relocation / surrounding files.
 
 This module imports only ``kernel.manifest_uri_resolver`` (stdlib-only) so it
@@ -17,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -26,7 +33,9 @@ if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 
 from kernel.manifest_uri_resolver import (  # noqa: E402
+    ARTIFACT_DIGEST_REQUIRED_AFTER,
     ManifestUriResolutionError,
+    digest_required,
     resolve_manifest_uri,
 )
 
@@ -53,7 +62,11 @@ def _write(path: Path, text: str) -> Path:
 
 # --- pass-through ----------------------------------------------------------
 
-def test_absolute_uri_untouched(tmp_path):
+def test_absolute_uri_within_root_returned_as_path(tmp_path):
+    # Round 3: an absolute URI is no longer returned blindly — its realpath
+    # must be under an allowed root. Here it is (the strategy root IS
+    # tmp_path), so it resolves without needing allow_external. See
+    # test_absolute_uri_outside_roots_rejected below for the rejection case.
     _strategy, manifest = _strategy_with_manifest(tmp_path)
     abs_uri = str(tmp_path / "elsewhere" / "model.pt")
     out = resolve_manifest_uri(manifest, abs_uri)
@@ -113,6 +126,71 @@ def test_traversal_just_outside_strategy_rejected(tmp_path):
     _strategy, manifest = _strategy_with_manifest(tmp_path)
     with pytest.raises(ManifestUriResolutionError):
         resolve_manifest_uri(manifest, "../sibling/model.json")
+
+
+# --- (3b) in-root symlink escape → rejected (PR #421 review, blocking pt 1) -
+
+def test_symlink_escape_rejected(tmp_path):
+    # The URI is lexically contained (passes _is_within), but the file is a
+    # symlink whose REAL target lives outside every allowed root. The bounded
+    # resolver must reject it rather than silently digesting/loading the
+    # external target.
+    strategy = tmp_path / "renquant_104"
+    manifest = strategy / "artifacts" / "sim" / "wf.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{}")
+    external = _write(tmp_path / "external" / "model.json", '{"model": "external"}')
+    uri = "artifacts/walkforward_gbdt/2023-10-02/panel-ltr.json"
+    link_path = strategy / uri
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    link_path.symlink_to(external)
+
+    with pytest.raises(ManifestUriResolutionError):
+        resolve_manifest_uri(manifest, uri)
+
+
+def test_symlink_within_roots_resolves(tmp_path):
+    # Contrast case: a symlink whose real target is ALSO inside an allowed
+    # root is fine — only escape is rejected, not symlinks per se.
+    strategy = tmp_path / "renquant_104"
+    manifest = strategy / "artifacts" / "sim" / "wf.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{}")
+    real = _write(strategy / "real" / "model.json", '{"model": "in-strategy"}')
+    uri = "artifacts/walkforward_gbdt/2023-10-02/panel-ltr.json"
+    link_path = strategy / uri
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    link_path.symlink_to(real)
+
+    out = resolve_manifest_uri(manifest, uri)
+
+    assert Path(out).read_text() == '{"model": "in-strategy"}'
+
+
+# --- (3c) absolute path outside roots → rejected unless allow_external -----
+# (PR #421 review, blocking point 2)
+
+def test_absolute_uri_outside_roots_rejected(tmp_path):
+    strategy = tmp_path / "renquant_104"
+    manifest = strategy / "artifacts" / "sim" / "wf.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{}")
+    external = _write(tmp_path / "external" / "model.pt", "external-bytes")
+
+    with pytest.raises(ManifestUriResolutionError):
+        resolve_manifest_uri(manifest, str(external))
+
+
+def test_absolute_uri_outside_roots_allowed_with_allow_external(tmp_path):
+    strategy = tmp_path / "renquant_104"
+    manifest = strategy / "artifacts" / "sim" / "wf.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{}")
+    external = _write(tmp_path / "external" / "model.pt", "external-bytes")
+
+    out = resolve_manifest_uri(manifest, str(external), allow_external=True)
+
+    assert Path(out) == external
 
 
 # --- (4) two conflicting candidates → error --------------------------------
@@ -209,6 +287,51 @@ def test_digest_ignored_when_absent(tmp_path):
     uri = "artifacts/walkforward_gbdt/2023-10-02/panel-ltr.json"
     real = _write(strategy / uri, '{"model": "gbdt"}')
     assert resolve_manifest_uri(manifest, uri, expected_digest=None) == real
+
+
+# --- (7) require_digest fail-closed (PR #421 review, blocking point 3) -----
+
+def test_require_digest_missing_rejected(tmp_path):
+    # Model-validation path past the compatibility window: no expected_digest
+    # supplied at all → fails closed rather than accepting "found a file".
+    strategy, manifest = _strategy_with_manifest(tmp_path)
+    uri = "artifacts/walkforward_gbdt/2023-10-02/panel-ltr.json"
+    _write(strategy / uri, '{"model": "gbdt"}')
+    with pytest.raises(ManifestUriResolutionError):
+        resolve_manifest_uri(manifest, uri, require_digest=True)
+
+
+def test_require_digest_present_accepted(tmp_path):
+    strategy, manifest = _strategy_with_manifest(tmp_path)
+    uri = "artifacts/walkforward_gbdt/2023-10-02/panel-ltr.json"
+    real = _write(strategy / uri, '{"model": "gbdt"}')
+    good = "sha256:" + _sha256(real)
+    out = resolve_manifest_uri(
+        manifest, uri, expected_digest=good, require_digest=True
+    )
+    assert out == real
+
+
+def test_require_digest_false_still_tolerates_missing(tmp_path):
+    # Before the compatibility window closes, require_digest defaults False
+    # (caller-gated by digest_required()) — unstamped manifests keep working.
+    strategy, manifest = _strategy_with_manifest(tmp_path)
+    uri = "artifacts/walkforward_gbdt/2023-10-02/panel-ltr.json"
+    real = _write(strategy / uri, '{"model": "gbdt"}')
+    out = resolve_manifest_uri(manifest, uri, require_digest=False)
+    assert out == real
+
+
+def test_digest_required_date_boundary():
+    # digest_required(now) is False strictly before the cutoff and True on
+    # and after it. now is injectable so this is deterministic (no freezing
+    # the real clock / no dependency on wall-clock "today").
+    before = ARTIFACT_DIGEST_REQUIRED_AFTER - timedelta(days=1)
+    on = ARTIFACT_DIGEST_REQUIRED_AFTER
+    after = ARTIFACT_DIGEST_REQUIRED_AFTER + timedelta(days=1)
+    assert digest_required(before) is False
+    assert digest_required(on) is True
+    assert digest_required(after) is True
 
 
 # --- call-site delegation: the WF loader shares the same contract ----------

@@ -28,13 +28,18 @@ from __future__ import annotations
 import glob
 import hashlib
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from kernel.manifest_uri_resolver import resolve_manifest_uri
+from kernel.manifest_uri_resolver import (
+    ARTIFACT_DIGEST_REQUIRED_AFTER,
+    digest_required,
+    resolve_manifest_uri,
+)
 from kernel.walk_forward.leakage_guard import assert_no_leakage
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -330,9 +335,7 @@ class WalkForwardModelLoader:
         manifest entries share scorer instances.
         """
         chosen = self.entry_as_of(today)
-        resolved = self._resolve_uri(
-            chosen.artifact_uri, expected_digest=chosen.artifact_sha256
-        )
+        resolved = self._resolve_model_uri(chosen)
         cache_key = str(resolved)
         if cache_key in self._cache:
             return self._cache[cache_key]
@@ -369,7 +372,13 @@ class WalkForwardModelLoader:
         self._calibrator_cache[uri] = cal
         return cal
 
-    def _resolve_uri(self, uri: str, *, expected_digest: str | None = None):
+    def _resolve_uri(
+        self,
+        uri: str,
+        *,
+        expected_digest: str | None = None,
+        require_digest: bool = False,
+    ):
         """Resolve a manifest URI via the shared bounded resolver.
 
         Manifest URIs are normally relative to the manifest's own folder, but
@@ -377,19 +386,50 @@ class WalkForwardModelLoader:
         ``artifacts/walkforward_.../panel-ltr.json``. The shared resolver
         (``kernel.manifest_uri_resolver``) resolves against an ORDERED set
         of known roots (manifest folder, then the inferred strategy root),
-        enforces containment, rejects ambiguity, and — on this model-validation
-        path — binds the resolved file to ``expected_digest`` when the manifest
-        entry stamps one. See that module for the full contract.
+        enforces lexical + realpath containment (rejecting ``..`` traversal,
+        in-root symlink escapes, and external absolute paths), rejects
+        ambiguity, and — on this model-validation path — binds the resolved
+        file to ``expected_digest`` when the manifest entry stamps one (and
+        fails closed on a missing digest once ``require_digest`` is set). See
+        that module for the full contract.
         """
         return resolve_manifest_uri(
-            self._manifest_path, uri, expected_digest=expected_digest
+            self._manifest_path,
+            uri,
+            expected_digest=expected_digest,
+            require_digest=require_digest,
+        )
+
+    def _resolve_model_uri(self, entry: RetrainEntry):
+        """Resolve a scorer artifact URI on the model-validation path.
+
+        Binds the resolved file to the entry's stamped ``artifact_sha256`` so
+        this gate path cannot silently run against a stale/wrong same-named
+        artifact. The compatibility window (``ARTIFACT_DIGEST_REQUIRED_AFTER``)
+        governs a missing digest: on/after the cutoff a missing digest fails
+        closed (the gate keeps the prior model — safe direction); before it, we
+        warn once so operators re-stamp the manifest before the deadline.
+        """
+        require = digest_required()
+        if not entry.artifact_sha256 and not require:
+            warnings.warn(
+                f"WalkForwardModelLoader: manifest entry cutoff="
+                f"{entry.cutoff_date.date()} artifact={entry.artifact_uri} has "
+                f"no artifact_sha256; the bounded resolver cannot bind it to an "
+                f"expected digest. Re-stamp the manifest (schema v2) before "
+                f"{ARTIFACT_DIGEST_REQUIRED_AFTER.isoformat()}, after which this "
+                f"resolution fails closed.",
+                stacklevel=2,
+            )
+        return self._resolve_uri(
+            entry.artifact_uri,
+            expected_digest=entry.artifact_sha256,
+            require_digest=require,
         )
 
     def _scorer_fingerprints_for_entry(self, entry: RetrainEntry) -> list[str]:
         """Read the selected fold's local scorer identities without loading it."""
-        resolved = self._resolve_uri(
-            entry.artifact_uri, expected_digest=entry.artifact_sha256
-        )
+        resolved = self._resolve_model_uri(entry)
         if not isinstance(resolved, Path) or not resolved.exists():
             return []
         out: list[str] = []
