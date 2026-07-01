@@ -61,17 +61,42 @@ REPO = Path(os.environ["RENQUANT_REPO_ROOT"]).resolve() \
 
 # --- #210 §2/§3 SLA defaults -------------------------------------------------
 FAST_CEILING_DAYS = 28          # #210 fast-axis (price/retrain-data) ceiling
-SLOW_SLA_DAYS = 55              # quarterly fundamentals filing-calendar SLA (~45d + buffer)
+
+# --- fundamentals TWO-AXIS SLA (P-FUND-FRESHNESS contract) --------------------
+# The quarterly fundamentals source is NOT a generic max-date slow feed: a daily
+# forward-filled feed can show yesterday's ``date`` while still MISSING the latest
+# expected 10-Q. It is judged on TWO independent axes (see ``fundamentals_sla_verdict``),
+# mirroring renquant-pipeline
+#   src/renquant_pipeline/kernel/preflight_pipeline/tasks/fundamentals_freshness.py
+# (the merged P-FUND-FRESHNESS gate): daily-feed liveness AND latest-expected fiscal
+# quarter (filing-lag / quarters-behind). It FAILS CLOSED until a real fiscal-period /
+# available-at field exists — the as-of ``date`` alone cannot establish the fiscal
+# quarter, so it must never be classified as a plain max-date feed.
+FUND_MAX_FEED_STALE_DAYS = 20   # daily forward-filled feed liveness ceiling (aligns pipeline)
+FUND_FILING_LAG_DAYS = 45       # days after fiscal-period end a 10-Q is expected filed+ingested
+FUND_MAX_QUARTERS_BEHIND = 1    # 1 == panel must be at the latest-expected-filed quarter
+# Real fiscal-period / available-at columns that carry the true fiscal quarter (NOT the
+# forward-fillable as-of ``date``). The first present column is used; NONE present ->
+# quarterly availability is UNVERIFIABLE -> fail closed.
+DEFAULT_FISCAL_PERIOD_COLS = ["fiscal_period_end", "period_end", "fiscal_period",
+                              "report_date", "filed_date", "acceptance_datetime",
+                              "available_at"]
 
 # Recipe-required sources the served shadow model's data cutoff is capped by (RFC §3.1).
-# ``date_col`` present -> read the max of that column as the data cutoff; else file mtime.
+# ``date_col`` present -> read the max of that column as the data cutoff (a declared
+# data-cutoff source: fail CLOSED on any read failure, NEVER fall back to file mtime);
+# ``kind=fundamentals`` -> the two-axis P-FUND-FRESHNESS check (above).
 DEFAULT_SOURCES: list[dict] = [
     {"name": "transformer_panel", "path": "data/transformer_v4_wl200_clean.parquet",
      "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date"},
     {"name": "rawlabel", "path": "data/alpha158_291_fundamental_dataset_rawlabel.parquet",
      "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date"},
     {"name": "fundamentals", "path": "data/sec_fundamentals_daily.parquet",
-     "axis": "slow", "sla_days": SLOW_SLA_DAYS, "date_col": "date"},
+     "axis": "slow", "kind": "fundamentals", "date_col": "date",
+     "max_feed_stale_days": FUND_MAX_FEED_STALE_DAYS,
+     "filing_lag_days": FUND_FILING_LAG_DAYS,
+     "max_quarters_behind": FUND_MAX_QUARTERS_BEHIND,
+     "fiscal_period_cols": DEFAULT_FISCAL_PERIOD_COLS},
 ]
 
 DEFAULT_SERVED_CONFIG = "backtesting/renquant_104/strategy_config.shadow.json"
@@ -278,20 +303,217 @@ def atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def _source_path(repo: Path, source: dict) -> Path:
+    return (repo / source["path"]) if not Path(source["path"]).is_absolute() \
+        else Path(source["path"])
+
+
+def _read_parquet_max_date(path: Path, date_col: str) -> dt.date | None:
+    """Max of ``date_col`` in a parquet, or None on ANY failure (fail-closed).
+
+    Returns None for: unreadable/corrupt parquet, incompatible engine, a missing
+    ``date_col``, an empty frame, or a column with no parseable dates. The caller
+    treats None as UNRESOLVED and fails closed — file mtime is never substituted.
+    """
+    try:
+        import pandas as pd  # noqa: PLC0415
+        df = pd.read_parquet(path, columns=[date_col])
+    except Exception:
+        return None  # corrupt / incompatible engine / missing column at read
+    if date_col not in getattr(df, "columns", []) or df.empty:
+        return None
+    try:
+        s = pd.to_datetime(df[date_col], errors="coerce").dropna()
+    except Exception:
+        return None
+    if len(s) == 0:
+        return None
+    return s.max().date()
+
+
+def _parquet_columns(path: Path) -> set[str] | None:
+    """Column names of a parquet WITHOUT loading data, or None if unreadable."""
+    try:
+        import pyarrow.parquet as pq  # noqa: PLC0415
+        return set(pq.ParquetFile(path).schema.names)
+    except Exception:
+        try:
+            import pandas as pd  # noqa: PLC0415
+            return set(pd.read_parquet(path).columns)
+        except Exception:
+            return None
+
+
 def resolve_data_cutoff(repo: Path, source: dict) -> dt.date | None:
-    """Resolve a source's data cutoff: max(date_col) for parquet, else file mtime."""
-    p = (repo / source["path"]) if not Path(source["path"]).is_absolute() else Path(source["path"])
+    """Resolve a source's data cutoff.
+
+    For a DECLARED parquet + ``date_col`` source the cutoff is ``max(date_col)``;
+    ANY read/parse/empty/max-date failure returns None (UNRESOLVED -> fail closed
+    at the SLA gate). File mtime is NEVER substituted for a declared data cutoff:
+    a corrupt / incompatible / rewritten-old-data copy touched recently must not
+    pass the SLA on filesystem liveness alone. mtime is used ONLY for a source
+    that declares no ``date_col`` (there it is the intended liveness proxy, not a
+    data cutoff)."""
+    p = _source_path(repo, source)
     if not p.exists():
         return None
     date_col = source.get("date_col")
     if date_col and p.suffix == ".parquet":
-        try:
-            import pandas as pd  # noqa: PLC0415
-            df = pd.read_parquet(p, columns=[date_col])
-            return pd.to_datetime(df[date_col]).max().date()
-        except Exception:
-            pass  # fall through to mtime
+        # Declared data-cutoff source: fail CLOSED on failure; do NOT fall to mtime.
+        return _read_parquet_max_date(p, date_col)
+    if date_col:
+        # A date column was declared but the path is not parquet we can read as a
+        # data cutoff -> unresolved (fail closed) rather than pretending mtime is it.
+        return None
+    # No declared date column: mtime is the intended liveness/provenance proxy.
     return dt.date.fromtimestamp(p.stat().st_mtime)
+
+
+# --- fundamentals TWO-AXIS (P-FUND-FRESHNESS) --------------------------------
+# Ported from renquant-pipeline preflight_pipeline/tasks/fundamentals_freshness.py
+# (the merged P-FUND-FRESHNESS contract) so the shadow promote applies the SAME
+# daily-feed-liveness + quarterly-availability judgement rather than a plain
+# max-date SLA. Kept self-contained: this script runs standalone under launchd
+# and must not import the pipeline package at promote time.
+
+_QUARTER_ENDS = ((3, 31), (6, 30), (9, 30), (12, 31))
+
+
+def _snap_to_quarter(d: dt.date) -> dt.date:
+    """Snap a date back to the most recent fiscal quarter-end at or before it."""
+    for month, day in reversed(_QUARTER_ENDS):
+        qe = dt.date(d.year, month, day)
+        if qe <= d:
+            return qe
+    return dt.date(d.year - 1, 12, 31)
+
+
+def _recent_quarter_ends(today: dt.date, lookback_quarters: int = 12) -> list[dt.date]:
+    """Fiscal quarter-end dates at or before ``today``, newest first."""
+    ends: list[dt.date] = []
+    for year in range(today.year, today.year - (lookback_quarters // 4 + 2), -1):
+        for month, day in reversed(_QUARTER_ENDS):
+            qe = dt.date(year, month, day)
+            if qe <= today:
+                ends.append(qe)
+    ends.sort(reverse=True)
+    return ends[:lookback_quarters]
+
+
+def latest_expected_filed_quarter(today: dt.date, filing_lag_days: int) -> dt.date | None:
+    """Newest fiscal quarter whose 10-Q is expected filed by ``today`` (deadline+lag)."""
+    for qe in _recent_quarter_ends(today):
+        if (today - qe).days >= filing_lag_days:
+            return qe
+    return None
+
+
+def quarters_behind(panel_max_date: dt.date | None, today: dt.date,
+                    filing_lag_days: int):
+    """How many fiscal quarters the panel lags the latest-expected-filed quarter.
+
+    Returns ``(n_behind, expected_quarter, panel_quarter)``; ``n_behind`` is 0 when
+    the panel is at/ahead of the expected quarter (fresh) and >= 1 when behind
+    (the broken-refresh signature). None ``n_behind`` when unresolvable."""
+    expected = latest_expected_filed_quarter(today, filing_lag_days)
+    if panel_max_date is None or expected is None:
+        return None, expected, panel_max_date
+    expected_q = _snap_to_quarter(expected)
+    panel_q = _snap_to_quarter(panel_max_date)
+    if panel_q >= expected_q:
+        return 0, expected_q, panel_q
+    n = 0
+    for qe in _recent_quarter_ends(today):
+        if qe <= panel_q:
+            break
+        if qe <= expected_q:
+            n += 1
+    return n, expected_q, panel_q
+
+
+def fundamentals_sla_verdict(source: dict, now: dt.date, *,
+                             feed_max_date: dt.date | None,
+                             fiscal_period_date: dt.date | None,
+                             fiscal_field_present: bool,
+                             max_feed_stale_days: int,
+                             filing_lag_days: int,
+                             max_quarters_behind: int,
+                             resolve_detail: str = "") -> SourceVerdict:
+    """PURE two-axis judgement for the fundamentals source (P-FUND-FRESHNESS).
+
+    ON-SLA only when BOTH axes hold:
+      1. DAILY-FEED liveness: ``feed_age = now - feed_max_date`` within
+         ``max_feed_stale_days`` (the daily forward-filled refresh is current).
+      2. QUARTERLY availability: a REAL fiscal-period/available-at field exists AND
+         the panel's fiscal quarter is < ``max_quarters_behind`` behind the
+         latest-expected-filed quarter. With no real fiscal field the quarter is
+         UNVERIFIABLE (the as-of ``date`` can be forward-filled current while the
+         10-Q is missing) -> FAIL CLOSED.
+    Any unresolved input fails closed (keep the old pin)."""
+    name = source["name"]
+    axis = source.get("axis", "slow")
+    if feed_max_date is None:
+        return SourceVerdict(name, axis, max_feed_stale_days, None, None, False,
+                             detail=f"daily-feed cutoff unresolved ({resolve_detail}) "
+                                    f"— fail-closed (mtime is not a data cutoff)")
+    feed_age = max(0, (now - feed_max_date).days)
+    feed_ok = feed_age <= max_feed_stale_days
+    feed_fact = (f"daily feed as-of {feed_max_date.isoformat()} age={feed_age}d "
+                 f"(max={max_feed_stale_days}d {'OK' if feed_ok else 'STALE'})")
+    if not fiscal_field_present:
+        return SourceVerdict(name, axis, max_feed_stale_days, feed_max_date, feed_age, False,
+                             detail=f"{feed_fact}; QUARTERLY UNVERIFIABLE — no real "
+                                    f"fiscal-period/available-at field ({resolve_detail}); "
+                                    f"fail-closed until one exists (as-of date alone cannot "
+                                    f"establish the fiscal quarter)")
+    if fiscal_period_date is None:
+        return SourceVerdict(name, axis, max_feed_stale_days, feed_max_date, feed_age, False,
+                             detail=f"{feed_fact}; fiscal-period column present but unreadable "
+                                    f"({resolve_detail}) — fail-closed")
+    n_behind, expected_q, panel_q = quarters_behind(fiscal_period_date, now, filing_lag_days)
+    quarter_ok = n_behind is not None and n_behind < max_quarters_behind
+    on_sla = feed_ok and quarter_ok
+    quarter_fact = (f"fiscal {panel_q.isoformat() if isinstance(panel_q, dt.date) else '?'} "
+                    f"vs expected-filed "
+                    f"{expected_q.isoformat() if isinstance(expected_q, dt.date) else '?'} "
+                    f"({n_behind} q behind, lag={filing_lag_days}d, "
+                    f"{'OK' if quarter_ok else 'BEHIND'})")
+    return SourceVerdict(name, axis, max_feed_stale_days, feed_max_date, feed_age, on_sla,
+                         detail=f"{feed_fact}; {quarter_fact} "
+                                f"{'OK' if on_sla else 'OFF-SLA'}")
+
+
+def resolve_fundamentals_verdict(repo: Path, source: dict, now: dt.date) -> SourceVerdict:
+    """I/O wrapper: read the fundamentals parquet's daily as-of date AND a real
+    fiscal-period/available-at column, then apply ``fundamentals_sla_verdict``.
+    All read failures fail closed (keep the old pin)."""
+    max_feed_stale = int(source.get("max_feed_stale_days", FUND_MAX_FEED_STALE_DAYS))
+    filing_lag = int(source.get("filing_lag_days", FUND_FILING_LAG_DAYS))
+    max_qb = int(source.get("max_quarters_behind", FUND_MAX_QUARTERS_BEHIND))
+    fiscal_cols = source.get("fiscal_period_cols") or DEFAULT_FISCAL_PERIOD_COLS
+    date_col = source.get("date_col", "date")
+    kw = dict(max_feed_stale_days=max_feed_stale, filing_lag_days=filing_lag,
+              max_quarters_behind=max_qb)
+    p = _source_path(repo, source)
+    if not p.exists():
+        return fundamentals_sla_verdict(source, now, feed_max_date=None,
+                                        fiscal_period_date=None, fiscal_field_present=False,
+                                        resolve_detail="file missing", **kw)
+    cols = _parquet_columns(p)
+    if cols is None:
+        return fundamentals_sla_verdict(source, now, feed_max_date=None,
+                                        fiscal_period_date=None, fiscal_field_present=False,
+                                        resolve_detail="parquet schema unreadable", **kw)
+    feed_max = _read_parquet_max_date(p, date_col)
+    fiscal_col = next((c for c in fiscal_cols if c in cols), None)
+    if fiscal_col is None:
+        return fundamentals_sla_verdict(source, now, feed_max_date=feed_max,
+                                        fiscal_period_date=None, fiscal_field_present=False,
+                                        resolve_detail=f"columns={sorted(cols)[:8]}", **kw)
+    fiscal_date = _read_parquet_max_date(p, fiscal_col)
+    return fundamentals_sla_verdict(source, now, feed_max_date=feed_max,
+                                    fiscal_period_date=fiscal_date, fiscal_field_present=True,
+                                    resolve_detail=f"fiscal_col={fiscal_col}", **kw)
 
 
 def resolve_pin_path(pin: str, config_path: Path, repo: Path) -> Path:
@@ -599,8 +821,14 @@ def run_promote(args) -> PromoteReport:
     # --- §3.1 freshness: source SLA + cutoff advance ---
     sources = json.loads(args.sources_json) if args.sources_json else DEFAULT_SOURCES
     for src in sources:
-        cutoff = resolve_data_cutoff(repo, src)
-        rep.source_verdicts.append(source_sla_verdict(src, now, cutoff))
+        if src.get("kind") == "fundamentals":
+            # Two-axis P-FUND-FRESHNESS: daily-feed liveness AND quarterly filing
+            # availability — NOT a generic max-date slow feed (fail-closed until a
+            # real fiscal-period/available-at field exists).
+            rep.source_verdicts.append(resolve_fundamentals_verdict(repo, src, now))
+        else:
+            cutoff = resolve_data_cutoff(repo, src)
+            rep.source_verdicts.append(source_sla_verdict(src, now, cutoff))
     all_on_sla = all(v.on_sla for v in rep.source_verdicts)
     rep.advance = cutoffs_advance(served_axes, cand)
 

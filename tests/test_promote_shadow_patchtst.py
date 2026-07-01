@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -294,3 +295,240 @@ def test_run_promote_gate_failure_when_smoke_degenerate(tmp_path, monkeypatch):
     rep = M.run_promote(args)
     assert rep.rc == M.RC_GATE_FAILED
     assert any(g.name == "non_degenerate" and not g.ok for g in rep.gates)
+
+
+# ===========================================================================
+# Codex review #419 fixes — freshness must FAIL CLOSED (never fall to mtime),
+# and fundamentals must test QUARTERLY availability, not just max daily date.
+# Every case below must keep the OLD pin (rc == RC_NOT_FRESH, never promoted).
+# ===========================================================================
+
+def _write_parquet(path: Path, rows: dict) -> Path:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    pd.DataFrame(rows).to_parquet(path, index=False)
+    return path
+
+
+def _touch(path: Path, when: dt.datetime) -> None:
+    ts = when.timestamp()
+    os.utime(path, (ts, ts))
+
+
+# --- resolve_data_cutoff: declared parquet/date-col sources fail closed ------
+
+class TestResolveDataCutoffFailsClosed:
+    def test_corrupt_parquet_is_unresolved_not_mtime(self, tmp_path):
+        # (a) unreadable/corrupt parquet with a FRESH mtime must NOT pass on mtime.
+        p = tmp_path / "corrupt.parquet"
+        p.write_bytes(b"not a parquet file")
+        _touch(p, dt.datetime(2026, 6, 30, 12, 0, 0))  # mtime "today"
+        src = {"name": "panel", "path": str(p), "axis": "fast",
+               "sla_days": 28, "date_col": "date"}
+        assert M.resolve_data_cutoff(tmp_path, src) is None  # fail-closed
+
+    def test_missing_date_column_is_unresolved(self, tmp_path):
+        # (b) valid parquet WITHOUT the declared date column -> unresolved.
+        pytest.importorskip("pandas")
+        p = _write_parquet(tmp_path / "nocol.parquet", {"ticker": ["A", "B"]})
+        _touch(p, dt.datetime(2026, 6, 30, 12, 0, 0))
+        src = {"name": "panel", "path": str(p), "axis": "fast",
+               "sla_days": 28, "date_col": "date"}
+        assert M.resolve_data_cutoff(tmp_path, src) is None
+
+    def test_empty_date_column_is_unresolved(self, tmp_path):
+        # (b') present but all-null date column -> no parseable cutoff -> unresolved.
+        pd = pytest.importorskip("pandas")
+        p = _write_parquet(tmp_path / "emptycol.parquet",
+                           {"date": pd.to_datetime([None, None])})
+        src = {"name": "panel", "path": str(p), "axis": "fast",
+               "sla_days": 28, "date_col": "date"}
+        assert M.resolve_data_cutoff(tmp_path, src) is None
+
+    def test_freshly_touched_old_data_uses_data_cutoff_not_mtime(self, tmp_path):
+        # (c) readable parquet with OLD data but a brand-new mtime: the resolved
+        # cutoff is the OLD data date, never the fresh mtime.
+        pd = pytest.importorskip("pandas")
+        p = _write_parquet(tmp_path / "old.parquet",
+                           {"date": pd.to_datetime(["2026-01-01", "2026-01-02"])})
+        _touch(p, dt.datetime(2026, 6, 30, 12, 0, 0))  # mtime "today", data old
+        src = {"name": "panel", "path": str(p), "axis": "fast",
+               "sla_days": 28, "date_col": "date"}
+        cutoff = M.resolve_data_cutoff(tmp_path, src)
+        assert cutoff == dt.date(2026, 1, 2)  # data cutoff, NOT today's mtime
+        v = M.source_sla_verdict(src, dt.date(2026, 6, 30), cutoff)
+        assert not v.on_sla  # ~179d old -> off 28d SLA
+
+    def test_readable_recent_parquet_resolves(self, tmp_path):
+        pd = pytest.importorskip("pandas")
+        p = _write_parquet(tmp_path / "recent.parquet",
+                           {"date": pd.to_datetime(["2026-06-20", "2026-06-25"])})
+        src = {"name": "panel", "path": str(p), "axis": "fast",
+               "sla_days": 28, "date_col": "date"}
+        assert M.resolve_data_cutoff(tmp_path, src) == dt.date(2026, 6, 25)
+
+
+# --- fundamentals TWO-AXIS (quarterly availability) -------------------------
+
+class TestFundamentalsTwoAxis:
+    _NOW = dt.date(2026, 6, 30)
+    _KW = dict(max_feed_stale_days=20, filing_lag_days=45, max_quarters_behind=1)
+
+    def test_latest_expected_filed_quarter(self):
+        # Late June: Q1 (Mar 31) is expected filed; Q2 (Jun 30) is not yet due.
+        assert M.latest_expected_filed_quarter(self._NOW, 45) == dt.date(2026, 3, 31)
+
+    def test_quarters_behind_fresh_at_expected(self):
+        n, exp_q, panel_q = M.quarters_behind(dt.date(2026, 3, 31), self._NOW, 45)
+        assert n == 0 and exp_q == dt.date(2026, 3, 31)
+
+    def test_quarters_behind_one_quarter_stale(self):
+        # Panel stuck at Q4-2025 while Q1-2026 is expected -> 1 behind.
+        n, exp_q, panel_q = M.quarters_behind(dt.date(2025, 12, 31), self._NOW, 45)
+        assert n == 1 and exp_q == dt.date(2026, 3, 31) and panel_q == dt.date(2025, 12, 31)
+
+    def test_verdict_no_fiscal_field_fails_closed(self):
+        # A current daily feed but NO real fiscal-period field -> unverifiable ->
+        # fail closed (the as-of date alone cannot establish the fiscal quarter).
+        v = M.fundamentals_sla_verdict(
+            {"name": "fundamentals", "axis": "slow"}, self._NOW,
+            feed_max_date=dt.date(2026, 6, 29), fiscal_period_date=None,
+            fiscal_field_present=False, **self._KW)
+        assert not v.on_sla and "UNVERIFIABLE" in v.detail
+
+    def test_verdict_current_asof_overdue_quarter_fails_closed(self):
+        # (d) daily feed CURRENT (age 1d, passes dimension 1) but the real fiscal
+        # period is stuck at Q4-2025 while Q1-2026 is expected -> BEHIND -> off-SLA.
+        v = M.fundamentals_sla_verdict(
+            {"name": "fundamentals", "axis": "slow"}, self._NOW,
+            feed_max_date=dt.date(2026, 6, 29), fiscal_period_date=dt.date(2025, 12, 31),
+            fiscal_field_present=True, **self._KW)
+        assert not v.on_sla and "BEHIND" in v.detail
+
+    def test_verdict_current_asof_current_quarter_passes(self):
+        # Real fiscal field at the latest-expected quarter AND live feed -> on-SLA.
+        v = M.fundamentals_sla_verdict(
+            {"name": "fundamentals", "axis": "slow"}, self._NOW,
+            feed_max_date=dt.date(2026, 6, 29), fiscal_period_date=dt.date(2026, 3, 31),
+            fiscal_field_present=True, **self._KW)
+        assert v.on_sla
+
+    def test_verdict_stale_daily_feed_fails_even_if_quarter_ok(self):
+        # Fiscal quarter current, but the daily feed stopped 90d ago -> off-SLA.
+        v = M.fundamentals_sla_verdict(
+            {"name": "fundamentals", "axis": "slow"}, self._NOW,
+            feed_max_date=dt.date(2026, 3, 31), fiscal_period_date=dt.date(2026, 3, 31),
+            fiscal_field_present=True, **self._KW)
+        assert not v.on_sla and "STALE" in v.detail
+
+    def test_resolve_verdict_missing_fiscal_column_fails_closed(self, tmp_path):
+        # A parquet with only the daily as-of ``date`` (the real prod schema today)
+        # -> quarterly unverifiable -> fail closed.
+        pd = pytest.importorskip("pandas")
+        p = _write_parquet(tmp_path / "fund.parquet",
+                           {"date": pd.to_datetime(["2026-06-28", "2026-06-29"]),
+                            "book_to_price": [0.5, 0.5]})
+        src = {"name": "fundamentals", "path": str(p), "axis": "slow",
+               "kind": "fundamentals", "date_col": "date",
+               "fiscal_period_cols": ["period_end", "fiscal_period_end"]}
+        v = M.resolve_fundamentals_verdict(tmp_path, src, self._NOW)
+        assert not v.on_sla and "UNVERIFIABLE" in v.detail
+
+    def test_resolve_verdict_current_asof_overdue_fiscal_fails_closed(self, tmp_path):
+        # (d) end-to-end read path: current as-of ``date`` + a real ``period_end``
+        # column stuck at Q4-2025 -> off-SLA.
+        pd = pytest.importorskip("pandas")
+        p = _write_parquet(tmp_path / "fund.parquet",
+                           {"date": pd.to_datetime(["2026-06-28", "2026-06-29"]),
+                            "period_end": pd.to_datetime(["2025-12-31", "2025-12-31"])})
+        src = {"name": "fundamentals", "path": str(p), "axis": "slow",
+               "kind": "fundamentals", "date_col": "date",
+               "fiscal_period_cols": ["period_end"]}
+        v = M.resolve_fundamentals_verdict(tmp_path, src, self._NOW)
+        assert not v.on_sla and "BEHIND" in v.detail
+
+
+# --- run_promote integration: pin unchanged in every fail-closed case -------
+
+def _promote_setup(tmp_path, sources, *, cand_fresh=True):
+    """Serve a stale pin + a candidate whose cutoffs advance; the ONLY reason a
+    given case is not-fresh is the source SLA under test. Returns run args."""
+    _write_pt_stub(tmp_path, "served.pt", {
+        "effective_train_cutoff_date": "2024-11-13",
+        "effective_selection_cutoff_date": "2026-02-10", "lookahead_days": 60})
+    cand_axes = {"effective_train_cutoff_date": "2026-05-01",
+                 "effective_selection_cutoff_date": "2026-06-15",
+                 "lookahead_days": 60, "wf_ic": 0.03} if cand_fresh else {
+                 "effective_train_cutoff_date": "2024-11-13",
+                 "effective_selection_cutoff_date": "2026-02-10", "lookahead_days": 60}
+    cand_pt = _write_pt_stub(tmp_path, "cand.pt", cand_axes)
+    cfg = tmp_path / "strategy_config.shadow.json"
+    cfg.write_text(json.dumps({"ranking": {"panel_scoring": {
+        "kind": "hf_patchtst", "artifact_path": "served.pt", "lookahead_days": 60}}}))
+    return _base_args(served_config=str(cfg), candidate=str(cand_pt),
+                      sources_json=json.dumps(sources)), cfg
+
+
+def test_promote_keeps_pin_on_corrupt_parquet(tmp_path, monkeypatch):
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    (tmp_path / "panel.parquet").write_bytes(b"corrupt")
+    _touch(tmp_path / "panel.parquet", dt.datetime(2026, 6, 30, 12, 0, 0))
+    args, cfg = _promote_setup(tmp_path, [{"name": "panel", "path": "panel.parquet",
+                                           "axis": "fast", "sla_days": 28, "date_col": "date"}])
+    before = cfg.read_text()
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
+    assert cfg.read_text() == before  # pin unchanged
+
+
+def test_promote_keeps_pin_on_missing_date_column(tmp_path, monkeypatch):
+    pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    _write_parquet(tmp_path / "panel.parquet", {"ticker": ["A", "B"]})
+    args, cfg = _promote_setup(tmp_path, [{"name": "panel", "path": "panel.parquet",
+                                           "axis": "fast", "sla_days": 28, "date_col": "date"}])
+    before = cfg.read_text()
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
+    assert cfg.read_text() == before
+
+
+def test_promote_keeps_pin_on_freshly_touched_old_data(tmp_path, monkeypatch):
+    pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    _write_parquet(tmp_path / "panel.parquet",
+                   {"date": pd.to_datetime(["2026-01-01", "2026-01-02"])})
+    _touch(tmp_path / "panel.parquet", dt.datetime(2026, 6, 30, 12, 0, 0))  # fresh mtime
+    args, cfg = _promote_setup(tmp_path, [{"name": "panel", "path": "panel.parquet",
+                                           "axis": "fast", "sla_days": 28, "date_col": "date"}])
+    before = cfg.read_text()
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
+    assert cfg.read_text() == before
+
+
+def test_promote_keeps_pin_on_current_asof_overdue_fiscal_quarter(tmp_path, monkeypatch):
+    pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    # A FRESH fast source (so freshness fails ONLY on the fundamentals quarterly axis).
+    _write_parquet(tmp_path / "panel.parquet",
+                   {"date": pd.to_datetime(["2026-06-28", "2026-06-29"])})
+    # Fundamentals: current daily as-of date, but the real fiscal period is overdue.
+    _write_parquet(tmp_path / "fund.parquet",
+                   {"date": pd.to_datetime(["2026-06-28", "2026-06-29"]),
+                    "period_end": pd.to_datetime(["2025-12-31", "2025-12-31"])})
+    sources = [
+        {"name": "panel", "path": "panel.parquet", "axis": "fast",
+         "sla_days": 28, "date_col": "date"},
+        {"name": "fundamentals", "path": "fund.parquet", "axis": "slow",
+         "kind": "fundamentals", "date_col": "date", "fiscal_period_cols": ["period_end"]},
+    ]
+    args, cfg = _promote_setup(tmp_path, sources)
+    before = cfg.read_text()
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
+    assert cfg.read_text() == before
+    fund_v = next(v for v in rep.source_verdicts if v.name == "fundamentals")
+    assert not fund_v.on_sla and "BEHIND" in fund_v.detail
+    panel_v = next(v for v in rep.source_verdicts if v.name == "panel")
+    assert panel_v.on_sla  # the fast source IS fresh; only fundamentals blocks
