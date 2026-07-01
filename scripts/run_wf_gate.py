@@ -40,7 +40,11 @@ Placebo evaluation mode (opt-in, OFF BY DEFAULT):
         model (e.g. real −0.01, placebo −0.03, diff +0.02) can never pass; AND
     (b) the incremental criterion: ``aligned_real_ic - placebo_ic > margin``
         (pre-registered margin, default +0.01) — genuine edge above the floor.
-  The same combined policy is applied to the per-regime difference diagnostic.
+  The per-regime diagnostic uses the SAME combined placebo policy, but the mode
+  replaces ONLY the placebo sub-verdict: every original regime quality/coverage
+  condition (``n_dates >= min_dates``, ``mean_ic >= min_mean_ic``) still applies
+  in BOTH modes, so a regime with poor full-regime ``mean_ic`` cannot pass on the
+  60-shift aligned subset alone.
   Invalid / non-finite config (margin, floor) or IC inputs FAIL CLOSED. Selected
   only via ``strategy_config.wf_gate.placebo_mode`` / ``--placebo-mode
   difference``. BOTH verdicts are always computed and logged (shadow/dual-
@@ -289,6 +293,18 @@ def _is_finite_number(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
+def _as_float_or_nan(x) -> float:
+    """Coerce ``x`` to float, returning NaN on unparseable/None input.
+
+    Used so a non-finite IC lands as NaN and is rejected by the fail-closed
+    finiteness checks rather than raising mid-verdict.
+    """
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def _placebo_difference_pass(
     aligned_real_ic,
     placebo_ic,
@@ -315,6 +331,81 @@ def _placebo_difference_pass(
     real_floor_ok = aligned_real_ic > real_ic_floor
     incremental_ok = (aligned_real_ic - placebo_ic) > margin
     return bool(real_floor_ok and incremental_ok)
+
+
+def _regime_placebo_ok(
+    mean_ic_f: float,
+    aligned_real60,
+    placebo60,
+    *,
+    mode: str,
+    max_placebo_ratio: float,
+    margin,
+    real_ic_floor,
+) -> bool:
+    """Per-regime PLACEBO sub-verdict for the given ``mode`` — placebo only.
+
+    The ``difference`` mode replaces ONLY this placebo evaluation with the
+    combined placebo-clean policy (:func:`_placebo_difference_pass`: positive
+    real-IC floor AND incremental margin, fail-closed on non-finite). The
+    ``absolute`` mode keeps the current §5.2 time-shift ceiling
+    (``|placebo60| <= max(0.005, ratio×|ref|)``) bit-for-bit. The full
+    per-regime verdict (:func:`_regime_sanity_pass`) still ANDs the shared
+    quality conditions on top of this in BOTH modes.
+    """
+    if mode == "difference":
+        return _placebo_difference_pass(
+            _as_float_or_nan(aligned_real60),
+            _as_float_or_nan(placebo60),
+            margin,
+            real_ic_floor,
+        )
+    # absolute ceiling (unchanged live behaviour): a missing placebo or a
+    # non-finite mean_ic leaves the ceiling satisfied — the caller's quality
+    # gate rejects a non-finite mean_ic separately.
+    if placebo60 is None or mean_ic_f != mean_ic_f:
+        return True
+    placebo_ref = mean_ic_f
+    aligned_real60_f = _as_float_or_nan(aligned_real60)
+    if aligned_real60_f == aligned_real60_f:
+        placebo_ref = aligned_real60_f
+    return abs(float(placebo60)) <= max(0.005, max_placebo_ratio * abs(placebo_ref))
+
+
+def _regime_sanity_pass(
+    mean_ic,
+    aligned_real60,
+    placebo60,
+    *,
+    mode: str,
+    min_mean_ic: float,
+    max_placebo_ratio: float,
+    margin,
+    real_ic_floor,
+) -> bool:
+    """Full per-regime sanity verdict for an ELIGIBLE regime (n_dates gate is
+    applied by the caller).
+
+    ALL original quality conditions apply in BOTH modes — ``mean_ic`` must be
+    finite AND ``>= min_mean_ic`` (0.02). The ``mode`` replaces ONLY the placebo
+    sub-verdict (:func:`_regime_placebo_ok`). This closes the PR #422 review
+    hole: a regime with poor/negative full-regime ``mean_ic`` must NOT pass on
+    the 60-shift aligned subset (floor + margin) alone.
+    """
+    mean_ic_f = _as_float_or_nan(mean_ic)
+    if not (mean_ic_f == mean_ic_f and mean_ic_f >= min_mean_ic):
+        return False
+    return bool(
+        _regime_placebo_ok(
+            mean_ic_f,
+            aligned_real60,
+            placebo60,
+            mode=mode,
+            max_placebo_ratio=max_placebo_ratio,
+            margin=margin,
+            real_ic_floor=real_ic_floor,
+        )
+    )
 
 
 def _placebo_absolute_verdict(
@@ -2603,50 +2694,24 @@ def run_sanity_battery(
             passed = False
             if eligible:
                 eligible_any = True
-                try:
-                    mean_ic_f = float(mean_ic)
-                except (TypeError, ValueError):
-                    mean_ic_f = float("nan")
-                if placebo_mode == "difference":
-                    # SAME combined policy as the global difference verdict: the
-                    # regime aligned real IC must clear the POSITIVE floor AND
-                    # beat its own time-shift placebo by the margin. Non-finite
-                    # regime IC / placebo / config FAILS CLOSED. This prevents a
-                    # regime with negative-but-less-negative-than-placebo IC from
-                    # passing via the incremental criterion alone.
-                    try:
-                        aligned_real60_f = float(aligned_real60)
-                    except (TypeError, ValueError):
-                        aligned_real60_f = float("nan")
-                    try:
-                        placebo60_f = float(placebo60)
-                    except (TypeError, ValueError):
-                        placebo60_f = float("nan")
-                    passed = _placebo_difference_pass(
-                        aligned_real60_f,
-                        placebo60_f,
-                        placebo_difference_margin,
-                        placebo_real_ic_floor,
-                    )
-                else:
-                    placebo_ok = True
-                    if placebo60 is not None and mean_ic_f == mean_ic_f:
-                        placebo_ref = mean_ic_f
-                        try:
-                            aligned_real60_f = float(aligned_real60)
-                            if aligned_real60_f == aligned_real60_f:
-                                placebo_ref = aligned_real60_f
-                        except (TypeError, ValueError):
-                            placebo_ref = mean_ic_f
-                        placebo_ok = abs(float(placebo60)) <= max(
-                            0.005,
-                            max_placebo_ratio * abs(placebo_ref),
-                        )
-                    passed = (
-                        mean_ic_f == mean_ic_f
-                        and mean_ic_f >= min_mean_ic
-                        and placebo_ok
-                    )
+                # ALL original regime quality/coverage conditions apply in BOTH
+                # modes (n_dates >= min_dates above; mean_ic >= min_mean_ic
+                # inside the helper). The ``difference`` mode replaces ONLY the
+                # placebo sub-verdict with the combined placebo-clean policy
+                # (positive real-IC floor AND incremental margin, fail-closed on
+                # non-finite). This prevents a regime with poor/negative
+                # full-regime mean_ic from passing on the 60-shift aligned
+                # subset alone (PR #422 review).
+                passed = _regime_sanity_pass(
+                    mean_ic,
+                    aligned_real60,
+                    placebo60,
+                    mode=placebo_mode,
+                    min_mean_ic=min_mean_ic,
+                    max_placebo_ratio=max_placebo_ratio,
+                    margin=placebo_difference_margin,
+                    real_ic_floor=placebo_real_ic_floor,
+                )
                 if not passed:
                     failed.append(regime)
             regimes_out[regime] = {

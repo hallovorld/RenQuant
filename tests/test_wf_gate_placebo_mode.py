@@ -446,3 +446,140 @@ def test_resolve_placebo_settings_cli_floor_overrides_config(tmp_path, monkeypat
     )
     out = run_wf_gate._resolve_placebo_settings(name, cli_real_ic_floor=0.05)
     assert out["real_ic_floor"] == 0.05
+
+
+# --------------------------------------------------------------------------- #
+# Per-regime sanity verdict (PR #422 second-round CHANGES_REQUESTED).
+#
+# The `difference` mode must replace ONLY the placebo evaluation of the
+# per-regime sanity gate; every original quality/coverage condition
+# (`mean_ic >= min_mean_ic`, `n_dates >= min_dates`) must still apply in BOTH
+# modes. The prior cut assigned regime `passed` from
+# `_placebo_difference_pass(aligned_real60, placebo60, margin, floor)` ALONE, so
+# a regime could pass with poor/negative full-regime `mean_ic` as long as the
+# 60-shift aligned subset cleared the floor+margin. These tests pin the fix.
+# --------------------------------------------------------------------------- #
+MIN_MEAN_IC = 0.02        # run_sanity_battery per-regime quality floor
+MAX_PLACEBO_RATIO = 0.5   # run_sanity_battery per-regime absolute ceiling ratio
+
+
+def _regime_pass(mean_ic, aligned_real60, placebo60, *, mode, margin=MARGIN,
+                 real_ic_floor=FLOOR, min_mean_ic=MIN_MEAN_IC,
+                 max_placebo_ratio=MAX_PLACEBO_RATIO):
+    return run_wf_gate._regime_sanity_pass(
+        mean_ic,
+        aligned_real60,
+        placebo60,
+        mode=mode,
+        min_mean_ic=min_mean_ic,
+        max_placebo_ratio=max_placebo_ratio,
+        margin=margin,
+        real_ic_floor=real_ic_floor,
+    )
+
+
+def _historical_regime_pass_absolute(mean_ic, aligned_real60, placebo60,
+                                     min_mean_ic=MIN_MEAN_IC,
+                                     max_placebo_ratio=MAX_PLACEBO_RATIO):
+    """The exact pre-refactor absolute-mode per-regime verdict from the loop in
+    run_sanity_battery — the shadow reference guarding live behaviour."""
+    try:
+        mean_ic_f = float(mean_ic)
+    except (TypeError, ValueError):
+        mean_ic_f = float("nan")
+    placebo_ok = True
+    if placebo60 is not None and mean_ic_f == mean_ic_f:
+        placebo_ref = mean_ic_f
+        try:
+            aligned_real60_f = float(aligned_real60)
+            if aligned_real60_f == aligned_real60_f:
+                placebo_ref = aligned_real60_f
+        except (TypeError, ValueError):
+            placebo_ref = mean_ic_f
+        placebo_ok = abs(float(placebo60)) <= max(
+            0.005, max_placebo_ratio * abs(placebo_ref)
+        )
+    return bool(
+        mean_ic_f == mean_ic_f and mean_ic_f >= min_mean_ic and placebo_ok
+    )
+
+
+def test_regime_absolute_mode_reproduces_historical_verdict_random_sweep():
+    """Refactor is bit-identical in absolute mode → live behaviour unchanged."""
+    rng = random.Random(4321)
+    for _ in range(3000):
+        mean_ic = rng.uniform(-0.1, 0.1)
+        real60 = rng.uniform(-0.1, 0.1)
+        placebo60 = rng.uniform(-0.1, 0.1)
+        assert _regime_pass(mean_ic, real60, placebo60, mode="absolute") == (
+            _historical_regime_pass_absolute(mean_ic, real60, placebo60)
+        ), (mean_ic, real60, placebo60)
+
+
+def test_regime_difference_fails_when_mean_ic_below_min_even_if_placebo_passes():
+    """Reviewer's exact regression: aligned_real60 clears the placebo test
+    (floor + margin) but the full-regime mean_ic is below min_mean_ic → the
+    regime must FAIL. Prior cut passed it."""
+    real60, placebo60 = 0.05, 0.02     # real>floor(0.01), diff=0.03>margin(0.01)
+    weak_mean_ic = 0.005               # < min_mean_ic (0.02)
+    # The placebo sub-verdict alone WOULD pass ...
+    assert run_wf_gate._placebo_difference_pass(
+        real60, placebo60, MARGIN, FLOOR
+    ) is True
+    # ... but the full regime verdict must still enforce mean_ic >= min_mean_ic.
+    assert _regime_pass(weak_mean_ic, real60, placebo60, mode="difference") is False
+    # And absolute mode agrees it fails on the weak mean_ic.
+    assert _regime_pass(weak_mean_ic, real60, placebo60, mode="absolute") is False
+
+
+def test_regime_difference_passes_when_mean_ic_and_placebo_both_clear():
+    """Happy path: strong full-regime mean_ic AND placebo difference test clear."""
+    real60, placebo60 = 0.05, 0.02
+    strong_mean_ic = 0.03              # >= min_mean_ic
+    assert _regime_pass(strong_mean_ic, real60, placebo60, mode="difference") is True
+
+
+def test_regime_difference_negative_mean_ic_fails():
+    """A negative full-regime mean_ic fails regardless of the aligned subset."""
+    real60, placebo60 = 0.05, 0.02     # placebo sub-verdict would pass
+    assert _regime_pass(-0.03, real60, placebo60, mode="difference") is False
+
+
+def test_regime_difference_nan_or_missing_mean_ic_fails():
+    """A NaN / missing / non-numeric mean_ic fails the quality gate in difference
+    mode — identically to absolute mode (the mean_ic condition is unchanged; the
+    mode replaces ONLY the placebo sub-verdict)."""
+    for bad in (float("nan"), None, "n/a"):
+        assert _regime_pass(bad, 0.05, 0.02, mode="difference") is False
+        # Same quality gate applies in absolute mode → identical verdict.
+        assert _regime_pass(bad, 0.05, 0.02, mode="absolute") is False
+
+
+def test_regime_difference_placebo_subverdict_still_enforced():
+    """Strong mean_ic does NOT rescue a failing placebo sub-verdict:
+    negative aligned_real60 below the floor (reviewer's global hole, at the
+    regime level) → FAIL even though diff > margin and mean_ic is strong."""
+    strong_mean_ic = 0.05
+    real60, placebo60 = -0.01, -0.03   # diff=+0.02>margin but real60<floor
+    assert (real60 - placebo60) > MARGIN
+    assert _regime_pass(strong_mean_ic, real60, placebo60, mode="difference") is False
+
+
+def test_regime_difference_clears_absolute_ceiling_when_edge_is_real():
+    """The whole point: a regime whose placebo60 EXCEEDS the absolute ceiling
+    still passes in difference mode when mean_ic and the real edge are genuine."""
+    mean_ic, real60, placebo60 = 0.05, 0.0529, 0.0402  # real prod-shaped numbers
+    # Fails the absolute ceiling (|0.0402| > 0.5*0.0529=0.0265) ...
+    assert _regime_pass(mean_ic, real60, placebo60, mode="absolute") is False
+    # ... but passes the difference test (real>floor AND diff=0.0127>margin).
+    assert _regime_pass(mean_ic, real60, placebo60, mode="difference") is True
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_regime_difference_nonfinite_config_fails_closed(bad):
+    """Non-finite margin or floor FAILS the regime CLOSED even on strong inputs."""
+    mean_ic, real60, placebo60 = 0.05, 0.20, 0.0
+    assert _regime_pass(mean_ic, real60, placebo60, mode="difference", margin=bad) is False
+    assert _regime_pass(
+        mean_ic, real60, placebo60, mode="difference", real_ic_floor=bad
+    ) is False
