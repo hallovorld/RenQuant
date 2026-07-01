@@ -22,12 +22,25 @@ FILES:    - `scripts/launchd/com.renquant.weekly-retrain-patchtst.plist` — the
             a not-fresh refusal (exit 10) or gate failure (exit 20) never fails the retrain
             job; the safe state (old pin retained) is kept.
 GATE:     FAILS CLOSED (keeps old pin) unless ALL hold —
-          §3.1 freshness: every recipe-required source on its source-specific SLA (fast axis
-            ≤28d #210 ceiling: transformer panel + rawlabel; slow axis: SEC fundamentals on
-            ~55d filing SLA) AND the effective train/selection cutoffs ACTUALLY ADVANCE past
-            the served pin. A non-advancing recipe/code-fix retrain needs
-            `--allow-non-fresh --reason ...` and is LABELED non-fresh (does NOT reset the
-            freshness clock).
+          §3.1 freshness: every recipe-required source on its source-specific SLA AND the
+            effective train/selection cutoffs ACTUALLY ADVANCE past the served pin. A
+            non-advancing recipe/code-fix retrain needs `--allow-non-fresh --reason ...` and
+            is LABELED non-fresh (does NOT reset the freshness clock).
+            - FAST axis (≤28d #210 ceiling: transformer panel + rawlabel): a DECLARED
+              parquet+date_col source resolves its cutoff from `max(date_col)` and FAILS
+              CLOSED on any read/parse/empty failure — file mtime is provenance/liveness
+              only, NEVER a data-cutoff substitute (Codex #419 review 1).
+            - SLOW axis (SEC fundamentals): TWO-axis P-FUND-FRESHNESS — daily-feed liveness
+              AND PER-ENTITY quarterly coverage. Codex #419 review 2 showed a single global
+              `max(fiscal_period)` lets ONE current issuer certify a frozen panel and that
+              calendar-quarter snapping is invalid for non-calendar fiscal years. Now each
+              entity is judged from its OWN latest fiscal-period end (rolling staleness
+              window + filing lag, NO calendar snapping) and the panel is gated on a
+              PREREGISTERED COVERAGE DISTRIBUTION (missing fraction, stale fraction,
+              worst-quarters-behind, quantiles + a min-entities floor), not one maximum.
+              Missing entity id OR fiscal-period/available-at provenance -> UNVERIFIABLE ->
+              fail closed (the real prod `sec_fundamentals_daily.parquet` today carries only
+              ticker+date, so this axis correctly blocks until per-entity provenance ships).
           §3.4 validation: (1) artifact LOAD + smoke inference, (2) schema/recipe/config-
             fingerprint PARITY stamped from the CURRENT pinned config (reuses
             `stamp_patchtst_fingerprint.py` — reconciles with the `panel_scorer_config_mismatch`

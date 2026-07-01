@@ -68,19 +68,36 @@ FAST_CEILING_DAYS = 28          # #210 fast-axis (price/retrain-data) ceiling
 # expected 10-Q. It is judged on TWO independent axes (see ``fundamentals_sla_verdict``),
 # mirroring renquant-pipeline
 #   src/renquant_pipeline/kernel/preflight_pipeline/tasks/fundamentals_freshness.py
-# (the merged P-FUND-FRESHNESS gate): daily-feed liveness AND latest-expected fiscal
-# quarter (filing-lag / quarters-behind). It FAILS CLOSED until a real fiscal-period /
-# available-at field exists — the as-of ``date`` alone cannot establish the fiscal
-# quarter, so it must never be classified as a plain max-date feed.
+# (the merged P-FUND-FRESHNESS gate): daily-feed liveness AND per-ENTITY fiscal-quarter
+# coverage. It FAILS CLOSED until a real ENTITY id + fiscal-period/available-at field
+# exist — the as-of ``date`` alone (or a single global max fiscal date) cannot establish
+# that the WHOLE cross-section is fresh.
+#
+# Axis-2 (Codex #419 review 2): a single ``max(fiscal_period)`` over the whole parquet lets
+# ONE current issuer certify the entire panel while ~291 others stay quarters stale/missing.
+# Instead freshness is evaluated PER ENTITY from each entity's OWN latest fiscal-period end
+# (no calendar-quarter snapping -> valid for non-calendar fiscal years) and gated on a
+# PREREGISTERED COVERAGE DISTRIBUTION (missing fraction, stale fraction, worst-quarters-
+# behind, quantiles), not one global maximum.
 FUND_MAX_FEED_STALE_DAYS = 20   # daily forward-filled feed liveness ceiling (aligns pipeline)
 FUND_FILING_LAG_DAYS = 45       # days after fiscal-period end a 10-Q is expected filed+ingested
-FUND_MAX_QUARTERS_BEHIND = 1    # 1 == panel must be at the latest-expected-filed quarter
-# Real fiscal-period / available-at columns that carry the true fiscal quarter (NOT the
-# forward-fillable as-of ``date``). The first present column is used; NONE present ->
-# quarterly availability is UNVERIFIABLE -> fail closed.
-DEFAULT_FISCAL_PERIOD_COLS = ["fiscal_period_end", "period_end", "fiscal_period",
-                              "report_date", "filed_date", "acceptance_datetime",
-                              "available_at"]
+FUND_QUARTER_DAYS = 92          # nominal quarter length (per-entity staleness; no calendar snap)
+FUND_MAX_QUARTERS_BEHIND = 1    # per entity: current == 0 quarters behind (q_behind < this)
+# Preregistered coverage policy (PROVISIONAL — conservative/fail-closed pending the
+# IC/rank/turnover sensitivity study in doc/design/2026-06-30-shadow-scorer-freshness.md).
+FUND_MAX_STALE_FRACTION = 0.05      # <=5% of the universe may be >= max_quarters_behind stale
+FUND_MAX_MISSING_FRACTION = 0.02    # <=2% of the universe may lack any fiscal-period provenance
+FUND_MAX_WORST_QUARTERS_BEHIND = 1  # no single entity may be more than this many quarters behind
+FUND_MIN_ENTITIES = 50              # refuse to certify quarterly coverage on a tiny cross-section
+# Entity/issuer id columns (the first present is the grouping key). NONE present ->
+# per-entity coverage is UNVERIFIABLE -> fail closed.
+DEFAULT_ENTITY_COLS = ["ticker", "symbol", "entity_id", "cik", "figi", "permaticker", "sid"]
+# Real fiscal-period / available-at columns that carry the true per-entity fiscal quarter
+# (NOT the forward-fillable as-of ``date``). The first present column is used per entity;
+# NONE present -> quarterly availability is UNVERIFIABLE -> fail closed. Ordered date-like
+# first (ambiguous string quarter labels like "2026Q1" are deliberately excluded).
+DEFAULT_FISCAL_PERIOD_COLS = ["fiscal_period_end", "period_end", "report_date",
+                              "filed_date", "acceptance_datetime", "available_at"]
 
 # Recipe-required sources the served shadow model's data cutoff is capped by (RFC §3.1).
 # ``date_col`` present -> read the max of that column as the data cutoff (a declared
@@ -95,7 +112,13 @@ DEFAULT_SOURCES: list[dict] = [
      "axis": "slow", "kind": "fundamentals", "date_col": "date",
      "max_feed_stale_days": FUND_MAX_FEED_STALE_DAYS,
      "filing_lag_days": FUND_FILING_LAG_DAYS,
+     "quarter_days": FUND_QUARTER_DAYS,
      "max_quarters_behind": FUND_MAX_QUARTERS_BEHIND,
+     "max_stale_fraction": FUND_MAX_STALE_FRACTION,
+     "max_missing_fraction": FUND_MAX_MISSING_FRACTION,
+     "max_worst_quarters_behind": FUND_MAX_WORST_QUARTERS_BEHIND,
+     "min_entities": FUND_MIN_ENTITIES,
+     "entity_cols": DEFAULT_ENTITY_COLS,
      "fiscal_period_cols": DEFAULT_FISCAL_PERIOD_COLS},
 ]
 
@@ -161,6 +184,7 @@ class SourceVerdict:
     age_days: int | None
     on_sla: bool
     detail: str
+    coverage: dict | None = None  # per-entity fundamentals coverage distribution (if any)
 
 
 def source_sla_verdict(source: dict, now: dt.date, cutoff: dt.date | None,
@@ -344,6 +368,32 @@ def _parquet_columns(path: Path) -> set[str] | None:
             return None
 
 
+def _read_parquet_max_by_group(path: Path, group_col: str,
+                               date_col: str) -> dict[str, dt.date | None] | None:
+    """Per-entity latest ``date_col`` value: ``{entity -> max date | None}``.
+
+    ``None`` (whole result) on ANY read failure or a missing/empty required column
+    (fail-closed). A present entity whose ``date_col`` has no parseable value maps to
+    ``None`` (a MISSING entity — cannot prove its fiscal freshness)."""
+    try:
+        import pandas as pd  # noqa: PLC0415
+        df = pd.read_parquet(path, columns=[group_col, date_col])
+    except Exception:
+        return None
+    cols = getattr(df, "columns", [])
+    if group_col not in cols or date_col not in cols or df.empty:
+        return None
+    try:
+        parsed = pd.to_datetime(df[date_col], errors="coerce")
+    except Exception:
+        return None
+    out: dict[str, dt.date | None] = {}
+    for ent, idx in df.groupby(group_col).groups.items():
+        vals = parsed.loc[idx].dropna()
+        out[str(ent)] = (vals.max().date() if len(vals) else None)
+    return out or None
+
+
 def resolve_data_cutoff(repo: Path, source: dict) -> dt.date | None:
     """Resolve a source's data cutoff.
 
@@ -369,86 +419,125 @@ def resolve_data_cutoff(repo: Path, source: dict) -> dt.date | None:
     return dt.date.fromtimestamp(p.stat().st_mtime)
 
 
-# --- fundamentals TWO-AXIS (P-FUND-FRESHNESS) --------------------------------
-# Ported from renquant-pipeline preflight_pipeline/tasks/fundamentals_freshness.py
-# (the merged P-FUND-FRESHNESS contract) so the shadow promote applies the SAME
-# daily-feed-liveness + quarterly-availability judgement rather than a plain
-# max-date SLA. Kept self-contained: this script runs standalone under launchd
-# and must not import the pipeline package at promote time.
-
-_QUARTER_ENDS = ((3, 31), (6, 30), (9, 30), (12, 31))
-
-
-def _snap_to_quarter(d: dt.date) -> dt.date:
-    """Snap a date back to the most recent fiscal quarter-end at or before it."""
-    for month, day in reversed(_QUARTER_ENDS):
-        qe = dt.date(d.year, month, day)
-        if qe <= d:
-            return qe
-    return dt.date(d.year - 1, 12, 31)
+# --- fundamentals TWO-AXIS (P-FUND-FRESHNESS), per-ENTITY coverage -----------
+# Aligns with renquant-pipeline preflight_pipeline/tasks/fundamentals_freshness.py
+# (the merged P-FUND-FRESHNESS contract): daily-feed liveness AND per-entity fiscal
+# availability. Kept self-contained — this script runs standalone under launchd and
+# must not import the pipeline package at promote time.
+#
+# Codex #419 review 2: a single ``max(fiscal_period)`` over the whole parquet lets ONE
+# current issuer certify the entire cross-section. Instead each entity is judged from
+# its OWN latest fiscal-period end (staleness window, NO calendar-quarter snapping ->
+# valid for non-calendar fiscal years), and the panel is gated on a PREREGISTERED
+# COVERAGE DISTRIBUTION rather than one global maximum.
 
 
-def _recent_quarter_ends(today: dt.date, lookback_quarters: int = 12) -> list[dt.date]:
-    """Fiscal quarter-end dates at or before ``today``, newest first."""
-    ends: list[dt.date] = []
-    for year in range(today.year, today.year - (lookback_quarters // 4 + 2), -1):
-        for month, day in reversed(_QUARTER_ENDS):
-            qe = dt.date(year, month, day)
-            if qe <= today:
-                ends.append(qe)
-    ends.sort(reverse=True)
-    return ends[:lookback_quarters]
+def entity_quarters_behind(fiscal_period_end: dt.date | None, today: dt.date,
+                           filing_lag_days: int,
+                           quarter_days: int = FUND_QUARTER_DAYS) -> int | None:
+    """Quarters ONE entity's latest fiscal period lags, from its OWN fiscal-period end.
+
+    Uses a rolling staleness window (``today - fiscal_period_end``) with a
+    ``filing_lag_days`` grace period, NOT calendar-quarter snapping — so a non-calendar
+    fiscal year (e.g. Jan/Apr/Jul/Oct ends) is judged on its own filing cadence. Returns
+    0 for a current (or future-dated) entity, >=1 when behind, and None when the entity
+    has no parseable fiscal-period end (MISSING — its freshness cannot be proven)."""
+    if fiscal_period_end is None:
+        return None
+    staleness = (today - fiscal_period_end).days
+    if staleness < 0:
+        return 0  # future-dated fiscal period -> treat as current
+    # A full new quarter's filing is overdue once staleness exceeds one quarter + lag.
+    return max(0, (staleness - filing_lag_days) // max(1, quarter_days))
 
 
-def latest_expected_filed_quarter(today: dt.date, filing_lag_days: int) -> dt.date | None:
-    """Newest fiscal quarter whose 10-Q is expected filed by ``today`` (deadline+lag)."""
-    for qe in _recent_quarter_ends(today):
-        if (today - qe).days >= filing_lag_days:
-            return qe
-    return None
+def _quantiles(values: list[int], ps=(0.5, 0.9, 0.99)) -> dict:
+    """Nearest-rank quantiles of integer quarters-behind (empty -> {})."""
+    if not values:
+        return {}
+    s = sorted(values)
+    out: dict[str, int] = {}
+    import math  # noqa: PLC0415
+    for p in ps:
+        idx = min(len(s) - 1, max(0, math.ceil(p * len(s)) - 1))
+        out[f"p{int(round(p * 100))}"] = int(s[idx])
+    return out
 
 
-def quarters_behind(panel_max_date: dt.date | None, today: dt.date,
-                    filing_lag_days: int):
-    """How many fiscal quarters the panel lags the latest-expected-filed quarter.
+@dataclass
+class FundamentalsCoverage:
+    n_entities: int
+    n_missing: int            # entities present but with no parseable fiscal-period end
+    n_stale: int              # entities >= max_quarters_behind behind (missing counts too)
+    n_current: int            # entities with q_behind < max_quarters_behind
+    stale_fraction: float     # (n_missing + n_behind) / n_entities
+    missing_fraction: float   # n_missing / n_entities
+    worst_quarters_behind: int | None   # max q_behind over PRESENT entities (None if all missing)
+    quantiles: dict           # nearest-rank quantiles of present entities' q_behind
 
-    Returns ``(n_behind, expected_quarter, panel_quarter)``; ``n_behind`` is 0 when
-    the panel is at/ahead of the expected quarter (fresh) and >= 1 when behind
-    (the broken-refresh signature). None ``n_behind`` when unresolvable."""
-    expected = latest_expected_filed_quarter(today, filing_lag_days)
-    if panel_max_date is None or expected is None:
-        return None, expected, panel_max_date
-    expected_q = _snap_to_quarter(expected)
-    panel_q = _snap_to_quarter(panel_max_date)
-    if panel_q >= expected_q:
-        return 0, expected_q, panel_q
-    n = 0
-    for qe in _recent_quarter_ends(today):
-        if qe <= panel_q:
-            break
-        if qe <= expected_q:
-            n += 1
-    return n, expected_q, panel_q
+    def as_dict(self) -> dict:
+        return {"n_entities": self.n_entities, "n_missing": self.n_missing,
+                "n_stale": self.n_stale, "n_current": self.n_current,
+                "stale_fraction": round(self.stale_fraction, 6),
+                "missing_fraction": round(self.missing_fraction, 6),
+                "worst_quarters_behind": self.worst_quarters_behind,
+                "quantiles": self.quantiles}
+
+
+def fundamentals_coverage(fiscal_by_entity: dict, today: dt.date, *,
+                          filing_lag_days: int, max_quarters_behind: int,
+                          quarter_days: int = FUND_QUARTER_DAYS) -> FundamentalsCoverage:
+    """PER-ENTITY coverage distribution of the fundamentals cross-section.
+
+    ``fiscal_by_entity``: ``{entity -> latest fiscal-period end | None}``. An entity is
+    STALE if MISSING (None) or ``q_behind >= max_quarters_behind``. Aggregates the
+    missing count, stale fraction, worst-case and quantiles — the distribution the
+    coverage gate enforces (NOT a single global maximum)."""
+    n = len(fiscal_by_entity)
+    present_behind: list[int] = []
+    n_missing = 0
+    for _ent, fpe in fiscal_by_entity.items():
+        qb = entity_quarters_behind(fpe, today, filing_lag_days, quarter_days)
+        if qb is None:
+            n_missing += 1
+        else:
+            present_behind.append(int(qb))
+    n_behind = sum(1 for q in present_behind if q >= max_quarters_behind)
+    n_current = sum(1 for q in present_behind if q < max_quarters_behind)
+    n_stale = n_missing + n_behind
+    worst = max(present_behind) if present_behind else None
+    return FundamentalsCoverage(
+        n_entities=n, n_missing=n_missing, n_stale=n_stale, n_current=n_current,
+        stale_fraction=(n_stale / n if n else 1.0),
+        missing_fraction=(n_missing / n if n else 1.0),
+        worst_quarters_behind=worst, quantiles=_quantiles(present_behind))
 
 
 def fundamentals_sla_verdict(source: dict, now: dt.date, *,
                              feed_max_date: dt.date | None,
-                             fiscal_period_date: dt.date | None,
-                             fiscal_field_present: bool,
+                             fiscal_by_entity: dict | None,
+                             provenance_present: bool,
                              max_feed_stale_days: int,
                              filing_lag_days: int,
                              max_quarters_behind: int,
+                             max_stale_fraction: float,
+                             max_missing_fraction: float,
+                             max_worst_quarters_behind: int,
+                             min_entities: int,
+                             quarter_days: int = FUND_QUARTER_DAYS,
                              resolve_detail: str = "") -> SourceVerdict:
     """PURE two-axis judgement for the fundamentals source (P-FUND-FRESHNESS).
 
     ON-SLA only when BOTH axes hold:
       1. DAILY-FEED liveness: ``feed_age = now - feed_max_date`` within
          ``max_feed_stale_days`` (the daily forward-filled refresh is current).
-      2. QUARTERLY availability: a REAL fiscal-period/available-at field exists AND
-         the panel's fiscal quarter is < ``max_quarters_behind`` behind the
-         latest-expected-filed quarter. With no real fiscal field the quarter is
-         UNVERIFIABLE (the as-of ``date`` can be forward-filled current while the
-         10-Q is missing) -> FAIL CLOSED.
+      2. PER-ENTITY QUARTERLY coverage: real ENTITY id + fiscal-period/available-at
+         provenance exist (else UNVERIFIABLE -> fail closed), the cross-section has at
+         least ``min_entities`` names, and its coverage DISTRIBUTION clears the
+         preregistered policy — ``stale_fraction <= max_stale_fraction``,
+         ``missing_fraction <= max_missing_fraction`` and
+         ``worst_quarters_behind <= max_worst_quarters_behind``. A single global max
+         date is NOT sufficient: one fresh issuer must not certify a frozen panel.
     Any unresolved input fails closed (keep the old pin)."""
     name = source["name"]
     axis = source.get("axis", "slow")
@@ -460,60 +549,83 @@ def fundamentals_sla_verdict(source: dict, now: dt.date, *,
     feed_ok = feed_age <= max_feed_stale_days
     feed_fact = (f"daily feed as-of {feed_max_date.isoformat()} age={feed_age}d "
                  f"(max={max_feed_stale_days}d {'OK' if feed_ok else 'STALE'})")
-    if not fiscal_field_present:
+    if not provenance_present or fiscal_by_entity is None:
         return SourceVerdict(name, axis, max_feed_stale_days, feed_max_date, feed_age, False,
-                             detail=f"{feed_fact}; QUARTERLY UNVERIFIABLE — no real "
-                                    f"fiscal-period/available-at field ({resolve_detail}); "
-                                    f"fail-closed until one exists (as-of date alone cannot "
-                                    f"establish the fiscal quarter)")
-    if fiscal_period_date is None:
-        return SourceVerdict(name, axis, max_feed_stale_days, feed_max_date, feed_age, False,
-                             detail=f"{feed_fact}; fiscal-period column present but unreadable "
-                                    f"({resolve_detail}) — fail-closed")
-    n_behind, expected_q, panel_q = quarters_behind(fiscal_period_date, now, filing_lag_days)
-    quarter_ok = n_behind is not None and n_behind < max_quarters_behind
+                             detail=f"{feed_fact}; QUARTERLY UNVERIFIABLE — no per-entity "
+                                    f"fiscal-period/available-at provenance ({resolve_detail}); "
+                                    f"fail-closed until it exists (a single global max date, or "
+                                    f"the as-of date alone, cannot establish cross-section "
+                                    f"freshness)")
+    cov = fundamentals_coverage(fiscal_by_entity, now, filing_lag_days=filing_lag_days,
+                                max_quarters_behind=max_quarters_behind,
+                                quarter_days=quarter_days)
+    reasons: list[str] = []
+    if cov.n_entities < min_entities:
+        reasons.append(f"too few entities ({cov.n_entities}<{min_entities}) to certify coverage")
+    if cov.missing_fraction > max_missing_fraction:
+        reasons.append(f"missing_frac={cov.missing_fraction:.3f}>{max_missing_fraction}")
+    if cov.stale_fraction > max_stale_fraction:
+        reasons.append(f"stale_frac={cov.stale_fraction:.3f}>{max_stale_fraction}")
+    if cov.worst_quarters_behind is not None \
+            and cov.worst_quarters_behind > max_worst_quarters_behind:
+        reasons.append(f"worst={cov.worst_quarters_behind}q>{max_worst_quarters_behind}")
+    quarter_ok = not reasons
     on_sla = feed_ok and quarter_ok
-    quarter_fact = (f"fiscal {panel_q.isoformat() if isinstance(panel_q, dt.date) else '?'} "
-                    f"vs expected-filed "
-                    f"{expected_q.isoformat() if isinstance(expected_q, dt.date) else '?'} "
-                    f"({n_behind} q behind, lag={filing_lag_days}d, "
-                    f"{'OK' if quarter_ok else 'BEHIND'})")
+    coverage_fact = (f"coverage n={cov.n_entities} current={cov.n_current} "
+                     f"missing={cov.n_missing} stale={cov.n_stale} "
+                     f"stale_frac={cov.stale_fraction:.3f}(max={max_stale_fraction}) "
+                     f"worst={cov.worst_quarters_behind}q q={cov.quantiles} "
+                     f"{'OK' if quarter_ok else 'STALE-COVERAGE: ' + '; '.join(reasons)}")
     return SourceVerdict(name, axis, max_feed_stale_days, feed_max_date, feed_age, on_sla,
-                         detail=f"{feed_fact}; {quarter_fact} "
-                                f"{'OK' if on_sla else 'OFF-SLA'}")
+                         detail=f"{feed_fact}; {coverage_fact} "
+                                f"{'OK' if on_sla else 'OFF-SLA'}",
+                         coverage=cov.as_dict())
 
 
 def resolve_fundamentals_verdict(repo: Path, source: dict, now: dt.date) -> SourceVerdict:
-    """I/O wrapper: read the fundamentals parquet's daily as-of date AND a real
-    fiscal-period/available-at column, then apply ``fundamentals_sla_verdict``.
-    All read failures fail closed (keep the old pin)."""
-    max_feed_stale = int(source.get("max_feed_stale_days", FUND_MAX_FEED_STALE_DAYS))
-    filing_lag = int(source.get("filing_lag_days", FUND_FILING_LAG_DAYS))
-    max_qb = int(source.get("max_quarters_behind", FUND_MAX_QUARTERS_BEHIND))
+    """I/O wrapper: read the fundamentals parquet's daily as-of date AND a PER-ENTITY
+    (entity id x fiscal-period/available-at) cross-section, then apply
+    ``fundamentals_sla_verdict``. All read failures fail closed (keep the old pin)."""
+    kw = dict(
+        max_feed_stale_days=int(source.get("max_feed_stale_days", FUND_MAX_FEED_STALE_DAYS)),
+        filing_lag_days=int(source.get("filing_lag_days", FUND_FILING_LAG_DAYS)),
+        max_quarters_behind=int(source.get("max_quarters_behind", FUND_MAX_QUARTERS_BEHIND)),
+        max_stale_fraction=float(source.get("max_stale_fraction", FUND_MAX_STALE_FRACTION)),
+        max_missing_fraction=float(source.get("max_missing_fraction", FUND_MAX_MISSING_FRACTION)),
+        max_worst_quarters_behind=int(source.get("max_worst_quarters_behind",
+                                                 FUND_MAX_WORST_QUARTERS_BEHIND)),
+        min_entities=int(source.get("min_entities", FUND_MIN_ENTITIES)),
+        quarter_days=int(source.get("quarter_days", FUND_QUARTER_DAYS)))
+    entity_cols = source.get("entity_cols") or DEFAULT_ENTITY_COLS
     fiscal_cols = source.get("fiscal_period_cols") or DEFAULT_FISCAL_PERIOD_COLS
     date_col = source.get("date_col", "date")
-    kw = dict(max_feed_stale_days=max_feed_stale, filing_lag_days=filing_lag,
-              max_quarters_behind=max_qb)
+
+    def _verdict(feed_max, fiscal_by_entity, provenance_present, detail):
+        return fundamentals_sla_verdict(
+            source, now, feed_max_date=feed_max, fiscal_by_entity=fiscal_by_entity,
+            provenance_present=provenance_present, resolve_detail=detail, **kw)
+
     p = _source_path(repo, source)
     if not p.exists():
-        return fundamentals_sla_verdict(source, now, feed_max_date=None,
-                                        fiscal_period_date=None, fiscal_field_present=False,
-                                        resolve_detail="file missing", **kw)
+        return _verdict(None, None, False, "file missing")
     cols = _parquet_columns(p)
     if cols is None:
-        return fundamentals_sla_verdict(source, now, feed_max_date=None,
-                                        fiscal_period_date=None, fiscal_field_present=False,
-                                        resolve_detail="parquet schema unreadable", **kw)
+        return _verdict(None, None, False, "parquet schema unreadable")
     feed_max = _read_parquet_max_date(p, date_col)
+    entity_col = next((c for c in entity_cols if c in cols), None)
     fiscal_col = next((c for c in fiscal_cols if c in cols), None)
-    if fiscal_col is None:
-        return fundamentals_sla_verdict(source, now, feed_max_date=feed_max,
-                                        fiscal_period_date=None, fiscal_field_present=False,
-                                        resolve_detail=f"columns={sorted(cols)[:8]}", **kw)
-    fiscal_date = _read_parquet_max_date(p, fiscal_col)
-    return fundamentals_sla_verdict(source, now, feed_max_date=feed_max,
-                                    fiscal_period_date=fiscal_date, fiscal_field_present=True,
-                                    resolve_detail=f"fiscal_col={fiscal_col}", **kw)
+    if entity_col is None or fiscal_col is None:
+        return _verdict(feed_max, None, False,
+                        f"no per-entity provenance (entity_col={entity_col}, "
+                        f"fiscal_col={fiscal_col}, columns={sorted(cols)[:8]})")
+    fiscal_by_entity = _read_parquet_max_by_group(p, entity_col, fiscal_col)
+    if fiscal_by_entity is None:
+        return _verdict(feed_max, None, False,
+                        f"entity/fiscal columns unreadable "
+                        f"(entity_col={entity_col}, fiscal_col={fiscal_col})")
+    return _verdict(feed_max, fiscal_by_entity, True,
+                    f"entity_col={entity_col} fiscal_col={fiscal_col} "
+                    f"n_entities={len(fiscal_by_entity)}")
 
 
 def resolve_pin_path(pin: str, config_path: Path, repo: Path) -> Path:

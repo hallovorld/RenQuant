@@ -368,65 +368,144 @@ class TestResolveDataCutoffFailsClosed:
         assert M.resolve_data_cutoff(tmp_path, src) == dt.date(2026, 6, 25)
 
 
-# --- fundamentals TWO-AXIS (quarterly availability) -------------------------
+# --- fundamentals TWO-AXIS, per-ENTITY coverage -----------------------------
+# Codex #419 review 2: a single global max fiscal date lets ONE fresh issuer certify a
+# frozen panel. Freshness is per-entity (own fiscal-period end, no calendar snapping)
+# gated on a preregistered COVERAGE DISTRIBUTION.
 
-class TestFundamentalsTwoAxis:
+def _fund_src(**over):
+    s = {"name": "fundamentals", "axis": "slow"}
+    s.update(over)
+    return s
+
+
+class TestEntityQuartersBehind:
     _NOW = dt.date(2026, 6, 30)
-    _KW = dict(max_feed_stale_days=20, filing_lag_days=45, max_quarters_behind=1)
 
-    def test_latest_expected_filed_quarter(self):
-        # Late June: Q1 (Mar 31) is expected filed; Q2 (Jun 30) is not yet due.
-        assert M.latest_expected_filed_quarter(self._NOW, 45) == dt.date(2026, 3, 31)
+    def test_calendar_current_is_zero_behind(self):
+        # Calendar FY: latest period Mar-31 (Q1) is current on late June.
+        assert M.entity_quarters_behind(dt.date(2026, 3, 31), self._NOW, 45) == 0
 
-    def test_quarters_behind_fresh_at_expected(self):
-        n, exp_q, panel_q = M.quarters_behind(dt.date(2026, 3, 31), self._NOW, 45)
-        assert n == 0 and exp_q == dt.date(2026, 3, 31)
+    def test_calendar_one_quarter_stale(self):
+        # Stuck at Q4-2025 -> 1 quarter behind.
+        assert M.entity_quarters_behind(dt.date(2025, 12, 31), self._NOW, 45) == 1
 
-    def test_quarters_behind_one_quarter_stale(self):
-        # Panel stuck at Q4-2025 while Q1-2026 is expected -> 1 behind.
-        n, exp_q, panel_q = M.quarters_behind(dt.date(2025, 12, 31), self._NOW, 45)
-        assert n == 1 and exp_q == dt.date(2026, 3, 31) and panel_q == dt.date(2025, 12, 31)
+    def test_calendar_two_quarters_stale(self):
+        assert M.entity_quarters_behind(dt.date(2025, 9, 30), self._NOW, 45) == 2
 
-    def test_verdict_no_fiscal_field_fails_closed(self):
-        # A current daily feed but NO real fiscal-period field -> unverifiable ->
-        # fail closed (the as-of date alone cannot establish the fiscal quarter).
+    def test_non_calendar_fiscal_year_current(self):
+        # Jan-FYE issuer: quarters end Apr/Jul/Oct/Jan. Latest = Apr-30 (61d) is current
+        # WITHOUT any calendar-quarter snapping — the reviewer's non-calendar case.
+        assert M.entity_quarters_behind(dt.date(2026, 4, 30), self._NOW, 45) == 0
+
+    def test_non_calendar_fiscal_year_stale(self):
+        # Same issuer stuck at Jan-31 (missed the Apr-30 quarter) -> 1 behind.
+        assert M.entity_quarters_behind(dt.date(2026, 1, 31), self._NOW, 45) == 1
+
+    def test_missing_is_none(self):
+        assert M.entity_quarters_behind(None, self._NOW, 45) is None
+
+    def test_future_dated_is_zero(self):
+        assert M.entity_quarters_behind(dt.date(2026, 9, 30), self._NOW, 45) == 0
+
+
+class TestFundamentalsCoverage:
+    _NOW = dt.date(2026, 6, 30)
+
+    def test_one_fresh_many_stale_is_almost_all_stale(self):
+        # The reviewer's regression at the distribution level: 1 current + 291 stale.
+        fbe = {"FRESH": dt.date(2026, 3, 31)}
+        fbe.update({f"S{i}": dt.date(2025, 12, 31) for i in range(291)})
+        cov = M.fundamentals_coverage(fbe, self._NOW, filing_lag_days=45,
+                                      max_quarters_behind=1)
+        assert cov.n_entities == 292 and cov.n_current == 1
+        assert cov.n_stale == 291 and cov.stale_fraction > 0.99
+        assert cov.worst_quarters_behind == 1
+
+    def test_all_current(self):
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(100)}
+        cov = M.fundamentals_coverage(fbe, self._NOW, filing_lag_days=45,
+                                      max_quarters_behind=1)
+        assert cov.stale_fraction == 0.0 and cov.missing_fraction == 0.0
+
+    def test_missing_counts_as_stale(self):
+        fbe = {"A": dt.date(2026, 3, 31), "B": None, "C": None, "D": None}
+        cov = M.fundamentals_coverage(fbe, self._NOW, filing_lag_days=45,
+                                      max_quarters_behind=1)
+        assert cov.n_missing == 3 and cov.n_stale == 3
+        assert cov.missing_fraction == pytest.approx(0.75)
+
+
+class TestFundamentalsVerdict:
+    _NOW = dt.date(2026, 6, 30)
+    _KW = dict(max_feed_stale_days=20, filing_lag_days=45, max_quarters_behind=1,
+               max_stale_fraction=0.05, max_missing_fraction=0.02,
+               max_worst_quarters_behind=1, min_entities=1)
+
+    def test_no_provenance_fails_closed(self):
+        # Current daily feed but NO per-entity fiscal/available-at provenance ->
+        # UNVERIFIABLE -> fail closed (a global max cannot establish freshness).
         v = M.fundamentals_sla_verdict(
-            {"name": "fundamentals", "axis": "slow"}, self._NOW,
-            feed_max_date=dt.date(2026, 6, 29), fiscal_period_date=None,
-            fiscal_field_present=False, **self._KW)
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 6, 29),
+            fiscal_by_entity=None, provenance_present=False, **self._KW)
         assert not v.on_sla and "UNVERIFIABLE" in v.detail
 
-    def test_verdict_current_asof_overdue_quarter_fails_closed(self):
-        # (d) daily feed CURRENT (age 1d, passes dimension 1) but the real fiscal
-        # period is stuck at Q4-2025 while Q1-2026 is expected -> BEHIND -> off-SLA.
+    def test_one_fresh_291_stale_fails_closed(self):
+        # THE reviewer's regression: 1 Q1-current + 291 Q4-stale MUST fail, even
+        # though a global max(fiscal) would read Q1 (fresh).
+        fbe = {"FRESH": dt.date(2026, 3, 31)}
+        fbe.update({f"S{i}": dt.date(2025, 12, 31) for i in range(291)})
         v = M.fundamentals_sla_verdict(
-            {"name": "fundamentals", "axis": "slow"}, self._NOW,
-            feed_max_date=dt.date(2026, 6, 29), fiscal_period_date=dt.date(2025, 12, 31),
-            fiscal_field_present=True, **self._KW)
-        assert not v.on_sla and "BEHIND" in v.detail
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 6, 29),
+            fiscal_by_entity=fbe, provenance_present=True,
+            **{**self._KW, "min_entities": 50})
+        assert not v.on_sla and "STALE-COVERAGE" in v.detail
+        assert v.coverage["n_current"] == 1 and v.coverage["stale_fraction"] > 0.99
 
-    def test_verdict_current_asof_current_quarter_passes(self):
-        # Real fiscal field at the latest-expected quarter AND live feed -> on-SLA.
+    def test_all_current_passes(self):
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(100)}
         v = M.fundamentals_sla_verdict(
-            {"name": "fundamentals", "axis": "slow"}, self._NOW,
-            feed_max_date=dt.date(2026, 6, 29), fiscal_period_date=dt.date(2026, 3, 31),
-            fiscal_field_present=True, **self._KW)
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 6, 29),
+            fiscal_by_entity=fbe, provenance_present=True, **self._KW)
         assert v.on_sla
 
-    def test_verdict_stale_daily_feed_fails_even_if_quarter_ok(self):
-        # Fiscal quarter current, but the daily feed stopped 90d ago -> off-SLA.
+    def test_stale_daily_feed_fails_even_if_coverage_ok(self):
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(100)}
         v = M.fundamentals_sla_verdict(
-            {"name": "fundamentals", "axis": "slow"}, self._NOW,
-            feed_max_date=dt.date(2026, 3, 31), fiscal_period_date=dt.date(2026, 3, 31),
-            fiscal_field_present=True, **self._KW)
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 3, 31),
+            fiscal_by_entity=fbe, provenance_present=True, **self._KW)
         assert not v.on_sla and "STALE" in v.detail
 
-    def test_resolve_verdict_missing_fiscal_column_fails_closed(self, tmp_path):
-        # A parquet with only the daily as-of ``date`` (the real prod schema today)
-        # -> quarterly unverifiable -> fail closed.
+    def test_too_few_entities_fails_closed(self):
+        # A tiny cross-section (1 fresh issuer) must not certify the panel.
+        v = M.fundamentals_sla_verdict(
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 6, 29),
+            fiscal_by_entity={"ONLY": dt.date(2026, 3, 31)}, provenance_present=True,
+            **{**self._KW, "min_entities": 50})
+        assert not v.on_sla and "too few entities" in v.detail
+
+    def test_worst_case_outlier_fails_even_if_fraction_ok(self):
+        # 199 current + 1 deeply-stale (3 quarters behind): stale_fraction tiny but the
+        # worst-case cap catches the outlier.
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(199)}
+        fbe["OUTLIER"] = dt.date(2025, 6, 30)  # ~3 quarters behind
+        v = M.fundamentals_sla_verdict(
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 6, 29),
+            fiscal_by_entity=fbe, provenance_present=True,
+            **{**self._KW, "min_entities": 50, "max_stale_fraction": 0.10})
+        assert not v.on_sla and "worst=" in v.detail
+
+
+class TestResolveFundamentalsVerdict:
+    _NOW = dt.date(2026, 6, 30)
+
+    def test_only_daily_date_no_fiscal_column_fails_closed(self, tmp_path):
+        # The real prod schema today (ticker + daily as-of ``date`` + features, NO
+        # fiscal-period column) -> per-entity coverage UNVERIFIABLE -> fail closed.
         pd = pytest.importorskip("pandas")
         p = _write_parquet(tmp_path / "fund.parquet",
-                           {"date": pd.to_datetime(["2026-06-28", "2026-06-29"]),
+                           {"ticker": ["A", "B"],
+                            "date": pd.to_datetime(["2026-06-28", "2026-06-29"]),
                             "book_to_price": [0.5, 0.5]})
         src = {"name": "fundamentals", "path": str(p), "axis": "slow",
                "kind": "fundamentals", "date_col": "date",
@@ -434,18 +513,46 @@ class TestFundamentalsTwoAxis:
         v = M.resolve_fundamentals_verdict(tmp_path, src, self._NOW)
         assert not v.on_sla and "UNVERIFIABLE" in v.detail
 
-    def test_resolve_verdict_current_asof_overdue_fiscal_fails_closed(self, tmp_path):
-        # (d) end-to-end read path: current as-of ``date`` + a real ``period_end``
-        # column stuck at Q4-2025 -> off-SLA.
+    def test_no_entity_column_fails_closed(self, tmp_path):
+        # A fiscal column but NO entity id -> per-entity coverage UNVERIFIABLE.
         pd = pytest.importorskip("pandas")
         p = _write_parquet(tmp_path / "fund.parquet",
                            {"date": pd.to_datetime(["2026-06-28", "2026-06-29"]),
-                            "period_end": pd.to_datetime(["2025-12-31", "2025-12-31"])})
+                            "period_end": pd.to_datetime(["2026-03-31", "2026-03-31"])})
         src = {"name": "fundamentals", "path": str(p), "axis": "slow",
                "kind": "fundamentals", "date_col": "date",
-               "fiscal_period_cols": ["period_end"]}
+               "entity_cols": ["ticker"], "fiscal_period_cols": ["period_end"]}
         v = M.resolve_fundamentals_verdict(tmp_path, src, self._NOW)
-        assert not v.on_sla and "BEHIND" in v.detail
+        assert not v.on_sla and "UNVERIFIABLE" in v.detail
+
+    def test_per_entity_one_fresh_many_stale_fails_closed(self, tmp_path):
+        # (KEY end-to-end regression) 1 ticker Q1-current + 291 tickers Q4-stale.
+        pd = pytest.importorskip("pandas")
+        tickers = ["FRESH"] + [f"S{i}" for i in range(291)]
+        periods = [dt.date(2026, 3, 31)] + [dt.date(2025, 12, 31)] * 291
+        p = _write_parquet(tmp_path / "fund.parquet",
+                           {"ticker": tickers, "date": [dt.date(2026, 6, 29)] * 292,
+                            "period_end": pd.to_datetime(periods)})
+        src = {"name": "fundamentals", "path": str(p), "axis": "slow",
+               "kind": "fundamentals", "date_col": "date",
+               "entity_cols": ["ticker"], "fiscal_period_cols": ["period_end"],
+               "min_entities": 50}
+        v = M.resolve_fundamentals_verdict(tmp_path, src, self._NOW)
+        assert not v.on_sla and "STALE-COVERAGE" in v.detail
+        assert v.coverage["n_entities"] == 292 and v.coverage["n_current"] == 1
+
+    def test_per_entity_all_current_passes(self, tmp_path):
+        pd = pytest.importorskip("pandas")
+        tickers = [f"T{i}" for i in range(60)]
+        p = _write_parquet(tmp_path / "fund.parquet",
+                           {"ticker": tickers, "date": [dt.date(2026, 6, 29)] * 60,
+                            "period_end": pd.to_datetime([dt.date(2026, 3, 31)] * 60)})
+        src = {"name": "fundamentals", "path": str(p), "axis": "slow",
+               "kind": "fundamentals", "date_col": "date",
+               "entity_cols": ["ticker"], "fiscal_period_cols": ["period_end"],
+               "min_entities": 50}
+        v = M.resolve_fundamentals_verdict(tmp_path, src, self._NOW)
+        assert v.on_sla
 
 
 # --- run_promote integration: pin unchanged in every fail-closed case -------
@@ -507,28 +614,34 @@ def test_promote_keeps_pin_on_freshly_touched_old_data(tmp_path, monkeypatch):
     assert cfg.read_text() == before
 
 
-def test_promote_keeps_pin_on_current_asof_overdue_fiscal_quarter(tmp_path, monkeypatch):
+def test_promote_keeps_pin_on_one_fresh_many_stale_fundamentals(tmp_path, monkeypatch):
+    # The reviewer's explicit end-to-end regression: 1 ticker Q1-current + 291 tickers
+    # Q4-stale -> the pin MUST stay unchanged (a single fresh issuer must not promote a
+    # challenger trained on a frozen fundamentals cross-section).
     pd = pytest.importorskip("pandas")
     monkeypatch.setattr(M, "REPO", tmp_path)
-    # A FRESH fast source (so freshness fails ONLY on the fundamentals quarterly axis).
+    # A FRESH fast source (so freshness fails ONLY on the fundamentals coverage axis).
     _write_parquet(tmp_path / "panel.parquet",
                    {"date": pd.to_datetime(["2026-06-28", "2026-06-29"])})
-    # Fundamentals: current daily as-of date, but the real fiscal period is overdue.
+    tickers = ["FRESH"] + [f"S{i}" for i in range(291)]
+    periods = [dt.date(2026, 3, 31)] + [dt.date(2025, 12, 31)] * 291
     _write_parquet(tmp_path / "fund.parquet",
-                   {"date": pd.to_datetime(["2026-06-28", "2026-06-29"]),
-                    "period_end": pd.to_datetime(["2025-12-31", "2025-12-31"])})
+                   {"ticker": tickers, "date": [dt.date(2026, 6, 29)] * 292,
+                    "period_end": pd.to_datetime(periods)})
     sources = [
         {"name": "panel", "path": "panel.parquet", "axis": "fast",
          "sla_days": 28, "date_col": "date"},
         {"name": "fundamentals", "path": "fund.parquet", "axis": "slow",
-         "kind": "fundamentals", "date_col": "date", "fiscal_period_cols": ["period_end"]},
+         "kind": "fundamentals", "date_col": "date", "entity_cols": ["ticker"],
+         "fiscal_period_cols": ["period_end"], "min_entities": 50},
     ]
     args, cfg = _promote_setup(tmp_path, sources)
     before = cfg.read_text()
     rep = M.run_promote(args)
     assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
-    assert cfg.read_text() == before
+    assert cfg.read_text() == before  # pin unchanged
     fund_v = next(v for v in rep.source_verdicts if v.name == "fundamentals")
-    assert not fund_v.on_sla and "BEHIND" in fund_v.detail
+    assert not fund_v.on_sla and "STALE-COVERAGE" in fund_v.detail
+    assert fund_v.coverage["n_current"] == 1 and fund_v.coverage["n_entities"] == 292
     panel_v = next(v for v in rep.source_verdicts if v.name == "panel")
     assert panel_v.on_sla  # the fast source IS fresh; only fundamentals blocks
