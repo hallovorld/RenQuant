@@ -16,7 +16,15 @@
 #   2. Run renquant_model_gbdt.fit_calibrator_alpha158_fund against the
 #      active production model
 #   3. Test scorer + new calibrator produces sane (P, E[R]) on synthetic
-#      input — abort if calibrator collapsed (n_unique_prob_y < floor)
+#      input — abort if calibrator collapsed (n_unique_prob_y < floor) or
+#      pool_ic regressed vs baseline
+#   3b. 2026-07-01 fix: verify the calibrator's stamped fingerprint actually
+#      BINDS to what the live runtime will compute for the active scorer
+#      (runtime-authoritative `PanelScorer.load` + `_any_fingerprints_match`
+#      from renquant-pipeline — the same contract
+#      `_assert_calibrator_matches_scorer` enforces at runtime). A calibrator
+#      can pass Step 3's quality gate and still be bound to the wrong scorer;
+#      this is a separate, additional gate, not a replacement.
 #   4. ntfy summary — n knots, score → P(out) range
 set -uo pipefail
 
@@ -78,7 +86,11 @@ source "$REPO_DIR/scripts/subrepo_env.sh"
 renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
-export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-common renquant-base-data renquant-artifacts):${PYTHONPATH:-}"
+# 2026-07-01: renquant-pipeline added so Step 3b can import the
+# runtime-authoritative PanelScorer loader + fingerprint-match helpers
+# (kernel/panel_pipeline/{panel_scorer,job_panel_scoring}.py) — the same
+# modules daily_104.sh / weekly_wf_promote.sh already put on PYTHONPATH.
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-model renquant-common renquant-base-data renquant-artifacts renquant-pipeline):${PYTHONPATH:-}"
 MONTHLY_CALIBRATOR_STRICT=0
 if renquant_strict_enabled RQ_MONTHLY_CALIBRATOR_STRICT; then
     MONTHLY_CALIBRATOR_STRICT=1
@@ -278,6 +290,64 @@ pool_ic = md.get('pool_ic', '—')
 print(f'knots: prob={n_knots_p} er={n_knots_e}  n_unique_prob_y={n_uniq}  pool_ic={pool_ic}')
 " 2>/dev/null || echo "calibrator info unavailable")
 echo "Calibrator state: $CAL_INFO"
+
+# ── Step 3b: Scorer/calibrator BINDING check (defense-in-depth) ──────────
+# 2026-07-01 incident: this calibrator passed Step 3's pool_ic/n_unique
+# quality gate above, then fail-closed the live daily-full at runtime,
+# because `_assert_calibrator_matches_scorer` (job_panel_scoring.py)
+# rejected it — fit_calibrator_alpha158_fund.py's stamped
+# scorer_model_content_fingerprint used a DIFFERENT model_content_sha256
+# field-set than the runtime's own check, so a calibrator fit here could
+# never bind to the live scorer, by construction. Step 3 never exercised
+# that contract, so the mismatch shipped silently.
+#
+# Root cause is being fixed at the source: renquant-common#18 (canonical
+# model_content_sha256) + renquant-pipeline#155 + renquant-model#40 (both
+# consumers import the shared function instead of hand-copying it). This
+# step is defense-in-depth on top of that fix: it runs the SAME
+# runtime-authoritative loader (PanelScorer.load) and match logic
+# (_any_fingerprints_match / _fingerprint_values, imported — not
+# reimplemented — from renquant_pipeline.kernel.panel_pipeline) so ANY
+# future re-divergence, or any other cause of a scorer/calibrator
+# mismatch, is caught HERE before publish — not after it blocks live
+# trading. Keeps working regardless of which of those three PRs lands
+# first (see scripts/verify_calibrator_scorer_binding.py docstring).
+#
+# This is a DIFFERENT failure mode than Step 3's pool_ic/n_unique_prob_y
+# quality-regression gate: a calibrator can have excellent pool_ic and
+# still be bound to the wrong scorer — that is exactly what happened
+# 2026-07-01. FAILS CLOSED (treated as a gate failure, never a silent
+# skip) if the runtime-authoritative loader isn't importable — a check
+# that exists-but-skips-silently is exactly the failure mode that let
+# today's incident through.
+echo "--- Step 3b: Validate scorer/calibrator binding (runtime-authoritative) ---"
+BINDING_VERDICT=$("$PYTHON" scripts/verify_calibrator_scorer_binding.py \
+    --scorer "$PROD_SCORER" --calibrator "$PROD_CAL" --json 2>&1)
+BINDING_RC=$?
+echo "$BINDING_VERDICT"
+if [ $BINDING_RC -ne 0 ]; then
+    if [ $BINDING_RC -eq 2 ]; then
+        BINDING_REASON="binding check could not run (runtime-authoritative loader unavailable — failed CLOSED, not skipped)"
+    else
+        BINDING_REASON="calibrator/scorer BINDING MISMATCH (a DIFFERENT failure than Step 3's pool_ic/n_unique quality gate, which already passed above — this calibrator is bound to the wrong scorer, not merely lower-quality)"
+    fi
+    echo "SCORER/CALIBRATOR BINDING GATE FAILED: $BINDING_REASON"
+    echo "Rolling back to baseline calibrator."
+    if [ -f "$ROLLBACK_CAL" ]; then
+        # ATOMIC rollback (audit P0-16)
+        cp "$ROLLBACK_CAL" "$PROD_CAL.tmp" && mv "$PROD_CAL.tmp" "$PROD_CAL"
+        # Smoke test the rollback too
+        if "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104 >/dev/null 2>&1; then
+            notify "RenQuant 104 MONTHLY-REJECT" "Calibrator REJECTED: $BINDING_REASON. Rolled back to prior."
+        else
+            notify "RenQuant 104 MONTHLY-CRITICAL" "Calibrator rejected (binding mismatch) AND rollback failed smoke. Operator action REQUIRED."
+        fi
+    else
+        notify "RenQuant 104 MONTHLY-CRITICAL" "Calibrator rejected (binding mismatch) and no rollback baseline available. Operator action REQUIRED."
+    fi
+    exit 1
+fi
+echo "Binding gate: OK — calibrator fingerprint matches the runtime-computed active scorer fingerprint."
 
 # ── Step 4: Refresh dashboard so monthly cadence is visible ──────────────
 "$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \
