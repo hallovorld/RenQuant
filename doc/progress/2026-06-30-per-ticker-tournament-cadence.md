@@ -96,3 +96,70 @@ Then point the orchestrator freshness monitor (PR #213) at
 `backtesting/renquant_104/models/.last_tournament_retrain.json`. The separate
 renquant-strategy-104 PR #37 (parallel_ticker_timeout_seconds 600→2400) fixes
 the timeout bug that made the tournament retrain fail even when run manually.
+
+## Round 2 (Codex CHANGES_REQUESTED, same thread, 2026-06-30 → addressed 2026-07-01)
+
+Codex's second pass on `scripts/tournament_retrain_marker.py` named four
+residual gaps in round-1's `mtime >= LAUNCH_EPOCH` + 0.90-floor design — each
+closed here, all with new/updated unit tests:
+
+  1. **No pre-run baseline → mtime alone proved nothing about training.** A
+     no-op writer / `cp -p` restamp / failed run rewriting IDENTICAL bytes
+     with a fresh mtime still "succeeded". Fix: `capture_baseline()` (CLI
+     `--emit-baseline`) snapshots each expected ticker's digest + data cutoff
+     BEFORE launch. Post-run, `evaluate_ticker()` now requires the digest to
+     have **changed** vs that baseline, or the rewritten payload to carry an
+     explicit non-empty `no_change_reason` — an unexplained byte-identical
+     rewrite is a new terminal state, `unverified_no_change`, and blocks
+     certification. A rewritten cutoff older than the baseline is a second new
+     state, `cutoff_regressed`, also blocking.
+  2. **`trained_date` fallback reintroduced the wall-clock spoof.** Removed —
+     `live_train_end` is the ONLY accepted cutoff field now; a rewritten
+     artifact without it is `unparseable`.
+  3. **`--exit-code` was recorded but never enforced.** `build_marker_evidence`
+     now HARD-REQUIRES `exit_code == 0` as an independent, always-checked gate
+     — artifact freshness can never override a failed training process, even
+     under a direct/manual invocation of the marker script. The wrapper no
+     longer `exit 1`s before calling the marker on a non-zero `train_104.py`
+     rc; it threads the real `$RC` into `--exit-code` so the marker's OWN
+     logic (not shell control flow) is what refuses certification.
+  4. **The hard-coded 0.90 floor was an unregistered magic number.** Replaced
+     with an explicit `non_trainable` map (`ticker -> justification`),
+     validated (every key must be in the frozen watchlist; every reason
+     non-empty) and required at **100% coverage for everything else** (the
+     "trainable" set). `weekly_tournament_retrain.sh` derives the exclusion
+     set LIVE from `strategy_config.json` (`benchmark` + `sector_etf_map`
+     values + `defensive_tickers`, intersected with the frozen watchlist) so
+     it can never drift out of sync with watchlist/sector-map edits — on the
+     current 142-name watchlist this resolves to exactly 8 benchmark/sector
+     ETFs (SPY, GLD, XLE, XLF, XLI, XLK, XLU, XLY). Anything else missing
+     (e.g. a newly-added, not-yet-trained ticker) now correctly BLOCKS
+     certification instead of being silently tolerated under a floor — this
+     is a deliberate tightening: it surfaces a real coverage gap (round 1's
+     smoke test saw 9 missing, only 8 of which are ETFs) rather than masking
+     it.
+
+Schema bumped `tournament_retrain_marker/v1` → `v2` (evidence dict reshaped:
+`coverage`/`succeeded_count`/`stale_count`/... → `trainable_coverage`/
+`trainable_succeeded_count`/`sets.trainable_*`/`sets.excluded_*`, plus
+`exit_code`/`exit_code_ok`); no external consumer of the raw evidence dict
+exists yet (grepped both repos), only `trained_date`/`trained_date_source` at
+the top level, which are unchanged for monitor compatibility.
+
+EVIDENCE (round 2): `bash -n` clean, `shellcheck` clean (pre-existing SC2155/
+SC2064/SC2164 warnings on untouched lines only), `python -m py_compile` clean,
+`git diff --check` clean. `tests/test_tournament_retrain_marker.py` — 29 tests
+PASS (round-1's 12 plus new coverage for: trained_date-fallback removal,
+exit-code hard gate at both the function and CLI layer, baseline capture,
+digest-unchanged-without-reason blocks / with explicit reason certifies,
+digest-changed certifies, no-baseline-entry treated as first training,
+cutoff-regression blocks, non-trainable validation — unknown ticker /
+unjustified reason / excludes-entire-watchlist all refused — non-trainable
+missing tolerated but trainable missing still blocks, `--emit-baseline` /
+`--baseline` CLI round-trip end-to-end, and a regression guard that
+`min_coverage` is gone from the function signature). Full repo suite was not
+run against this fresh clone — no `.venv` was created, and the system
+`python3` (3.9.6) cannot even collect large parts of the existing suite
+(`kernel/config.py` uses PEP 604 `X | None` unconditionally, which needs
+3.10+); this is a pre-existing environment gap unrelated to this diff, not a
+regression it introduced.

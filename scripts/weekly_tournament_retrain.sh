@@ -58,28 +58,34 @@ LOG="$LOG_DIR/$DATE.log"
 # scanning 100+ per-ticker dirs. Co-located with the artifacts it describes.
 #
 # The marker is stamped by scripts/tournament_retrain_marker.py, which derives
-# completion evidence from the ARTIFACTS themselves (Codex review, PR #420): it
-# freezes the expected watchlist, checks each per-ticker metadata was REWRITTEN
-# this invocation (mtime >= LAUNCH_EPOCH, not a pre-existing orphan dir), records
-# per-ticker effective DATA CUTOFF + sha256 digest, and refuses to stamp unless a
-# pre-registered coverage policy is met. `trained_date` is bound to the min data
-# cutoff (artifact-derived), NOT the wall clock, and the marker carries explicit
-# PARTIAL status + min/max cutoff. Stamped ONLY when certified; on any failure it
-# is left untouched so its data cutoff keeps ageing → the monitor alerts too
-# (belt-and-suspenders with the loud ntfy).
+# completion evidence from the ARTIFACTS themselves (Codex review, PR #420,
+# both rounds): it freezes the expected watchlist, snapshots a PRE-RUN
+# baseline (per-ticker digest + data cutoff) before launch, checks each
+# per-ticker metadata was REWRITTEN this invocation (mtime >= LAUNCH_EPOCH,
+# not a pre-existing orphan dir) AND that its digest actually changed vs the
+# baseline (or carries an explicit no_change_reason — an unexplained
+# byte-identical rewrite does NOT certify), and requires the data cutoff to be
+# non-regressing. Certification also HARD-REQUIRES exit_code == 0 — a train
+# failure can never be overridden by artifact freshness. `trained_date` is
+# bound to the min data cutoff (artifact-derived), NOT the wall clock.
+# Stamped ONLY when certified; on any failure it is left untouched so its data
+# cutoff keeps ageing → the monitor alerts too (belt-and-suspenders with the
+# loud ntfy).
 MARKER="$REPO_DIR/backtesting/renquant_104/models/.last_tournament_retrain.json"
 MODELS_DIR="$REPO_DIR/backtesting/renquant_104/models"
 STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
 EXPECTED_WATCHLIST="$LOG_DIR/$DATE.expected_watchlist.json"
+EXPECTED_NON_TRAINABLE="$LOG_DIR/$DATE.expected_non_trainable.json"
+BASELINE_FILE="$LOG_DIR/$DATE.pre_run_baseline.json"
 
-# Pre-registered coverage policy (fraction of the frozen watchlist that must be
-# freshly rewritten to certify). NOT 1.0: a handful of watchlist entries are
-# benchmark / sector ETFs and newly-added names the per-ticker tournament does
-# not (yet) train — they surface as `missing` and are tolerated. The STRONG
-# regression guard is zero-stale: any previously-trained watchlist ticker not
-# rewritten this run blocks certification regardless of this floor, and a wiped
-# / mass-missing population drops coverage below the floor and also fails.
-MIN_COVERAGE="0.90"
+# Coverage policy (Codex review, PR #420 round 2): the hard-coded 0.90 floor
+# was an unregistered magic number that could silently mask up to ~14 missing
+# names. Replaced with an EXPLICIT, justified exclusion list — benchmark /
+# sector / defensive ETFs the per-ticker tournament intentionally does not
+# admit as portfolio candidates — derived LIVE from strategy_config.json
+# (`benchmark`, `sector_etf_map` values, `defensive_tickers`) so it can never
+# drift out of sync with watchlist/config edits. Every OTHER expected ticker
+# (the trainable set) is required at 100% coverage — zero tolerance.
 
 notify() {
     local title="$1" body="$2"
@@ -177,6 +183,60 @@ then
     exit 1
 fi
 
+# ── Freeze the intentional non-trainable exclusions BEFORE launch ────────────
+# Derived LIVE from strategy_config.json — never hand-maintained — so it can
+# never silently drift out of sync with watchlist/sector-map edits (Codex
+# review, PR #420 round 2: the prior 0.90 blanket floor was an unregistered
+# magic number). Each exclusion carries an explicit justification; every OTHER
+# expected ticker is the trainable set and is required at 100% coverage.
+echo "--- Freezing expected non-trainable exclusions from $STRATEGY_CONFIG ---"
+if ! "$PYTHON" - "$STRATEGY_CONFIG" "$EXPECTED_WATCHLIST" "$EXPECTED_NON_TRAINABLE" <<'PY'
+import json, sys
+cfg_path, wl_path, out_path = sys.argv[1:4]
+cfg = json.load(open(cfg_path))
+watchlist = set(json.load(open(wl_path))["watchlist"])
+
+benchmark = cfg.get("benchmark")
+sector_etfs = set(cfg.get("sector_etf_map", {}).values())
+defensive = set(cfg.get("defensive_tickers", []))
+
+reasons: dict[str, str] = {}
+if benchmark in watchlist:
+    reasons[benchmark] = "benchmark index (strategy_config.benchmark) — regime/relative-strength reference, not a per-ticker tournament admission candidate"
+for t in sorted(sector_etfs & watchlist):
+    if t not in reasons:
+        reasons[t] = "sector ETF (strategy_config.sector_etf_map value) — held for sector exposure/hedging, not a per-ticker tournament admission candidate"
+for t in sorted(defensive & watchlist):
+    if t not in reasons:
+        reasons[t] = "defensive/hedge ETF (strategy_config.defensive_tickers) — regime-defensive sleeve, not a per-ticker tournament admission candidate"
+
+json.dump(reasons, open(out_path, "w"), indent=2)
+print(f"Froze {len(reasons)} non-trainable exclusions (of {len(watchlist)} watchlist) → {out_path}")
+PY
+then
+    echo "=== weekly_tournament_retrain FAILED — could not freeze non-trainable exclusions ==="
+    notify "RenQuant 104 TOURNAMENT-RETRAIN ✗" \
+        "Weekly per-ticker tournament retrain ABORTED — could not freeze non-trainable exclusions from $STRATEGY_CONFIG. Log: $LOG"
+    exit 1
+fi
+
+# ── Snapshot the PRE-RUN baseline BEFORE launch ───────────────────────────────
+# Per-ticker digest + data cutoff for whatever is currently on disk (Codex
+# review, PR #420 round 2): mtime >= LAUNCH_EPOCH alone only proves a file was
+# touched, not that its bytes changed. The marker compares POST-run artifacts
+# against this baseline to require a genuine digest change (or an explicit
+# no_change_reason) with a non-regressing cutoff.
+echo "--- Snapshotting pre-run baseline (tournament_retrain_marker.py --emit-baseline) ---"
+if ! "$PYTHON" scripts/tournament_retrain_marker.py \
+        --models-dir "$MODELS_DIR" \
+        --watchlist "$EXPECTED_WATCHLIST" \
+        --emit-baseline "$BASELINE_FILE"; then
+    echo "=== weekly_tournament_retrain FAILED — could not snapshot pre-run baseline ==="
+    notify "RenQuant 104 TOURNAMENT-RETRAIN ✗" \
+        "Weekly per-ticker tournament retrain ABORTED — could not snapshot pre-run baseline. Log: $LOG"
+    exit 1
+fi
+
 # ── Retrain the per-ticker tournament ─────────────────────────────────────────
 # --skip-panel  : only the BaselineTournamentJob (panel/calibrator owned by
 #                 weekly_wf_promote.sh); auto-disables acceptance staging.
@@ -196,32 +256,39 @@ else
     RC=$?
 fi
 
+# NOTE: we deliberately do NOT `exit` here on RC != 0 (Codex review, PR #420
+# round 2: "the shell must also pass the actual train exit code into
+# certification and certification must require exit_code==0; artifact mtimes
+# alone cannot override process failure"). RC is threaded into
+# tournament_retrain_marker.py --exit-code below, which enforces exit_code==0
+# as its OWN independent, always-checked gate — not just a shell short-circuit
+# that a manual/partial invocation could bypass. We still fail loudly either
+# way; the log line below records the raw train_104.py outcome immediately.
 if [ "$RC" -ne 0 ]; then
-    echo "=== weekly_tournament_retrain FAILED at $(date) (rc=$RC) ==="
-    # FAIL LOUDLY — a silent failure is exactly what aged the tournament out.
-    notify "RenQuant 104 TOURNAMENT-RETRAIN ✗" \
-        "Weekly per-ticker tournament retrain FAILED (rc=$RC). Universe admission will drift stale — investigate now. Log: $LOG"
-    exit 1
+    echo "train_104.py exited rc=$RC at $(date) — proceeding to marker stamp so exit_code is bound into certification evidence; certification WILL be refused."
 fi
 
 # ── Stamp the artifact-derived completion marker (certified runs only) ─────────
 # train_104.py exiting 0 is necessary but NOT sufficient (Codex review, #420): a
 # partial / no-op run can still exit 0. tournament_retrain_marker.py re-derives
-# completion from the artifacts — per-ticker rewrite proof (mtime >= LAUNCH_EPOCH),
-# effective data cutoff, digest, and a coverage policy — and stamps the marker
-# ONLY when the frozen watchlist is genuinely covered. A non-zero exit here means
-# the retrain did NOT meet the coverage policy (stale / missing / unparseable),
-# so we FAIL LOUDLY and leave the prior marker untouched (its cutoff keeps ageing).
+# completion from the artifacts — per-ticker rewrite proof (mtime >= LAUNCH_EPOCH)
+# PLUS digest-identity-vs-baseline / non-regressing cutoff — and independently
+# HARD-REQUIRES --exit-code == 0 (round 2: the actual $RC is passed here even
+# when non-zero, so a train failure can never be overridden by artifact
+# freshness). Stamped ONLY when both the trainable set is 100% covered AND
+# exit_code is 0; otherwise we FAIL LOUDLY and leave the prior marker untouched
+# (its cutoff keeps ageing).
 COMPLETED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)
 echo "--- Stamping completion marker (tournament_retrain_marker.py) ---"
 if "$PYTHON" scripts/tournament_retrain_marker.py \
         --models-dir "$MODELS_DIR" \
         --watchlist "$EXPECTED_WATCHLIST" \
+        --non-trainable "$EXPECTED_NON_TRAINABLE" \
+        --baseline "$BASELINE_FILE" \
         --launch-epoch "$LAUNCH_EPOCH" \
         --run-id "$RUN_ID" \
         --marker "$MARKER" \
-        --min-coverage "$MIN_COVERAGE" \
         --exit-code "$RC" \
         --command "scripts/train_104.py --skip-panel --force" \
         --host "$HOSTNAME_SHORT" \
@@ -233,11 +300,14 @@ if "$PYTHON" scripts/tournament_retrain_marker.py \
         "Weekly per-ticker tournament retrain CERTIFIED (see $MARKER). Universe admission refreshed. Log: $LOG"
 else
     MRC=$?
-    echo "=== weekly_tournament_retrain FAILED at $(date) — completion NOT certified (marker rc=$MRC) ==="
-    # FAIL LOUDLY — train_104 exited 0 but the artifacts do not meet the coverage
-    # policy (partial / stale / no-op). This is exactly the silent-drift failure
+    echo "=== weekly_tournament_retrain FAILED at $(date) — completion NOT certified (train rc=$RC, marker rc=$MRC) ==="
+    # FAIL LOUDLY. Either train_104 itself failed (rc != 0, now hard-gated
+    # inside the marker's own certification logic, not just shell control
+    # flow) or it exited 0 but the artifacts do not meet the trainable-100%
+    # coverage / identity-change / non-regression policy (partial / stale /
+    # no-op / regressed). Either way this is exactly the silent-drift failure
     # this job exists to catch. Prior marker left untouched → monitor ages too.
     notify "RenQuant 104 TOURNAMENT-RETRAIN ✗" \
-        "Weekly per-ticker tournament retrain NOT CERTIFIED (train exited $RC, coverage policy unmet rc=$MRC). Universe admission is stale/partial — investigate now. Log: $LOG"
+        "Weekly per-ticker tournament retrain NOT CERTIFIED (train exited $RC, certification rc=$MRC). Universe admission is stale/partial — investigate now. Log: $LOG"
     exit 1
 fi
