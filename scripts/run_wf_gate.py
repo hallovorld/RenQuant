@@ -26,6 +26,19 @@ Walk-forward criteria (default):
   - time-shift placebo IC: ratio < 0.5 × aligned real IC (placebo should not
     capture the same signal on the same evaluable rows)
 
+Placebo evaluation mode (opt-in, OFF BY DEFAULT):
+  The default ``absolute`` mode uses the ceiling above. It is structurally
+  unsatisfiable for the daily-sampled 60-day-horizon label: the overlapping
+  label is autocorrelated at the 2×horizon gate shift, so the time-shift
+  placebo carries a ~+0.04 persistence floor that exceeds 0.5×aligned_real_ic
+  regardless of model quality (see doc/research/2026-06-10-m6-placebo-gate-verdict.md).
+  An opt-in ``difference`` mode instead requires a genuine edge ABOVE that
+  floor: ``aligned_real_ic - placebo_ic > margin`` (pre-registered margin,
+  default +0.01 per the M6 genuine_ic_floor). Selected only via
+  ``strategy_config.wf_gate.placebo_mode`` / ``--placebo-mode difference``.
+  BOTH verdicts are always computed and logged (shadow/dual-logging) so the
+  authoritative-mode flip can be justified on real runs before it is made.
+
 References:
 - Lopez de Prado AFML §7 + §11 (walk-forward + cross-validation in finance)
 - Bailey-Lopez de Prado 2014 "Pseudo-Mathematics and Financial Charlatanism"
@@ -234,6 +247,131 @@ def _placebo_ic_requirement_text(aligned_real_ic: float) -> str:
     return (
         f"threshold={threshold:+.4f} "
         f"(0.5×|aligned_real_ic|, aligned_real_ic={aligned_real_ic:+.4f})"
+    )
+
+
+# --- Placebo evaluation mode (additive, opt-in, OFF BY DEFAULT) --------------
+# ``absolute`` reproduces the current §5.2 ceiling exactly. ``difference`` is the
+# opt-in placebo-clean difference test: a genuine edge ABOVE the embargo-leakage
+# placebo floor, ``aligned_real_ic - placebo_ic > margin``. The margin is a
+# pre-registered config value; the default matches the M6 genuine_ic_floor
+# (doc/research/2026-06-10-m6-placebo-gate-verdict.md §5, "+0.01").
+DEFAULT_PLACEBO_MODE = "absolute"
+DEFAULT_PLACEBO_DIFFERENCE_MARGIN = 0.01
+_VALID_PLACEBO_MODES = ("absolute", "difference")
+
+
+def _is_number(x) -> bool:
+    """True iff x is a real (non-NaN) number."""
+    return isinstance(x, (int, float)) and (x == x)
+
+
+def _placebo_absolute_verdict(
+    placebo_ic: float, placebo_aligned_real_ic: float
+) -> dict:
+    """CURRENT §5.2 ceiling: |placebo_ic| < max(0.005, 0.5×|aligned_real_ic|).
+
+    This MUST reproduce the historical ``pass_placebo`` verdict bit-for-bit —
+    it is the default authoritative test and the shadow reference.
+    """
+    available = _is_number(placebo_ic) and _is_number(placebo_aligned_real_ic)
+    threshold = None
+    passed = False
+    if available:
+        threshold = _placebo_ic_threshold(placebo_aligned_real_ic)
+        passed = (
+            abs(placebo_ic) < threshold
+            if placebo_aligned_real_ic != 0
+            else True
+        )
+    return {
+        "mode": "absolute",
+        "available": bool(available),
+        "passed": bool(passed),
+        "placebo_ic": float(placebo_ic) if available else None,
+        "aligned_real_ic": float(placebo_aligned_real_ic) if available else None,
+        "threshold": float(threshold) if threshold is not None else None,
+        "criterion": "abs(placebo_ic) < max(0.005, 0.5*abs(aligned_real_ic))",
+    }
+
+
+def _placebo_difference_verdict(
+    placebo_ic: float, placebo_aligned_real_ic: float, margin: float
+) -> dict:
+    """OPT-IN placebo-clean difference test: aligned_real_ic - placebo_ic > margin.
+
+    Passing requires a genuine edge ABOVE the embargo-leakage placebo floor,
+    rather than an absolute ceiling that the ~+0.04 overlapping-label floor
+    makes structurally unsatisfiable for the 60d label.
+    """
+    available = _is_number(placebo_ic) and _is_number(placebo_aligned_real_ic)
+    diff = None
+    passed = False
+    if available:
+        diff = float(placebo_aligned_real_ic) - float(placebo_ic)
+        passed = diff > float(margin)
+    return {
+        "mode": "difference",
+        "available": bool(available),
+        "passed": bool(passed),
+        "placebo_ic": float(placebo_ic) if available else None,
+        "aligned_real_ic": float(placebo_aligned_real_ic) if available else None,
+        "difference": float(diff) if diff is not None else None,
+        "margin": float(margin),
+        "criterion": "aligned_real_ic - placebo_ic > margin",
+    }
+
+
+def _evaluate_placebo(
+    placebo_ic: float,
+    placebo_aligned_real_ic: float,
+    mode: str = DEFAULT_PLACEBO_MODE,
+    margin: float = DEFAULT_PLACEBO_DIFFERENCE_MARGIN,
+) -> dict:
+    """Compute BOTH placebo verdicts; select the authoritative one by ``mode``.
+
+    Always returns both the ``absolute`` and ``difference`` verdicts so the
+    caller can dual-log (shadow) them regardless of which one is authoritative.
+    An unknown ``mode`` falls back to ``absolute`` (default-safe).
+    """
+    absolute = _placebo_absolute_verdict(placebo_ic, placebo_aligned_real_ic)
+    difference = _placebo_difference_verdict(
+        placebo_ic, placebo_aligned_real_ic, margin
+    )
+    authoritative_mode = mode if mode in _VALID_PLACEBO_MODES else DEFAULT_PLACEBO_MODE
+    authoritative = difference if authoritative_mode == "difference" else absolute
+    return {
+        "mode": authoritative_mode,
+        "difference_margin": float(margin),
+        "passed": bool(authoritative["passed"]),
+        "available": bool(authoritative["available"]),
+        "absolute": absolute,
+        "difference": difference,
+    }
+
+
+def _placebo_dual_log_message(placebo_eval: dict) -> str:
+    """Human-readable shadow line: BOTH verdicts + numbers, mode-independent."""
+    absolute = placebo_eval["absolute"]
+    difference = placebo_eval["difference"]
+
+    def _verdict(v: dict) -> str:
+        if not v.get("available"):
+            return "N/A(unavailable)"
+        return "PASS" if v.get("passed") else "FAIL"
+
+    def _num(x) -> str:
+        return f"{x:+.4f}" if _is_number(x) else "n/a"
+
+    abs_thr = absolute.get("threshold")
+    return (
+        f"placebo dual-verdict [authoritative={placebo_eval['mode']}] "
+        f"absolute={_verdict(absolute)} "
+        f"(|placebo|={_num(absolute.get('placebo_ic'))} vs "
+        f"thr={_num(abs_thr) if abs_thr is not None else 'n/a'}) | "
+        f"difference={_verdict(difference)} "
+        f"(real−placebo={_num(difference.get('difference'))} vs "
+        f"margin={_num(difference.get('margin'))})"
     )
 
 
@@ -1024,6 +1162,57 @@ def _read_wf_gate_relax(strategy_config: str) -> dict:
         "benchmark_required": bool(block.get("benchmark_required", True)),
         "regime_required": bool(block.get("regime_required", True)),
         "sanity_regime_ic_required": bool(block.get("sanity_regime_ic_required", True)),
+    }
+
+
+def _resolve_placebo_settings(
+    strategy_config: str,
+    cli_mode: str | None = None,
+    cli_margin: float | None = None,
+) -> dict:
+    """Resolve the placebo-evaluation mode + margin (opt-in, off by default).
+
+    Precedence: explicit CLI flag > ``strategy_config.wf_gate.placebo_*`` >
+    module default (``absolute`` / +0.01 margin). The margin is a
+    pre-registered config value. This ONLY selects which placebo verdict is
+    authoritative — both verdicts are always computed and dual-logged. Absent
+    config + no CLI flag reproduces the historical absolute-ceiling gate, so
+    merging this does not change live promotion behaviour.
+    """
+    try:
+        cfg_path = STRATEGY_DIR / strategy_config
+        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    except Exception:
+        cfg = {}
+    block = (cfg.get("wf_gate") or {}) if isinstance(cfg, dict) else {}
+
+    cfg_mode = block.get("placebo_mode", DEFAULT_PLACEBO_MODE)
+    mode = cli_mode if cli_mode else cfg_mode
+    if mode not in _VALID_PLACEBO_MODES:
+        log.warning(
+            "unknown placebo_mode=%r — falling back to %r (default-safe)",
+            mode,
+            DEFAULT_PLACEBO_MODE,
+        )
+        mode = DEFAULT_PLACEBO_MODE
+
+    cfg_margin = block.get("placebo_difference_margin", DEFAULT_PLACEBO_DIFFERENCE_MARGIN)
+    margin = cli_margin if cli_margin is not None else cfg_margin
+    try:
+        margin = float(margin)
+    except (TypeError, ValueError):
+        log.warning(
+            "invalid placebo_difference_margin=%r — falling back to %+.4f",
+            margin,
+            DEFAULT_PLACEBO_DIFFERENCE_MARGIN,
+        )
+        margin = DEFAULT_PLACEBO_DIFFERENCE_MARGIN
+
+    return {
+        "mode": mode,
+        "difference_margin": margin,
+        "config_mode": cfg_mode,
+        "source": "cli" if cli_mode else ("config" if block.get("placebo_mode") else "default"),
     }
 
 
@@ -1998,6 +2187,8 @@ def _score_manifest_sanity(
 def run_sanity_battery(
     artifact_path: Path,
     artifact_usage: dict | None = None,
+    placebo_mode: str = DEFAULT_PLACEBO_MODE,
+    placebo_difference_margin: float = DEFAULT_PLACEBO_DIFFERENCE_MARGIN,
 ) -> dict:
     """§5.2 shuffled-label + time-shift placebo on the artifact's training pipeline.
 
@@ -2344,15 +2535,29 @@ def run_sanity_battery(
 
     # Pass criteria
     pass_shuf = abs(shuf_ic) < 0.005
-    pass_placebo = (
-        (placebo_ic == placebo_ic)
-        and (placebo_aligned_real_ic == placebo_aligned_real_ic)
-        and (
-            abs(placebo_ic) < _placebo_ic_threshold(placebo_aligned_real_ic)
-            if placebo_aligned_real_ic != 0 else
-            True
-        )
+
+    # Placebo verdict: compute BOTH the absolute ceiling (current, default
+    # authoritative) AND the opt-in placebo-clean difference test, then select
+    # the authoritative one by ``placebo_mode``. Under the default config
+    # (mode="absolute") this reproduces the historical pass bit-for-bit.
+    placebo_eval = _evaluate_placebo(
+        placebo_ic,
+        placebo_aligned_real_ic,
+        mode=placebo_mode,
+        margin=placebo_difference_margin,
     )
+    pass_placebo = bool(placebo_eval["passed"])
+    # Dual-logging (shadow): emit BOTH verdicts + numbers regardless of which is
+    # authoritative, so the mode flip can be justified on real runs later.
+    log.info("  %s", _placebo_dual_log_message(placebo_eval))
+    if placebo_eval["mode"] != DEFAULT_PLACEBO_MODE:
+        log.warning(
+            "  placebo authoritative mode is %r (opt-in) — NOT the default "
+            "%r ceiling; verify this run's config is intended",
+            placebo_eval["mode"],
+            DEFAULT_PLACEBO_MODE,
+        )
+
     sanity_method = (
         "manifest_point_in_time_label_diagnostics"
         if sanity_meta.get("sanity_eval_scope") == "walkforward_manifest"
@@ -2366,6 +2571,14 @@ def run_sanity_battery(
         sanity_reason = (
             "FAIL: regime sanity IC failed: "
             f"{sanity_regime_ic.get('reason', 'unknown')}"
+        )
+    elif placebo_eval["mode"] == "difference":
+        diff = placebo_eval["difference"].get("difference")
+        diff_txt = f"{diff:+.4f}" if _is_number(diff) else "n/a"
+        sanity_reason = (
+            f"FAIL: shuf_ic={shuf_ic:+.4f} (need |·| < 0.005), "
+            f"placebo difference-test real−placebo={diff_txt} "
+            f"(must be available and > margin={placebo_difference_margin:+.4f})"
         )
     else:
         sanity_reason = (
@@ -2388,6 +2601,16 @@ def run_sanity_battery(
         "sanity_method": sanity_method,
         "placebo_shift_diagnostics": placebo_shift_diagnostics,
         "sanity_regime_ic": sanity_regime_ic,
+        # Placebo mode + dual (shadow) verdicts. ``sanity_placebo_mode`` records
+        # the authoritative mode; ``sanity_placebo_verdicts`` carries BOTH the
+        # absolute-ceiling and difference-test outcomes for shadow comparison.
+        "sanity_placebo_mode": placebo_eval["mode"],
+        "sanity_placebo_difference_margin": placebo_eval["difference_margin"],
+        "sanity_placebo_verdicts": {
+            "authoritative_mode": placebo_eval["mode"],
+            "absolute": placebo_eval["absolute"],
+            "difference": placebo_eval["difference"],
+        },
         "reason": sanity_reason,
         **sanity_meta,
     }
@@ -2406,6 +2629,20 @@ def main():
                     help="Skip walk-forward (sanity only) — for emergency / testing")
     ap.add_argument("--skip-sanity", action="store_true",
                     help="Skip sanity battery — for emergency / testing")
+    ap.add_argument("--placebo-mode", choices=list(_VALID_PLACEBO_MODES), default=None,
+                    help="Placebo evaluation mode (OPT-IN, OFF BY DEFAULT). "
+                         "'absolute' (default) = current ceiling "
+                         "|placebo_ic| < 0.5×|aligned_real_ic|. 'difference' = "
+                         "opt-in placebo-clean difference test "
+                         "(aligned_real_ic - placebo_ic > margin), which clears "
+                         "the ~+0.04 embargo-leakage placebo floor. Overrides "
+                         "strategy_config.wf_gate.placebo_mode. Default None → "
+                         "config → 'absolute' (live behaviour unchanged). BOTH "
+                         "verdicts are always dual-logged regardless of mode.")
+    ap.add_argument("--placebo-difference-margin", type=float, default=None,
+                    help="Pre-registered margin for the difference test "
+                         f"(default from config or {DEFAULT_PLACEBO_DIFFERENCE_MARGIN:+.4f}). "
+                         "Only used when placebo mode is 'difference'.")
     ap.add_argument("--jobs", type=int, default=1,
                     help="Number of walk-forward cuts to run concurrently. "
                          "Default 1 preserves the conservative historical path; "
@@ -2648,11 +2885,28 @@ def main():
         log.info("Trade gate result: %s", trade_gate_result["reason"])
         log.info("Alpha economics result: %s", alpha_economics_result["reason"])
 
+    placebo_settings = _resolve_placebo_settings(
+        args.strategy_config,
+        cli_mode=args.placebo_mode,
+        cli_margin=args.placebo_difference_margin,
+    )
+    if placebo_settings["mode"] != DEFAULT_PLACEBO_MODE:
+        log.warning(
+            "Placebo authoritative mode = %r (source=%s, margin=%+.4f) — OPT-IN, "
+            "not the default %r ceiling",
+            placebo_settings["mode"],
+            placebo_settings["source"],
+            placebo_settings["difference_margin"],
+            DEFAULT_PLACEBO_MODE,
+        )
+
     sanity_result = {"passed": True, "reason": "skipped"}
     if not args.skip_sanity:
         sanity_result = run_sanity_battery(
             artifact_path,
             artifact_usage=artifact_usage,
+            placebo_mode=placebo_settings["mode"],
+            placebo_difference_margin=placebo_settings["difference_margin"],
         )
         log.info("Sanity result: %s", sanity_result["reason"])
 
@@ -2749,6 +3003,11 @@ def main():
         "sanity_n_oos_dates":  sanity_result.get("n_oos_dates"),
         "sanity_cutoff_contract": sanity_result.get("cutoff_contract"),
         "sanity_regime_ic":    sanity_result.get("sanity_regime_ic"),
+        "sanity_placebo_mode": sanity_result.get("sanity_placebo_mode"),
+        "sanity_placebo_difference_margin": (
+            sanity_result.get("sanity_placebo_difference_margin")
+        ),
+        "sanity_placebo_verdicts": sanity_result.get("sanity_placebo_verdicts"),
         "placebo_shift_diagnostics": sanity_result.get("placebo_shift_diagnostics"),
         "wf_reason":           wf_result.get("reason"),
         "sanity_reason":       sanity_result.get("reason"),
