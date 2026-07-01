@@ -26,8 +26,13 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+_STRATEGY_DIR = _REPO_ROOT / "backtesting" / "renquant_104"
+if str(_STRATEGY_DIR) not in sys.path:
+    sys.path.insert(0, str(_STRATEGY_DIR))
 
 from scripts import train_production_model as TPM  # noqa: E402
+from scripts import restamp_prod_fingerprint as RESTAMP  # noqa: E402
+from kernel.model_acceptance import promote  # noqa: E402
 
 
 # ───── synthetic panel fixture ─────
@@ -226,6 +231,367 @@ class TestArtifactStampedCutoff:
         )
         assert "cutoff_date" not in art
         assert "side_label" not in art
+
+
+class TestFullHistoryDataCutoffStamp:
+    """#423 — the full-history production panel stamps TWO DISTINCT
+    information-set fields so the freshness monitor (orch #213) +
+    P-MODEL-STALENESS gate can key staleness on the right axis:
+
+      * ``label_observation_cutoff`` — the fwd-clipped max labeled row. THIS is
+        the MODEL-FRESHNESS axis (latest information that affected fitting).
+      * ``max_feature_anchor_date`` — the RAW feature/data frontier. This is
+        DATA-PIPELINE HEALTH provenance only (leads the label axis by ~60 BD);
+        it is NOT model freshness — unused trailing rows cannot refresh weights.
+
+    Neither is wall-clock ``trained_date``; ``effective_selection_cutoff_date``
+    is never fabricated; the full-history path never overloads the
+    exclusive-bound ``effective_train_cutoff_date`` with the observed-max label;
+    and a missing raw frontier stays missing (never backfilled from the label
+    cutoff — one field, one meaning).
+    """
+
+    def _train_df_with_known_max(self, tail_null: int = 40):
+        """Panel (all 2024 dates) whose fwd_60d label is nulled for the last
+        ``tail_null`` trading days, so after ``dropna`` the max labeled date is
+        a controlled 2024 business day — well before wall-clock
+        ``trained_date`` (>= 2025). ``feature_frontier`` is the pre-``dropna``
+        panel max (the nulled tail) and leads the labeled max."""
+        panel = _make_synthetic_panel(n_tickers=4, n_dates=200, start="2024-01-01")
+        dates = pd.Index(sorted(panel["date"].unique()))
+        cut = pd.Timestamp(dates[-(tail_null + 1)])
+        feature_frontier = pd.Timestamp(dates[-1])
+        panel.loc[panel["date"] > cut, "fwd_60d_excess"] = np.nan
+        train = panel.dropna(subset=["fwd_60d_excess"])
+        assert train["date"].max() == cut  # fixture sanity
+        assert feature_frontier > cut       # frontier leads the labeled max
+        return train, cut, feature_frontier
+
+    def _build(self, train, max_feature_anchor_date=None):
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        return TPM.build_artifact(
+            booster, ["feat_a", "feat_b"], np.zeros(2), np.ones(2), train,
+            cutoff_date=None, side_label=None, train_run_id="abc12345",
+            max_feature_anchor_date=max_feature_anchor_date,
+        )
+
+    def test_stamps_label_observation_cutoff_from_max_labeled_date(self):
+        train, cut, _ = self._train_df_with_known_max()
+        art = self._build(train)
+        assert art["label_observation_cutoff"] == cut.isoformat()
+
+    def test_label_observation_cutoff_is_data_not_wall_clock(self):
+        """A fresh trained_date over stale labeled data must NOT masquerade as
+        fresh: the stamped label cutoff is the DATA max, not today's date."""
+        train, cut, _ = self._train_df_with_known_max()
+        art = self._build(train)
+        stamped = pd.Timestamp(art["label_observation_cutoff"])
+        assert stamped == cut
+        # Derived from the frame, NOT datetime.now(): a 2024 data cutoff on an
+        # artifact trained "today" (>= 2025) proves it is not wall-clock.
+        assert stamped < pd.Timestamp(art["trained_date"])
+        assert stamped.year == 2024
+
+    def test_feature_anchor_is_distinct_and_leads_label_cutoff(self):
+        """``max_feature_anchor_date`` (data-pipeline health provenance) is the
+        raw frontier and LEADS the label-observation cutoff (the actual
+        model-freshness axis) by the label horizon — the two fields are
+        distinct and must never be conflated (Codex #423 round-3 review)."""
+        train, cut, frontier = self._train_df_with_known_max()
+        art = self._build(train, max_feature_anchor_date=frontier)
+        assert art["max_feature_anchor_date"] == frontier.isoformat()
+        assert art["label_observation_cutoff"] == cut.isoformat()
+        assert (
+            pd.Timestamp(art["max_feature_anchor_date"])
+            > pd.Timestamp(art["label_observation_cutoff"])
+        )
+
+    def test_feature_anchor_omitted_when_absent(self):
+        """When no frontier is threaded in (per-regime / legacy callers) the
+        field is OMITTED — never silently backfilled from the label cutoff.
+        Falling back would give ``max_feature_anchor_date`` one meaning
+        (independently observed raw frontier) on one caller path and another
+        (copy of the label max) on another, and a caller checking data-pipeline
+        health could misread the fallback as a fresh frontier (Codex #423
+        round-3 review)."""
+        train, cut, _ = self._train_df_with_known_max()
+        art = self._build(train)  # no max_feature_anchor_date
+        assert "max_feature_anchor_date" not in art
+        assert art["label_observation_cutoff"] == cut.isoformat()
+
+    def test_selection_cutoff_never_fabricated_full_history(self):
+        """effective_selection_cutoff_date must NOT be copied from the train
+        cutoff (Codex #423): omitting it lets lean_guard._selection_anchor fall
+        through to the conservative trained_date."""
+        train, _, frontier = self._train_df_with_known_max()
+        art = self._build(train, max_feature_anchor_date=frontier)
+        assert "effective_selection_cutoff_date" not in art
+
+    def test_full_history_omits_exclusive_train_cutoff(self):
+        """The full-history path has no --train-cutoff bounding feature rows, so
+        the exclusive-bound effective_train_cutoff_date is OMITTED — never
+        overloaded with the observed-max label."""
+        train, _, frontier = self._train_df_with_known_max()
+        art = self._build(train, max_feature_anchor_date=frontier)
+        assert "effective_train_cutoff_date" not in art
+
+    def test_walkforward_stamps_exclusive_cutoff_not_selection(self):
+        """The walk-forward branch keeps effective_train_cutoff_date as the
+        pre-embargo EXCLUSIVE boundary (its documented contract) and still does
+        NOT fabricate a selection cutoff. label_observation_cutoff is the
+        observed max labeled row on this path too (consistent meaning)."""
+        train = _make_synthetic_panel(
+            n_tickers=3, n_dates=30, start="2023-06-01"
+        ).dropna(subset=["fwd_60d_excess"])
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        art = TPM.build_artifact(
+            booster, ["feat_a"], np.zeros(1), np.ones(1), train,
+            cutoff_date=pd.Timestamp("2024-01-01"),
+            side_label="walkforward_v2_2024-01-01",
+            train_run_id="abc12345",
+        )
+        expected = (pd.Timestamp("2024-01-01") - pd.offsets.BDay(60)).isoformat()
+        assert art["effective_train_cutoff_date"] == expected
+        assert "effective_selection_cutoff_date" not in art
+        assert art["label_observation_cutoff"] == pd.Timestamp(
+            train["date"].max()).isoformat()
+
+
+class TestPromotePreservesDataCutoff:
+    """The active-swap promote() must not drop the freshness/provenance fields
+    — it copies the whole artifact, so a promoted panel keeps the fields the
+    freshness monitor + P-MODEL-STALENESS gate rely on."""
+
+    def test_promote_preserves_freshness_provenance_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RQ_ALLOW_NO_WF", "1")  # bypass WF gate; test swap
+        staging = tmp_path / "panel-ltr.staging.json"
+        active = tmp_path / "panel-ltr.alpha158_fund.json"
+        staging.write_text(json.dumps({
+            "kind": "panel_ltr_xgboost",
+            "feature_cols": ["a", "b"],
+            "trained_date": "2026-05-18",
+            "max_feature_anchor_date": "2026-05-15T00:00:00",
+            "label_observation_cutoff": "2024-11-13T00:00:00",
+        }))
+        promote(staging, active)
+        promoted = json.loads(active.read_text())
+        assert promoted["max_feature_anchor_date"] == "2026-05-15T00:00:00"
+        assert promoted["label_observation_cutoff"] == "2024-11-13T00:00:00"
+
+
+class TestRestampPreservesDataCutoff:
+    """The sector_map re-stamp repair tool rewrites the WHOLE artifact dict
+    (mutating only fingerprint fields), so a re-stamp must NOT drop the
+    freshness/provenance fields."""
+
+    def test_restamp_preserves_freshness_provenance_fields(self, tmp_path, monkeypatch):
+        repo = tmp_path
+        strat = repo / "backtesting" / "renquant_104"
+        (strat / "artifacts" / "prod").mkdir(parents=True)
+        art_rel = "artifacts/prod/panel-ltr.alpha158_fund.json"
+        art_path = strat / art_rel
+        # Artifact carries the freshness/provenance fields + a legacy
+        # fingerprint whose sector_map is None (the exact re-stamp trigger).
+        art_path.write_text(json.dumps({
+            "kind": "panel_ltr_xgboost",
+            "feature_cols": ["a"],
+            "trained_date": "2026-05-18",
+            "max_feature_anchor_date": "2026-05-15T00:00:00",
+            "label_observation_cutoff": "2024-11-13T00:00:00",
+            "config_fingerprint": "sha256:old",
+            "config_fingerprint_fields": {"watchlist": ["AAA"], "sector_map": None},
+        }))
+        cfg_path = strat / "strategy_config.json"
+        cfg_path.write_text(json.dumps(
+            {"ranking": {"panel_scoring": {"artifact_path": art_rel}}}
+        ))
+        # Redirect module paths to the tmp tree and stub the fingerprint
+        # machinery so only sector_map differs (a valid re-stamp).
+        monkeypatch.setattr(RESTAMP, "REPO", repo)
+        monkeypatch.setattr(RESTAMP, "STRATEGY_DIR", strat)
+        monkeypatch.setattr(
+            RESTAMP, "_model_relevant_fields",
+            lambda cfg: {"watchlist": ["AAA"], "sector_map": {"AAA": "tech"}},
+        )
+        monkeypatch.setattr(RESTAMP, "fingerprint_config", lambda cfg: "sha256:new")
+        monkeypatch.setattr(sys, "argv", ["restamp_prod_fingerprint.py"])
+        rc = RESTAMP.main()
+        assert rc == 0
+        restamped = json.loads(art_path.read_text())
+        # Fingerprint was updated (proves the re-stamp ran)...
+        assert restamped["config_fingerprint"] == "sha256:new"
+        assert restamped["config_fingerprint_fields"]["sector_map"] == {"AAA": "tech"}
+        # ...and the freshness/provenance fields survived the rewrite.
+        assert restamped["max_feature_anchor_date"] == "2026-05-15T00:00:00"
+        assert restamped["label_observation_cutoff"] == "2024-11-13T00:00:00"
+
+
+class TestModelFreshnessAxisIntegration:
+    """INTEGRATION (#423 round-3) — producer + monitor together. Model
+    freshness MUST key on ``label_observation_cutoff`` (the latest information
+    that actually affected fitting), with the ~60 BD fwd-label horizon lag
+    accounted for EXPLICITLY, never on ``max_feature_anchor_date`` (the raw
+    feature/data frontier). Keying on the raw frontier would let fresh
+    UNLABELED rows — which the model never trained on — make a frozen model
+    read healthy: "fresh metadata over stale trained information" under a new
+    field name (Codex #423 round-3 review). This class also pins the explicit
+    anti-regression the review asked for: appending fresh unlabeled rows
+    without changing the labeled training frame must not improve the
+    model-freshness read."""
+
+    LOOKAHEAD_BD = 60  # matches fwd_60d_excess
+
+    @classmethod
+    def _model_freshness_state(cls, label_cutoff_iso: str, today: pd.Timestamp) -> str:
+        """orch #213 prod fast-axis policy keyed on the LABEL axis, with the
+        expected fwd-label horizon lag subtracted out explicitly: a labeled
+        row can never be more recent than ``today - LOOKAHEAD_BD`` business
+        days, so age is measured from THAT expected frontier, not from
+        ``today`` directly. HEALTHY <=14 cal days beyond expectation,
+        BREACH >28."""
+        expected_max = today - pd.offsets.BDay(cls.LOOKAHEAD_BD)
+        age = (expected_max - pd.Timestamp(label_cutoff_iso)).days
+        if age <= 14:
+            return "HEALTHY"
+        if age > 28:
+            return "BREACH"
+        return "WARN"
+
+    @staticmethod
+    def _panel_ending(end: pd.Timestamp, n_dates: int, tail_null: int,
+                      n_tickers: int = 4) -> pd.DataFrame:
+        """alpha158-shaped panel whose FEATURE rows end at ``end`` but whose
+        fwd_60d label is nulled for the last ``tail_null`` business days (the
+        unobservable-forward-return frontier)."""
+        dates = pd.bdate_range(end=end, periods=n_dates)
+        rng = np.random.default_rng(7)
+        rows = []
+        for t in range(n_tickers):
+            for d in dates:
+                rows.append({
+                    "ticker": f"T{t:02d}", "date": d, "split_label": "train",
+                    "feat_a": rng.normal(), "feat_b": rng.normal(),
+                    "earnings_yield": rng.normal(),
+                    "fwd_5d_excess": rng.normal() * 0.01,
+                    "fwd_20d_excess": rng.normal() * 0.02,
+                    "fwd_60d_excess": rng.normal() * 0.03,
+                })
+        panel = pd.DataFrame(rows)
+        cut = pd.Timestamp(dates[-(tail_null + 1)])
+        panel.loc[panel["date"] > cut, "fwd_60d_excess"] = np.nan
+        return panel
+
+    def _build_from_panel(self, panel, tmp_path, monkeypatch, booster=None):
+        (tmp_path / "data").mkdir(exist_ok=True)
+        panel.to_parquet(
+            tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet"
+        )
+        monkeypatch.chdir(tmp_path)
+        train, feat_cols, _label, frontier = TPM.load_and_slice_panel(
+            None, return_feature_frontier=True,
+        )
+        if booster is None:
+            booster = mock.MagicMock()
+            booster.save_raw.return_value = b"{}"
+        art = TPM.build_artifact(
+            booster, feat_cols,
+            np.zeros(len(feat_cols)), np.ones(len(feat_cols)), train,
+            cutoff_date=None, side_label=None, train_run_id="int00001",
+            max_feature_anchor_date=frontier,
+        )
+        return art, train
+
+    def test_current_panel_is_healthy_on_label_axis_with_lag_accounted(
+            self, tmp_path, monkeypatch):
+        today = pd.Timestamp.today().normalize()
+        panel = self._panel_ending(end=today, n_dates=200, tail_null=self.LOOKAHEAD_BD)
+        art, _train = self._build_from_panel(panel, tmp_path, monkeypatch)
+        # Raw frontier ≈ today (data-pipeline health provenance, NOT model
+        # freshness)...
+        assert pd.Timestamp(art["max_feature_anchor_date"]) >= today - pd.Timedelta(days=3)
+        # ...and the LABEL axis, once the expected ~60 BD horizon lag is
+        # accounted for explicitly, reads HEALTHY for a genuinely fresh
+        # retrain — the monitor must not need the raw frontier to avoid a
+        # false BREACH.
+        assert self._model_freshness_state(
+            art["label_observation_cutoff"], today) == "HEALTHY"
+
+    def test_frozen_panel_breaches_on_label_axis(self, tmp_path, monkeypatch):
+        today = pd.Timestamp.today().normalize()
+        frozen_end = today - pd.Timedelta(days=400)
+        panel = self._panel_ending(end=frozen_end, n_dates=200, tail_null=self.LOOKAHEAD_BD)
+        art, _train = self._build_from_panel(panel, tmp_path, monkeypatch)
+        assert self._model_freshness_state(
+            art["label_observation_cutoff"], today) == "BREACH"
+
+    def test_fresh_unlabeled_rows_do_not_improve_model_freshness(
+            self, tmp_path, monkeypatch):
+        """Regression for the Codex #423 round-3 review: appending fresh
+        UNLABELED feature rows to a frozen panel — without changing the
+        labeled training frame the model actually fit on — must NOT move
+        ``label_observation_cutoff`` and must NOT improve the model-freshness
+        read, even though it correctly advances ``max_feature_anchor_date``
+        (a genuine, separate data-pipeline-health signal)."""
+        today = pd.Timestamp.today().normalize()
+        frozen_end = today - pd.Timedelta(days=400)
+        frozen_panel = self._panel_ending(
+            end=frozen_end, n_dates=200, tail_null=self.LOOKAHEAD_BD)
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+
+        art_frozen, train_frozen = self._build_from_panel(
+            frozen_panel, tmp_path, monkeypatch, booster=booster)
+
+        # Simulate the data pipeline catching up to today WITHOUT any new
+        # labels existing yet (fresh rows can't have an observable fwd_60d
+        # label): append feature-only rows out to `today`, all unlabeled.
+        extra_dates = pd.bdate_range(
+            start=frozen_end + pd.Timedelta(days=1), end=today)
+        rng = np.random.default_rng(11)
+        extra_rows = []
+        for t in range(4):
+            for d in extra_dates:
+                extra_rows.append({
+                    "ticker": f"T{t:02d}", "date": d, "split_label": "train",
+                    "feat_a": rng.normal(), "feat_b": rng.normal(),
+                    "earnings_yield": rng.normal(),
+                    "fwd_5d_excess": np.nan,
+                    "fwd_20d_excess": np.nan,
+                    "fwd_60d_excess": np.nan,
+                })
+        extended_panel = pd.concat(
+            [frozen_panel, pd.DataFrame(extra_rows)], ignore_index=True)
+
+        # Rebuild from the SAME (mocked) trained booster — the model itself
+        # did not retrain — over the extended panel.
+        art_extended, train_extended = self._build_from_panel(
+            extended_panel, tmp_path, monkeypatch, booster=booster)
+
+        # The labeled training frame the model actually fit on is UNCHANGED...
+        assert len(train_extended) == len(train_frozen)
+        assert train_extended["date"].max() == train_frozen["date"].max()
+        assert (
+            art_extended["label_observation_cutoff"]
+            == art_frozen["label_observation_cutoff"]
+        )
+
+        # ...so the model-freshness read must be IDENTICAL (still BREACH) —
+        # NOT improved to HEALTHY/WARN just because the raw frontier moved.
+        state_frozen = self._model_freshness_state(
+            art_frozen["label_observation_cutoff"], today)
+        state_extended = self._model_freshness_state(
+            art_extended["label_observation_cutoff"], today)
+        assert state_frozen == state_extended == "BREACH"
+
+        # Meanwhile the raw frontier DID advance (genuine data-pipeline-health
+        # signal) — proving the two fields really are decoupled, not that the
+        # extension silently no-opped.
+        assert (
+            pd.Timestamp(art_extended["max_feature_anchor_date"])
+            > pd.Timestamp(art_frozen["max_feature_anchor_date"])
+        )
 
 
 class TestSideLabelInArtifact:
