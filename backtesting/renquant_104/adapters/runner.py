@@ -886,6 +886,16 @@ class RunnerAdapter:
         from adapters.runner_ext_sell import bar_date  # noqa: PLC0415
         return bar_date(ctx)
 
+    @staticmethod
+    def _ext_sell_fill_date(fill: dict | None) -> "datetime.date | None":
+        """Delegate — see adapters/runner_ext_sell.ext_sell_fill_date.
+
+        2026-07-01 fix: the broker fill this lookup already returned is
+        AUTHORITATIVE for the wash-sale stamp date, mirroring the
+        ENTRY-DATE-FROM-FILLS principle used for entry_dates."""
+        from adapters.runner_ext_sell import ext_sell_fill_date  # noqa: PLC0415
+        return ext_sell_fill_date(fill)
+
     def _gc_recent_sell_orders(self, ctx) -> dict:
         """Delegate — body moved verbatim to adapters/broker_sync.py
         (S2 decomposition slice 2, 2026-06-13)."""
@@ -1553,14 +1563,48 @@ class RunnerAdapter:
         # filled_at) and a source guess (z9_stop / external).
         ext_sell_fills = self._lookup_ext_sell_fills(ctx, disappeared)
         for t in disappeared:
-            self._last_sell_dates_str[t] = today_str
             attribution = self._attribute_ext_sell(t, ext_sell_fills)
-            log.warning(
-                "STATE-EXT-SELL: %s disappeared from broker without runner sell — "
-                "stamping wash-sale clock today (%s) to prevent re-entry within 30d "
-                "(attribution: %s)",
-                t, today_str, attribution,
-            )
+            # 2026-07-01 fix (META incident): this reconciliation may run
+            # DAYS after the ticker actually left the book (e.g. a prior
+            # bar's GC/reconciliation step was skipped by an unrelated
+            # pipeline failure, so `disappeared` only fires here, later).
+            # Pre-fix, this always stamped `today_str` — the date THIS
+            # code happens to run — discarding the real fill date that
+            # `ext_sell_fills` (via `_lookup_ext_sell_fills`, already
+            # fetched above) carries. That silently EXTENDED the 30-day
+            # wash-sale block by however many days late reconciliation
+            # ran. Confirmed live: META's last_sell_dates was wrongly
+            # stamped 2026-06-26 (a reconciliation run date) instead of
+            # the real broker SELL fill on 2026-06-02 — a 24-day
+            # over-extension. Same authority principle as
+            # ENTRY-DATE-FROM-FILLS for entry_dates: the broker's fill
+            # timestamp is authoritative over "today". Only fall back to
+            # today_str when no qualifying SELL fill can be found at all
+            # (genuine unknown-cause disappearance — corporate action,
+            # account transfer, or a disposition the broker API can't
+            # attribute to a dated fill) — and say so loudly, distinctly
+            # from the real-fill-date path, so operators reading logs
+            # later can tell which happened.
+            fill_date = self._ext_sell_fill_date(ext_sell_fills.get(t))
+            if fill_date is not None:
+                stamp_str = fill_date.isoformat()
+                self._last_sell_dates_str[t] = stamp_str
+                log.warning(
+                    "STATE-EXT-SELL: %s disappeared from broker without runner "
+                    "sell — stamping wash-sale clock from the ACTUAL broker fill "
+                    "date %s (reconciliation ran %s) to prevent re-entry within "
+                    "30d of the real sell (attribution: %s)",
+                    t, stamp_str, today_str, attribution,
+                )
+            else:
+                self._last_sell_dates_str[t] = today_str
+                log.warning(
+                    "STATE-EXT-SELL: %s disappeared from broker without runner "
+                    "sell, and NO broker SELL fill record was found — stamping "
+                    "wash-sale clock as a NO-FILL-FOUND FALLBACK to today (%s) "
+                    "(attribution: %s)",
+                    t, today_str, attribution,
+                )
             # Z9: cancel any orphan broker-side stop for this ticker.
             # The position is already gone; the stop on broker side is now
             # for 0 shares — Alpaca would auto-cancel, but be explicit.

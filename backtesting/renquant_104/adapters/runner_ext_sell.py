@@ -136,6 +136,37 @@ def lookup_ext_sell_fills(broker, ctx, disappeared: list[str]) -> dict[str, dict
             latest[sym] = normalized
     return latest
 
+def ext_sell_fill_date(fill: dict | None) -> "datetime.date | None":
+    """Extract the broker fill DATE from a normalized ext-sell fill record.
+
+    ``fill`` is the per-ticker value out of ``lookup_ext_sell_fills``'s
+    return dict (already run through ``normalize_fill_record``), so
+    ``filled_at`` is the broker-reported timestamp for the most recent
+    qualifying SELL fill. Returns ``None`` when there is no fill record,
+    or ``filled_at`` is missing/unparseable — callers must then fall back
+    to a "no fill found" path rather than inventing a date.
+
+    Same date-parsing shape as the ENTRY-DATE-FROM-FILLS path (broker's
+    ``filled_at`` truncated to its first 10 chars, ``YYYY-MM-DD``) —
+    mirrors that path's authority principle: the broker's fill timestamp
+    is authoritative over "today, because that's when this reconciliation
+    code happened to run" (2026-07-01 META incident: last_sell_dates was
+    wrongly stamped with the reconciliation run date instead of the real
+    2026-06-02 broker SELL fill date, extending the wash-sale block by
+    24 days).
+    """
+    import datetime as _dt  # noqa: PLC0415
+    if not fill:
+        return None
+    fa = fill.get("filled_at")
+    if not fa:
+        return None
+    try:
+        return _dt.date.fromisoformat(str(fa)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
 def bar_date(ctx) -> "datetime.date":
     """Return the bar date as a pure ``date``.
 

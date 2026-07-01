@@ -424,7 +424,10 @@ class TestExternalSellWashSaleClock:
         )
 
     def test_stamps_today_str(self):
-        # External-sell ticker gets `last_sell_dates_str[t] = today_str`
+        # NO-FILL-FOUND fallback still exists: `last_sell_dates_str[t] =
+        # today_str` (now conditional — see TestExternalSellUsesActualFillDate
+        # below for the 2026-07-01 fix that makes this the FALLBACK, not the
+        # unconditional stamp).
         assert "self._last_sell_dates_str[t] = today_str" in RUNNER_SOURCE
 
     def test_warns_loudly_so_operator_sees_it(self):
@@ -445,6 +448,79 @@ class TestExternalSellWashSaleClock:
             "External-sell detection must run before STATE-GC pops "
             "entry_dates, or the disappeared list will already be empty."
         )
+
+
+# ── 2026-07-01 STATE-EXT-SELL: stamp the ACTUAL broker fill date ──────────
+
+class TestExternalSellUsesActualFillDate:
+    """Confirmed live 2026-07-01: META's last_sell_dates was wrongly
+    stamped 2026-06-26 (the date STATE-EXT-SELL reconciliation happened to
+    run) instead of the real broker SELL fill date 2026-06-02 — a 24-day
+    wash-sale over-extension (should clear 2026-07-02, was heading toward
+    ~2026-07-26). Root cause: the loop already fetched
+    ``ext_sell_fills = self._lookup_ext_sell_fills(ctx, disappeared)`` (used
+    only for the log-attribution string) but discarded the real fill date
+    and always stamped ``today_str``.
+
+    Fix: prefer the ACTUAL broker fill date (extracted via
+    ``adapters.runner_ext_sell.ext_sell_fill_date`` from the SAME
+    ``ext_sell_fills`` lookup result already computed — no re-fetch). Only
+    fall back to ``today_str`` when no qualifying SELL fill can be found,
+    and log that fallback with a distinct NO-FILL-FOUND marker so operators
+    can tell the two cases apart later. Mirrors the ENTRY-DATE-FROM-FILLS
+    authority principle already established for entry_dates in this file
+    (broker fill timestamp > "today, because that's when this code ran").
+
+    Behavioral (non-source-string) coverage of the date-extraction logic
+    itself, including the exact D1-vs-D2 reconciliation-delay scenario and
+    the genuine no-fill fallback, lives in
+    tests/test_runner_ext_sell.py::TestExtSellFillDate.
+    """
+
+    def test_prefers_actual_fill_date_over_today(self):
+        assert "self._ext_sell_fill_date(ext_sell_fills.get(t))" in RUNNER_SOURCE
+        assert "fill_date = self._ext_sell_fill_date" in RUNNER_SOURCE
+        assert "if fill_date is not None:" in RUNNER_SOURCE
+        assert "stamp_str = fill_date.isoformat()" in RUNNER_SOURCE
+        assert "self._last_sell_dates_str[t] = stamp_str" in RUNNER_SOURCE
+
+    def test_reuses_already_fetched_lookup_no_refetch(self):
+        # The fix must reuse `ext_sell_fills` (already fetched above the
+        # loop) — not call _lookup_ext_sell_fills a second time per ticker.
+        assert RUNNER_SOURCE.count("self._lookup_ext_sell_fills(") == 1
+
+    def test_actual_fill_date_log_marker_distinguishes_from_fallback(self):
+        assert "ACTUAL broker fill" in RUNNER_SOURCE
+
+    def test_no_fill_found_fallback_is_explicit_and_distinct(self):
+        # The today_str fallback path must be clearly distinguishable in
+        # logs from the real-fill-date path (operator auditability).
+        assert "NO-FILL-FOUND FALLBACK" in RUNNER_SOURCE
+        assert "NO broker SELL fill record was found" in RUNNER_SOURCE
+
+    def test_ext_sell_fill_date_delegate_defined(self):
+        assert "_ext_sell_fill_date(fill: dict | None)" in RUNNER_SOURCE
+        assert "from adapters.runner_ext_sell import ext_sell_fill_date" in RUNNER_SOURCE
+
+    def test_primary_full_liquidation_stamp_path_unchanged(self):
+        """The EARLIER-in-commit() full-liquidation stamping block (the
+        runner's OWN sell fills THIS bar) is correct by construction —
+        today_str there IS the actual fill date because the sell just
+        happened moments ago in this same commit() call. This fix must NOT
+        touch that path; it only applies to the disappeared/STATE-EXT-SELL
+        reconciliation path (a DIFFERENT bar, run later, for a ticker the
+        runner itself did not sell)."""
+        assert "if not is_partial:" in RUNNER_SOURCE
+        assert "full_exit_tickers.add(ticker)" in RUNNER_SOURCE
+        primary_idx = RUNNER_SOURCE.index("full_exit_tickers.add(ticker)")
+        primary_stamp_idx = RUNNER_SOURCE.index(
+            "self._last_sell_dates_str[ticker] = today_str"
+        )
+        # Unconditional stamp immediately follows full_exit_tickers.add —
+        # no fill-date lookup inserted into this path.
+        assert 0 < primary_stamp_idx - primary_idx < 200
+        between = RUNNER_SOURCE[primary_idx:primary_stamp_idx]
+        assert "_ext_sell_fill_date" not in between
 
 
 # ── 2026-05-17 STATE-EXT-SELL pending-order false-positive fix ───────────────
