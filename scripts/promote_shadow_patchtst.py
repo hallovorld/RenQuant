@@ -133,6 +133,29 @@ RC_NOT_FRESH = 10
 RC_GATE_FAILED = 20
 RC_USAGE = 2
 
+# --- future-dated / clock-skew guard (Codex #419 review 3) -------------------
+# EVERY freshness/staleness computation below compares a data cutoff (a source's
+# max date, the fundamentals daily-feed as-of date, or a per-entity fiscal-period
+# end) to ``now`` (the decision timestamp, ``dt.date.today()``). A cutoff LATER
+# than ``now`` is IMPOSSIBLE — the source/availability/fiscal date cannot postdate
+# the decision that reads it — and is itself a real look-ahead-leak signal (a
+# clock bug, a corrupted/rewritten date column, or an actual future-dated write).
+# It must FAIL CLOSED with a distinct "future-dated" reason. It must NEVER be
+# clamped to age=0 / quarters-behind=0: that silently turns IMPOSSIBLE data into
+# MAXIMALLY FRESH data — exactly backwards, and exactly the bug this guards.
+#
+# Tolerance: 0 days. Every comparison here is done at ``dt.date`` (day) granularity
+# (``dt.date.today()`` vs a parsed ``date``/fiscal-period column) — there is no
+# sub-day timestamp involved, so there is no clock-skew jitter to tolerate. A
+# cutoff dated exactly today (age/staleness == 0) is the boundary and passes as
+# current; a cutoff dated ANY day after today is never legitimate at this
+# granularity, so a 0-day tolerance is the correct (not merely convenient) value.
+FUTURE_DATE_TOLERANCE_DAYS = 0
+# Sentinel returned by ``entity_quarters_behind`` for an impossible (future-dated)
+# per-entity fiscal-period end. Distinct from ``None`` (MISSING: no parseable date
+# at all) — both fail closed, but future-dated is flagged with its own reason.
+FUTURE_DATED = "future_dated"
+
 
 # ============================================================================
 # Pure helpers (unit-tested in tests/test_promote_shadow_patchtst.py)
@@ -201,6 +224,15 @@ def source_sla_verdict(source: dict, now: dt.date, cutoff: dt.date | None,
                              on_sla=bool(missing_ok),
                              detail="cutoff unresolved" + (" (tolerated)" if missing_ok else ""))
     age = (now - cutoff).days
+    if age < -FUTURE_DATE_TOLERANCE_DAYS:
+        # Impossible: the source's data cutoff postdates the decision timestamp.
+        # FAIL CLOSED with a distinct reason — never let a negative age pass the
+        # `age <= sla_days` check trivially (that would score future-dated data
+        # as maximally fresh, i.e. a look-ahead leak in the freshness gate).
+        return SourceVerdict(source["name"], source["axis"], sla_days, cutoff, age, False,
+                             detail=f"cutoff={cutoff.isoformat()} is FUTURE-DATED "
+                                    f"({-age}d after now={now.isoformat()}) — impossible / "
+                                    f"look-ahead value, fail-closed ({FUTURE_DATED})")
     on_sla = age <= sla_days
     return SourceVerdict(source["name"], source["axis"], sla_days, cutoff, age, on_sla,
                          detail=f"cutoff={cutoff.isoformat()} age={age}d sla={sla_days}d "
@@ -434,19 +466,24 @@ def resolve_data_cutoff(repo: Path, source: dict) -> dt.date | None:
 
 def entity_quarters_behind(fiscal_period_end: dt.date | None, today: dt.date,
                            filing_lag_days: int,
-                           quarter_days: int = FUND_QUARTER_DAYS) -> int | None:
+                           quarter_days: int = FUND_QUARTER_DAYS) -> int | None | str:
     """Quarters ONE entity's latest fiscal period lags, from its OWN fiscal-period end.
 
     Uses a rolling staleness window (``today - fiscal_period_end``) with a
     ``filing_lag_days`` grace period, NOT calendar-quarter snapping — so a non-calendar
-    fiscal year (e.g. Jan/Apr/Jul/Oct ends) is judged on its own filing cadence. Returns
-    0 for a current (or future-dated) entity, >=1 when behind, and None when the entity
-    has no parseable fiscal-period end (MISSING — its freshness cannot be proven)."""
+    fiscal year (e.g. Jan/Apr/Jul/Oct ends) is judged on its own filing cadence.
+
+    Returns 0 for a current entity, >=1 when behind, ``None`` when the entity has no
+    parseable fiscal-period end (MISSING — its freshness cannot be proven), and the
+    ``FUTURE_DATED`` sentinel when ``fiscal_period_end`` is LATER than ``today`` beyond
+    ``FUTURE_DATE_TOLERANCE_DAYS``. Codex #419 review 3: a future-dated fiscal period is
+    an IMPOSSIBLE / look-ahead value — it must FAIL CLOSED, never be silently treated as
+    "0 quarters behind" (maximally fresh)."""
     if fiscal_period_end is None:
         return None
     staleness = (today - fiscal_period_end).days
-    if staleness < 0:
-        return 0  # future-dated fiscal period -> treat as current
+    if staleness < -FUTURE_DATE_TOLERANCE_DAYS:
+        return FUTURE_DATED  # impossible / look-ahead fiscal-period end -> fail closed
     # A full new quarter's filing is overdue once staleness exceeds one quarter + lag.
     return max(0, (staleness - filing_lag_days) // max(1, quarter_days))
 
@@ -468,15 +505,17 @@ def _quantiles(values: list[int], ps=(0.5, 0.9, 0.99)) -> dict:
 class FundamentalsCoverage:
     n_entities: int
     n_missing: int            # entities present but with no parseable fiscal-period end
-    n_stale: int              # entities >= max_quarters_behind behind (missing counts too)
+    n_future_dated: int       # entities whose fiscal-period end is LATER than now (impossible)
+    n_stale: int              # entities >= max_quarters_behind behind, MISSING, or FUTURE-DATED
     n_current: int            # entities with q_behind < max_quarters_behind
-    stale_fraction: float     # (n_missing + n_behind) / n_entities
+    stale_fraction: float     # (n_missing + n_future_dated + n_behind) / n_entities
     missing_fraction: float   # n_missing / n_entities
     worst_quarters_behind: int | None   # max q_behind over PRESENT entities (None if all missing)
     quantiles: dict           # nearest-rank quantiles of present entities' q_behind
 
     def as_dict(self) -> dict:
         return {"n_entities": self.n_entities, "n_missing": self.n_missing,
+                "n_future_dated": self.n_future_dated,
                 "n_stale": self.n_stale, "n_current": self.n_current,
                 "stale_fraction": round(self.stale_fraction, 6),
                 "missing_fraction": round(self.missing_fraction, 6),
@@ -490,24 +529,30 @@ def fundamentals_coverage(fiscal_by_entity: dict, today: dt.date, *,
     """PER-ENTITY coverage distribution of the fundamentals cross-section.
 
     ``fiscal_by_entity``: ``{entity -> latest fiscal-period end | None}``. An entity is
-    STALE if MISSING (None) or ``q_behind >= max_quarters_behind``. Aggregates the
-    missing count, stale fraction, worst-case and quantiles — the distribution the
-    coverage gate enforces (NOT a single global maximum)."""
+    STALE if MISSING (None), FUTURE-DATED (an impossible fiscal-period end later than
+    ``today`` — Codex #419 review 3, never treated as current), or
+    ``q_behind >= max_quarters_behind``. Aggregates the missing/future-dated counts,
+    stale fraction, worst-case and quantiles — the distribution the coverage gate
+    enforces (NOT a single global maximum)."""
     n = len(fiscal_by_entity)
     present_behind: list[int] = []
     n_missing = 0
+    n_future = 0
     for _ent, fpe in fiscal_by_entity.items():
         qb = entity_quarters_behind(fpe, today, filing_lag_days, quarter_days)
         if qb is None:
             n_missing += 1
+        elif qb == FUTURE_DATED:
+            n_future += 1
         else:
             present_behind.append(int(qb))
     n_behind = sum(1 for q in present_behind if q >= max_quarters_behind)
     n_current = sum(1 for q in present_behind if q < max_quarters_behind)
-    n_stale = n_missing + n_behind
+    n_stale = n_missing + n_future + n_behind
     worst = max(present_behind) if present_behind else None
     return FundamentalsCoverage(
-        n_entities=n, n_missing=n_missing, n_stale=n_stale, n_current=n_current,
+        n_entities=n, n_missing=n_missing, n_future_dated=n_future,
+        n_stale=n_stale, n_current=n_current,
         stale_fraction=(n_stale / n if n else 1.0),
         missing_fraction=(n_missing / n if n else 1.0),
         worst_quarters_behind=worst, quantiles=_quantiles(present_behind))
@@ -545,7 +590,16 @@ def fundamentals_sla_verdict(source: dict, now: dt.date, *,
         return SourceVerdict(name, axis, max_feed_stale_days, None, None, False,
                              detail=f"daily-feed cutoff unresolved ({resolve_detail}) "
                                     f"— fail-closed (mtime is not a data cutoff)")
-    feed_age = max(0, (now - feed_max_date).days)
+    feed_age = (now - feed_max_date).days
+    if feed_age < -FUTURE_DATE_TOLERANCE_DAYS:
+        # Impossible: the daily-feed as-of date postdates the decision timestamp.
+        # FAIL CLOSED with a distinct reason — NEVER clamp this to age=0, which would
+        # silently turn a future-dated (impossible) feed into "maximally fresh".
+        return SourceVerdict(name, axis, max_feed_stale_days, feed_max_date, feed_age, False,
+                             detail=f"daily feed as-of {feed_max_date.isoformat()} is "
+                                    f"FUTURE-DATED ({-feed_age}d after now={now.isoformat()}) "
+                                    f"— impossible / look-ahead value, fail-closed "
+                                    f"({FUTURE_DATED})")
     feed_ok = feed_age <= max_feed_stale_days
     feed_fact = (f"daily feed as-of {feed_max_date.isoformat()} age={feed_age}d "
                  f"(max={max_feed_stale_days}d {'OK' if feed_ok else 'STALE'})")
@@ -560,6 +614,14 @@ def fundamentals_sla_verdict(source: dict, now: dt.date, *,
                                 max_quarters_behind=max_quarters_behind,
                                 quarter_days=quarter_days)
     reasons: list[str] = []
+    if cov.n_future_dated > 0:
+        # An impossible (future-dated) fiscal-period end is a distinct, unconditional
+        # fail-closed — never let it hide inside a coverage-fraction threshold that
+        # might otherwise tolerate a small count of "stale" entities (Codex #419
+        # review 3: future-dated data is a look-ahead-leak signal, not ordinary staleness).
+        reasons.append(f"{FUTURE_DATED}={cov.n_future_dated} entit"
+                       f"{'y' if cov.n_future_dated == 1 else 'ies'} with an impossible "
+                       f"fiscal-period end later than now — fail-closed")
     if cov.n_entities < min_entities:
         reasons.append(f"too few entities ({cov.n_entities}<{min_entities}) to certify coverage")
     if cov.missing_fraction > max_missing_fraction:
@@ -572,7 +634,8 @@ def fundamentals_sla_verdict(source: dict, now: dt.date, *,
     quarter_ok = not reasons
     on_sla = feed_ok and quarter_ok
     coverage_fact = (f"coverage n={cov.n_entities} current={cov.n_current} "
-                     f"missing={cov.n_missing} stale={cov.n_stale} "
+                     f"missing={cov.n_missing} {FUTURE_DATED}={cov.n_future_dated} "
+                     f"stale={cov.n_stale} "
                      f"stale_frac={cov.stale_fraction:.3f}(max={max_stale_fraction}) "
                      f"worst={cov.worst_quarters_behind}q q={cov.quantiles} "
                      f"{'OK' if quarter_ok else 'STALE-COVERAGE: ' + '; '.join(reasons)}")

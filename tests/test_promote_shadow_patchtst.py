@@ -90,6 +90,27 @@ class TestSourceSLA:
         v = M.source_sla_verdict(src, dt.date(2026, 6, 30), None, missing_ok=True)
         assert v.on_sla
 
+    # --- Codex #419 review 3: a future-dated cutoff must FAIL CLOSED, never pass -
+    # --- trivially because a negative age is "<= sla_days" (look-ahead leak). ----
+
+    def test_future_dated_cutoff_fails_closed(self):
+        src = {"name": "panel", "axis": "fast", "sla_days": 28}
+        v = M.source_sla_verdict(src, dt.date(2026, 6, 30), dt.date(2026, 7, 5))
+        assert not v.on_sla
+        assert M.FUTURE_DATED in v.detail
+
+    def test_one_day_future_cutoff_fails_closed(self):
+        # Just past the (zero-day) clock-skew tolerance -> must fail.
+        src = {"name": "panel", "axis": "fast", "sla_days": 28}
+        v = M.source_sla_verdict(src, dt.date(2026, 6, 30), dt.date(2026, 7, 1))
+        assert not v.on_sla and M.FUTURE_DATED in v.detail
+
+    def test_cutoff_exactly_now_is_boundary_and_passes(self):
+        # A cutoff dated exactly "now" (age == 0) is the boundary: not future.
+        src = {"name": "panel", "axis": "fast", "sla_days": 28}
+        v = M.source_sla_verdict(src, dt.date(2026, 6, 30), dt.date(2026, 6, 30))
+        assert v.on_sla and v.age_days == 0
+
 
 # --- cutoff advance ---------------------------------------------------------
 
@@ -253,9 +274,12 @@ def test_run_promote_dryrun_ok_when_fresh_and_gates_pass(tmp_path, monkeypatch):
     cfg = tmp_path / "strategy_config.shadow.json"
     cfg.write_text(json.dumps({"ranking": {"panel_scoring": {
         "kind": "hf_patchtst", "artifact_path": "served.pt", "lookahead_days": 60}}}))
-    # a fresh source file (mtime ~ now)
+    # a fresh source file, mtime pinned to the test's `now` (2026-06-30) — NOT the
+    # real wall clock, so this test is not future-dated (and thus fail-closed) once
+    # real time moves past 2026-06-30 (Codex #419 review 3 fail-closed fix).
     src = tmp_path / "panel.parquet"
     src.write_bytes(b"x")
+    _touch(src, dt.datetime(2026, 6, 30, 12, 0, 0))
     sources = json.dumps([{"name": "panel", "path": "panel.parquet",
                            "axis": "fast", "sla_days": 100000}])
     # mock the heavy smoke inference + fingerprint parity (no torch / no stamp tool)
@@ -284,6 +308,7 @@ def test_run_promote_gate_failure_when_smoke_degenerate(tmp_path, monkeypatch):
         "kind": "hf_patchtst", "artifact_path": "served.pt", "lookahead_days": 60}}}))
     src = tmp_path / "panel.parquet"
     src.write_bytes(b"x")
+    _touch(src, dt.datetime(2026, 6, 30, 12, 0, 0))  # pinned mtime, see comment above
     sources = json.dumps([{"name": "panel", "path": "panel.parquet",
                            "axis": "fast", "sla_days": 100000}])
     # degenerate (constant) probe scores -> non_degenerate gate fails
@@ -405,8 +430,25 @@ class TestEntityQuartersBehind:
     def test_missing_is_none(self):
         assert M.entity_quarters_behind(None, self._NOW, 45) is None
 
-    def test_future_dated_is_zero(self):
-        assert M.entity_quarters_behind(dt.date(2026, 9, 30), self._NOW, 45) == 0
+    # --- Codex #419 review 3: future-dated fiscal periods must FAIL CLOSED, ------
+    # --- never be silently treated as "0 quarters behind" (maximally fresh). ----
+
+    def test_future_dated_fails_closed_not_zero(self):
+        # An impossible fiscal-period end (later than "today") must return the
+        # FUTURE_DATED sentinel, NOT 0 (which would read as "current").
+        v = M.entity_quarters_behind(dt.date(2026, 9, 30), self._NOW, 45)
+        assert v == M.FUTURE_DATED
+        assert v != 0
+
+    def test_one_day_future_fails_closed(self):
+        # Just past the (zero-day) clock-skew tolerance -> must fail.
+        v = M.entity_quarters_behind(self._NOW + dt.timedelta(days=1), self._NOW, 45)
+        assert v == M.FUTURE_DATED
+
+    def test_exactly_today_is_boundary_and_passes(self):
+        # A fiscal-period end dated exactly "today" (staleness == 0) is the boundary:
+        # not future, and current (0 quarters behind).
+        assert M.entity_quarters_behind(self._NOW, self._NOW, 45) == 0
 
 
 class TestFundamentalsCoverage:
@@ -434,6 +476,16 @@ class TestFundamentalsCoverage:
                                       max_quarters_behind=1)
         assert cov.n_missing == 3 and cov.n_stale == 3
         assert cov.missing_fraction == pytest.approx(0.75)
+
+    def test_future_dated_counts_as_stale_not_current(self):
+        # Codex #419 review 3: a future-dated entity must count against staleness,
+        # never be silently folded into n_current (which "0 quarters behind" would do).
+        fbe = {"A": dt.date(2026, 3, 31), "FUTURE": dt.date(2026, 9, 30)}
+        cov = M.fundamentals_coverage(fbe, self._NOW, filing_lag_days=45,
+                                      max_quarters_behind=1)
+        assert cov.n_future_dated == 1
+        assert cov.n_current == 1  # only the genuinely current entity
+        assert cov.n_stale == 1 and cov.n_missing == 0
 
 
 class TestFundamentalsVerdict:
@@ -494,6 +546,49 @@ class TestFundamentalsVerdict:
             fiscal_by_entity=fbe, provenance_present=True,
             **{**self._KW, "min_entities": 50, "max_stale_fraction": 0.10})
         assert not v.on_sla and "worst=" in v.detail
+
+    # --- Codex #419 review 3: future-dated observations must FAIL CLOSED --------
+    # --- (BOTH the global daily-feed axis and the per-entity fiscal axis). ------
+
+    def test_global_future_dated_feed_fails_closed(self):
+        # The daily-feed as-of date itself postdates "now" -> impossible; must fail
+        # closed with a distinct reason, never be clamped to age=0 (maximally fresh).
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(100)}
+        v = M.fundamentals_sla_verdict(
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 7, 5),
+            fiscal_by_entity=fbe, provenance_present=True, **self._KW)
+        assert not v.on_sla
+        assert M.FUTURE_DATED in v.detail
+
+    def test_global_feed_one_day_future_fails_closed(self):
+        # Just past the (zero-day) clock-skew tolerance -> must fail.
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(100)}
+        v = M.fundamentals_sla_verdict(
+            _fund_src(), self._NOW, feed_max_date=self._NOW + dt.timedelta(days=1),
+            fiscal_by_entity=fbe, provenance_present=True, **self._KW)
+        assert not v.on_sla and M.FUTURE_DATED in v.detail
+
+    def test_global_feed_exactly_now_is_boundary_and_passes(self):
+        # A daily feed dated exactly "now" is the boundary: not future, and current.
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(100)}
+        v = M.fundamentals_sla_verdict(
+            _fund_src(), self._NOW, feed_max_date=self._NOW,
+            fiscal_by_entity=fbe, provenance_present=True, **self._KW)
+        assert v.on_sla
+
+    def test_per_entity_future_dated_fiscal_period_fails_closed(self):
+        # A daily-fresh feed with a per-entity fiscal-period end LATER than "now" is
+        # impossible (a real look-ahead-leak signal) -> must fail closed even though
+        # the naive "0 quarters behind" reading would otherwise pass as current.
+        fbe = {f"T{i}": dt.date(2026, 3, 31) for i in range(99)}
+        fbe["FUTURE"] = dt.date(2026, 9, 30)
+        v = M.fundamentals_sla_verdict(
+            _fund_src(), self._NOW, feed_max_date=dt.date(2026, 6, 29),
+            fiscal_by_entity=fbe, provenance_present=True,
+            **{**self._KW, "min_entities": 50})
+        assert not v.on_sla
+        assert M.FUTURE_DATED in v.detail
+        assert v.coverage["n_future_dated"] == 1
 
 
 class TestResolveFundamentalsVerdict:
@@ -645,3 +740,53 @@ def test_promote_keeps_pin_on_one_fresh_many_stale_fundamentals(tmp_path, monkey
     assert fund_v.coverage["n_current"] == 1 and fund_v.coverage["n_entities"] == 292
     panel_v = next(v for v in rep.source_verdicts if v.name == "panel")
     assert panel_v.on_sla  # the fast source IS fresh; only fundamentals blocks
+
+
+# --- Codex #419 review 3: future-dated observations must FAIL CLOSED end-to-end ---
+
+def test_promote_keeps_pin_on_future_dated_panel(tmp_path, monkeypatch):
+    # A fast-axis cutoff LATER than the decision timestamp is impossible and must
+    # fail closed -- never pass trivially because a negative age is "<= sla_days".
+    pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    # now == 2026-06-30 (see _base_args); 2026-07-05 is future-dated.
+    _write_parquet(tmp_path / "panel.parquet",
+                   {"date": pd.to_datetime(["2026-06-29", "2026-07-05"])})
+    args, cfg = _promote_setup(tmp_path, [{"name": "panel", "path": "panel.parquet",
+                                           "axis": "fast", "sla_days": 28, "date_col": "date"}])
+    before = cfg.read_text()
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
+    assert cfg.read_text() == before  # pin unchanged
+    panel_v = next(v for v in rep.source_verdicts if v.name == "panel")
+    assert not panel_v.on_sla and M.FUTURE_DATED in panel_v.detail
+
+
+def test_promote_keeps_pin_on_future_dated_fundamentals_entity(tmp_path, monkeypatch):
+    # A per-entity fiscal-period end LATER than the decision timestamp is impossible
+    # and must fail closed, not be read as "0 quarters behind" (maximally fresh) --
+    # even though the daily feed itself and the other 99 entities are current.
+    pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    _write_parquet(tmp_path / "panel.parquet",
+                   {"date": pd.to_datetime(["2026-06-28", "2026-06-29"])})
+    tickers = [f"T{i}" for i in range(99)] + ["FUTURE"]
+    periods = [dt.date(2026, 3, 31)] * 99 + [dt.date(2026, 9, 30)]
+    _write_parquet(tmp_path / "fund.parquet",
+                   {"ticker": tickers, "date": [dt.date(2026, 6, 29)] * 100,
+                    "period_end": pd.to_datetime(periods)})
+    sources = [
+        {"name": "panel", "path": "panel.parquet", "axis": "fast",
+         "sla_days": 28, "date_col": "date"},
+        {"name": "fundamentals", "path": "fund.parquet", "axis": "slow",
+         "kind": "fundamentals", "date_col": "date", "entity_cols": ["ticker"],
+         "fiscal_period_cols": ["period_end"], "min_entities": 50},
+    ]
+    args, cfg = _promote_setup(tmp_path, sources)
+    before = cfg.read_text()
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
+    assert cfg.read_text() == before  # pin unchanged
+    fund_v = next(v for v in rep.source_verdicts if v.name == "fundamentals")
+    assert not fund_v.on_sla and M.FUTURE_DATED in fund_v.detail
+    assert fund_v.coverage["n_future_dated"] == 1
