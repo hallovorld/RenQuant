@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from kernel.decision_trace import model_type_from_artifact
+from kernel.manifest_uri_resolver import resolve_manifest_uri
 
 # Leakage guard: columns that must never reach an inference feature frame.
 _FORBIDDEN_HISTORY_COL_PREFIXES = ("fwd_",)
@@ -71,25 +72,14 @@ def _drop_inference_forbidden_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resolve_manifest_uri(manifest_path: Path, uri: str) -> Path:
-    """Resolve a manifest artifact URI to a filesystem path.
+    """Resolve a manifest artifact URI via the shared bounded resolver.
 
-    Manifest URIs are normally relative to the manifest folder, but
-    orchestrator-built WF manifests emit strategy-dir-relative URIs
-    (``artifacts/walkforward_.../panel-ltr.json``). Resolving those under the
-    manifest folder (``artifacts/sim/``) doubled the prefix into a non-existent
-    ``artifacts/sim/artifacts/...`` path. Resolve against the manifest folder
-    first, then walk up its ancestors so both URI conventions resolve; fall back
-    to the manifest-folder join when nothing exists.
+    Thin wrapper over ``kernel.walk_forward.uri_resolver.resolve_manifest_uri``
+    so this call site shares the single URI contract (bounded known roots,
+    containment, ambiguity rejection) with the WF loader and the gate script,
+    instead of a drifting local copy. Manifest URIs are normally
+    manifest-folder-relative, but orchestrator-built WF manifests emit
+    strategy-dir-relative URIs (``artifacts/walkforward_.../panel-ltr.json``);
+    the shared resolver handles both against an ordered set of known roots.
     """
-    p = Path(uri)
-    if p.is_absolute():
-        return p
-    base = manifest_path.parent
-    candidate = base / p
-    if candidate.exists():
-        return candidate
-    for ancestor in base.parents:
-        alt = ancestor / p
-        if alt.exists():
-            return alt
-    return candidate
+    return Path(resolve_manifest_uri(manifest_path, uri))

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from kernel.manifest_uri_resolver import resolve_manifest_uri
 from kernel.walk_forward.leakage_guard import assert_no_leakage
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -68,6 +69,12 @@ class RetrainEntry:
     lookahead_days: int = 0
     calibrator_uri: str | None = None
     effective_train_cutoff_date: pd.Timestamp | None = None
+    # 2026-07-01 PR #421 review: optional per-entry artifact digest. When a
+    # manifest stamps ``artifact_sha256`` the bounded URI resolver binds the
+    # resolved file to it so this model-validation path cannot silently run
+    # against a stale/wrong same-named artifact. Absent (older manifests) → the
+    # resolver still enforces bounded roots / containment / no-ambiguity.
+    artifact_sha256: str | None = None
 
 
 def _optional_timestamp(raw: object) -> pd.Timestamp | None:
@@ -126,6 +133,9 @@ def _parse_entry(r: dict) -> RetrainEntry:
             else None
         ),
         effective_train_cutoff_date=effective,
+        artifact_sha256=(
+            str(r.get("artifact_sha256")) if r.get("artifact_sha256") else None
+        ),
     )
 
 
@@ -320,7 +330,9 @@ class WalkForwardModelLoader:
         manifest entries share scorer instances.
         """
         chosen = self.entry_as_of(today)
-        resolved = self._resolve_uri(chosen.artifact_uri)
+        resolved = self._resolve_uri(
+            chosen.artifact_uri, expected_digest=chosen.artifact_sha256
+        )
         cache_key = str(resolved)
         if cache_key in self._cache:
             return self._cache[cache_key]
@@ -357,39 +369,27 @@ class WalkForwardModelLoader:
         self._calibrator_cache[uri] = cal
         return cal
 
-    def _resolve_uri(self, uri: str):
-        """Resolve local relative manifest URIs to a filesystem path.
+    def _resolve_uri(self, uri: str, *, expected_digest: str | None = None):
+        """Resolve a manifest URI via the shared bounded resolver.
 
-        Manifest URIs are normally relative to the manifest's own folder.
-        Orchestrator-built WF manifests (``renquant_orchestrator.build_wf_manifest``)
-        instead emit strategy-dir-relative URIs such as
-        ``artifacts/walkforward_.../panel-ltr.json``. Resolving those under the
-        manifest folder (``artifacts/sim/``) doubled the prefix into a
-        non-existent ``artifacts/sim/artifacts/...`` path, so ``model_as_of`` /
-        ``calibrator_as_of`` raised ``FileNotFoundError`` and fail-closed the WF
-        gate for every bar. Resolve against the manifest folder first, then walk
-        up its ancestors so both URI conventions resolve; fall back to the
-        manifest-folder join when nothing exists so error messages stay
-        meaningful.
+        Manifest URIs are normally relative to the manifest's own folder, but
+        orchestrator-built WF manifests emit strategy-dir-relative URIs such as
+        ``artifacts/walkforward_.../panel-ltr.json``. The shared resolver
+        (``kernel.manifest_uri_resolver``) resolves against an ORDERED set
+        of known roots (manifest folder, then the inferred strategy root),
+        enforces containment, rejects ambiguity, and — on this model-validation
+        path — binds the resolved file to ``expected_digest`` when the manifest
+        entry stamps one. See that module for the full contract.
         """
-        if "://" in uri:
-            return uri
-        p = Path(uri)
-        if p.is_absolute():
-            return p
-        base = self._manifest_path.parent
-        candidate = base / p
-        if candidate.exists():
-            return candidate
-        for ancestor in base.parents:
-            alt = ancestor / p
-            if alt.exists():
-                return alt
-        return candidate
+        return resolve_manifest_uri(
+            self._manifest_path, uri, expected_digest=expected_digest
+        )
 
     def _scorer_fingerprints_for_entry(self, entry: RetrainEntry) -> list[str]:
         """Read the selected fold's local scorer identities without loading it."""
-        resolved = self._resolve_uri(entry.artifact_uri)
+        resolved = self._resolve_uri(
+            entry.artifact_uri, expected_digest=entry.artifact_sha256
+        )
         if not isinstance(resolved, Path) or not resolved.exists():
             return []
         out: list[str] = []

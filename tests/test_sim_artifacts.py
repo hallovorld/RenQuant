@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
@@ -13,6 +14,7 @@ from adapters.sim_artifacts import (  # noqa: E402
     _drop_inference_forbidden_cols,
     _resolve_manifest_uri,
 )
+from kernel.manifest_uri_resolver import ManifestUriResolutionError  # noqa: E402
 
 
 class TestLeakageGuard:
@@ -80,3 +82,26 @@ class TestResolveManifestUri:
         manifest.write_text("{}")
         out = _resolve_manifest_uri(manifest, "artifacts/nope/panel-ltr.json")
         assert out == manifest.parent / "artifacts/nope/panel-ltr.json"
+
+    def test_traversal_rejected_through_wrapper(self, tmp_path):
+        """The sim call site now shares the bounded contract: a URI that
+        escapes every allowed root is rejected, not silently walked."""
+        manifest = tmp_path / "artifacts" / "sim" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}")
+        with pytest.raises(ManifestUriResolutionError):
+            _resolve_manifest_uri(manifest, "../../../../../../etc/passwd")
+
+    def test_conflicting_candidates_rejected_through_wrapper(self, tmp_path):
+        """Two existing candidates with different digests → ambiguity error."""
+        strategy = tmp_path
+        manifest = strategy / "artifacts" / "sim" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}")
+        uri = "shared/model.json"
+        (manifest.parent / uri).parent.mkdir(parents=True, exist_ok=True)
+        (manifest.parent / uri).write_text('{"id": "a"}')
+        (strategy / uri).parent.mkdir(parents=True, exist_ok=True)
+        (strategy / uri).write_text('{"id": "b"}')
+        with pytest.raises(ManifestUriResolutionError):
+            _resolve_manifest_uri(manifest, uri)

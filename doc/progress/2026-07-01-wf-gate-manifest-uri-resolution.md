@@ -35,18 +35,53 @@ fresh clone: parent-relative resolution → `exists=False`; strategy-dir-relativ
 The older manifests used absolute URIs (which resolve fine as pass-through), so
 only the newer orchestrator-built v2 manifests tripped the doubling.
 
-## Fix
+## Fix — a BOUNDED resolver (revised after Codex review)
 
-Make the three resolvers tolerant of BOTH conventions: resolve against the
-manifest folder first (unchanged default), and if that path does not exist walk
-up the manifest folder's ancestors and return the first join that exists;
-fall back to the manifest-folder join when nothing exists so the downstream
-not-found error stays meaningful. Absolute paths and `scheme://` URIs are
-unchanged. Sites fixed (all on the GBDT weekly-gate path):
+The first cut resolved by walking *arbitrary* ancestors of the manifest folder
+and returning the first path that happened to exist. Codex correctly blocked
+that: on a model-validation path it makes artifact identity a property of the
+machine's surrounding filesystem — a stale same-named file higher in the
+checkout could be silently picked, relocating the checkout could select a
+different model, and three duplicated resolver copies could drift.
+
+Replaced with a single shared **bounded** resolver,
+`kernel/manifest_uri_resolver.py::resolve_manifest_uri`, used by all three call
+sites. Contract:
+
+- Resolve a relative URI only against a small ORDERED set of KNOWN ROOTS:
+  (1) the manifest's own folder (legacy default), then (2) the strategy/repo
+  root inferred from the manifest path (parent of the outermost `artifacts`
+  directory) — where orchestrator-built manifests emit their strategy-dir-
+  relative URIs. No arbitrary parent walking.
+- NORMALIZE each candidate and ENFORCE CONTAINMENT: a URI whose normalized
+  join escapes *every* allowed root (`..` traversal) is REJECTED
+  (`ManifestUriResolutionError`), not walked.
+- REJECT AMBIGUITY: if more than one root yields an existing file and those
+  files have different content digests, raise rather than guess. Identical
+  bytes under both roots are not ambiguous (manifest-folder root wins the tie,
+  deterministically).
+- Bind to the manifest's expected digest WHERE PRESENT: the resolver accepts an
+  optional `expected_digest`; on a mismatch it raises. A new optional
+  `RetrainEntry.artifact_sha256` (round-tripped by `manifest.py`, default absent
+  → unchanged for pre-digest manifests) feeds it on the loader path, so "found a
+  file" is not sufficient to run the gate.
+- Absolute paths and `scheme://` URIs are returned untouched.
+- When nothing exists, fall back to the manifest-relative join so the
+  downstream not-found error names the expected location.
+
+Because both roots are derived from the manifest path itself (never an absolute
+machine prefix), resolution is deterministic across checkout relocation.
+
+The module lives directly under `kernel/` (not `kernel/walk_forward/`) on
+purpose: the sim adapter imports it, and the `kernel/walk_forward` package
+`__init__` pulls heavier pipeline modules the URI-resolution path does not need.
+
+Sites consolidated onto the shared resolver (all on the GBDT weekly-gate path):
 
 - `kernel/walk_forward/loader.py::WalkForwardModelLoader._resolve_uri` — the
   per-bar scorer + per-fold calibrator load (the `FileNotFoundError` source) and
-  `_scorer_fingerprints_for_entry`.
+  `_scorer_fingerprints_for_entry`; both now pass the entry's `artifact_sha256`
+  as `expected_digest`.
 - `backtesting/renquant_104/adapters/sim_artifacts.py::_resolve_manifest_uri` —
   the sim's scorer-kind probes (`_alpha158_cache_required` etc.; the GBDT kind
   `panel_ltr_xgboost` is alpha158-cache-eligible, so a mis-probe silently skips
@@ -55,7 +90,7 @@ unchanged. Sites fixed (all on the GBDT weekly-gate path):
   sanity per-cut scorer resolution (`_score_manifest_sanity`).
 
 No manifest data was rewritten (a regenerated manifest would re-break it); the
-umbrella's loader now defines a robust read contract for orchestrator-emitted
+umbrella now defines a single robust read contract for orchestrator-emitted
 URIs.
 
 ## Bug 2 (scorer-kind parity) was already fixed — no change needed
@@ -73,19 +108,27 @@ bug 1 alone.
 
 ## Evidence / verification
 
-- Reproduced in a fresh blobless clone of `hallovorld/RenQuant` (never the live
-  tree): both v2 manifest URIs resolve to existing files after the fix
-  (loader, sim_artifacts, run_wf_gate resolvers all confirmed against the real
-  `walkforward_manifest_gbdt_prod_recipe_v2.calibrated.json`).
-- `tests/test_sim_artifacts.py` — 8 passed, including two new regression tests:
-  `test_strategy_dir_relative_uri_resolves_to_existing_corpus` (the bug) and
-  `test_missing_relative_uri_falls_back_to_manifest_parent` (sensible-error
-  fallback). Existing `TestResolveManifestUri` (absolute passthrough +
-  manifest-parent default) stays green, as does the loader regression guard
-  `test_relative_artifact_uri_resolved_against_manifest_parent` (materialized
-  file → level-0 short-circuit).
+- New `tests/test_manifest_uri_resolver.py` pins the bounded contract:
+  manifest-relative resolves, strategy-dir-relative resolves, traversal-outside
+  → rejected, two conflicting candidates → error, deterministic across
+  simulated checkout relocation (ignores a same-named decoy above the strategy
+  root), digest-mismatch → rejected, digest-match accepted, absolute/`scheme://`
+  untouched, and loader delegation.
+- `tests/test_sim_artifacts.py` extended: strategy-dir-relative resolves and
+  manifest-parent fallback (kept from the first cut), plus new
+  traversal-rejected and conflicting-candidates-rejected cases through the sim
+  wrapper.
+- Ran in a fresh blobless clone of `hallovorld/RenQuant` (never the live tree),
+  Python venv: `tests/test_sim_artifacts.py` + `tests/test_manifest_uri_resolver.py`
+  → 24 passed, 1 skipped (the loader-delegation case skips only where the
+  pipeline subrepo is not assembled). `tests/test_walkforward_loader.py` +
+  `tests/test_walkforward_manifest.py` → 27 passed incl. the relative/absolute
+  URI regression guards and the manifest round-trip; the single remaining
+  failure is an unrelated Python-3.9-vs-3.10 `X | None` runtime-annotation issue
+  in `kernel/config.py` (the real gate venv is 3.10+), not this change.
 - Scope: no gate-threshold change, no placebo/§5.2 statistic change, no model
-  weights, no promotion criteria, no retrain. Path-resolution only.
+  weights, no promotion criteria, no retrain. Path-resolution + optional
+  digest-binding only.
 - `git diff --check` clean.
 
 ## Next
