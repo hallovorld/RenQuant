@@ -5,9 +5,16 @@ These cover the frozen-corpus root cause: the transformer training universe
 watchlist gets fresh daily bars, so ``transformer_v4_wl200_clean.parquet`` sat at
 2026-02-10. The refresh task must iterate the FULL transformer universe (not just
 the watchlist), a single ticker's failure / delisting must not abort, the guard
-must fire when more than a configurable fraction is stale while staying quiet at
-the expected fwd_60d frontier, and the rebuilt corpus must swap in NON-destructively
-only when it advances + passes a row/date sanity gate.
+must fire when more than a configurable fraction is stale (PARTIAL freeze) OR when
+the whole universe is uniformly stale vs an independent market as-of (GLOBAL
+freeze) while staying quiet at the expected fwd_60d frontier, and the rebuilt
+corpus must swap in ATOMICALLY + NON-destructively only when it strictly advances
++ keeps the prior schema / rows / coverage.
+
+Fail-closed contract (Codex review, PR #424): bad universe provenance
+(missing/corrupt/empty inventory), unassessable freshness (no resolvable dates or
+a global freeze), a non-advancing / wrong-recipe rebuild, and an interrupted swap
+all FAIL CLOSED — never a silent skip or a lost served corpus.
 
 All fetch / freshness / builder IO is mocked or uses tmp fixtures — no real network
 fetch, no real rebuild, and no production data write ever happens here.
@@ -50,6 +57,33 @@ def _corpus_parquet(path: Path, max_date: dt.date, n_rows: int = 100) -> None:
     pd.DataFrame({"date": dates, "ticker": "AAA", "close": 1.0}).to_parquet(path, index=False)
 
 
+def _corpus_parquet_rich(
+    path: Path,
+    max_date: dt.date,
+    n_rows: int,
+    features=(),
+    labels=(),
+    n_tickers: int = 3,
+) -> None:
+    """Write a corpus parquet with explicit feature + multi-horizon label columns
+    and a controllable distinct-ticker count (for schema/coverage/recipe tests)."""
+    dates = pd.bdate_range(end=pd.Timestamp(max_date), periods=n_rows)
+    tickers = [f"T{i % n_tickers}" for i in range(n_rows)]
+    data = {"date": dates, "ticker": tickers, "close": 1.0}
+    for f in features:
+        data[f] = 1.0
+    for lb in labels:
+        data[lb] = 0.01
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(data).to_parquet(path, index=False)
+
+
+def _capture_ntfy(monkeypatch) -> list:
+    posted: list = []
+    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    return posted
+
+
 # ─────────────────────────── refresh task ──────────────────────────────────
 
 
@@ -75,6 +109,9 @@ def test_refresh_iterates_full_transformer_universe_not_just_watchlist(tmp_path)
     assert summary["n_refreshed"] == len(universe)
     assert summary["n_failed"] == 0
     assert summary["n_delisted"] == 0
+    # provenance recorded for the explicit universe
+    assert ctx.universe_provenance["source"] == "explicit"
+    assert ctx.universe_provenance["n_universe"] == len(universe)
 
 
 def test_refresh_sources_universe_from_inventory_tier_a_and_b(tmp_path) -> None:
@@ -101,6 +138,8 @@ def test_refresh_sources_universe_from_inventory_tier_a_and_b(tmp_path) -> None:
 
     # tier_A + tier_B only — tier_C (skip) is excluded, mirroring the builder.
     assert set(calls) == {"AAPL", "MSFT", "XYZ", "QRS", "TUV"}
+    assert ctx.universe_provenance["source"] == "inventory"
+    assert ctx.universe_provenance["inventory_digest"]  # sha256 recorded
 
 
 def test_refresh_delisted_and_failed_tickers_do_not_abort(tmp_path) -> None:
@@ -154,13 +193,6 @@ def test_refresh_disabled_skips_fetch(tmp_path) -> None:
     assert called == []
 
 
-def test_refresh_empty_universe_is_safe_noop(tmp_path) -> None:
-    (tmp_path / "data").mkdir(parents=True)  # no inventory present
-    ctx = _ctx(tmp_path)
-    assert mod.RefreshTransformerUniverseOhlcvTask().run(ctx) is True
-    assert ctx.ohlcv_refresh_summary["n_universe"] == 0
-
-
 def test_refresh_resolves_default_fetch_fn_when_not_injected(tmp_path, monkeypatch) -> None:
     """Runtime-wiring seam: with no fetch_fn injected the task resolves the real
     base-data primitive via ``_default_fetch_fn`` (patched here so no import)."""
@@ -178,6 +210,70 @@ def test_refresh_resolves_default_fetch_fn_when_not_injected(tmp_path, monkeypat
     assert set(calls) == {"A", "B", "C"}
 
 
+# ─────────────────── universe provenance: fail closed ───────────────────────
+
+
+def test_provenance_fails_closed_on_missing_inventory(tmp_path, monkeypatch) -> None:
+    (tmp_path / "data").mkdir(parents=True)  # no inventory present
+    posted = _capture_ntfy(monkeypatch)
+    ctx = _ctx(tmp_path)  # require_universe defaults True
+
+    # Required training-universe provenance must fail closed, not silently no-op.
+    with pytest.raises(mod.CorpusRefreshError, match="UNIVERSE-PROVENANCE|provenance"):
+        mod.RefreshTransformerUniverseOhlcvTask().run(ctx)
+    assert len(posted) == 1  # loud alert fired
+    assert ctx.universe_provenance["reason"]
+
+
+def test_provenance_fails_closed_on_corrupt_inventory(tmp_path, monkeypatch) -> None:
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    (data / "transformer_universe_inventory.json").write_text("{ this is not valid json ")
+    posted = _capture_ntfy(monkeypatch)
+    ctx = _ctx(tmp_path)
+
+    with pytest.raises(mod.CorpusRefreshError):
+        mod.RefreshTransformerUniverseOhlcvTask().run(ctx)
+    assert len(posted) == 1
+    assert "corrupt" in ctx.universe_provenance["reason"]
+
+
+def test_provenance_fails_closed_on_empty_tiers(tmp_path, monkeypatch) -> None:
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    (data / "transformer_universe_inventory.json").write_text(
+        json.dumps({"tier_A_tickers": [], "tier_B_tickers": [], "tier_C_tickers": ["NOPE"]})
+    )
+    posted = _capture_ntfy(monkeypatch)
+    ctx = _ctx(tmp_path)
+
+    with pytest.raises(mod.CorpusRefreshError):
+        mod.RefreshTransformerUniverseOhlcvTask().run(ctx)
+    assert len(posted) == 1
+
+
+def test_provenance_empty_is_safe_noop_when_require_universe_false(tmp_path) -> None:
+    (tmp_path / "data").mkdir(parents=True)  # no inventory present
+    ctx = _ctx(tmp_path, require_universe=False)
+    # Explicit ops escape hatch: degrade to a safe no-op instead of failing closed.
+    assert mod.RefreshTransformerUniverseOhlcvTask().run(ctx) is True
+    assert ctx.ohlcv_refresh_summary["n_universe"] == 0
+
+
+def test_inventory_digest_binding_mismatch_fails_closed(tmp_path, monkeypatch) -> None:
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    (data / "transformer_universe_inventory.json").write_text(
+        json.dumps({"tier_A_tickers": ["AAPL"], "tier_B_tickers": ["MSFT"]})
+    )
+    posted = _capture_ntfy(monkeypatch)
+    ctx = _ctx(tmp_path, expected_inventory_digest="deadbeef" * 8)
+
+    with pytest.raises(mod.CorpusRefreshError, match="inventory digest"):
+        mod.RefreshTransformerUniverseOhlcvTask().run(ctx)
+    assert len(posted) == 1
+
+
 # ─────────────────────────── freshness guard ───────────────────────────────
 
 
@@ -192,16 +288,17 @@ def test_guard_quiet_when_bars_fresh_despite_fwd60d_panel_frontier(tmp_path, mon
         tmp_path,
         transformer_universe=universe,
         ohlcv_max_dates={t: frontier for t in universe},
+        freshness_as_of=frontier,  # market as-of == frontier → no global freeze
         freshness_stale_after_days=10,
         freshness_max_stale_fraction=0.10,
         freshness_fail_on_stale=True,
     )
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     assert mod.TransformerUniverseFreshnessGuardTask().run(ctx) is True
     assert posted == []
     assert ctx.freshness_report["n_stale"] == 0
+    assert ctx.freshness_report["global_frozen"] is False
     assert ctx.freshness_report["as_of_frontier"] == frontier.isoformat()
 
 
@@ -215,11 +312,11 @@ def test_guard_quiet_below_threshold(tmp_path, monkeypatch) -> None:
         tmp_path,
         transformer_universe=universe,
         ohlcv_max_dates=md,
+        freshness_as_of=frontier,
         freshness_max_stale_fraction=0.10,
         freshness_fail_on_stale=True,
     )
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     assert mod.TransformerUniverseFreshnessGuardTask().run(ctx) is True
     assert posted == []
@@ -238,18 +335,47 @@ def test_guard_fails_closed_on_partial_freeze(tmp_path, monkeypatch) -> None:
         tmp_path,
         transformer_universe=universe,
         ohlcv_max_dates=md,
+        freshness_as_of=frontier,  # frontier fresh → isolates the PARTIAL trip
         freshness_max_stale_fraction=0.10,
         freshness_fail_on_stale=True,
     )
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
-    with pytest.raises(RuntimeError, match="transformer tickers stale"):
+    with pytest.raises(mod.CorpusRefreshError, match="transformer tickers stale"):
         mod.TransformerUniverseFreshnessGuardTask().run(ctx)
 
     assert len(posted) == 1  # LOUD alert fired
     assert ctx.freshness_report["n_stale"] == 10
     assert ctx.freshness_report["stale_fraction"] == 0.5
+    assert ctx.freshness_report["global_frozen"] is False  # partial, not global
+
+
+def test_guard_fails_closed_on_global_freeze_uniform_stale_bars(tmp_path, monkeypatch) -> None:
+    """A GLOBALLY frozen universe has ZERO relative staleness (every ticker equal),
+    so a frontier-relative check alone passes. The independent market as-of catches
+    it: the frontier itself lags the expected completed session."""
+    frozen = dt.date(2026, 2, 10)
+    asof = dt.date(2026, 6, 30)  # market moved on; the whole universe did not
+    universe = [f"T{i}" for i in range(20)]
+    ctx = _ctx(
+        tmp_path,
+        transformer_universe=universe,
+        ohlcv_max_dates={t: frozen for t in universe},  # uniformly stale
+        freshness_as_of=asof,
+        freshness_stale_after_days=10,
+        freshness_max_stale_fraction=0.10,
+        freshness_fail_on_stale=True,
+    )
+    posted = _capture_ntfy(monkeypatch)
+
+    with pytest.raises(mod.CorpusRefreshError, match="GLOBAL FREEZE"):
+        mod.TransformerUniverseFreshnessGuardTask().run(ctx)
+
+    assert len(posted) == 1
+    assert ctx.freshness_report["global_frozen"] is True
+    # zero RELATIVE staleness — only the independent as-of surfaced it
+    assert ctx.freshness_report["n_stale"] == 0
+    assert ctx.freshness_report["frontier_lag_days"] > 10
 
 
 def test_guard_proceeds_with_warning_when_fail_disabled(tmp_path, monkeypatch) -> None:
@@ -263,11 +389,11 @@ def test_guard_proceeds_with_warning_when_fail_disabled(tmp_path, monkeypatch) -
         tmp_path,
         transformer_universe=universe,
         ohlcv_max_dates=md,
+        freshness_as_of=frontier,
         freshness_max_stale_fraction=0.10,
         freshness_fail_on_stale=False,
     )
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     # proceeds (returns True) but still alerts loudly
     assert mod.TransformerUniverseFreshnessGuardTask().run(ctx) is True
@@ -284,12 +410,13 @@ def test_guard_counts_missing_bars_as_stale(tmp_path, monkeypatch) -> None:
         tmp_path,
         transformer_universe=universe,
         ohlcv_max_dates=md,
+        freshness_as_of=frontier,
         freshness_max_stale_fraction=0.10,
         freshness_fail_on_stale=True,
     )
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: None)
+    _capture_ntfy(monkeypatch)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(mod.CorpusRefreshError):
         mod.TransformerUniverseFreshnessGuardTask().run(ctx)
     assert ctx.freshness_report["n_missing"] == 3
     assert ctx.freshness_report["n_stale"] == 3
@@ -302,20 +429,23 @@ def test_guard_uses_injected_ohlcv_reader(tmp_path, monkeypatch) -> None:
         tmp_path,
         transformer_universe=universe,
         ohlcv_max_date_fn=lambda t: frontier,
+        freshness_as_of=frontier,
         freshness_fail_on_stale=True,
     )
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     assert mod.TransformerUniverseFreshnessGuardTask().run(ctx) is True
     assert posted == []
     assert ctx.freshness_report["as_of_frontier"] == frontier.isoformat()
 
 
-def test_guard_skips_when_no_dates_resolvable(tmp_path) -> None:
+def test_guard_fails_closed_when_no_dates_resolvable(tmp_path, monkeypatch) -> None:
+    posted = _capture_ntfy(monkeypatch)
     ctx = _ctx(tmp_path, transformer_universe=["A", "B"], ohlcv_max_date_fn=lambda t: None)
-    # cannot assess → soft skip (does not raise)
-    assert mod.TransformerUniverseFreshnessGuardTask().run(ctx) is True
+    # Unassessable input (no resolvable dates) must FAIL CLOSED, not silently skip.
+    with pytest.raises(mod.CorpusRefreshError, match="UNASSESSABLE|cannot assess"):
+        mod.TransformerUniverseFreshnessGuardTask().run(ctx)
+    assert len(posted) == 1
 
 
 # ─────────────────────────── rebuild + swap ────────────────────────────────
@@ -330,8 +460,7 @@ def test_rebuild_swaps_in_advancing_corpus_non_destructively(tmp_path, monkeypat
         _corpus_parquet(staging_path, max_date=dt.date(2026, 6, 30), n_rows=140)
 
     ctx = _ctx(tmp_path, transformer_universe=["AAA"], builder_fn=fake_builder)
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     assert mod.RebuildTransformerCorpusTask().run(ctx) is True
     assert posted == []  # clean swap, no alert
@@ -344,7 +473,7 @@ def test_rebuild_swaps_in_advancing_corpus_non_destructively(tmp_path, monkeypat
     assert bak.exists()
     _, bak_date = mod._default_corpus_stats(bak)
     assert bak_date == dt.date(2026, 2, 10)
-    # ... and the staging file was consumed.
+    # ... and the staging file was consumed by the atomic replace.
     assert not ctx.resolved_staging_path.exists()
 
 
@@ -357,11 +486,10 @@ def test_rebuild_rejects_regressed_corpus_and_keeps_prior(tmp_path, monkeypatch)
         _corpus_parquet(staging_path, max_date=dt.date(2026, 2, 10), n_rows=40)
 
     ctx = _ctx(tmp_path, transformer_universe=["AAA"], builder_fn=fake_builder)
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     # fail-closed: a regression must NOT clobber the served corpus
-    with pytest.raises(RuntimeError, match="rejected"):
+    with pytest.raises(mod.CorpusRefreshError, match="rejected"):
         mod.RebuildTransformerCorpusTask().run(ctx)
 
     assert len(posted) == 1  # LOUD alert fired
@@ -372,6 +500,125 @@ def test_rebuild_rejects_regressed_corpus_and_keeps_prior(tmp_path, monkeypatch)
     # ... no .bak created, staged build dropped.
     assert not corpus.with_name(corpus.name + ".bak").exists()
     assert not ctx.resolved_staging_path.exists()
+
+
+def test_rebuild_rejects_equal_non_advancing_frontier(tmp_path, monkeypatch) -> None:
+    """require_date_advance means STRICTLY advance — an equal (non-advanced) staged
+    corpus must be rejected despite matching rows / schema."""
+    same_date = dt.date(2026, 6, 30)
+    corpus = tmp_path / "data" / "transformer_v4_wl200_clean.parquet"
+    _corpus_parquet(corpus, max_date=same_date, n_rows=140)
+
+    def fake_builder(staging_path, universe):
+        _corpus_parquet(staging_path, max_date=same_date, n_rows=140)  # equal frontier
+
+    ctx = _ctx(tmp_path, transformer_universe=["AAA"], builder_fn=fake_builder)
+    posted = _capture_ntfy(monkeypatch)
+
+    with pytest.raises(mod.CorpusRefreshError, match="rejected"):
+        mod.RebuildTransformerCorpusTask().run(ctx)
+    assert any("does not advance" in r for r in ctx.swap_report["sanity_reasons"])
+    assert len(posted) == 1
+    _, served_date = mod._default_corpus_stats(corpus)
+    assert served_date == same_date  # untouched
+
+
+def test_rebuild_rejects_wrong_recipe_schema_and_label_drift(tmp_path, monkeypatch) -> None:
+    """A wrong builder recipe can produce a PLAUSIBLE row count + an advancing date
+    while silently dropping features / changing the label horizon. The schema gate
+    fails it closed."""
+    corpus = tmp_path / "data" / "transformer_v4_wl200_clean.parquet"
+    _corpus_parquet_rich(
+        corpus,
+        max_date=dt.date(2026, 6, 30),
+        n_rows=140,
+        features=["feat_a", "feat_b"],
+        labels=["fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"],
+        n_tickers=3,
+    )
+
+    def fake_builder(staging_path, universe):
+        # advancing date + equal rows (passes date/row checks) BUT wrong recipe:
+        # dropped feat_b and dropped the fwd_60d label horizon.
+        _corpus_parquet_rich(
+            staging_path,
+            max_date=dt.date(2026, 7, 30),
+            n_rows=140,
+            features=["feat_a"],
+            labels=["fwd_5d_excess", "fwd_20d_excess"],
+            n_tickers=3,
+        )
+
+    ctx = _ctx(tmp_path, transformer_universe=["AAA"], builder_fn=fake_builder)
+    posted = _capture_ntfy(monkeypatch)
+
+    with pytest.raises(mod.CorpusRefreshError, match="rejected"):
+        mod.RebuildTransformerCorpusTask().run(ctx)
+    reasons = ctx.swap_report["sanity_reasons"]
+    assert any("dropped columns" in r for r in reasons)
+    assert any("label horizon" in r for r in reasons)
+    assert len(posted) == 1
+    # served corpus untouched (still has feat_b + fwd_60d)
+    schema = mod._default_corpus_schema(corpus)
+    assert "feat_b" in schema["columns"]
+    assert 60 in schema["label_horizons"]
+
+
+def test_rebuild_rejects_ticker_coverage_drop(tmp_path, monkeypatch) -> None:
+    corpus = tmp_path / "data" / "transformer_v4_wl200_clean.parquet"
+    _corpus_parquet_rich(
+        corpus,
+        max_date=dt.date(2026, 6, 30),
+        n_rows=140,
+        labels=["fwd_60d_excess"],
+        n_tickers=10,
+    )
+
+    def fake_builder(staging_path, universe):
+        # advancing + plausible rows + same columns, but collapsed to 1 ticker
+        _corpus_parquet_rich(
+            staging_path,
+            max_date=dt.date(2026, 7, 30),
+            n_rows=140,
+            labels=["fwd_60d_excess"],
+            n_tickers=1,
+        )
+
+    ctx = _ctx(tmp_path, transformer_universe=["AAA"], builder_fn=fake_builder)
+    posted = _capture_ntfy(monkeypatch)
+
+    with pytest.raises(mod.CorpusRefreshError, match="rejected"):
+        mod.RebuildTransformerCorpusTask().run(ctx)
+    assert any("ticker coverage" in r for r in ctx.swap_report["sanity_reasons"])
+    assert len(posted) == 1
+
+
+def test_rebuild_swap_interruption_preserves_served_corpus(tmp_path, monkeypatch) -> None:
+    """If the atomic replace is interrupted (injected failure), the served corpus is
+    never moved out of the way — it must remain the intact prior, not disappear."""
+    corpus = tmp_path / "data" / "transformer_v4_wl200_clean.parquet"
+    _corpus_parquet(corpus, max_date=dt.date(2026, 2, 10), n_rows=100)
+
+    def fake_builder(staging_path, universe):
+        _corpus_parquet(staging_path, max_date=dt.date(2026, 6, 30), n_rows=140)
+
+    ctx = _ctx(tmp_path, transformer_universe=["AAA"], builder_fn=fake_builder)
+    posted = _capture_ntfy(monkeypatch)
+
+    def boom(src, dst):
+        raise OSError("disk full during rename")
+
+    monkeypatch.setattr(mod.os, "replace", boom)  # interrupt the atomic swap
+
+    with pytest.raises(mod.CorpusRefreshError, match="SWAP FAILED|swap failed"):
+        mod.RebuildTransformerCorpusTask().run(ctx)
+
+    assert len(posted) == 1
+    assert ctx.swap_report["swapped"] is False
+    # served corpus still present + intact (the prior), never lost
+    assert corpus.exists()
+    _, served_date = mod._default_corpus_stats(corpus)
+    assert served_date == dt.date(2026, 2, 10)
 
 
 def test_rebuild_regression_proceeds_when_fail_disabled(tmp_path, monkeypatch) -> None:
@@ -387,8 +634,7 @@ def test_rebuild_regression_proceeds_when_fail_disabled(tmp_path, monkeypatch) -
         builder_fn=fake_builder,
         swap_fail_on_regression=False,
     )
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     # proceeds (returns True), keeps prior corpus, still alerts
     assert mod.RebuildTransformerCorpusTask().run(ctx) is True
@@ -458,16 +704,16 @@ def test_refresh_then_guard_catches_partial_freeze_end_to_end(tmp_path, monkeypa
         tmp_path,
         transformer_universe=universe,
         fetch_fn=fake_fetch,
+        freshness_as_of=frontier,
         freshness_max_stale_fraction=0.10,
         freshness_fail_on_stale=True,
     )
-    posted: list = []
-    monkeypatch.setattr(mod, "post_ntfy", lambda *a, **k: posted.append(a))
+    posted = _capture_ntfy(monkeypatch)
 
     assert mod.RefreshTransformerUniverseOhlcvTask().run(ctx) is True
     assert ctx.ohlcv_refresh_summary["n_stale"] == 8
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(mod.CorpusRefreshError):
         mod.TransformerUniverseFreshnessGuardTask().run(ctx)
     assert len(posted) == 1
     assert ctx.freshness_report["n_stale"] == 8
@@ -492,6 +738,41 @@ def test_default_corpus_stats_reads_parquet(tmp_path) -> None:
     assert n_rows == 42
     assert max_date == dt.date(2026, 6, 30)
     assert mod._default_corpus_stats(tmp_path / "missing.parquet") == (0, None)
+
+
+def test_default_corpus_schema_reads_columns_tickers_and_labels(tmp_path) -> None:
+    corpus = tmp_path / "c.parquet"
+    _corpus_parquet_rich(
+        corpus,
+        max_date=dt.date(2026, 6, 30),
+        n_rows=30,
+        features=["feat_a"],
+        labels=["fwd_5d_excess", "fwd_60d_excess"],
+        n_tickers=3,
+    )
+    schema = mod._default_corpus_schema(corpus)
+    assert "feat_a" in schema["columns"]
+    assert schema["n_tickers"] == 3
+    assert schema["label_horizons"] == frozenset({5, 60})
+    # missing file → empty (unconstrained) snapshot
+    empty = mod._default_corpus_schema(tmp_path / "missing.parquet")
+    assert empty["columns"] == [] and empty["n_tickers"] == 0
+
+
+def test_label_horizons_detects_forward_columns() -> None:
+    assert mod._label_horizons(["date", "ticker", "close"]) == frozenset()
+    assert mod._label_horizons(["fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"]) == frozenset(
+        {5, 20, 60}
+    )
+
+
+def test_expected_asof_default_is_a_business_day(tmp_path) -> None:
+    asof = mod._default_expected_asof()
+    assert asof.weekday() < 5  # Mon-Fri
+    # explicit override wins
+    fixed = dt.date(2026, 6, 30)
+    ctx = _ctx(tmp_path, freshness_as_of=fixed)
+    assert mod._resolve_expected_asof(ctx) == fixed
 
 
 def test_trading_days_between_is_business_day_gap() -> None:

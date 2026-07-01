@@ -18,34 +18,47 @@ PatchTST/xgb baseline). That corpus was frozen at 2026-02-10 for two reasons:
      corpus for those names.
 
 This module wires a fresh-data rebuild into the PatchTST retrain cadence
-(``scripts/weekly_retrain_patchtst.sh``), mirroring the orchestrator alpha158 fix:
+(``scripts/weekly_retrain_patchtst.sh``), mirroring the orchestrator alpha158 fix.
 
-  1. RefreshTransformerUniverseOhlcvTask — iterate the FULL transformer universe
-     (tier_A + tier_B, sourced exactly where the builder reads it) and call the
-     incremental (append-merge, non-destructive, timeout-protected) OHLCV fetch
-     for each ticker. Resilient: a single ticker's failure / delisting never
-     aborts the refresh. Summarizes n_refreshed / n_stale / n_delisted / n_failed.
-  2. TransformerUniverseFreshnessGuardTask — after the refresh, compute each
-     transformer ticker's RAW OHLCV bar max date; if more than
-     ``freshness_max_stale_fraction`` (default 10%) of the universe lags the
-     universe frontier by more than ``freshness_stale_after_days`` (default 10
-     trading days), emit a LOUD ntfy alert and (per ``freshness_fail_on_stale``,
-     default fail-closed) fail or proceed. Reads RAW bars (frontier ~today), NOT
-     the built panel (which legitimately ends ~today-60 after the fwd_60d clip),
-     so the expected fwd_60d frontier is distinguished from genuine input staleness.
-  3. RebuildTransformerCorpusTask — rebuild the transformer panel to a STAGING
-     path, then (only if it advances the corpus date frontier + passes a basic
-     row/date-count sanity vs the prior corpus) swap it in NON-DESTRUCTIVELY,
-     keeping a ``.bak`` of the prior corpus. A regression (staged corpus older /
-     materially smaller) never clobbers the served corpus.
+FAIL-CLOSED CONTRACT (Codex review, PR #424)
+--------------------------------------------
+Every load-bearing input is validated and fails CLOSED on an unassessable state —
+a silent skip is never allowed to hand the builder / retrain a degraded corpus:
 
-After this runs, the existing ``weekly_retrain_patchtst.sh`` WF build + the shadow
-promote (PR #419) train on the fresh corpus.
+  * Universe PROVENANCE — a missing / corrupt / empty inventory (or an inventory
+    whose digest does not match a bound expected digest) raises, so the refresh /
+    rebuild never runs against an empty universe.
+  * FRESHNESS — the raw-bar frontier is compared to an INDEPENDENT expected
+    completed market session (an exchange-calendar as-of), not only to the
+    universe's own max(known dates). A GLOBALLY frozen universe (every ticker
+    uniformly stale) trips the guard even though it has zero *relative* staleness;
+    unassessable inputs (no resolvable dates) fail closed rather than skip.
+  * REBUILD/SWAP — the staged corpus must strictly ADVANCE the frontier (an equal,
+    non-advanced corpus is rejected), keep >= ``min_row_ratio`` of the prior rows,
+    keep the prior SCHEMA / features / label horizons, and keep >=
+    ``min_ticker_coverage_ratio`` of the prior ticker coverage. A wrong builder
+    recipe that changes features / universe / schema while still producing a
+    plausible row count therefore fails closed instead of silently serving a
+    divergent corpus.
+  * ATOMIC swap — the prior corpus is backed up by COPY and replaced with a single
+    ``os.replace`` (atomic rename on one filesystem) + fsync. The served corpus is
+    never moved out of the way, so an interrupted swap can never leave it missing.
+
+The three tasks (refresh → freshness guard → rebuild + atomic swap) are ordered so
+the guard runs on freshly-fetched bars and the rebuild only runs behind a green
+guard. After this runs, the existing ``weekly_retrain_patchtst.sh`` WF build + the
+shadow promote (PR #419) train on the fresh corpus.
 
 Non-destructive: uses ONLY the incremental append-merge OHLCV primitive; never
 overwrites/deletes ``data/ohlcv/``. The model architecture and the fwd_60d label
 clip are UNCHANGED. Every network / builder / disk seam is dependency-injected so
 this module is unit-testable with mocks/fixtures and no real fetch / rebuild.
+
+REFRESH/REBUILD IS PLUMBING, NOT A PROMOTION. This module only assembles a fresh,
+integrity-checked corpus. Whether the freshly-trained shadow model is PROMOTED is
+still decided downstream by the existing WF gate + shadow replay (PR #419); a
+frozen shadow replay (identical model code/seeds, PIT checks, regime IC,
+turnover/cost, coverage diagnostics on old vs new corpus) gates any promotion.
 
 RUNTIME WIRING
 --------------
@@ -56,8 +69,10 @@ dependency-injected via ``CorpusRefreshContext.fetch_fn``; when None it resolves
 lazily through ``_default_fetch_fn()`` at call time. The corpus builder is
 likewise injected via ``CorpusRefreshContext.builder_fn``; when None it invokes
 ``scripts/transformer_dataset_builder.py`` to the staging path against the same
-inventory the builder reads. Tests inject fakes so nothing touches the network or
-a production data file.
+inventory / labels / integrity-report the builder reads. The staged corpus is
+then validated against the served corpus's schema / label / coverage CONTRACT, so
+a divergent recipe fails closed rather than silently swapping in. Tests inject
+fakes so nothing touches the network or a production data file.
 
 Usage::
 
@@ -69,9 +84,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -88,6 +105,8 @@ logging.basicConfig(
 log = logging.getLogger("refresh-transformer-corpus")
 
 DEFAULT_INVENTORY_FILENAME = "transformer_universe_inventory.json"
+DEFAULT_INTEGRITY_FILENAME = "transformer_data_integrity_report.json"
+DEFAULT_LABELS_FILENAME = "transformer_panel_labels.parquet"
 DEFAULT_OHLCV_DIRNAME = "ohlcv"
 DEFAULT_CORPUS_RELPATH = "transformer_v4_wl200_clean.parquet"
 DEFAULT_OHLCV_TIMEOUT_SEC = 30.0
@@ -97,7 +116,21 @@ DEFAULT_FRESHNESS_MAX_STALE_FRACTION = 0.10
 # be trusted (guards against a truncated / partial rebuild silently shrinking the
 # served corpus). A healthy rebuild is >= prior rows (it appends fresher dates).
 DEFAULT_MIN_ROW_RATIO = 0.95
+# Staged corpus must retain at least this fraction of the prior corpus's distinct
+# tickers (a wrong recipe / universe drift silently dropping names fails closed).
+DEFAULT_MIN_TICKER_COVERAGE_RATIO = 0.90
+# Recorded for audit; the OUTPUT-CONTRACT gate (schema/label/coverage) is what
+# actually binds the recipe — a divergent builder output fails the swap closed.
+DEFAULT_BUILDER_RECIPE = "transformer_dataset_builder:tier_A+tier_B/raw-OHLCV/fwd_{5,20,60}d/wl200_clean"
 DEFAULT_NTFY_TOPIC = "renquant"
+
+# Label columns look like ``fwd_60d_excess`` / ``label_20d`` / ``y_5d``.
+_LABEL_HORIZON_RE = re.compile(r"(\d+)")
+
+
+class CorpusRefreshError(RuntimeError):
+    """Fail-closed integrity failure (bad provenance / unassessable freshness /
+    interrupted swap). Subclasses RuntimeError so callers can catch either."""
 
 
 def post_ntfy(title: str, body: str, topic: str = DEFAULT_NTFY_TOPIC) -> None:
@@ -129,6 +162,12 @@ class CorpusRefreshContext:
     # inventory (tier_A + tier_B) exactly as the builder reads it.
     transformer_universe: Optional[list] = None
     inventory_path: Optional[Path] = None
+    # Fail closed (default) when the required training universe is unresolvable /
+    # empty. False → warn + degrade to a safe no-op (explicit ops escape hatch).
+    require_universe: bool = True
+    # When set, the sourced inventory's sha256 must equal this or the run fails
+    # closed (binds the exact universe file that produced the served corpus).
+    expected_inventory_digest: Optional[str] = None
 
     # ── full-universe OHLCV refresh ─────────────────────────────────────────
     refresh_ohlcv: bool = True
@@ -137,11 +176,16 @@ class CorpusRefreshContext:
     fetch_fn: "Callable[..., object] | None" = None
     ohlcv_timeout_sec: float = DEFAULT_OHLCV_TIMEOUT_SEC
 
-    # ── partial-freeze guard ────────────────────────────────────────────────
+    # ── partial / global freeze guard ───────────────────────────────────────
     # Injectable per-ticker on-disk max-date reader; None → read the parquet.
     ohlcv_max_date_fn: "Callable[[str], object] | None" = None
     freshness_stale_after_days: int = DEFAULT_FRESHNESS_STALE_AFTER_DAYS
     freshness_max_stale_fraction: float = DEFAULT_FRESHNESS_MAX_STALE_FRACTION
+    # Independent "expected completed market session" the raw-bar frontier is
+    # measured against (catches a GLOBAL freeze that has zero relative staleness).
+    # Explicit date wins; else expected_as_of_fn(); else the last business day.
+    freshness_as_of: "dt.date | None" = None
+    expected_as_of_fn: "Callable[[], dt.date] | None" = None
     # Fail-closed by default (a partially frozen training universe is a real
     # training-input integrity failure). False → only warn (ntfy) + proceed.
     freshness_fail_on_stale: bool = True
@@ -149,16 +193,25 @@ class CorpusRefreshContext:
     # ── corpus rebuild + non-destructive, sanity-gated swap ─────────────────
     corpus_path: Optional[Path] = None
     staging_path: Optional[Path] = None
+    labels_path: Optional[Path] = None
+    integrity_report_path: Optional[Path] = None
     rebuild_corpus: bool = True
+    builder_recipe: str = DEFAULT_BUILDER_RECIPE
     # Injected panel builder (staging_path, universe) -> None. None → invoke
     # scripts/transformer_dataset_builder.py to the staging path.
     builder_fn: "Callable[[Path, list], None] | None" = None
     # Injected (path) -> (n_rows, max_date|None) reader; None → read the parquet.
     corpus_stats_fn: "Callable[[Path], tuple] | None" = None
-    # Staged corpus must advance the date frontier (>= prior max date) ...
+    # Injected (path) -> schema dict reader; None → read the parquet schema.
+    corpus_schema_fn: "Callable[[Path], dict] | None" = None
+    # Staged corpus must strictly ADVANCE the date frontier (equal is rejected) ...
     require_date_advance: bool = True
-    # ... and keep at least this fraction of the prior corpus's rows.
+    # ... keep at least this fraction of the prior corpus's rows ...
     min_row_ratio: float = DEFAULT_MIN_ROW_RATIO
+    # ... keep at least this fraction of the prior corpus's distinct tickers ...
+    min_ticker_coverage_ratio: float = DEFAULT_MIN_TICKER_COVERAGE_RATIO
+    # ... and keep the prior schema / features / label horizons (recipe parity).
+    validate_schema: bool = True
     # Fail the retrain when the rebuilt corpus regresses (default, fail-closed);
     # False → warn (ntfy) + keep the prior corpus + proceed.
     swap_fail_on_regression: bool = True
@@ -172,6 +225,8 @@ class CorpusRefreshContext:
     ohlcv_refresh_summary: dict = field(default_factory=dict)
     freshness_report: dict = field(default_factory=dict)
     swap_report: dict = field(default_factory=dict)
+    universe_provenance: dict = field(default_factory=dict)
+    _universe_cache: Optional[list] = field(default=None, repr=False)
 
     @property
     def data_dir(self) -> Path:
@@ -188,6 +243,18 @@ class CorpusRefreshContext:
         return self.data_dir / DEFAULT_INVENTORY_FILENAME
 
     @property
+    def resolved_labels_path(self) -> Path:
+        if self.labels_path is not None:
+            return self.labels_path
+        return self.data_dir / DEFAULT_LABELS_FILENAME
+
+    @property
+    def resolved_integrity_report_path(self) -> Path:
+        if self.integrity_report_path is not None:
+            return self.integrity_report_path
+        return self.data_dir / DEFAULT_INTEGRITY_FILENAME
+
+    @property
     def resolved_corpus_path(self) -> Path:
         if self.corpus_path is not None:
             return self.corpus_path
@@ -201,32 +268,118 @@ class CorpusRefreshContext:
         return c.with_name(c.name + ".staging")
 
 
+# ─────────────────────────── fail-closed helper ────────────────────────────
+
+
+def _fail_closed(ctx: CorpusRefreshContext, title: str, body: str) -> "None":
+    """Emit a LOUD ntfy alert (unless quiet), log, and raise — the single place a
+    load-bearing integrity failure turns into a fail-closed abort."""
+    if not ctx.quiet:
+        post_ntfy(title, body, ctx.ntfy_topic)
+    log.error("%s: %s", title, body)
+    raise CorpusRefreshError(body)
+
+
 # ─────────────────────────── universe sourcing ─────────────────────────────
 
 
-def _resolve_transformer_universe(ctx: CorpusRefreshContext) -> list:
-    """Source the FULL transformer training universe (tier_A + tier_B), NOT just
-    the ~142-ticker live watchlist.
+def _digest_universe(universe: list) -> str:
+    return hashlib.sha256("\n".join(universe).encode("utf-8")).hexdigest()
 
-    Mirrors ``scripts/transformer_dataset_builder.py``, which reads
-    ``tier_A_tickers`` + ``tier_B_tickers`` from ``transformer_universe_inventory
-    .json``. An explicit ``ctx.transformer_universe`` wins. Returns a sorted,
-    de-duplicated list; an unreadable / missing inventory yields an empty list
-    (logged) so the refresh + guard degrade to safe no-ops rather than aborting.
+
+def _source_transformer_universe(ctx: CorpusRefreshContext) -> "tuple[list, dict]":
+    """Source the FULL transformer training universe (tier_A + tier_B) and record
+    provenance. PURE (never raises): the caller decides fail-closed behaviour.
+
+    Mirrors ``scripts/transformer_dataset_builder.py``, which unions
+    ``tier_A_tickers`` + ``tier_B_tickers`` from the inventory. An explicit
+    ``ctx.transformer_universe`` wins. A missing / corrupt / empty-tiers inventory
+    yields an empty list plus a provenance dict flagging why.
     """
     if ctx.transformer_universe:
-        return sorted(dict.fromkeys(str(t) for t in ctx.transformer_universe))
+        uni = sorted(dict.fromkeys(str(t) for t in ctx.transformer_universe))
+        return uni, {
+            "source": "explicit",
+            "inventory_path": None,
+            "inventory_digest": _digest_universe(uni),
+            "n_universe": len(uni),
+            "reason": None,
+        }
     inv_path = ctx.resolved_inventory_path
+    prov: dict = {
+        "source": "inventory",
+        "inventory_path": str(inv_path),
+        "inventory_digest": None,
+        "n_universe": 0,
+        "reason": None,
+    }
     if not inv_path.exists():
-        log.warning("transformer universe inventory not found: %s — universe empty", inv_path)
-        return []
+        prov["reason"] = "inventory not found"
+        return [], prov
     try:
-        inv = json.loads(inv_path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        log.warning("failed to read transformer universe inventory %s: %s", inv_path, exc)
-        return []
+        raw = inv_path.read_bytes()
+    except OSError as exc:
+        prov["reason"] = f"inventory unreadable: {exc}"
+        return [], prov
+    prov["inventory_digest"] = hashlib.sha256(raw).hexdigest()
+    try:
+        inv = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        prov["reason"] = f"inventory corrupt (invalid JSON): {exc}"
+        return [], prov
+    if not isinstance(inv, dict):
+        prov["reason"] = "inventory not a JSON object"
+        return [], prov
     universe = set(inv.get("tier_A_tickers", [])) | set(inv.get("tier_B_tickers", []))
-    return sorted(str(t) for t in universe)
+    uni = sorted(str(t) for t in universe)
+    prov["n_universe"] = len(uni)
+    if not uni:
+        prov["reason"] = "inventory tier_A_tickers + tier_B_tickers empty"
+    return uni, prov
+
+
+def _resolve_transformer_universe(ctx: CorpusRefreshContext) -> list:
+    """Resolve + validate the training universe (cached). Fails CLOSED when the
+    universe is required but unresolvable / empty, or when a bound inventory
+    digest does not match — required training-universe provenance must fail
+    closed, never silently degrade to an empty universe."""
+    if ctx._universe_cache is not None:
+        return ctx._universe_cache
+    universe, prov = _source_transformer_universe(ctx)
+    ctx.universe_provenance = prov
+
+    if ctx.expected_inventory_digest and prov.get("inventory_digest") and (
+        prov["inventory_digest"] != ctx.expected_inventory_digest
+    ):
+        _fail_closed(
+            ctx,
+            "RenQuant PatchTST INVENTORY-DIGEST MISMATCH",
+            (
+                f"transformer inventory digest {prov['inventory_digest'][:12]} != bound "
+                f"{ctx.expected_inventory_digest[:12]} ({prov.get('inventory_path')}); "
+                "the universe file that produced the served corpus changed — refusing to "
+                "refresh/rebuild against an unverified universe."
+            ),
+        )
+
+    if not universe:
+        if ctx.require_universe:
+            _fail_closed(
+                ctx,
+                "RenQuant PatchTST UNIVERSE-PROVENANCE FAIL",
+                (
+                    f"transformer training universe unresolvable/empty "
+                    f"(source={prov.get('source')}, reason={prov.get('reason')}, "
+                    f"inventory={prov.get('inventory_path')}); required training-universe "
+                    "provenance failed — refusing to refresh/rebuild on an empty universe."
+                ),
+            )
+        log.warning(
+            "transformer universe empty (%s) but require_universe=False — safe no-op",
+            prov.get("reason"),
+        )
+    ctx._universe_cache = universe
+    return universe
 
 
 # ─────────────────────────── fetch / date helpers ──────────────────────────
@@ -303,7 +456,26 @@ def _trading_days_between(start: "dt.date", end: "dt.date") -> int:
     return int(np.busday_count(start, end))
 
 
-# ─────────────────────────── corpus stats / build ──────────────────────────
+def _default_expected_asof() -> "dt.date":
+    """The most recent completed market session, holiday-agnostic proxy: the last
+    business day <= today. Independent of the universe's own bars so a GLOBAL
+    freeze (every ticker uniformly stale) is detectable."""
+    import numpy as np  # noqa: PLC0415
+
+    today = dt.date.today()
+    d = np.busday_offset(np.datetime64(today, "D"), 0, roll="backward")
+    return dt.date.fromisoformat(str(d))
+
+
+def _resolve_expected_asof(ctx: CorpusRefreshContext) -> "dt.date":
+    if ctx.freshness_as_of is not None:
+        return ctx.freshness_as_of
+    if ctx.expected_as_of_fn is not None:
+        return ctx.expected_as_of_fn()
+    return _default_expected_asof()
+
+
+# ─────────────────────────── corpus stats / schema / build ─────────────────
 
 
 def _default_corpus_stats(path: Path) -> tuple:
@@ -328,22 +500,79 @@ def _default_corpus_stats(path: Path) -> tuple:
             return (0, None)
 
 
+def _label_horizons(columns) -> "frozenset":
+    """Forward-label horizons present in a column set, e.g. {5, 20, 60} from
+    ``fwd_5d_excess`` / ``fwd_20d_excess`` / ``fwd_60d_excess``."""
+    horizons = set()
+    for c in columns:
+        lc = str(c).lower()
+        if "fwd" in lc or "label" in lc or lc.startswith("y_"):
+            m = _LABEL_HORIZON_RE.search(lc)
+            if m:
+                horizons.add(int(m.group(1)))
+    return frozenset(horizons)
+
+
+def _default_corpus_schema(path: Path) -> dict:
+    """Cheap output-contract snapshot of a corpus parquet: sorted column names,
+    distinct ticker count, and the set of forward-label horizons. Empty snapshot
+    when the file is missing / unreadable so a first-time build is unconstrained.
+    """
+    empty = {"columns": [], "n_tickers": 0, "label_horizons": frozenset()}
+    if not path.exists():
+        return dict(empty)
+    columns: list = []
+    try:
+        import pyarrow.parquet as pq  # noqa: PLC0415
+
+        columns = list(pq.read_schema(path).names)
+    except Exception:  # pragma: no cover - fall back to a pandas read
+        try:
+            import pandas as pd  # noqa: PLC0415
+
+            columns = list(pd.read_parquet(path).columns)
+        except Exception:
+            return dict(empty)
+    n_tickers = 0
+    if "ticker" in columns:
+        try:
+            import pandas as pd  # noqa: PLC0415
+
+            n_tickers = int(pd.read_parquet(path, columns=["ticker"])["ticker"].nunique())
+        except Exception:  # pragma: no cover - defensive
+            n_tickers = 0
+    return {
+        "columns": sorted(str(c) for c in columns),
+        "n_tickers": n_tickers,
+        "label_horizons": _label_horizons(columns),
+    }
+
+
 def _resolve_corpus_stats(ctx: CorpusRefreshContext, path: Path) -> tuple:
     if ctx.corpus_stats_fn is not None:
         return ctx.corpus_stats_fn(path)
     return _default_corpus_stats(path)
 
 
+def _resolve_corpus_schema(ctx: CorpusRefreshContext, path: Path) -> dict:
+    if ctx.corpus_schema_fn is not None:
+        return ctx.corpus_schema_fn(path)
+    return _default_corpus_schema(path)
+
+
 def _default_build_corpus(ctx: CorpusRefreshContext, staging_path: Path, universe: list) -> None:
     """Rebuild the transformer panel to ``staging_path`` by invoking the existing
-    builder against the SAME inventory the corpus is built from.
+    builder against the SAME inventory / labels / integrity-report the corpus is
+    built from.
 
     RUNTIME WIRING NOTE: the served corpus ``transformer_v4_wl200_clean.parquet``
     is the wl200-clean transformer_v4 corpus. This default wires the canonical
-    ``scripts/transformer_dataset_builder.py`` (inventory tier_A+tier_B over
-    ``data/ohlcv``) to the staging path; point ``builder_fn`` at the operator's
-    exact wl200-clean recipe if it diverges — the injection seam makes that a
-    one-line change with no code churn here.
+    ``scripts/transformer_dataset_builder.py`` to the staging path. If the
+    operator's exact wl200-clean recipe diverges, its OUTPUT still has to satisfy
+    the served corpus's schema / label / coverage contract (the swap gate) or the
+    swap fails closed — a silent feature/universe/schema change can never reach
+    the served corpus. Point ``builder_fn`` at the exact recipe to also match the
+    build side; that is a one-line injection change with no code churn here.
     """
     builder = ctx.repo_dir / "scripts" / "transformer_dataset_builder.py"
     cmd = [
@@ -351,13 +580,66 @@ def _default_build_corpus(ctx: CorpusRefreshContext, staging_path: Path, univers
         str(builder),
         "--inventory",
         str(ctx.resolved_inventory_path),
+        "--integrity-report",
+        str(ctx.resolved_integrity_report_path),
+        "--labels",
+        str(ctx.resolved_labels_path),
         "--ohlcv-dir",
         str(ctx.ohlcv_dir),
         "--output",
         str(staging_path),
     ]
-    log.info("rebuilding transformer corpus to staging: %s", " ".join(cmd))
+    log.info("rebuilding transformer corpus to staging [%s]: %s", ctx.builder_recipe, " ".join(cmd))
     subprocess.run(cmd, check=True)  # noqa: S603
+
+
+# ─────────────────────────── atomic swap helpers ───────────────────────────
+
+
+def _fsync_file(path: Path) -> None:
+    """Best-effort fsync of a file's bytes to durable storage."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:  # pragma: no cover - not all filesystems support fsync
+        pass
+
+
+def _fsync_dir(path: Path) -> None:
+    """Best-effort fsync of a directory entry (so a rename is durable)."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:  # pragma: no cover - directory fsync unsupported on some fs
+        pass
+
+
+def _atomic_replace_corpus(staging: Path, corpus: Path) -> "str | None":
+    """Atomically replace ``corpus`` with ``staging`` on ONE filesystem.
+
+    The served corpus is NEVER moved out of the way: the prior is backed up by a
+    COPY, then a single ``os.replace`` (atomic rename) overwrites the served path.
+    If the replace is interrupted, the served corpus is still the intact prior, so
+    it can never disappear. Returns the ``.bak`` path (None on a first-time build).
+    """
+    _fsync_file(staging)  # staged bytes durable before we touch the served path
+    bak: "str | None" = None
+    if corpus.exists():
+        bak_path = corpus.with_name(corpus.name + ".bak")
+        if bak_path.exists():
+            bak_path.unlink()
+        shutil.copy2(str(corpus), str(bak_path))  # COPY (prior stays in place)
+        _fsync_file(bak_path)
+        bak = str(bak_path)
+    os.replace(str(staging), str(corpus))  # atomic on one filesystem
+    _fsync_dir(corpus.parent)
+    return bak
 
 
 # ─────────────────────────── tasks ─────────────────────────────────────────
@@ -375,10 +657,13 @@ class RefreshTransformerUniverseOhlcvTask:
     failure / delisting NEVER aborts the refresh — delisted names return their
     stale cache and are counted, not fatal. Records n_refreshed / n_stale /
     n_delisted / n_failed.
+
+    Fails CLOSED before any fetch if the required training universe is
+    unresolvable (bad inventory provenance).
     """
 
     def run(self, ctx: CorpusRefreshContext) -> bool:
-        universe = _resolve_transformer_universe(ctx)
+        universe = _resolve_transformer_universe(ctx)  # fails closed on bad provenance
         summary = {
             "n_universe": len(universe),
             "n_refreshed": 0,
@@ -390,7 +675,7 @@ class RefreshTransformerUniverseOhlcvTask:
         if not ctx.refresh_ohlcv:
             log.info("OHLCV refresh disabled (refresh_ohlcv=False); skipping")
             return True
-        if not universe:
+        if not universe:  # only reachable with require_universe=False
             log.warning("transformer universe empty; nothing to refresh")
             return True
         if ctx.dry_run:
@@ -438,48 +723,72 @@ class RefreshTransformerUniverseOhlcvTask:
 
 
 class TransformerUniverseFreshnessGuardTask:
-    """Guard against a *partial* transformer-universe freeze — the silent failure
-    mode that let the research tail sit at 2026-02-10 while the ~142-ticker
-    watchlist stayed fresh and the watchlist-only scan passed.
+    """Guard against a transformer-universe freeze — both a PARTIAL freeze (the
+    research tail sits at 2026-02-10 while the ~142-ticker watchlist stays fresh,
+    which the watchlist-only scan passed) and a GLOBAL freeze (every ticker
+    uniformly stale, which a frontier-relative check alone would miss).
 
     Reads each transformer ticker's RAW OHLCV bar max date — NOT the built
     corpus, which legitimately ends ~today-60 trading days after the (correct)
     fwd_60d label clip. Reading raw bars means an on-frontier universe never trips
     this guard: genuine input staleness (the bars themselves old) is distinguished
-    from the expected fwd_60d frontier. A ticker is 'stale' when its newest bar
-    lags the universe frontier (the freshest bar any ticker has) by more than
-    ``freshness_stale_after_days`` trading days. If more than
-    ``freshness_max_stale_fraction`` of the universe is stale, emit a LOUD ntfy
-    alert and — per ``freshness_fail_on_stale`` — either fail the retrain
+    from the expected fwd_60d frontier.
+
+      * PARTIAL: a ticker is stale when its newest bar lags the universe frontier
+        (the freshest bar any ticker has) by > ``freshness_stale_after_days``; if
+        > ``freshness_max_stale_fraction`` of the universe is stale, trip.
+      * GLOBAL: the universe frontier itself is compared to an INDEPENDENT expected
+        completed market session; if the frontier lags that as-of by >
+        ``freshness_stale_after_days`` the whole universe is frozen, trip.
+
+    Unassessable inputs (no resolvable dates) fail closed rather than skip. On a
+    trip: LOUD ntfy alert and — per ``freshness_fail_on_stale`` — fail the retrain
     (default, fail-closed) or proceed with the warning.
     """
 
     def run(self, ctx: CorpusRefreshContext) -> bool:
-        universe = _resolve_transformer_universe(ctx)
-        if not universe:
+        universe = _resolve_transformer_universe(ctx)  # fails closed on bad provenance
+        if not universe:  # only reachable with require_universe=False
             log.warning("freshness guard: transformer universe empty; cannot assess — skipping")
             return True
         dates = {t: _resolve_ohlcv_max_date(ctx, t) for t in universe}
         known = {t: d for t, d in dates.items() if d is not None}
+        missing = {t for t, d in dates.items() if d is None}
         if not known:
-            log.warning("freshness guard: no OHLCV max dates resolvable — skipping")
-            return True
+            # Unassessable input — no resolvable OHLCV dates. Fail CLOSED (never a
+            # silent skip): we cannot certify the training inputs are fresh.
+            _fail_closed(
+                ctx,
+                "RenQuant PatchTST CORPUS-FRESHNESS UNASSESSABLE",
+                (
+                    f"no OHLCV max dates resolvable for any of {len(universe)} transformer "
+                    "tickers; cannot assess training-input freshness — refusing to proceed."
+                ),
+            )
 
         frontier = max(known.values())
+        expected_asof = _resolve_expected_asof(ctx)
+        frontier_lag = _trading_days_between(frontier, expected_asof)
+        global_frozen = frontier_lag > ctx.freshness_stale_after_days
+
         stale = {
             t: d
             for t, d in known.items()
             if _trading_days_between(d, frontier) > ctx.freshness_stale_after_days
         }
-        missing = {t for t, d in dates.items() if d is None}
         n_stale = len(stale) + len(missing)
         fraction = n_stale / len(universe)
+        partial_frozen = fraction > ctx.freshness_max_stale_fraction
         worst = sorted(
             ((_trading_days_between(d, frontier), t) for t, d in stale.items()),
             reverse=True,
         )[:10]
         report = {
             "as_of_frontier": frontier.isoformat(),
+            "expected_as_of": expected_asof.isoformat(),
+            "frontier_lag_days": frontier_lag,
+            "global_frozen": global_frozen,
+            "partial_frozen": partial_frozen,
             "n_universe": len(universe),
             "n_stale": n_stale,
             "n_missing": len(missing),
@@ -490,44 +799,61 @@ class TransformerUniverseFreshnessGuardTask:
         }
         ctx.freshness_report = report
 
-        if fraction <= ctx.freshness_max_stale_fraction:
+        if not (partial_frozen or global_frozen):
             log.info(
-                "freshness guard OK: %d/%d stale (%.1f%% <= %.1f%%), frontier=%s",
+                "freshness guard OK: %d/%d stale (%.1f%% <= %.1f%%), frontier=%s lags market as-of %s by %dd",
                 n_stale,
                 len(universe),
                 fraction * 100,
                 ctx.freshness_max_stale_fraction * 100,
                 frontier.isoformat(),
+                expected_asof.isoformat(),
+                frontier_lag,
             )
             return True
 
-        worst_str = ", ".join(f"{t}(-{lag}d)" for lag, t in worst[:8])
+        parts = []
+        if global_frozen:
+            parts.append(
+                f"universe frontier {frontier.isoformat()} lags expected completed market "
+                f"session {expected_asof.isoformat()} by {frontier_lag} > "
+                f"{ctx.freshness_stale_after_days} trading days (GLOBAL FREEZE — every ticker "
+                "uniformly stale)"
+            )
+        if partial_frozen:
+            worst_str = ", ".join(f"{t}(-{lag}d)" for lag, t in worst[:8])
+            parts.append(
+                f"{n_stale}/{len(universe)} transformer tickers stale "
+                f"({fraction:.1%} > {ctx.freshness_max_stale_fraction:.0%}); bars lag frontier "
+                f"{frontier.isoformat()} by >{ctx.freshness_stale_after_days} trading days. "
+                f"Worst: {worst_str}"
+            )
         title = "RenQuant PatchTST CORPUS-FREEZE"
         body = (
-            f"{n_stale}/{len(universe)} transformer tickers stale "
-            f"({fraction:.1%} > {ctx.freshness_max_stale_fraction:.0%}); "
-            f"bars lag frontier {frontier.isoformat()} by "
-            f">{ctx.freshness_stale_after_days} trading days. "
-            f"Worst: {worst_str}. "
-            f"{'FAILING retrain' if ctx.freshness_fail_on_stale else 'proceeding with warning'}."
+            "; ".join(parts)
+            + f". {'FAILING retrain' if ctx.freshness_fail_on_stale else 'proceeding with warning'}."
         )
         if not ctx.quiet:
             post_ntfy(title, body, ctx.ntfy_topic)
         log.error("freshness guard TRIPPED: %s", body)
         if ctx.freshness_fail_on_stale:
-            raise RuntimeError(body)
+            raise CorpusRefreshError(body)
         return True
 
 
 class RebuildTransformerCorpusTask:
     """Rebuild the transformer corpus to a STAGING path, then swap it in only if
-    it advances the corpus + passes a basic row/date sanity vs the prior corpus.
+    it strictly advances the corpus + passes a schema/row/date/coverage sanity gate
+    vs the prior corpus.
 
-    Non-destructive: the prior corpus is moved to ``<corpus>.bak`` before the
-    staged corpus takes its place, so a bad rebuild is always recoverable. A
-    regression (staged corpus older, or materially fewer rows than the prior)
-    NEVER clobbers the served corpus — per ``swap_fail_on_regression`` it either
-    fails the retrain (default, fail-closed) or warns + keeps the prior corpus.
+    Non-destructive & ATOMIC: the prior corpus is backed up by COPY to
+    ``<corpus>.bak`` and replaced with a single ``os.replace`` (atomic rename on
+    one filesystem) + fsync, so the served corpus is never moved out of the way and
+    an interrupted swap can never leave it missing. A regression (staged corpus not
+    advancing, materially fewer rows, dropped features / changed label horizon, or
+    dropped ticker coverage) NEVER clobbers the served corpus — per
+    ``swap_fail_on_regression`` it either fails the retrain (default, fail-closed)
+    or warns + keeps the prior corpus.
     """
 
     def run(self, ctx: CorpusRefreshContext) -> bool:
@@ -536,6 +862,7 @@ class RebuildTransformerCorpusTask:
         report = {
             "corpus_path": str(corpus),
             "staging_path": str(staging),
+            "builder_recipe": ctx.builder_recipe,
             "swapped": False,
         }
         ctx.swap_report = report
@@ -546,10 +873,16 @@ class RebuildTransformerCorpusTask:
             log.info("[dry-run] would rebuild transformer corpus to %s and sanity-gate swap", staging)
             return True
 
-        universe = _resolve_transformer_universe(ctx)
+        universe = _resolve_transformer_universe(ctx)  # fails closed on bad provenance
+        if not universe:  # only reachable with require_universe=False
+            log.warning("transformer universe empty; skipping rebuild")
+            return True
+
         prior_rows, prior_date = _resolve_corpus_stats(ctx, corpus)
+        prior_schema = _resolve_corpus_schema(ctx, corpus)
         report["prior_rows"] = prior_rows
         report["prior_max_date"] = prior_date.isoformat() if prior_date else None
+        report["prior_n_tickers"] = prior_schema.get("n_tickers")
 
         # Build to staging (never touches the served corpus).
         staging.parent.mkdir(parents=True, exist_ok=True)
@@ -559,49 +892,95 @@ class RebuildTransformerCorpusTask:
         builder(staging, universe)
 
         staged_rows, staged_date = _resolve_corpus_stats(ctx, staging)
+        staged_schema = _resolve_corpus_schema(ctx, staging)
         report["staged_rows"] = staged_rows
         report["staged_max_date"] = staged_date.isoformat() if staged_date else None
+        report["staged_n_tickers"] = staged_schema.get("n_tickers")
 
-        reasons = self._sanity_reasons(ctx, prior_rows, prior_date, staged_rows, staged_date)
+        reasons = self._sanity_reasons(
+            ctx, prior_rows, prior_date, prior_schema, staged_rows, staged_date, staged_schema
+        )
         report["sanity_reasons"] = reasons
         if reasons:
             self._reject(ctx, staging, report, reasons)
             return True
 
-        # Non-destructive swap: prior -> .bak, then staging -> corpus.
-        if corpus.exists():
-            bak = corpus.with_name(corpus.name + ".bak")
-            if bak.exists():
-                bak.unlink()
-            shutil.move(str(corpus), str(bak))
-            report["backup_path"] = str(bak)
-        shutil.move(str(staging), str(corpus))
+        # Passed the gate → atomic, non-destructive swap.
+        try:
+            bak = _atomic_replace_corpus(staging, corpus)
+        except Exception as exc:  # served corpus preserved (never moved away)
+            report["swap_error"] = str(exc)
+            # Defensive: if a partial state ever left the served path missing, restore
+            # it from the .bak copy before failing closed.
+            bak_path = corpus.with_name(corpus.name + ".bak")
+            if not corpus.exists() and bak_path.exists():
+                shutil.copy2(str(bak_path), str(corpus))
+            _fail_closed(
+                ctx,
+                "RenQuant PatchTST CORPUS-SWAP FAILED",
+                (
+                    f"atomic corpus swap failed ({exc}); served corpus left intact "
+                    f"({corpus}) — retrain aborted. Staged build kept at {staging} for triage."
+                ),
+            )
+        report["backup_path"] = bak
         report["swapped"] = True
         log.info(
-            "transformer corpus swapped: %s rows=%d max_date=%s (prior rows=%d max_date=%s, backup=%s)",
+            "transformer corpus swapped (atomic): %s rows=%d max_date=%s tickers=%s "
+            "(prior rows=%d max_date=%s tickers=%s, backup=%s)",
             corpus,
             staged_rows,
             report["staged_max_date"],
+            report["staged_n_tickers"],
             prior_rows,
             report["prior_max_date"],
-            report.get("backup_path"),
+            report["prior_n_tickers"],
+            bak,
         )
         return True
 
     @staticmethod
-    def _sanity_reasons(ctx, prior_rows, prior_date, staged_rows, staged_date) -> list:
+    def _sanity_reasons(
+        ctx, prior_rows, prior_date, prior_schema, staged_rows, staged_date, staged_schema
+    ) -> list:
         reasons = []
         if staged_rows <= 0 or staged_date is None:
             reasons.append("staged corpus empty or unreadable")
             return reasons
         if prior_rows > 0 and prior_date is not None:
-            if ctx.require_date_advance and staged_date < prior_date:
+            # Strictly ADVANCE — an equal (non-advanced) corpus is not an advance.
+            if ctx.require_date_advance and staged_date <= prior_date:
                 reasons.append(
-                    f"staged max date {staged_date.isoformat()} < prior {prior_date.isoformat()}"
+                    f"staged max date {staged_date.isoformat()} does not advance prior "
+                    f"{prior_date.isoformat()} (<=)"
                 )
             if staged_rows < prior_rows * ctx.min_row_ratio:
                 reasons.append(
                     f"staged rows {staged_rows} < {ctx.min_row_ratio:.0%} of prior {prior_rows}"
+                )
+        # Recipe parity: a wrong builder recipe that still produces a plausible row
+        # count must not silently change features / universe / schema / label horizon.
+        if ctx.validate_schema and prior_schema:
+            prior_cols = set(prior_schema.get("columns", []))
+            staged_cols = set(staged_schema.get("columns", []))
+            dropped = prior_cols - staged_cols
+            if dropped:
+                reasons.append(
+                    f"staged corpus dropped columns (recipe/schema drift): {sorted(dropped)}"
+                )
+            prior_hz = prior_schema.get("label_horizons") or frozenset()
+            staged_hz = staged_schema.get("label_horizons") or frozenset()
+            if prior_hz and prior_hz != staged_hz:
+                reasons.append(
+                    f"label horizon(s) changed (recipe drift): prior {sorted(prior_hz)} -> "
+                    f"staged {sorted(staged_hz)}"
+                )
+            prior_nt = prior_schema.get("n_tickers") or 0
+            staged_nt = staged_schema.get("n_tickers") or 0
+            if prior_nt > 0 and staged_nt < prior_nt * ctx.min_ticker_coverage_ratio:
+                reasons.append(
+                    f"staged ticker coverage {staged_nt} < {ctx.min_ticker_coverage_ratio:.0%} "
+                    f"of prior {prior_nt}"
                 )
         return reasons
 
@@ -619,15 +998,15 @@ class RebuildTransformerCorpusTask:
             post_ntfy(title, body, ctx.ntfy_topic)
         log.error("corpus rebuild REJECTED: %s", body)
         if ctx.swap_fail_on_regression:
-            raise RuntimeError(body)
+            raise CorpusRefreshError(body)
 
 
 # ─────────────────────────── pipeline ──────────────────────────────────────
 
 
 def build_pipeline() -> list:
-    """Ordered tasks: refresh full-universe OHLCV, guard against a partial
-    freeze, then rebuild + sanity-gated non-destructive swap."""
+    """Ordered tasks: refresh full-universe OHLCV, guard against a partial/global
+    freeze, then rebuild + sanity-gated atomic non-destructive swap."""
     return [
         RefreshTransformerUniverseOhlcvTask(),
         TransformerUniverseFreshnessGuardTask(),
@@ -647,6 +1026,8 @@ def parse_args(argv: "list | None" = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--repo-dir", type=Path, default=REPO_ROOT)
     p.add_argument("--inventory-path", type=Path, default=None)
+    p.add_argument("--labels-path", type=Path, default=None)
+    p.add_argument("--integrity-report-path", type=Path, default=None)
     p.add_argument("--corpus-path", type=Path, default=None)
     p.add_argument("--staging-path", type=Path, default=None)
     p.add_argument(
@@ -658,6 +1039,17 @@ def parse_args(argv: "list | None" = None) -> argparse.Namespace:
             "tier_A_tickers/tier_B_tickers. Default: "
             "<repo>/data/transformer_universe_inventory.json (what the builder reads)."
         ),
+    )
+    p.add_argument(
+        "--require-universe",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Fail closed when the training universe is unresolvable/empty (default).",
+    )
+    p.add_argument(
+        "--expected-inventory-digest",
+        default=None,
+        help="Bind the sourced inventory's sha256; a mismatch fails closed.",
     )
     p.add_argument("--refresh-ohlcv", default=True, action=argparse.BooleanOptionalAction)
     p.add_argument("--ohlcv-timeout-sec", type=float, default=DEFAULT_OHLCV_TIMEOUT_SEC)
@@ -673,6 +1065,12 @@ def parse_args(argv: "list | None" = None) -> argparse.Namespace:
         default=DEFAULT_FRESHNESS_MAX_STALE_FRACTION,
     )
     p.add_argument(
+        "--freshness-as-of",
+        type=lambda s: dt.date.fromisoformat(s),
+        default=None,
+        help="ISO date of the expected completed market session (default: last business day).",
+    )
+    p.add_argument(
         "--freshness-fail-on-stale",
         default=True,
         action=argparse.BooleanOptionalAction,
@@ -680,6 +1078,15 @@ def parse_args(argv: "list | None" = None) -> argparse.Namespace:
     )
     p.add_argument("--require-date-advance", default=True, action=argparse.BooleanOptionalAction)
     p.add_argument("--min-row-ratio", type=float, default=DEFAULT_MIN_ROW_RATIO)
+    p.add_argument(
+        "--min-ticker-coverage-ratio", type=float, default=DEFAULT_MIN_TICKER_COVERAGE_RATIO
+    )
+    p.add_argument(
+        "--validate-schema",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Reject a staged corpus that drops features / changes label horizon / coverage.",
+    )
     p.add_argument(
         "--swap-fail-on-regression",
         default=True,
@@ -717,6 +1124,10 @@ def main(argv: "list | None" = None) -> int:
         repo_dir=args.repo_dir.expanduser().resolve(),
         transformer_universe=transformer_universe,
         inventory_path=inventory_path,
+        labels_path=args.labels_path,
+        integrity_report_path=args.integrity_report_path,
+        require_universe=args.require_universe,
+        expected_inventory_digest=args.expected_inventory_digest,
         corpus_path=args.corpus_path,
         staging_path=args.staging_path,
         refresh_ohlcv=args.refresh_ohlcv,
@@ -724,9 +1135,12 @@ def main(argv: "list | None" = None) -> int:
         rebuild_corpus=args.rebuild_corpus,
         freshness_stale_after_days=args.freshness_stale_after_days,
         freshness_max_stale_fraction=args.freshness_max_stale_fraction,
+        freshness_as_of=args.freshness_as_of,
         freshness_fail_on_stale=args.freshness_fail_on_stale,
         require_date_advance=args.require_date_advance,
         min_row_ratio=args.min_row_ratio,
+        min_ticker_coverage_ratio=args.min_ticker_coverage_ratio,
+        validate_schema=args.validate_schema,
         swap_fail_on_regression=args.swap_fail_on_regression,
         ntfy_topic=args.ntfy_topic,
         dry_run=args.dry_run,
