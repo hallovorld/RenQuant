@@ -26,8 +26,13 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+_STRATEGY_DIR = _REPO_ROOT / "backtesting" / "renquant_104"
+if str(_STRATEGY_DIR) not in sys.path:
+    sys.path.insert(0, str(_STRATEGY_DIR))
 
 from scripts import train_production_model as TPM  # noqa: E402
+from scripts import restamp_prod_fingerprint as RESTAMP  # noqa: E402
+from kernel.model_acceptance import promote  # noqa: E402
 
 
 # ───── synthetic panel fixture ─────
@@ -226,6 +231,153 @@ class TestArtifactStampedCutoff:
         )
         assert "cutoff_date" not in art
         assert "side_label" not in art
+
+
+class TestFullHistoryDataCutoffStamp:
+    """#210/#212 — the full-history production panel must stamp its binding
+    DATA cutoff (max labeled date), NOT wall-clock ``trained_date``, so the
+    freshness monitor (orch #213) + P-MODEL-STALENESS gate can measure panel
+    staleness instead of soft-skipping on a provenance gap.
+    """
+
+    def _train_df_with_known_max(self, tail_null: int = 40):
+        """Panel (all 2024 dates) whose fwd_60d label is nulled for the last
+        ``tail_null`` trading days, so after ``dropna`` the max labeled date is
+        a controlled 2024 business day — well before wall-clock
+        ``trained_date`` (>= 2025). Deriving ``cut`` from the panel keeps it
+        in-range and on a real trading day."""
+        panel = _make_synthetic_panel(n_tickers=4, n_dates=200, start="2024-01-01")
+        dates = pd.Index(sorted(panel["date"].unique()))
+        cut = pd.Timestamp(dates[-(tail_null + 1)])
+        panel.loc[panel["date"] > cut, "fwd_60d_excess"] = np.nan
+        train = panel.dropna(subset=["fwd_60d_excess"])
+        assert train["date"].max() == cut  # fixture sanity
+        return train, cut
+
+    def _build(self, train):
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        return TPM.build_artifact(
+            booster, ["feat_a", "feat_b"], np.zeros(2), np.ones(2), train,
+            cutoff_date=None, side_label=None, train_run_id="abc12345",
+        )
+
+    def test_stamps_effective_train_cutoff_from_max_labeled_date(self):
+        train, cut = self._train_df_with_known_max()
+        art = self._build(train)
+        assert art["effective_train_cutoff_date"] == cut.isoformat()
+
+    def test_stamps_selection_cutoff_alias_equal_to_train_cutoff(self):
+        train, cut = self._train_df_with_known_max()
+        art = self._build(train)
+        # Panel has no separate held-out selection window → alias == train
+        # cutoff (the field the freshness monitor's _selection_anchor reads
+        # first).
+        assert art["effective_selection_cutoff_date"] == cut.isoformat()
+        assert (
+            art["effective_selection_cutoff_date"]
+            == art["effective_train_cutoff_date"]
+        )
+
+    def test_cutoff_is_data_not_wall_clock(self):
+        """A fresh trained_date over stale labeled data must NOT masquerade as
+        fresh: the stamped cutoff is the DATA max, not today's date."""
+        train, cut = self._train_df_with_known_max()
+        art = self._build(train)
+        stamped = pd.Timestamp(art["effective_train_cutoff_date"])
+        assert stamped == cut
+        # Derived from the frame, NOT datetime.now(): a 2024 data cutoff on an
+        # artifact trained "today" (>= 2025) proves it is not wall-clock.
+        assert stamped < pd.Timestamp(art["trained_date"])
+        assert stamped.year == 2024
+
+    def test_walkforward_path_also_stamps_selection_cutoff(self):
+        """The walk-forward branch keeps its pre-embargo boundary for
+        ``effective_train_cutoff_date`` and mirrors it into the selection
+        alias so both paths expose the field the monitor reads."""
+        train = _make_synthetic_panel(
+            n_tickers=3, n_dates=30, start="2023-06-01"
+        ).dropna(subset=["fwd_60d_excess"])
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        art = TPM.build_artifact(
+            booster, ["feat_a"], np.zeros(1), np.ones(1), train,
+            cutoff_date=pd.Timestamp("2024-01-01"),
+            side_label="walkforward_v2_2024-01-01",
+            train_run_id="abc12345",
+        )
+        expected = (pd.Timestamp("2024-01-01") - pd.offsets.BDay(60)).isoformat()
+        assert art["effective_train_cutoff_date"] == expected
+        assert art["effective_selection_cutoff_date"] == expected
+
+
+class TestPromotePreservesDataCutoff:
+    """The active-swap promote() must not drop the DATA-cutoff provenance —
+    it copies the whole artifact, so a promoted panel keeps the field the
+    freshness monitor + P-MODEL-STALENESS gate rely on."""
+
+    def test_promote_preserves_effective_cutoff_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RQ_ALLOW_NO_WF", "1")  # bypass WF gate; test swap
+        staging = tmp_path / "panel-ltr.staging.json"
+        active = tmp_path / "panel-ltr.alpha158_fund.json"
+        staging.write_text(json.dumps({
+            "kind": "panel_ltr_xgboost",
+            "feature_cols": ["a", "b"],
+            "trained_date": "2026-05-18",
+            "effective_train_cutoff_date": "2024-11-13T00:00:00",
+            "effective_selection_cutoff_date": "2024-11-13T00:00:00",
+        }))
+        promote(staging, active)
+        promoted = json.loads(active.read_text())
+        assert promoted["effective_train_cutoff_date"] == "2024-11-13T00:00:00"
+        assert promoted["effective_selection_cutoff_date"] == "2024-11-13T00:00:00"
+
+
+class TestRestampPreservesDataCutoff:
+    """The sector_map re-stamp repair tool rewrites the WHOLE artifact dict
+    (mutating only fingerprint fields), so a re-stamp must NOT drop the
+    DATA-cutoff provenance."""
+
+    def test_restamp_preserves_effective_cutoff_fields(self, tmp_path, monkeypatch):
+        repo = tmp_path
+        strat = repo / "backtesting" / "renquant_104"
+        (strat / "artifacts" / "prod").mkdir(parents=True)
+        art_rel = "artifacts/prod/panel-ltr.alpha158_fund.json"
+        art_path = strat / art_rel
+        # Artifact carries the DATA-cutoff fields + a legacy fingerprint whose
+        # sector_map is None (the exact re-stamp trigger).
+        art_path.write_text(json.dumps({
+            "kind": "panel_ltr_xgboost",
+            "feature_cols": ["a"],
+            "trained_date": "2026-05-18",
+            "effective_train_cutoff_date": "2024-11-13T00:00:00",
+            "effective_selection_cutoff_date": "2024-11-13T00:00:00",
+            "config_fingerprint": "sha256:old",
+            "config_fingerprint_fields": {"watchlist": ["AAA"], "sector_map": None},
+        }))
+        cfg_path = strat / "strategy_config.json"
+        cfg_path.write_text(json.dumps(
+            {"ranking": {"panel_scoring": {"artifact_path": art_rel}}}
+        ))
+        # Redirect module paths to the tmp tree and stub the fingerprint
+        # machinery so only sector_map differs (a valid re-stamp).
+        monkeypatch.setattr(RESTAMP, "REPO", repo)
+        monkeypatch.setattr(RESTAMP, "STRATEGY_DIR", strat)
+        monkeypatch.setattr(
+            RESTAMP, "_model_relevant_fields",
+            lambda cfg: {"watchlist": ["AAA"], "sector_map": {"AAA": "tech"}},
+        )
+        monkeypatch.setattr(RESTAMP, "fingerprint_config", lambda cfg: "sha256:new")
+        monkeypatch.setattr(sys, "argv", ["restamp_prod_fingerprint.py"])
+        rc = RESTAMP.main()
+        assert rc == 0
+        restamped = json.loads(art_path.read_text())
+        # Fingerprint was updated (proves the re-stamp ran)...
+        assert restamped["config_fingerprint"] == "sha256:new"
+        assert restamped["config_fingerprint_fields"]["sector_map"] == {"AAA": "tech"}
+        # ...and the DATA-cutoff provenance survived the rewrite.
+        assert restamped["effective_train_cutoff_date"] == "2024-11-13T00:00:00"
+        assert restamped["effective_selection_cutoff_date"] == "2024-11-13T00:00:00"
 
 
 class TestSideLabelInArtifact:

@@ -738,6 +738,16 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    train_start_date: Optional[str] = None) -> dict:
     """Build artifact dict, stamping cutoff_date + side_label when set.
 
+    Always stamps ``effective_train_cutoff_date`` +
+    ``effective_selection_cutoff_date`` (the binding information-set DATA
+    cutoff) so the freshness monitor (orchestrator #213) and the
+    renquant-pipeline P-MODEL-STALENESS gate can measure panel staleness
+    against the DATA cutoff rather than soft-skipping. On the full-history
+    production path this is the max LABELED training date (the fwd_60d-clipped
+    panel max, derived from the frame — never wall-clock ``trained_date``); on
+    the walk-forward path it is the pre-embargo cutoff boundary. See the block
+    below for details.
+
     When ``train_start_date`` is provided (Track D regime-drift retrains),
     the artifact additionally stamps a machine-readable lower-bound
     provenance triplet so audits + gates can distinguish full-history vs
@@ -820,14 +830,38 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["feature_raw_clip_high"] = list(feature_raw_clip_high)
         artifact["feature_raw_clip_fit_split"] = "train"
         artifact["feature_preprocess_version"] = 2
+    # ── Information-set DATA cutoff provenance (freshness monitor
+    # orchestrator #213 + renquant-pipeline P-MODEL-STALENESS gate) ──
+    # The staleness rail MUST key on the DATA cutoff, never the wall-clock
+    # ``trained_date``: a fresh trained_date over stale labeled data is NOT
+    # fresh (the #210/#212 lesson). Stamp ``effective_train_cutoff_date`` on
+    # BOTH paths so the gate can measure panel staleness instead of
+    # soft-skipping:
+    #   * walk-forward retrain (``--train-cutoff`` set): the information-set
+    #     cutoff is the pre-embargo boundary ``cutoff_date - embargo``.
+    #   * full-history production retrain (no cutoff): the panel was already
+    #     ``dropna``'d on the fwd_60d label, so ``train["date"].max()`` IS
+    #     the fwd-clipped information set — derive it from the training
+    #     frame, NEVER ``datetime.now()``/``trained_date``.
     if cutoff_date is not None:
         artifact["cutoff_date"] = cutoff_date.isoformat()
         artifact["cutoff_embargo_days"] = int(
             lookahead_days if cutoff_embargo_days is None else cutoff_embargo_days
         )
-        artifact["effective_train_cutoff_date"] = (
+        effective_train_cutoff_iso = (
             cutoff_date - pd.offsets.BDay(artifact["cutoff_embargo_days"])
         ).isoformat()
+    else:
+        effective_train_cutoff_iso = pd.Timestamp(train["date"].max()).isoformat()
+    artifact["effective_train_cutoff_date"] = effective_train_cutoff_iso
+    # The panel has NO separate held-out model-selection window (CV is purged
+    # walk-forward WITHIN the clipped panel, and the final model trains on the
+    # full labeled panel), so the selection cutoff equals the train cutoff.
+    # Stamp the alias the freshness monitor reads first
+    # (kernel/walk_forward/lean_guard.py:_selection_anchor prefers
+    # ``effective_selection_cutoff_date``) so both the monitor and the gate
+    # resolve the same data cutoff regardless of which field they key on.
+    artifact["effective_selection_cutoff_date"] = effective_train_cutoff_iso
     if train_start_date is not None:
         start_ts = pd.Timestamp(train_start_date)
         effective_start_iso = start_ts.isoformat()
@@ -837,16 +871,12 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         # ``effective_train_cutoff_date`` and future-proofing.
         artifact["effective_train_start_date"] = effective_start_iso
         # train_window mirrors {effective_start, effective_end} so audits
-        # can read both bounds from one field. ``end`` echoes
-        # ``effective_train_cutoff_date`` when a cutoff is set, else the
-        # observed max train date.
-        if cutoff_date is not None:
-            end_iso = artifact["effective_train_cutoff_date"]
-        else:
-            end_iso = pd.Timestamp(train["date"].max()).isoformat()
+        # can read both bounds from one field. ``end`` echoes the
+        # ``effective_train_cutoff_date`` stamped above — the walk-forward
+        # boundary when a cutoff is set, else the observed max labeled date.
         artifact["train_window"] = {
             "start": effective_start_iso,
-            "end":   end_iso,
+            "end":   effective_train_cutoff_iso,
         }
     if side_label is not None:
         artifact["side_label"] = side_label
