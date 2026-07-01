@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly SHADOW PatchTST retrain + validated served-pin promote (Sat 05:30 PT).
+
+  Design: doc/design/2026-06-30-shadow-scorer-freshness.md (RFC r2; PR #212).
+
+  WHY THIS EXISTS
+  ---------------
+  The shadow PatchTST retrain has had NO scheduler — scripts/weekly_retrain_patchtst.sh
+  ran only when a human invoked it (last: 2026-06-16), so the served shadow model
+  froze at its 2026-05-22 bytes / 2026-02-10 data cutoff (RFC §1.2). This plist is
+  the CADENCE that restores the weekly run and makes it impossible to silently lapse
+  again — matching the other weekly scorers (weekly-wf-promote, weekly-fundamental-
+  refresh), which also run Saturday morning on the weekend market-closed buffer.
+
+  WHAT THE JOB DOES
+  -----------------
+  scripts/weekly_retrain_patchtst.sh (1) rebuilds the shadow WF corpus, then (2) —
+  unless RQ_PATCHTST_PROMOTE=0 — runs scripts/promote_shadow_patchtst.py --apply,
+  the VALIDATED served-pin promote. The promote FAILS CLOSED (keeps the old pin)
+  unless every recipe-required source is on its SLA AND the effective cutoffs
+  advance (RFC §3.1) AND the candidate passes load+smoke-inference / parity /
+  non-degenerate / resource / sanity-floor gates (RFC §3.4). On the current stale
+  panel the promote correctly REFUSES (not-fresh, exit 10) and keeps the old pin —
+  that is the intended safe behavior, not a failure.
+
+  CADENCE, NOT FRESHNESS: a run completing on schedule is a LIVENESS signal only.
+  The served model's freshness is keyed on its binding DATA cutoff + a validated
+  advancing promote (RFC §3.2) — enforced by the promote gate, not by this schedule.
+
+  Scheduled AFTER weekly-wf-promote (04:00) so the two heavy Saturday model jobs do
+  not overlap on CPU. SHADOW-ONLY: moves no capital.
+
+  OPTIONAL ENV (set here or in .env if the deploy differs):
+    RQ_PATCHTST_SERVED_CONFIG=<abs path to the config carrying the hf_patchtst pin>
+      Which strategy config holds the served PatchTST pin. Default resolves the
+      pinned renquant-strategy-104 strategy_config.shadow.json; the promote
+      refuses (harmless, exit 2) if that config is not kind=hf_patchtst, so set
+      this explicitly to the authoritative config in your deploy.
+    RQ_PATCHTST_PROMOTE=0   disable the chained promote (retrain WF corpus only)
+    RQ_PATCHTST_PROMOTE=dry run the promote in dry-run/--check mode (no pin swap)
+
+  INSTALL (operational — NOT done by the design/impl PR):
+    cp scripts/launchd/com.renquant.weekly-retrain-patchtst.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.renquant.weekly-retrain-patchtst.plist
+    # verify:  launchctl list | grep weekly-retrain-patchtst
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.weekly-retrain-patchtst</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/weekly_retrain_patchtst.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Saturday 05:30 PT. Weekday=6 = Saturday on the canonical Sun=0..Sat=6
+             scheme (same as sibling weekly-wf-promote / weekly-fundamental-refresh).
+             05:30 leaves a buffer after weekly-wf-promote (04:00) so the two heavy
+             model jobs do not contend for CPU. Market closed all weekend. -->
+        <key>Weekday</key><integer>6</integer>
+        <key>Hour</key><integer>5</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/weekly_retrain_patchtst/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/weekly_retrain_patchtst/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

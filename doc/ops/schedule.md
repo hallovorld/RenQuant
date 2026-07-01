@@ -97,18 +97,29 @@ Current status as of 2026-06-08:
 | Field | Value |
 |---|---|
 | **Script** | `scripts/weekly_retrain_patchtst.sh` |
+| **Plist** | `scripts/launchd/com.renquant.weekly-retrain-patchtst.plist` (Sat 05:30 PT) |
 | **Owner pipeline** | `renquant_orchestrator.build_patchtst_wf_manifest` |
 | **Cadence** | Weekly latest-cut retrain by default; sparse full validation only with `RQ_PATCHTST_FULL_MANIFEST=1` |
 | **Default runtime** | CPU with `OMP_NUM_THREADS=1`; `RQ_PATCHTST_DEVICE=mps` is reserved for manual runs |
-| **Touches (mutates)** | `backtesting/renquant_104/artifacts/walkforward_patchtst/` and `walkforward_patchtst_manifest.json` |
+| **Touches (mutates)** | `backtesting/renquant_104/artifacts/walkforward_patchtst/` and `walkforward_patchtst_manifest.json`; on a validated fresh promote, the SHADOW served pin in the target strategy config + `logs/promote_shadow_patchtst/` |
 | **Touches (read-only)** | source WF manifest, subrepo runtime roots, active strategy config |
 
 This wrapper is intentionally thin: it owns lock/log/root setup and delegates
 training to the orchestrator-owned Task/Job/Pipeline implementation. It restores
 scheduled retraining for the second production model family after the
-operator-directed PatchTST promotion. It does not directly promote the resulting
-checkpoint; promotion still requires the normal evidence and operator review
-boundary.
+operator-directed PatchTST promotion.
+
+Since 2026-06-30 (design `doc/design/2026-06-30-shadow-scorer-freshness.md`, #212)
+the schedule is a committed launchd plist so the cadence can no longer silently
+lapse, and — on a clean build — the wrapper chains `scripts/promote_shadow_patchtst.py`,
+the **validated served-pin promote** for the SHADOW PatchTST scorer. That promote
+**fails closed** (keeps the old pin) unless every recipe-required source is on its
+SLA, the effective cutoffs actually advance, and the candidate passes load + smoke
+inference / fingerprint parity / non-degenerate / resource / sanity-floor gates. It
+is SHADOW-scoped (moves no capital); the **prod** promote boundary is unchanged and
+still requires the normal evidence and operator review. Disable the chained promote
+with `RQ_PATCHTST_PROMOTE=0`; dry-run it with `RQ_PATCHTST_PROMOTE=dry`; point it at
+the deploy's authoritative config with `RQ_PATCHTST_SERVED_CONFIG`.
 
 ---
 
