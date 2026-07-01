@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from kernel.decision_trace import model_type_from_artifact
+from kernel.manifest_uri_resolver import resolve_manifest_uri
 
 # Leakage guard: columns that must never reach an inference feature frame.
 _FORBIDDEN_HISTORY_COL_PREFIXES = ("fwd_",)
@@ -71,5 +72,14 @@ def _drop_inference_forbidden_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resolve_manifest_uri(manifest_path: Path, uri: str) -> Path:
-    p = Path(uri)
-    return p if p.is_absolute() else manifest_path.parent / p
+    """Resolve a manifest artifact URI via the shared bounded resolver.
+
+    Thin wrapper over ``kernel.walk_forward.uri_resolver.resolve_manifest_uri``
+    so this call site shares the single URI contract (bounded known roots,
+    containment, ambiguity rejection) with the WF loader and the gate script,
+    instead of a drifting local copy. Manifest URIs are normally
+    manifest-folder-relative, but orchestrator-built WF manifests emit
+    strategy-dir-relative URIs (``artifacts/walkforward_.../panel-ltr.json``);
+    the shared resolver handles both against an ordered set of known roots.
+    """
+    return Path(resolve_manifest_uri(manifest_path, uri))

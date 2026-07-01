@@ -1841,9 +1841,40 @@ def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, 
     }
 
 
-def _manifest_uri_to_path(manifest_path: Path, uri: str) -> Path:
-    p = Path(str(uri))
-    return p if p.is_absolute() else manifest_path.parent / p
+def _manifest_uri_to_path(
+    manifest_path: Path,
+    uri: str,
+    *,
+    expected_digest: str | None = None,
+) -> Path:
+    """Resolve a manifest artifact URI via the shared bounded resolver.
+
+    Thin wrapper over ``kernel.manifest_uri_resolver.resolve_manifest_uri`` so
+    the gate's manifest-sanity path shares the single URI contract (bounded
+    known roots, lexical + realpath containment, symlink-escape / external-
+    absolute rejection, ambiguity rejection, digest binding) with the WF loader
+    and the sim adapter, instead of a drifting local copy. Manifest URIs are
+    normally manifest-folder-relative, but orchestrator-built WF manifests emit
+    strategy-dir-relative URIs (``artifacts/walkforward_.../panel-ltr.json``);
+    the shared resolver handles both against an ordered set of known roots.
+
+    This is a model-validation path, so when the manifest entry stamps an
+    ``artifact_sha256`` we bind the resolved file to it, and once the
+    compatibility window closes a missing digest fails closed.
+    """
+    from kernel.manifest_uri_resolver import (  # noqa: PLC0415
+        digest_required,
+        resolve_manifest_uri,
+    )
+
+    return Path(
+        resolve_manifest_uri(
+            manifest_path,
+            uri,
+            expected_digest=expected_digest,
+            require_digest=digest_required(),
+        )
+    )
 
 
 def _manifest_entry_safe_last_label_date(entry) -> pd.Timestamp:
@@ -1914,7 +1945,13 @@ def _score_manifest_sanity(
                 f"+ {entry.lookahead_days}BDay = {safe_last_label.date()} "
                 f">= {d.date()}"
             )
-        date_to_artifact[d] = str(_manifest_uri_to_path(manifest_path, entry.artifact_uri))
+        date_to_artifact[d] = str(
+            _manifest_uri_to_path(
+                manifest_path,
+                entry.artifact_uri,
+                expected_digest=getattr(entry, "artifact_sha256", None),
+            )
+        )
         safe_dates.append(d)
     if not safe_dates:
         raise ValueError(
