@@ -109,5 +109,54 @@ fi
     --device "${RQ_PATCHTST_DEVICE:-cpu}" \
     "$@"
 rc=$?
+echo "WF corpus build rc=$rc"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VALIDATED SERVED-PIN PROMOTE (design 2026-06-30-shadow-scorer-freshness.md §3.1/§3.4)
+#
+# A successful WF build (above) writes ONLY the walk-forward corpus — it does NOT
+# advance the SERVED shadow pin (RFC §1.3: "even a retrain does NOT unfreeze the
+# served model"). Without this step the model ages in place while the retrain
+# "succeeds" — the repo's recurring "merged is not deployed" failure. So, on a
+# clean build, chain the validated promote: it FAILS CLOSED (keeps the old pin)
+# unless every recipe source is on-SLA AND the effective cutoffs advance AND the
+# candidate passes the §3.4 load/parity/non-degenerate/resource/sanity gates.
+#
+# NON-FATAL: the promote never fails this job. The WF corpus is already built; a
+# not-fresh refusal (exit 10) is EXPECTED on a stale panel, and a gate failure
+# (exit 20) means the safe state (old pin retained) was kept. Disable with
+# RQ_PATCHTST_PROMOTE=0; dry-run with RQ_PATCHTST_PROMOTE=dry.
+# ─────────────────────────────────────────────────────────────────────────────
+PROMOTE_MODE="${RQ_PATCHTST_PROMOTE:-1}"
+if [ "$rc" -eq 0 ] && [ "$PROMOTE_MODE" != "0" ]; then
+    # Resolve the config carrying the served hf_patchtst pin. Default: the pinned
+    # renquant-strategy-104 shadow config; the promote refuses harmlessly (exit 2)
+    # if that config is not kind=hf_patchtst, so override RQ_PATCHTST_SERVED_CONFIG
+    # to the authoritative config for this deploy.
+    PROMOTE_CONFIG="${RQ_PATCHTST_SERVED_CONFIG:-}"
+    if [ -z "$PROMOTE_CONFIG" ]; then
+        PROMOTE_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow.json 2>/dev/null)" \
+            || PROMOTE_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.shadow.json"
+    fi
+    PROMOTE_APPLY="--apply"
+    [ "$PROMOTE_MODE" = "dry" ] && PROMOTE_APPLY="--check"
+    echo "─── validated served-pin promote ($PROMOTE_APPLY) against $PROMOTE_CONFIG ───"
+    set +e
+    "$PYTHON" "$REPO_DIR/scripts/promote_shadow_patchtst.py" \
+        --served-config "$PROMOTE_CONFIG" \
+        --wf-manifest "$OUT_MANIFEST" \
+        $PROMOTE_APPLY
+    prc=$?
+    set -e
+    case "$prc" in
+        0)  echo "promote: OK (pin advanced or clean dry-run)";;
+        10) echo "promote: refused — NOT FRESH (expected on a stale panel; old pin kept)";;
+        20) echo "promote: refused — VALIDATION GATE FAILED (old pin kept; investigate)";;
+        *)  echo "promote: precondition/usage rc=$prc (old pin kept)";;
+    esac
+else
+    echo "promote: skipped (rc=$rc, RQ_PATCHTST_PROMOTE=$PROMOTE_MODE)"
+fi
+
 echo "═══ weekly_retrain_patchtst finished rc=$rc $(date -u +'%Y-%m-%dT%H:%M:%SZ') ═══"
 exit "$rc"
