@@ -71,5 +71,25 @@ def _drop_inference_forbidden_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resolve_manifest_uri(manifest_path: Path, uri: str) -> Path:
+    """Resolve a manifest artifact URI to a filesystem path.
+
+    Manifest URIs are normally relative to the manifest folder, but
+    orchestrator-built WF manifests emit strategy-dir-relative URIs
+    (``artifacts/walkforward_.../panel-ltr.json``). Resolving those under the
+    manifest folder (``artifacts/sim/``) doubled the prefix into a non-existent
+    ``artifacts/sim/artifacts/...`` path. Resolve against the manifest folder
+    first, then walk up its ancestors so both URI conventions resolve; fall back
+    to the manifest-folder join when nothing exists.
+    """
     p = Path(uri)
-    return p if p.is_absolute() else manifest_path.parent / p
+    if p.is_absolute():
+        return p
+    base = manifest_path.parent
+    candidate = base / p
+    if candidate.exists():
+        return candidate
+    for ancestor in base.parents:
+        alt = ancestor / p
+        if alt.exists():
+            return alt
+    return candidate

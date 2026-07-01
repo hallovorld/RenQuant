@@ -1842,8 +1842,29 @@ def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, 
 
 
 def _manifest_uri_to_path(manifest_path: Path, uri: str) -> Path:
+    """Resolve a manifest artifact URI to a filesystem path.
+
+    Manifest URIs are normally relative to the manifest folder, but
+    orchestrator-built WF manifests emit strategy-dir-relative URIs
+    (``artifacts/walkforward_.../panel-ltr.json``). Resolving those under the
+    manifest folder (``artifacts/sim/``) doubled the prefix into a non-existent
+    ``artifacts/sim/artifacts/...`` path and fail-closed the manifest sanity.
+    Resolve against the manifest folder first, then walk up its ancestors so
+    both URI conventions resolve; fall back to the manifest-folder join when
+    nothing exists.
+    """
     p = Path(str(uri))
-    return p if p.is_absolute() else manifest_path.parent / p
+    if p.is_absolute():
+        return p
+    base = manifest_path.parent
+    candidate = base / p
+    if candidate.exists():
+        return candidate
+    for ancestor in base.parents:
+        alt = ancestor / p
+        if alt.exists():
+            return alt
+    return candidate
 
 
 def _manifest_entry_safe_last_label_date(entry) -> pd.Timestamp:

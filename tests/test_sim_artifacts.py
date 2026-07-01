@@ -46,3 +46,37 @@ class TestResolveManifestUri:
         manifest = tmp_path / "sub" / "manifest.json"
         out = _resolve_manifest_uri(manifest, "model.pt")
         assert out == manifest.with_name("model.pt")
+
+    def test_strategy_dir_relative_uri_resolves_to_existing_corpus(self, tmp_path):
+        """WF-gate regression: orchestrator-built manifests live under
+        ``<strategy>/artifacts/sim/`` but emit strategy-dir-relative URIs
+        (``artifacts/walkforward_.../panel-ltr.json``). Naive manifest-parent
+        joining doubled the prefix into ``artifacts/sim/artifacts/...`` which
+        does not exist → FileNotFoundError fail-closed the gate. The resolver
+        must walk up ancestors and find the real corpus.
+        """
+        strategy = tmp_path
+        manifest = strategy / "artifacts" / "sim" / "walkforward_manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}")
+        uri = "artifacts/walkforward_gbdt_prod_recipe_v2/2023-10-02/panel-ltr.json"
+        real = strategy / uri
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text("{}")
+
+        out = _resolve_manifest_uri(manifest, uri)
+
+        assert out == real, out
+        assert out.exists()
+        # And explicitly NOT the doubled manifest-parent path.
+        assert out != manifest.parent / uri
+
+    def test_missing_relative_uri_falls_back_to_manifest_parent(self, tmp_path):
+        """When no candidate exists, keep the manifest-parent join so the
+        downstream not-found error stays meaningful (no silent surprise path).
+        """
+        manifest = tmp_path / "artifacts" / "sim" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}")
+        out = _resolve_manifest_uri(manifest, "artifacts/nope/panel-ltr.json")
+        assert out == manifest.parent / "artifacts/nope/panel-ltr.json"

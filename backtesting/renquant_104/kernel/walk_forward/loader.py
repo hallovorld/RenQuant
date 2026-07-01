@@ -358,11 +358,34 @@ class WalkForwardModelLoader:
         return cal
 
     def _resolve_uri(self, uri: str):
-        """Resolve local relative manifest URIs against the manifest folder."""
+        """Resolve local relative manifest URIs to a filesystem path.
+
+        Manifest URIs are normally relative to the manifest's own folder.
+        Orchestrator-built WF manifests (``renquant_orchestrator.build_wf_manifest``)
+        instead emit strategy-dir-relative URIs such as
+        ``artifacts/walkforward_.../panel-ltr.json``. Resolving those under the
+        manifest folder (``artifacts/sim/``) doubled the prefix into a
+        non-existent ``artifacts/sim/artifacts/...`` path, so ``model_as_of`` /
+        ``calibrator_as_of`` raised ``FileNotFoundError`` and fail-closed the WF
+        gate for every bar. Resolve against the manifest folder first, then walk
+        up its ancestors so both URI conventions resolve; fall back to the
+        manifest-folder join when nothing exists so error messages stay
+        meaningful.
+        """
         if "://" in uri:
             return uri
         p = Path(uri)
-        return p if p.is_absolute() else self._manifest_path.parent / p
+        if p.is_absolute():
+            return p
+        base = self._manifest_path.parent
+        candidate = base / p
+        if candidate.exists():
+            return candidate
+        for ancestor in base.parents:
+            alt = ancestor / p
+            if alt.exists():
+                return alt
+        return candidate
 
     def _scorer_fingerprints_for_entry(self, entry: RetrainEntry) -> list[str]:
         """Read the selected fold's local scorer identities without loading it."""
