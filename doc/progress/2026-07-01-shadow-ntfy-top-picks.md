@@ -1,17 +1,36 @@
 # Shadow ntfy: honest top-N recommendation + disambiguate [SHADOW]-broker vs shadow-model labeling
 
-STATUS: revised after Codex CHANGES_REQUESTED round 6 (PR #426)
+STATUS: revised after Codex CHANGES_REQUESTED round 7 (PR #426)
 WHAT: `shadow_scoring.py`'s per-model top-N ntfy recommendation now binds every pick to an
-explicit freshness/coverage/fingerprint admission verdict, defaults every pick to NOT ACTIONABLE
-(an explicit opt-in flag is required to ever render one as a recommendation), evaluates EVERY
-present cutoff provenance axis independently (worst tier wins; a present-but-malformed axis fails
-closed rather than being silently dropped as though absent), and requires at least one
-code-guaranteed cutoff field to be present before an artifact can ever be certified fresh.
+explicit freshness/coverage/fingerprint/provenance-schema admission verdict, defaults every pick
+to NOT ACTIONABLE (an explicit opt-in flag is required to ever render one as a recommendation),
+evaluates EVERY present cutoff provenance axis independently (worst tier wins; a
+present-but-malformed axis fails closed rather than being silently dropped as though absent),
+requires at least one code-guaranteed cutoff field to be present before an artifact can ever be
+certified fresh, AND (round 7) requires that field combination to resolve to a NAMED, VERSIONED
+recipe/schema — not just "some confirmed field, any combination" — persisted in the run_id/audit
+trail.
 WHY/DIR: operator misread a `[SHADOW]`-broker ntfy as a PatchTST buy recommendation (see Incident
-below) and asked for a genuine, confidence-scored recommendation; six rounds of Codex review
-progressively closed provenance-spoofing gaps that would have let a stale, partially-stamped, or
-malformed artifact still render as an actionable pick.
-EVIDENCE: `tests/test_shadow_scoring.py` — 70/70 passed
+below) and asked for a genuine, confidence-scored recommendation; seven rounds of Codex review
+progressively closed provenance-spoofing gaps that would have let a stale, partially-stamped,
+malformed, or contract-drifted artifact still render as an actionable pick.
+EVIDENCE:
+```
+artifact:      backtesting/renquant_104/kernel/panel_pipeline/shadow_scoring.py
+prod or exp:   experiment (Stage-1 observability-only; default NOT ACTIONABLE; no order path)
+existing data: no prior committed `_compute_admission` behavior to regress against beyond this
+               PR's own rounds 1-6 (all still-passing tests below); no external oos_mean_ic/
+               training_runs baseline applies to this module (it consumes upstream primary/shadow
+               scores, it does not train or score independently)
+best-known?:   best-available fail-closed provenance gate for this module as of round 7; the
+               provenance-schema/recipe binding is scoped to what this file alone can validate
+               (see NEXT — a complete cross-repo fix needs training-side stamping this PR does
+               not add)
+scope:         this is shadow_scoring.py::_compute_admission, experiment/observability-only, vs
+               its own round-6 baseline (70 passing tests) — round 7 adds 4 tests (74 total), no
+               regression
+```
+`tests/test_shadow_scoring.py` — 74/74 passed
 (`/Users/renhao/git/github/RenQuant/.venv/bin/python -m pytest tests/test_shadow_scoring.py -q`);
 `tests/test_runner_trade_ntfy.py` run alongside — 132/133 passed, the one failure
 (`test_live_only_wrapper_does_not_duplicate_runner_success_ntfy`) is pre-existing and unrelated
@@ -20,7 +39,12 @@ NEXT: a preregistered shadow evaluation (fixed historical sessions: coverage sen
 stability, forward net return, turnover/cost, regime slices) is required before
 `shadow_experimental_actionable_display` is ever safe to flip on in a live config — no such
 evaluation has run yet, so the safe default (NOT ACTIONABLE) stays load-bearing indefinitely
-until one does.
+until one does. Separately (round 7): a COMPLETE provenance-schema fix would additionally stamp
+an explicit `provenance_schema_version`/`recipe_id` field on artifacts themselves, at training
+time (`hf_patchtst_scorer.py`'s `stamp_artifact_metadata` call, `train_production_model.py::
+build_artifact`) — this PR derives an equivalent signal purely from which confirmed cutoff fields
+are present (validated against a known-combinations map), which is correct for every recipe this
+repo currently produces, but a genuine cross-repo stamping change is a larger, separate follow-up.
 
 2026-07-01.
 
@@ -546,3 +570,67 @@ unchanged and remain the durable per-round record.
 Unchanged: still observability-only, default NOT ACTIONABLE, `_compute_admission` remains a pure
 function. This round only tightens WHICH artifacts can ever reach `gates_passed=True` under the
 experimental opt-in, plus the mechanical doc-schema fix — neither adds nor removes a code path.
+
+## Round 7 (Codex CHANGES_REQUESTED — bind admission to a provenance-schema/recipe version)
+
+Round 6's malformed-axis and weak-field-only fail-open fixes accepted. One remaining contract
+issue, plus the (now-recurring) evidence-schema completeness ask:
+
+1. **"At least one confirmed field present" (round 6) is code-global, not artifact-bound.**
+   `_CONFIRMED_STAMPED_CUTOFF_FIELDS` re-evaluates THIS MODULE's current understanding of "which
+   fields count as confirmed" against whatever an artifact happens to carry — it cannot prove
+   which STAMPING CONTRACT actually produced that artifact. If a future code change to that
+   constant (or a future training-script change to what gets stamped) drifts independently of an
+   already-produced artifact, the gate would silently keep evaluating it under a rule it was
+   never built against.
+
+### Changes (`shadow_scoring.py`)
+
+- New `_PROVENANCE_SCHEMA_VERSION = "v1"` — versions THIS module's admission-contract rules as a
+  whole (the GAP 1-4 gates, `_CONFIRMED_STAMPED_CUTOFF_FIELDS`, `_DATA_CUTOFF_FIELDS`,
+  `_TIER_SEVERITY`); bump it whenever any of those change in a way that could change which
+  artifacts pass.
+- New `_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS`: maps the EXACT set of confirmed cutoff axes an
+  artifact presents to a named recipe (`walkforward_only_v1` for `effective_train_cutoff_date`
+  alone — hf_patchtst/patchtst or an XGB walk-forward artifact; `full_history_only_v1` for
+  `label_observation_cutoff` alone — XGB full-history; `walkforward_dual_axis_v1` for both —
+  XGB walk-forward, which `train_production_model.py` stamps with both fields). New
+  `_resolve_recipe_schema()` looks up this map; an unrecognized combination (e.g. a future third
+  confirmed field added to `_CONFIRMED_STAMPED_CUTOFF_FIELDS` without a matching map entry)
+  returns `None`.
+- `_compute_admission` now treats an unresolved recipe EXACTLY like "no confirmed field present
+  at all" — fail-closed to `unknown`, never silently admitted under a combination this version of
+  the contract was never validated against. `run_id` now encodes both the schema version and the
+  resolved recipe (`{date}:{name}:{fingerprint}:{schema_version}:{recipe}`) so the audit trail can
+  distinguish "evaluated under schema v1, recipe walkforward_dual_axis_v1" from any future
+  schema/recipe without ambiguity. New `provenance_schema_version`/`resolved_recipe_schema`
+  fields on the returned dict.
+- **Scoping decision, stated explicitly rather than attempted:** no artifact anywhere in this repo
+  stamps an explicit `schema_version`/`recipe_id` field today (checked `hf_patchtst_scorer.py`'s
+  `stamp_artifact_metadata` call and `train_production_model.py::build_artifact` — neither writes
+  one). Adding that stamp at training time would be the fully "artifact-bound" version of this
+  fix, but it is a cross-repo, training-side change out of scope for this shadow-scoring-focused
+  PR. The version implemented here derives an equivalent signal purely from which confirmed
+  fields are present, validated against an explicit, versioned map — correct for every recipe this
+  repo currently produces, and it still closes the specific drift risk Codex named (an
+  unrecognized future combination fails closed instead of silently passing).
+
+### Tests
+- `TestProvenanceSchemaVersionBinding` (4 new tests): a lone `effective_train_cutoff_date` and a
+  dual-field combination both still resolve and certify normally (regression, additive-only
+  check); a THIRD confirmed field monkeypatched into `_CONFIRMED_STAMPED_CUTOFF_FIELDS` (simulating
+  future code drift) with a combination absent from the recipe map fails closed to `unknown`,
+  never silently admitted; direct unit coverage of `_resolve_recipe_schema()` for known and
+  unknown combinations.
+- Updated 2 existing tests whose assertions hardcoded the OLD `run_id` format
+  (`test_run_id_binds_date_name_and_fingerprint`, `test_missing_fingerprint_blocks_even_when_flag_enabled`)
+  to the new `{date}:{name}:{fingerprint}:{schema_version}:{recipe}` shape.
+- `tests/test_shadow_scoring.py` — 74/74 passed
+  (`/Users/renhao/git/github/RenQuant/.venv/bin/python -m pytest tests/test_shadow_scoring.py -q`).
+  `py_compile` clean.
+
+### Scope
+Unchanged: still observability-only, default NOT ACTIONABLE. This round only tightens WHICH
+artifacts can ever reach `gates_passed=True` (an unresolved recipe/schema combination now fails
+closed too), plus completes the `doc/AGENT-RETROSPECTIVE.md` §4(b) evidence-block schema in the
+header above — neither adds nor removes a code path.

@@ -507,7 +507,11 @@ class TestComputeAdmission:
         assert admission["gates_passed"] is False
         assert admission["actionable"] is False
         assert any("fingerprint" in r for r in admission["reasons"])
-        assert admission["run_id"].endswith(":nofingerprint")
+        assert ":nofingerprint:" in admission["run_id"]
+        # ROUND 7: a lone confirmed field (effective_train_cutoff_date) still
+        # resolves to a known recipe/schema — the fingerprint gate blocks
+        # independently of the recipe-schema gate.
+        assert admission["resolved_recipe_schema"] == "walkforward_only_v1"
 
     def test_run_id_binds_date_name_and_fingerprint(self, shadow_mod):
         admission = shadow_mod._compute_admission(
@@ -518,7 +522,14 @@ class TestComputeAdmission:
             },
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
-        assert admission["run_id"] == "2026-07-01:patchtst_v1:sha256:abcde"
+        # ROUND 7: run_id now also carries the provenance-schema version +
+        # resolved recipe. No cutoff field present here at all -> no
+        # confirmed axis -> recipe unresolved.
+        assert admission["run_id"] == (
+            "2026-07-01:patchtst_v1:sha256:abcde:v1:unresolved-recipe"
+        )
+        assert admission["provenance_schema_version"] == "v1"
+        assert admission["resolved_recipe_schema"] is None
 
     def test_default_min_coverage_constant(self, shadow_mod):
         assert shadow_mod._DEFAULT_MIN_COVERAGE == 0.80
@@ -977,6 +988,103 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         assert admission["verdict"] == "healthy"
         assert admission["gates_passed"] is True
         assert admission["actionable"] is True
+
+
+class TestProvenanceSchemaVersionBinding:
+    """2026-07-02 ROUND 7 (Codex CHANGES_REQUESTED on umbrella PR #426):
+    "at least one confirmed field present" alone (round 6) is code-global —
+    it re-evaluates the CURRENT code's rule against whatever the artifact
+    carries, with no way to prove which stamping CONTRACT actually produced
+    it. Admission is now bound to a provenance-schema/recipe version
+    (``_PROVENANCE_SCHEMA_VERSION`` / ``_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS``)
+    resolved from the EXACT combination of confirmed axes present, not just
+    "some confirmed field, any combination"."""
+
+    AS_OF = _dt.date(2026, 7, 1)
+
+    def test_known_single_field_recipe_still_certifies_normally(self, shadow_mod):
+        """Regression: a lone effective_train_cutoff_date (the
+        hf_patchtst/walkforward-only recipe) still resolves and certifies —
+        the new gate is additive, not a new blanket restriction."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["resolved_recipe_schema"] == "walkforward_only_v1"
+        assert admission["provenance_schema_version"] == "v1"
+        assert admission["verdict"] == "healthy"
+        assert admission["gates_passed"] is True
+        assert admission["actionable"] is True
+        assert ":v1:walkforward_only_v1" in admission["run_id"]
+
+    def test_known_dual_field_recipe_still_certifies_normally(self, shadow_mod):
+        """Regression: both confirmed fields present (the XGB walk-forward
+        recipe, per train_production_model.py stamping both) resolves to its
+        own distinct recipe name and still certifies."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "label_observation_cutoff": "2026-06-30",
+                "lookahead_days": 60,  # required for label_observation_cutoff (GAP 4b)
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["resolved_recipe_schema"] == "walkforward_dual_axis_v1"
+        assert admission["gates_passed"] is True
+
+    def test_unrecognized_confirmed_field_combination_fails_closed(self, shadow_mod):
+        """A confirmed field IS present, but simulate a future
+        _CONFIRMED_STAMPED_CUTOFF_FIELDS growing without the recipe map
+        keeping up: monkeypatch a THIRD confirmed field in so the present
+        combination is no longer a key in _RECIPE_SCHEMA_BY_CONFIRMED_FIELDS
+        — must fail closed to unknown, exactly like no confirmed field being
+        present at all, never silently admitted under an unvalidated
+        combination."""
+        original_confirmed = shadow_mod._CONFIRMED_STAMPED_CUTOFF_FIELDS
+        try:
+            shadow_mod._CONFIRMED_STAMPED_CUTOFF_FIELDS = original_confirmed + (
+                "cutoff_date",
+            )
+            admission = shadow_mod._compute_admission(
+                name="x", as_of_date=self.AS_OF,
+                artifact_meta={
+                    "effective_train_cutoff_date": "2026-06-30",
+                    "cutoff_date": "2026-06-30",
+                    "artifact_fingerprint": "sha256:testfp1234567890",
+                },
+                n_scored=10, n_expected=10, min_coverage=0.80,
+                experimental_actionable_display=True,
+            )
+        finally:
+            shadow_mod._CONFIRMED_STAMPED_CUTOFF_FIELDS = original_confirmed
+        assert admission["resolved_recipe_schema"] is None
+        assert admission["verdict"] == "unknown"
+        assert admission["gates_passed"] is False
+        assert admission["actionable"] is False
+        assert any("required-recipe-schema" in r for r in admission["reasons"])
+
+    def test_resolve_recipe_schema_helper_direct(self, shadow_mod):
+        """Direct unit coverage of the resolver: known combinations resolve,
+        unknown ones return None."""
+        assert shadow_mod._resolve_recipe_schema(
+            {"effective_train_cutoff_date"}
+        ) == "walkforward_only_v1"
+        assert shadow_mod._resolve_recipe_schema(
+            {"label_observation_cutoff"}
+        ) == "full_history_only_v1"
+        assert shadow_mod._resolve_recipe_schema(
+            {"label_observation_cutoff", "effective_train_cutoff_date"}
+        ) == "walkforward_dual_axis_v1"
+        assert shadow_mod._resolve_recipe_schema(set()) is None
+        assert shadow_mod._resolve_recipe_schema({"some_future_field"}) is None
 
 
 class TestComputeShadowSummaryAdmissionIntegration:

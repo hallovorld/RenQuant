@@ -337,6 +337,61 @@ _CONFIRMED_STAMPED_CUTOFF_FIELDS = (
     "effective_train_cutoff_date",
 )
 
+# 2026-07-02 ROUND 7 (Codex CHANGES_REQUESTED on umbrella PR #426): binding
+# admission to a provenance-schema/recipe version, not just "some confirmed
+# field is present". Round 6's check alone is CODE-GLOBAL: it re-evaluates
+# THIS module's CURRENT understanding of "which fields count as confirmed"
+# against whatever the artifact happens to carry, with no way to prove which
+# STAMPING CONTRACT actually produced that artifact. If a future change to
+# `_CONFIRMED_STAMPED_CUTOFF_FIELDS` (or to what the training scripts stamp)
+# drifts out of sync with an already-produced artifact, the gate would
+# silently keep evaluating it under a rule it was never built against.
+#
+# No artifact anywhere in this repo stamps an explicit `schema_version` /
+# `recipe_id` field today (checked: neither `hf_patchtst_scorer.py`'s
+# `stamp_artifact_metadata` call nor `train_production_model.py::
+# build_artifact` write one) — adding that stamp is a cross-repo,
+# training-side change out of scope for this shadow-scoring-focused PR (see
+# the progress doc's NEXT section). Within this file's own scope, the
+# equivalent signal is made EXPLICIT and VALIDATED instead of implicit:
+# `_PROVENANCE_SCHEMA_VERSION` versions THIS MODULE's admission-contract
+# rules (the GAP 1-4 gates, `_CONFIRMED_STAMPED_CUTOFF_FIELDS`,
+# `_DATA_CUTOFF_FIELDS`, `_TIER_SEVERITY` — bump it whenever any of those
+# change in a way that could change which artifacts pass), and
+# `_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS` maps the EXACT set of confirmed axes
+# an artifact presents to a named recipe/schema this version of the module
+# knows how to evaluate. An artifact whose confirmed-field combination is
+# not in this map (e.g. a future third confirmed field added to
+# `_CONFIRMED_STAMPED_CUTOFF_FIELDS` without updating this map too) resolves
+# to `None` and is fail-closed to UNKNOWN by `_compute_admission` — the same
+# treatment as no confirmed field being present at all — rather than being
+# silently admitted under a combination this version of the contract was
+# never validated against.
+_PROVENANCE_SCHEMA_VERSION = "v1"
+_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS: dict[frozenset, str] = {
+    # hf_patchtst / patchtst (stamp_artifact_metadata, always), OR an XGB
+    # walk-forward artifact that only carries the walk-forward-only field.
+    frozenset({"effective_train_cutoff_date"}): "walkforward_only_v1",
+    # XGB full-history (train_production_model.py::build_artifact, always
+    # stamps this on both training paths; walk-forward-only artifacts that
+    # DON'T also carry effective_train_cutoff_date are not currently
+    # expected to exist, but this entry covers the field alone regardless).
+    frozenset({"label_observation_cutoff"}): "full_history_only_v1",
+    # XGB walk-forward (train_production_model.py::build_artifact stamps
+    # BOTH fields on the walk-forward path — the most complete provenance).
+    frozenset({"label_observation_cutoff", "effective_train_cutoff_date"}): (
+        "walkforward_dual_axis_v1"
+    ),
+}
+
+
+def _resolve_recipe_schema(present_confirmed_fields: set) -> Optional[str]:
+    """The named recipe/schema this version of the admission contract
+    recognizes for EXACTLY this combination of confirmed axes, or ``None``
+    if the combination is not a known, validated one (fail-closed — see the
+    module comment above ``_PROVENANCE_SCHEMA_VERSION``)."""
+    return _RECIPE_SCHEMA_BY_CONFIRMED_FIELDS.get(frozenset(present_confirmed_fields))
+
 
 def _all_present_cutoff_fields(artifact_meta: dict) -> list[tuple[str, object]]:
     """Every ``_DATA_CUTOFF_FIELDS`` entry whose RAW value is present
@@ -645,6 +700,7 @@ def _compute_admission(
         for r in axis_results
     ]
 
+    resolved_recipe_schema: Optional[str] = None
     if not axis_results:
         # GAP 1: no binding DATA cutoff present at all. No ``trained_date``
         # fallback — see docstring.
@@ -661,7 +717,16 @@ def _compute_admission(
         # its own UNKNOWN axis result) — a weaker/legacy field alone must
         # never certify an artifact no matter how fresh it looks.
         present_fields = {r["field"] for r in axis_results}
-        missing_confirmed_axis = not (present_fields & set(_CONFIRMED_STAMPED_CUTOFF_FIELDS))
+        present_confirmed = present_fields & set(_CONFIRMED_STAMPED_CUTOFF_FIELDS)
+        # ROUND 7: presence alone is not enough — the EXACT combination of
+        # confirmed axes must also resolve to a recipe/schema THIS version
+        # of the contract explicitly knows how to evaluate (see
+        # ``_resolve_recipe_schema`` / ``_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS``
+        # above). An unrecognized combination is treated exactly like "no
+        # confirmed field present" — fail-closed, never silently admitted
+        # under a contract version it was never validated against.
+        resolved_recipe_schema = _resolve_recipe_schema(present_confirmed)
+        missing_confirmed_axis = not present_confirmed or resolved_recipe_schema is None
         if missing_confirmed_axis:
             tier = _FRESHNESS_TIER_UNKNOWN
 
@@ -691,7 +756,16 @@ def _compute_admission(
     )
     fingerprint_ok = bool(fingerprint) and bool(str(fingerprint).strip())
     fingerprint_short = str(fingerprint)[:12] if fingerprint_ok else "nofingerprint"
-    run_id = f"{as_of_date}:{name}:{fingerprint_short}"
+    # ROUND 7: the provenance-schema version + resolved recipe are part of
+    # the immutable run identity — an audit trail entry must be able to tell
+    # "evaluated under schema v1, recipe walkforward_dual_axis_v1" apart from
+    # any future schema/recipe without ambiguity, not just "some fingerprint
+    # from some artifact".
+    recipe_schema_short = resolved_recipe_schema or "unresolved-recipe"
+    run_id = (
+        f"{as_of_date}:{name}:{fingerprint_short}:"
+        f"{_PROVENANCE_SCHEMA_VERSION}:{recipe_schema_short}"
+    )
 
     reasons: list[str] = []
     cutoff_desc = (
@@ -703,13 +777,29 @@ def _compute_admission(
         reasons.append(f"freshness=unknown ({cutoff_desc}); binding DATA cutoff "
                         "missing/unparseable (fail-closed, GAP 1)")
     elif missing_confirmed_axis:
-        reasons.append(
-            f"present cutoff field(s) {sorted({r['field'] for r in axis_results})} do "
-            f"not include a confirmed code-guaranteed axis "
-            f"({', '.join(_CONFIRMED_STAMPED_CUTOFF_FIELDS)}) — provenance unverified "
-            "regardless of what a weaker/legacy field shows (fail-closed, "
-            "required-axis, round 6)"
+        present_confirmed_desc = sorted(
+            {r["field"] for r in axis_results} & set(_CONFIRMED_STAMPED_CUTOFF_FIELDS)
         )
+        if not present_confirmed_desc:
+            reasons.append(
+                f"present cutoff field(s) {sorted({r['field'] for r in axis_results})} do "
+                f"not include a confirmed code-guaranteed axis "
+                f"({', '.join(_CONFIRMED_STAMPED_CUTOFF_FIELDS)}) — provenance unverified "
+                "regardless of what a weaker/legacy field shows (fail-closed, "
+                "required-axis, round 6)"
+            )
+        else:
+            # ROUND 7: a confirmed field WAS present, but this exact
+            # combination does not resolve to a recipe/schema this version
+            # of the contract has validated — fail-closed the same way as
+            # "no confirmed field at all", not silently admitted.
+            reasons.append(
+                f"confirmed cutoff field(s) {present_confirmed_desc} present, but this "
+                f"combination does not resolve to a known recipe/schema under "
+                f"provenance schema {_PROVENANCE_SCHEMA_VERSION} "
+                f"(_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS) — provenance schema unverified "
+                "(fail-closed, required-recipe-schema, round 7)"
+            )
     elif worst["reason"] is not None:
         reasons.append(worst["reason"])
     # Every OTHER present axis that is itself not healthy/warn also gets its
@@ -775,6 +865,12 @@ def _compute_admission(
         # this admission bound to — persisted for audit ("which axes did we
         # actually see, and what did each say").
         "cutoffs_evaluated": cutoffs_evaluated,
+        # ROUND 7: the provenance-schema version this admission was
+        # evaluated under, and the recipe/schema resolved from the
+        # artifact's confirmed cutoff fields (None when unresolved/missing
+        # — the same fail-closed case as no confirmed field being present).
+        "provenance_schema_version": _PROVENANCE_SCHEMA_VERSION,
+        "resolved_recipe_schema": resolved_recipe_schema,
     }
 
 
