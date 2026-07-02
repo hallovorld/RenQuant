@@ -12,7 +12,11 @@
   Steps (delegate to scripts/monthly_calibrator_refresh.sh):
     1. smoke test
     2. fit_panel_calibrator.py against active model
-    3. validate calibrator non-collapse (n_unique_prob_y >= 10)
+    3. validate calibrator non-collapse (n_unique_prob_y >= 10) + pool_ic
+       regression vs baseline
+    3b. verify the calibrator's fingerprint BINDS to the live runtime's
+       active scorer (2026-07-01 fix — defense-in-depth on top of
+       renquant-common#18/renquant-pipeline#155/renquant-model#40)
     4. ntfy summary
 
   Install:

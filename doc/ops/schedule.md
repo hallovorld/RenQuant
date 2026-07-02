@@ -131,12 +131,12 @@ the deploy's authoritative config with `RQ_PATCHTST_SERVED_CONFIG`.
 | **Plist** | `scripts/launchd/com.renquant.monthly-calibrator-refresh.plist` |
 | **Trigger** | 1st of every month, 03:00 PT |
 | **Wallclock** | ~10-15 min |
-| **Touches (mutates)** | `panel-rank-calibration.json` (if smoke + non-collapse passes) |
+| **Touches (mutates)** | `panel-rank-calibration.json` — via a single atomic `os.replace` from a staging path, only after smoke + non-collapse + IC-regression + scorer/calibrator binding all pass (2026-07-01 round 2) |
 | **Touches (read-only)** | active panel-LTR model, OHLCV cache |
 | **Alert (success)** | "RenQuant 104 MONTHLY-CAL ✓" with knot count + n_unique_prob_y |
-| **Alert (failure)** | "RenQuant 104 MONTHLY-FAIL" — prior calibrator preserved |
+| **Alert (failure)** | "RenQuant 104 MONTHLY-FAIL"/"MONTHLY-REJECT" — production calibrator was never modified (fit writes to a staging path, not the live one) |
 
-**Why monthly:** Platt-scaling calibrator (switched from isotonic 2026-05-18) parameters drift as score distribution shifts (regime change, watchlist evolution). Refit catches drift without model change. n_unique_prob_y ≥ 10 invariant prevents the "calibrator collapsed to 7 buckets" failure mode (acceptance gate G2). 2026-05-17 monthly cron added H2a (non-collapse) + H2b (IC-regression) hard gates with auto-rollback (commit `637594e`).
+**Why monthly:** Platt-scaling calibrator (switched from isotonic 2026-05-18) parameters drift as score distribution shifts (regime change, watchlist evolution). Refit catches drift without model change. n_unique_prob_y ≥ 10 invariant prevents the "calibrator collapsed to 7 buckets" failure mode (acceptance gate G2). 2026-05-17 monthly cron added H2a (non-collapse) + H2b (IC-regression) hard gates. 2026-07-01 round 2: the fit no longer writes the live path directly — it stages to a unique path, every gate evaluates the staged candidate, and `scripts/monthly_calibrator_atomic_swap.py` only swaps it onto the live path (atomically) after every gate passes; any failure quarantines the staged candidate instead of exposing-then-rolling-back (see `doc/progress/2026-07-01-monthly-calibrator-binding-gate.md`).
 
 **Steps:**
 1. Pre-fit pre-refit backup (commit `637594e`)
