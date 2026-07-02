@@ -424,11 +424,13 @@ class TestExternalSellWashSaleClock:
         )
 
     def test_stamps_today_str(self):
-        # NO-FILL-FOUND fallback still exists: `last_sell_dates_str[t] =
-        # today_str` (now conditional — see TestExternalSellUsesActualFillDate
-        # below for the 2026-07-01 fix that makes this the FALLBACK, not the
-        # unconditional stamp).
-        assert "self._last_sell_dates_str[t] = today_str" in RUNNER_SOURCE
+        # NO-FILL-FOUND fallback still exists, now behind the 3-way
+        # ext_sell_stamp_decision (actual fill / preserve-unresolved /
+        # today fallback) — see TestExternalSellUsesActualFillDate and
+        # TestCodex428ReviewFixes below.
+        assert "self._ext_sell_stamp_decision(" in RUNNER_SOURCE
+        assert "fill_date, prior_stamp, today_str" in RUNNER_SOURCE
+        assert "no_fill_fallback" in RUNNER_SOURCE
 
     def test_warns_loudly_so_operator_sees_it(self):
         # Use log.warning, not log.info — manual sells should be
@@ -480,8 +482,11 @@ class TestExternalSellUsesActualFillDate:
     def test_prefers_actual_fill_date_over_today(self):
         assert "self._ext_sell_fill_date(ext_sell_fills.get(t))" in RUNNER_SOURCE
         assert "fill_date = self._ext_sell_fill_date" in RUNNER_SOURCE
-        assert "if fill_date is not None:" in RUNNER_SOURCE
-        assert "stamp_str = fill_date.isoformat()" in RUNNER_SOURCE
+        # codex #428 review: the actual-fill-vs-fallback branch now goes
+        # through ext_sell_stamp_decision (see TestCodex428ReviewFixes),
+        # which is what decides "actual_fill" wins over "today".
+        assert "self._ext_sell_stamp_decision(" in RUNNER_SOURCE
+        assert 'stamp_path == "actual_fill"' in RUNNER_SOURCE
         assert "self._last_sell_dates_str[t] = stamp_str" in RUNNER_SOURCE
 
     def test_reuses_already_fetched_lookup_no_refetch(self):
@@ -521,6 +526,80 @@ class TestExternalSellUsesActualFillDate:
         assert 0 < primary_stamp_idx - primary_idx < 200
         between = RUNNER_SOURCE[primary_idx:primary_stamp_idx]
         assert "_ext_sell_fill_date" not in between
+
+
+# ── codex #428 review follow-up: the 2026-07-01 fix above did NOT actually ─
+# ── cover the exact incident it cited ──────────────────────────────────────
+
+class TestCodex428ReviewFixes:
+    """PR #428 review (CHANGES_REQUESTED) on the 2026-07-01 fix above found
+    three real gaps:
+
+      1. ``lookup_ext_sell_fills`` queried only ``today - 5 days``. The real
+         META incident (fill 2026-06-02, discovered by reconciliation
+         2026-06-26) is a 24-day gap — the 5-day window could never have
+         found it, so the pre-review code still fell back to ``today_str``
+         in the EXACT scenario it claimed to fix. Widened to
+         ``EXT_SELL_LOOKBACK_DAYS`` (45d — the 30d wash-sale window plus an
+         operational buffer).
+      2. The lookup accepted fills with no confirmed ``side``/``action`` and
+         used the most-recent one to stamp the wash-sale clock — tolerable
+         for a log-only attribution string, not authoritative enough to set
+         ``last_sell_dates``. Now requires ``side == "sell"``.
+      3. ``ext_sell_fill_date`` sliced the first 10 characters of the raw
+         timestamp instead of parsing an AWARE datetime and converting to
+         America/New_York — an off-by-one trading-date risk near UTC
+         midnight. Now parses properly and fails closed on naive/unparseable
+         timestamps.
+
+    Also addressed ("ALSO reconsider", non-blocking but straightforward):
+    the no-fill fallback used to unconditionally overwrite an existing
+    OLDER ``last_sell_dates`` value with today's reconciliation date,
+    destroying known evidence. Now preserved via ``ext_sell_stamp_decision``
+    and flagged as an UNRESOLVED reconciliation instead.
+
+    Source-level regression guards here (matching this file's established
+    string-contract style); behavioral coverage of the actual date math /
+    lookback boundary / decision table lives in
+    tests/test_runner_ext_sell.py (``TestLookupExtSellFills``,
+    ``TestExtSellFillDate``, ``TestExtSellStampDecision``).
+    """
+
+    def test_lookback_widened_past_five_days(self):
+        assert "EXT_SELL_LOOKBACK_DAYS = 45" in RUNNER_SOURCE
+        assert "timedelta(days=EXT_SELL_LOOKBACK_DAYS)" in RUNNER_SOURCE
+        # The old hardcoded 5-day window must be gone from the lookup.
+        assert "timedelta(days=5)" not in RUNNER_SOURCE
+
+    def test_confirmed_sell_side_required_for_stamping(self):
+        # ext_sell_fill_date must refuse to authorize a stamp unless the
+        # broker actually surfaced side == "sell" — an ambiguous (no side
+        # field) or BUY-side fill must never set the wash-sale clock.
+        assert 'fill.get("side") != "sell"' in RUNNER_SOURCE
+
+    def test_fill_date_extraction_is_timezone_aware(self):
+        assert "_ny_trade_date_from_aware_timestamp" in RUNNER_SOURCE
+        assert "America/New_York" in RUNNER_SOURCE
+        assert "ZoneInfo" in RUNNER_SOURCE
+        # The old naive first-10-chars slice must be gone from the
+        # fill-date extraction path.
+        assert "_dt.date.fromisoformat(str(fa)[:10])" not in RUNNER_SOURCE
+
+    def test_naive_timestamp_rejected_fail_closed(self):
+        # A filled_at with no timezone/offset must be treated as
+        # unparseable — never silently assumed to be in some zone.
+        assert "parsed.tzinfo is None" in RUNNER_SOURCE
+
+    def test_z_suffix_normalized_before_parsing(self):
+        # datetime.fromisoformat() pre-3.11 rejects a bare 'Z' suffix;
+        # must be normalized to an explicit +00:00 offset first.
+        assert 'text[:-1] + "+00:00"' in RUNNER_SOURCE
+
+    def test_unresolved_preserves_existing_stamp_instead_of_overwriting(self):
+        assert "ext_sell_stamp_decision" in RUNNER_SOURCE
+        assert "unresolved_preserve" in RUNNER_SOURCE
+        assert "prior_stamp = self._last_sell_dates_str.get(t)" in RUNNER_SOURCE
+        assert "UNRESOLVED" in RUNNER_SOURCE
 
 
 # ── 2026-05-17 STATE-EXT-SELL pending-order false-positive fix ───────────────

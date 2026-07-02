@@ -14,6 +14,21 @@ import logging
 log = logging.getLogger("adapters.runner")
 
 
+# Codex #428 review (finding 1): the fill lookback used by
+# ``lookup_ext_sell_fills`` must cover the MAXIMUM plausible reconciliation
+# gap, not an arbitrary short window. The real production incident this
+# module's ``ext_sell_fill_date`` fix cites had the broker SELL fill on
+# 2026-06-02 discovered by reconciliation on 2026-06-26 — a 24-day gap. The
+# prior 5-day window could never have found that fill (it would still have
+# fallen back to `today_str`, the exact bug being fixed). Widen to the
+# 30-day wash-sale window itself PLUS an operational buffer, so any fill
+# that could still be wash-sale-relevant is always discoverable. The
+# umbrella `live/alpaca_broker.py::get_filled_orders` already paginates
+# properly (up to 5000 orders / ~1y) — this constant only bounds the
+# `after=` query filter, not broker-side pagination capacity.
+EXT_SELL_LOOKBACK_DAYS = 45
+
+
 # Codex #76: the two in-repo broker implementations of get_filled_orders
 # return DIFFERENT keys. Normalize through this schema map so the lookup
 # works on both AND any future broker that mostly follows one convention.
@@ -95,7 +110,18 @@ def lookup_ext_sell_fills(broker, ctx, disappeared: list[str]) -> dict[str, dict
     ``filled_avg_price``). Normalize through ``_normalize_fill_record``
     so attribution works against either schema.
 
-    Returns ``{ticker: {order_id, price, qty, filled_at, side}}``.
+    Queries ``EXT_SELL_LOOKBACK_DAYS`` (45d — 30d wash-sale window plus an
+    operational buffer, codex #428 review) of broker fill history so a
+    reconciliation delay of multiple weeks still finds the real fill
+    instead of silently falling back to "today" (see module-level comment
+    on ``EXT_SELL_LOOKBACK_DAYS``).
+
+    Returns ``{ticker: {order_id, price, qty, filled_at, side}}``. The
+    ``side`` key here may be ``""`` (ambiguous — no side/action field
+    surfaced by the broker) or ``"sell"``/``"buy"``; this dict is used
+    for BOTH log-attribution (``attribute_ext_sell``, tolerant of
+    ambiguity) and wash-sale stamping (``ext_sell_fill_date``, which
+    requires a CONFIRMED ``side == "sell"`` — see that function).
     Empty dict if the broker can't surface fills (e.g., sim path).
     """
     if not disappeared:
@@ -104,7 +130,7 @@ def lookup_ext_sell_fills(broker, ctx, disappeared: list[str]) -> dict[str, dict
         return {}
     import datetime as _dt  # noqa: PLC0415
     today = ctx.today if isinstance(ctx.today, _dt.date) else _dt.date.today()
-    after = (today - _dt.timedelta(days=5)).isoformat()
+    after = (today - _dt.timedelta(days=EXT_SELL_LOOKBACK_DAYS)).isoformat()
     try:
         fills = broker.get_filled_orders(after=after) or []
     except Exception as exc:
@@ -136,35 +162,133 @@ def lookup_ext_sell_fills(broker, ctx, disappeared: list[str]) -> dict[str, dict
             latest[sym] = normalized
     return latest
 
+def _ny_trade_date_from_aware_timestamp(raw: str) -> "datetime.date | None":
+    """Parse ``raw`` as an AWARE ISO-8601 timestamp and return its trade
+    DATE in the account's trade-date timezone convention —
+    America/New_York, the same zone used by ``live/clock.py``'s
+    ``NY = ZoneInfo("America/New_York")`` / ``trading_date()`` and by
+    ``kernel/data.py``'s NYSE freshness checks. Not imported from those
+    modules directly: this file is deliberately dependency-free (module
+    docstring — "Self-contained"), and ``live/clock.py`` isn't even on
+    this package's import path (``backtesting/renquant_104`` never
+    depends on ``live/``). Same zone name, independently applied.
+
+    Codex #428 review, finding 3: the prior implementation sliced the
+    first 10 characters of the raw string (``YYYY-MM-DD``) — a fill at
+    ``00:30 UTC`` was read as if that UTC calendar date were already the
+    NY trade date, when it actually belongs to the PRIOR NY trading date
+    (UTC-4/UTC-5 puts 00:30 UTC at 19:30/20:30 the previous NY day). That
+    slicing approach could shift the wash-sale clock by one day in either
+    direction near the UTC midnight boundary. Fixed here by properly
+    parsing an aware datetime and converting it.
+
+    Fails CLOSED (returns ``None``) rather than guessing when:
+      * ``raw`` isn't parseable ISO-8601 at all, or
+      * it parses but carries NO timezone/offset (naive) — a naive
+        timestamp cannot be safely mapped to a trade date near a
+        day-boundary; silently assuming a timezone is exactly the class
+        of bug this function exists to eliminate.
+    """
+    import datetime as _dt  # noqa: PLC0415
+    text = str(raw).strip()
+    # datetime.fromisoformat() before Python 3.11 does not accept the
+    # 'Z' (Zulu/UTC) suffix common in broker/REST API timestamps —
+    # normalize to an explicit +00:00 offset first.
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = _dt.datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None  # naive — fail closed, never guess
+    try:
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
+        ny_local = parsed.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        return None
+    return ny_local.date()
+
+
 def ext_sell_fill_date(fill: dict | None) -> "datetime.date | None":
     """Extract the broker fill DATE from a normalized ext-sell fill record.
 
     ``fill`` is the per-ticker value out of ``lookup_ext_sell_fills``'s
     return dict (already run through ``normalize_fill_record``), so
     ``filled_at`` is the broker-reported timestamp for the most recent
-    qualifying SELL fill. Returns ``None`` when there is no fill record,
-    or ``filled_at`` is missing/unparseable — callers must then fall back
-    to a "no fill found" path rather than inventing a date.
+    qualifying fill. Returns ``None`` — callers must then fall back to a
+    "no confirmed fill" path rather than inventing a date — when:
 
-    Same date-parsing shape as the ENTRY-DATE-FROM-FILLS path (broker's
-    ``filled_at`` truncated to its first 10 chars, ``YYYY-MM-DD``) —
-    mirrors that path's authority principle: the broker's fill timestamp
-    is authoritative over "today, because that's when this reconciliation
-    code happened to run" (2026-07-01 META incident: last_sell_dates was
-    wrongly stamped with the reconciliation run date instead of the real
-    2026-06-02 broker SELL fill date, extending the wash-sale block by
-    24 days).
+      * there is no fill record at all;
+      * the fill's ``side`` is not a CONFIRMED ``"sell"`` (codex #428
+        review, finding 2). ``lookup_ext_sell_fills`` deliberately keeps
+        rows with an AMBIGUOUS side (``""`` — broker surfaced no
+        side/action field at all, e.g. the execution-subrepo schema) so
+        the log-attribution string in ``attribute_ext_sell`` can still
+        name a candidate fill. That tolerance is fine for a human-
+        readable log line but NOT authoritative enough to actually set
+        ``last_sell_dates`` (the wash-sale clock): an ambiguous or
+        actual-BUY fill must never be mistaken for a sell here. If a
+        broker's schema needs enrichment to surface a side (e.g. an
+        ``order_id`` follow-up lookup), that is a broker-adapter change,
+        not a guess made in this reconciliation path;
+      * ``filled_at`` is missing or cannot be parsed as an AWARE
+        timestamp (see ``_ny_trade_date_from_aware_timestamp`` — also
+        fails closed on naive timestamps rather than guessing a
+        timezone).
+
+    Authority principle (2026-07-01 META incident): the broker's fill
+    timestamp is authoritative over "today, because that's when this
+    reconciliation code happened to run" — mirrors the ENTRY-DATE-FROM-
+    FILLS principle already established for ``entry_dates``. Live
+    incident: ``last_sell_dates`` was wrongly stamped with the
+    reconciliation run date (2026-06-26) instead of the real broker SELL
+    fill date (2026-06-02), extending the wash-sale block by 24 days.
     """
-    import datetime as _dt  # noqa: PLC0415
     if not fill:
+        return None
+    if fill.get("side") != "sell":
         return None
     fa = fill.get("filled_at")
     if not fa:
         return None
-    try:
-        return _dt.date.fromisoformat(str(fa)[:10])
-    except (ValueError, TypeError):
-        return None
+    return _ny_trade_date_from_aware_timestamp(fa)
+
+
+def ext_sell_stamp_decision(
+    fill_date: "datetime.date | None",
+    prior_stamp: str | None,
+    today_str: str,
+) -> "tuple[str, str]":
+    """Decide the ``last_sell_dates`` value to stamp for a ticker that
+    disappeared from the broker book, and which log path the caller
+    (``adapters/runner.py``'s STATE-EXT-SELL loop) should take.
+
+    Returns ``(stamp_value, path)`` where ``path`` is one of:
+
+      * ``"actual_fill"`` — a confirmed broker SELL fill date was found
+        (via ``ext_sell_fill_date``); authoritative, always wins.
+      * ``"unresolved_preserve"`` — no confirmed fill within the lookback
+        window, but an OLDER ``last_sell_dates`` value already exists for
+        this ticker. Codex #428 review ("ALSO reconsider"): overwriting a
+        known older date with "today" DESTROYS real evidence and
+        recreates the over-extension bug in a different form — if the
+        real fill is older than even the widened lookback window,
+        "today" is a WORSE guess than the value already on file.
+        Preserve it; the caller must flag this loudly as an UNRESOLVED
+        reconciliation needing operator/broker-history recovery, not
+        silently present "today" as a known sale date.
+      * ``"no_fill_fallback"`` — no confirmed fill AND no prior value to
+        fall back on; the ticker's disposition is genuinely unknown to
+        this state file. Stamping ``today_str`` here is the conservative
+        (block re-entry starting now) choice, not a claim that the sale
+        actually happened today.
+    """
+    if fill_date is not None:
+        return fill_date.isoformat(), "actual_fill"
+    if prior_stamp:
+        return prior_stamp, "unresolved_preserve"
+    return today_str, "no_fill_fallback"
 
 
 def bar_date(ctx) -> "datetime.date":
