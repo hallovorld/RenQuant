@@ -97,18 +97,29 @@ Current status as of 2026-06-08:
 | Field | Value |
 |---|---|
 | **Script** | `scripts/weekly_retrain_patchtst.sh` |
+| **Plist** | `scripts/launchd/com.renquant.weekly-retrain-patchtst.plist` (Sat 05:30 PT) |
 | **Owner pipeline** | `renquant_orchestrator.build_patchtst_wf_manifest` |
 | **Cadence** | Weekly latest-cut retrain by default; sparse full validation only with `RQ_PATCHTST_FULL_MANIFEST=1` |
 | **Default runtime** | CPU with `OMP_NUM_THREADS=1`; `RQ_PATCHTST_DEVICE=mps` is reserved for manual runs |
-| **Touches (mutates)** | `backtesting/renquant_104/artifacts/walkforward_patchtst/` and `walkforward_patchtst_manifest.json` |
+| **Touches (mutates)** | `backtesting/renquant_104/artifacts/walkforward_patchtst/` and `walkforward_patchtst_manifest.json`; on a validated fresh promote, the SHADOW served pin in the target strategy config + `logs/promote_shadow_patchtst/` |
 | **Touches (read-only)** | source WF manifest, subrepo runtime roots, active strategy config |
 
 This wrapper is intentionally thin: it owns lock/log/root setup and delegates
 training to the orchestrator-owned Task/Job/Pipeline implementation. It restores
 scheduled retraining for the second production model family after the
-operator-directed PatchTST promotion. It does not directly promote the resulting
-checkpoint; promotion still requires the normal evidence and operator review
-boundary.
+operator-directed PatchTST promotion.
+
+Since 2026-06-30 (design `doc/design/2026-06-30-shadow-scorer-freshness.md`, #212)
+the schedule is a committed launchd plist so the cadence can no longer silently
+lapse, and — on a clean build — the wrapper chains `scripts/promote_shadow_patchtst.py`,
+the **validated served-pin promote** for the SHADOW PatchTST scorer. That promote
+**fails closed** (keeps the old pin) unless every recipe-required source is on its
+SLA, the effective cutoffs actually advance, and the candidate passes load + smoke
+inference / fingerprint parity / non-degenerate / resource / sanity-floor gates. It
+is SHADOW-scoped (moves no capital); the **prod** promote boundary is unchanged and
+still requires the normal evidence and operator review. Disable the chained promote
+with `RQ_PATCHTST_PROMOTE=0`; dry-run it with `RQ_PATCHTST_PROMOTE=dry`; point it at
+the deploy's authoritative config with `RQ_PATCHTST_SERVED_CONFIG`.
 
 ---
 
@@ -120,12 +131,12 @@ boundary.
 | **Plist** | `scripts/launchd/com.renquant.monthly-calibrator-refresh.plist` |
 | **Trigger** | 1st of every month, 03:00 PT |
 | **Wallclock** | ~10-15 min |
-| **Touches (mutates)** | `panel-rank-calibration.json` (if smoke + non-collapse passes) |
+| **Touches (mutates)** | `panel-rank-calibration.json` — via a single atomic `os.replace` from a staging path, only after smoke + non-collapse + IC-regression + scorer/calibrator binding all pass (2026-07-01 round 2) |
 | **Touches (read-only)** | active panel-LTR model, OHLCV cache |
 | **Alert (success)** | "RenQuant 104 MONTHLY-CAL ✓" with knot count + n_unique_prob_y |
-| **Alert (failure)** | "RenQuant 104 MONTHLY-FAIL" — prior calibrator preserved |
+| **Alert (failure)** | "RenQuant 104 MONTHLY-FAIL"/"MONTHLY-REJECT" — production calibrator was never modified (fit writes to a staging path, not the live one) |
 
-**Why monthly:** Platt-scaling calibrator (switched from isotonic 2026-05-18) parameters drift as score distribution shifts (regime change, watchlist evolution). Refit catches drift without model change. n_unique_prob_y ≥ 10 invariant prevents the "calibrator collapsed to 7 buckets" failure mode (acceptance gate G2). 2026-05-17 monthly cron added H2a (non-collapse) + H2b (IC-regression) hard gates with auto-rollback (commit `637594e`).
+**Why monthly:** Platt-scaling calibrator (switched from isotonic 2026-05-18) parameters drift as score distribution shifts (regime change, watchlist evolution). Refit catches drift without model change. n_unique_prob_y ≥ 10 invariant prevents the "calibrator collapsed to 7 buckets" failure mode (acceptance gate G2). 2026-05-17 monthly cron added H2a (non-collapse) + H2b (IC-regression) hard gates. 2026-07-01 round 2: the fit no longer writes the live path directly — it stages to a unique path, every gate evaluates the staged candidate, and `scripts/monthly_calibrator_atomic_swap.py` only swaps it onto the live path (atomically) after every gate passes; any failure quarantines the staged candidate instead of exposing-then-rolling-back (see `doc/progress/2026-07-01-monthly-calibrator-binding-gate.md`).
 
 **Steps:**
 1. Pre-fit pre-refit backup (commit `637594e`)

@@ -35,6 +35,14 @@ References:
 - Duan, Avati, Ding, Thai, Basu, Ng, Schuler 2020. "NGBoost: Natural
   Gradient Boosting for Probabilistic Prediction" ICML 2020.
 - ngboost source: github.com/stanfordmlgroup/ngboost
+
+σ-head _rawlabel admission (2026-07): this is the REAL, currently-live
+training entrypoint for the σ-head (--panel-path defaults to the raw-label
+corpus renquant-orchestrator's RefreshSigmaHeadRawLabelTask keeps in
+lockstep with the fund panel; see renquant-orchestrator PR #218). main()
+refuses to read the corpus / fit / write an artifact unless it is admissible
+— see assert_rawlabel_admissible() below. --allow-unadmitted-rawlabel is a
+research-only escape hatch; never set it against the production corpus.
 """
 from __future__ import annotations
 import argparse
@@ -54,6 +62,171 @@ log = logging.getLogger("ngb-proper")
 REPO = Path(__file__).resolve().parent.parent
 LABEL = "fwd_60d_excess_raw"
 HORIZON = 60
+
+# ── σ-head _rawlabel admission (consumer-side enforcement) ─────────────────
+# This mirrors, by file-contract (not by cross-repo import — RenQuant does
+# not depend on renquant-orchestrator), the receipt/provenance schema written
+# by renquant-orchestrator's RefreshSigmaHeadRawLabelTask
+# (retrain_alpha158_fund.assert_rawlabel_admissible / _write_rawlabel_provenance):
+#   <rawlabel>.INVALID.json     — written whenever the lockstep refresh fails,
+#                                  produces an empty/rejected build, or the
+#                                  upstream fund panel is missing.
+#   <rawlabel>.provenance.json  — written only on a fully-validated swap;
+#                                  carries schema_version, horizon,
+#                                  source-panel sha256 digest/frontier,
+#                                  row/ticker/finite stats, AND
+#                                  rawlabel_sha256 — the digest of the
+#                                  PUBLISHED _rawlabel corpus bytes themselves
+#                                  (added alongside schema_version by the
+#                                  coordinated companion change on #218; see
+#                                  RefreshSigmaHeadRawLabelTask's
+#                                  publication-ordering note there).
+# Before this guard, a swallowed refresh failure left the corpus silently
+# stale (or an INVALID receipt could exist) while this script trained on it
+# anyway — the fail-open gap this whole lockstep-refresh mechanism exists to
+# close. See renquant-orchestrator PR #218.
+#
+# rawlabel_sha256 closes a SECOND, narrower gap Codex flagged on both PRs:
+# source_panel_sha256 only binds the corpus to its INPUT (the fund panel it
+# was built from); it says nothing about the corpus file itself. A later
+# replacement/edit of <rawlabel>.parquet, with the sidecar left untouched and
+# the source panel unchanged, would still pass a source_panel_sha256-only
+# check — it is indistinguishable from the originally-validated bytes. Binding
+# rawlabel_sha256 to the CURRENT on-disk corpus digest closes that: any
+# post-validation tamper/replace/corruption of the corpus itself is now
+# detected, not just drift of its declared input.
+RAWLABEL_INVALID_SUFFIX = ".INVALID.json"
+RAWLABEL_PROVENANCE_SUFFIX = ".provenance.json"
+# Must match renquant-orchestrator's RAWLABEL_PROVENANCE_SCHEMA_VERSION
+# (retrain_alpha158_fund.py). This consumer only understands this exact
+# schema shape; an older/different/missing version is untrusted and refused
+# rather than guessed at (fail closed on schema drift, not just content).
+RAWLABEL_PROVENANCE_SCHEMA_VERSION = 1
+
+
+class RawlabelAdmissionError(RuntimeError):
+    """The σ-head ``_rawlabel`` corpus failed downstream admission and MUST
+    NOT be consumed by NGBoost training (missing corpus, an active
+    invalidation receipt, no/unrecognized-schema provenance stamp, or a
+    provenance horizon / source-panel digest / RAWLABEL CORPUS digest that no
+    longer matches what is live on disk)."""
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def assert_rawlabel_admissible(
+    rawlabel_path: Path,
+    *,
+    expected_horizon: int,
+    source_panel_path: Path,
+) -> dict:
+    """Refuse (raise :class:`RawlabelAdmissionError`) unless the σ-head
+    ``_rawlabel`` corpus at ``rawlabel_path`` is admissible for training:
+
+    - the corpus file must exist;
+    - no active ``<rawlabel>.INVALID.json`` invalidation receipt may sit
+      beside it;
+    - a ``<rawlabel>.provenance.json`` stamp must exist — an un-provenanced
+      corpus (e.g. hand-copied, or predating the lockstep refresh task) was
+      never validated and must not be trusted (fail CLOSED, not open);
+    - the provenance ``schema_version`` must equal the version this consumer
+      understands — an older/missing/unrecognized schema is untrusted rather
+      than guessed at;
+    - the provenance ``horizon`` must equal ``expected_horizon``;
+    - the provenance ``source_panel_sha256`` must equal the sha256 of the
+      CURRENT ``source_panel_path`` on disk — this proves the raw-label
+      corpus was built from the fund panel that is live right now, catching
+      INPUT drift even when no invalidation receipt was written (e.g. the
+      panel moved forward after the corpus was stamped, without a failure
+      being recorded);
+    - the provenance ``rawlabel_sha256`` must equal the sha256 of the CURRENT
+      ``rawlabel_path`` (the corpus file itself) on disk — this closes the
+      gap where ``source_panel_sha256`` alone only binds the corpus to its
+      INPUT: a later replacement/edit of the corpus file itself, with the
+      sidecar left intact and the source panel unchanged, would otherwise be
+      indistinguishable from the originally-validated OUTPUT bytes.
+
+    Returns the parsed provenance dict on success.
+    """
+    if not rawlabel_path.exists():
+        raise RawlabelAdmissionError(f"σ-head _rawlabel corpus is missing: {rawlabel_path}")
+
+    receipt = rawlabel_path.with_name(rawlabel_path.name + RAWLABEL_INVALID_SUFFIX)
+    if receipt.exists():
+        try:
+            reason = json.loads(receipt.read_text()).get("reason", "unknown")
+        except (OSError, json.JSONDecodeError):
+            reason = "unreadable receipt"
+        raise RawlabelAdmissionError(
+            f"σ-head _rawlabel corpus is INVALIDATED ({receipt.name}: {reason}); "
+            "refusing to train until a fresh, validated refresh clears the receipt."
+        )
+
+    provenance_path = rawlabel_path.with_name(rawlabel_path.name + RAWLABEL_PROVENANCE_SUFFIX)
+    if not provenance_path.exists():
+        raise RawlabelAdmissionError(
+            f"σ-head _rawlabel corpus has no provenance stamp ({provenance_path.name}); "
+            "an un-provenanced corpus was never validated by the lockstep refresh task "
+            "and must not be trusted (fail closed)."
+        )
+    try:
+        provenance = json.loads(provenance_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RawlabelAdmissionError(
+            f"σ-head _rawlabel provenance is unreadable: {provenance_path}: {exc}"
+        ) from exc
+
+    prov_schema = provenance.get("schema_version")
+    if prov_schema != RAWLABEL_PROVENANCE_SCHEMA_VERSION:
+        raise RawlabelAdmissionError(
+            f"σ-head _rawlabel provenance schema_version={prov_schema!r} != expected "
+            f"{RAWLABEL_PROVENANCE_SCHEMA_VERSION}; refusing to trust an unrecognized, "
+            "missing, or outdated provenance schema (fail closed on schema drift)."
+        )
+
+    prov_horizon = provenance.get("horizon")
+    if prov_horizon != expected_horizon:
+        raise RawlabelAdmissionError(
+            f"σ-head _rawlabel provenance horizon={prov_horizon!r} != expected "
+            f"{expected_horizon}; refusing to train on a horizon-mismatched corpus."
+        )
+
+    if not source_panel_path.exists():
+        raise RawlabelAdmissionError(
+            "current source fund panel is missing, cannot verify the provenance "
+            f"digest: {source_panel_path}"
+        )
+    current_source_digest = _sha256_file(source_panel_path)
+    prov_source_digest = provenance.get("source_panel_sha256")
+    if prov_source_digest != current_source_digest:
+        raise RawlabelAdmissionError(
+            f"σ-head _rawlabel provenance source_panel_sha256={prov_source_digest!r} does "
+            f"not match the CURRENT source panel digest {current_source_digest!r} "
+            f"({source_panel_path}); the raw-label corpus was built from a DIFFERENT panel "
+            "than the one live now — it is stale even though no invalidation receipt is "
+            "present. Refusing to train."
+        )
+
+    # The corpus (OUTPUT) digest, not just the source panel (INPUT) digest —
+    # see the class/function docstrings. Catches a corpus replaced or edited
+    # AFTER validation, with the sidecar left intact and the source panel
+    # unchanged, which the source_panel_sha256 check above cannot see.
+    current_rawlabel_digest = _sha256_file(rawlabel_path)
+    prov_rawlabel_digest = provenance.get("rawlabel_sha256")
+    if prov_rawlabel_digest != current_rawlabel_digest:
+        raise RawlabelAdmissionError(
+            f"σ-head _rawlabel provenance rawlabel_sha256={prov_rawlabel_digest!r} does not "
+            f"match the CURRENT corpus digest {current_rawlabel_digest!r} ({rawlabel_path}); "
+            "the raw-label corpus FILE ITSELF was replaced, edited, or corrupted after "
+            "validation — refusing to train on bytes that were never actually validated."
+        )
+    return provenance
 
 
 def _env_float(name: str) -> float | None:
@@ -81,6 +254,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=REPO / "backtesting/renquant_104/artifacts/panel-ltr.alpha158_fund.json",
         help="Panel-LTR artifact whose feature_cols define the NGBoost input contract.",
+    )
+    parser.add_argument(
+        "--source-panel-path",
+        type=Path,
+        default=REPO / "data" / "alpha158_291_fundamental_dataset.parquet",
+        help=(
+            "Fund panel the --panel-path raw-label corpus was derived from. Used "
+            "only to verify the corpus's provenance digest still matches what is "
+            "live on disk (see assert_rawlabel_admissible)."
+        ),
+    )
+    parser.add_argument(
+        "--allow-unadmitted-rawlabel",
+        action="store_true",
+        help=(
+            "Bypass the σ-head _rawlabel admission check (missing corpus, active "
+            "invalidation receipt, missing/mismatched provenance). RESEARCH ONLY — "
+            "never set this against the production raw-label corpus."
+        ),
     )
     parser.add_argument(
         "--output-path",
@@ -169,6 +361,35 @@ def main(argv: list[str] | None = None):
     args = parse_args(argv)
     panel_path = args.panel_path
     art_panel = args.panel_artifact
+
+    # ── Admission gate — MUST run before any read of panel_path. A missing
+    # corpus, an active invalidation receipt, a missing/unrecognized-schema
+    # provenance stamp, or a provenance schema/horizon/source-panel-digest/
+    # rawlabel-digest mismatch refuses training here: no panel read, no
+    # NGBoost fit, no artifact write. See assert_rawlabel_admissible above.
+    if not args.allow_unadmitted_rawlabel:
+        try:
+            provenance = assert_rawlabel_admissible(
+                panel_path,
+                expected_horizon=HORIZON,
+                source_panel_path=args.source_panel_path,
+            )
+        except RawlabelAdmissionError as exc:
+            log.error("σ-head _rawlabel ADMISSION REFUSED: %s", exc)
+            return 3
+        log.info(
+            "σ-head _rawlabel admitted: rows=%s tickers=%s finite_fraction=%s "
+            "frontier=%s source_panel_sha256=%s rawlabel_sha256=%s schema_version=%s",
+            provenance.get("n_rows"), provenance.get("n_tickers"),
+            provenance.get("finite_fraction"), provenance.get("source_panel_frontier"),
+            provenance.get("source_panel_sha256"), provenance.get("rawlabel_sha256"),
+            provenance.get("schema_version"),
+        )
+    else:
+        log.warning(
+            "σ-head _rawlabel admission check BYPASSED (--allow-unadmitted-rawlabel); "
+            "research only — never against the production corpus."
+        )
 
     panel_meta = json.loads(art_panel.read_text())
     feat_cols = list(panel_meta["feature_cols"])
