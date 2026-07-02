@@ -70,6 +70,41 @@ _SCORER_CACHE: dict[tuple[str, str], object] = {}
 # length budget.
 _DEFAULT_TOP_N_PICKS = 5
 
+# 2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426 — see
+# doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum): the top-N list
+# above is a RAW diagnostic rank, not a validated recommendation. Before it
+# is ever surfaced as "actionable" this module binds it to an admission
+# verdict — is the shadow ARTIFACT fresh enough, and is the scored universe
+# complete enough, for rank-1-of-N to mean anything comparable day to day.
+#
+# Tier NAMING mirrors (not imports — model_freshness_monitor.py lives in the
+# renquant-orchestrator repo, a separate Python package/deploy unit)
+# renquant-orchestrator/src/renquant_orchestrator/model_freshness_monitor.py
+# TIER_HEALTHY/WARN/ESCALATE/BREACH/UNKNOWN + that module's SHADOW_POLICY
+# cadence (warn=28d/escalate=33d/breach=35d), so an operator who already
+# reads that monitor's alerts sees the SAME vocabulary here. A real shadow
+# PatchTST artifact has been observed ~140 DAYS stale in this codebase —
+# 4x past breach — which is exactly the silent-overclaim case this gates.
+_FRESHNESS_WARN_DAYS = 28
+_FRESHNESS_ESCALATE_DAYS = 33
+_FRESHNESS_BREACH_DAYS = 35
+_FRESHNESS_TIER_HEALTHY = "healthy"
+_FRESHNESS_TIER_WARN = "warn"
+_FRESHNESS_TIER_ESCALATE = "escalate"
+_FRESHNESS_TIER_BREACH = "breach"
+_FRESHNESS_TIER_UNKNOWN = "unknown"
+
+# Coverage: fraction of the CONFIGURED watchlist the shadow model actually
+# scored today (n_candidates / len(config["watchlist"])). Field naming
+# mirrors the coverage / n_have / n_expected convention already used by this
+# repo's own preflight (kernel/preflight.py _check_feature_coverage,
+# _check_sector_map_coverage) and renquant-pipeline's
+# task_data_verification.py (`coverage`, `n_have`/`n_expected`). The default
+# floor sits in the same 0.70-0.90 band those checks already use; an 83/292
+# (~28%) censored subset — the real incident this responds to — fails
+# clearly under any threshold in that band.
+_DEFAULT_MIN_COVERAGE = 0.80
+
 
 def _ensure_mlflow_setup(tracking_uri: Optional[str] = None,
                          experiment_name: Optional[str] = None) -> str:
@@ -147,6 +182,127 @@ def _log_shadow_run(experiment_id: str, as_of_date, shadow_name: str,
         mlflow.log_table(comparison, "comparison.json")
 
 
+def _freshness_tier(age_days: float | None) -> str:
+    """Bucket artifact age into healthy/warn/escalate/breach/unknown.
+
+    ``None``/non-finite age (missing or unparseable ``trained_date``) is
+    UNKNOWN, never a silent pass — mirrors this repo's own P-MODEL-STALENESS
+    convention (renquant-pipeline
+    kernel/preflight_pipeline/tasks/staleness.py: missing provenance is a
+    fail, not a skip).
+    """
+    if age_days is None:
+        return _FRESHNESS_TIER_UNKNOWN
+    try:
+        age = float(age_days)
+    except (TypeError, ValueError):
+        return _FRESHNESS_TIER_UNKNOWN
+    if age != age or age in (float("inf"), float("-inf")):  # NaN/inf check
+        return _FRESHNESS_TIER_UNKNOWN
+    if age >= _FRESHNESS_BREACH_DAYS:
+        return _FRESHNESS_TIER_BREACH
+    if age >= _FRESHNESS_ESCALATE_DAYS:
+        return _FRESHNESS_TIER_ESCALATE
+    if age >= _FRESHNESS_WARN_DAYS:
+        return _FRESHNESS_TIER_WARN
+    return _FRESHNESS_TIER_HEALTHY
+
+
+def _compute_admission(
+    *,
+    name: str,
+    as_of_date,
+    artifact_meta: dict,
+    n_scored: int,
+    n_expected: int,
+    min_coverage: float,
+) -> dict:
+    """Bind today's shadow top-picks to provenance + an actionability
+    verdict. See doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum
+    (Codex CHANGES_REQUESTED round 2 on umbrella PR #426).
+
+    This deliberately does NOT re-check feature-DATA freshness: primary and
+    shadow score the SAME ``ctx._panel_matrix`` / ``panel_history``, already
+    gated upstream by ``DataFreshnessGateTask``
+    (kernel/pipeline/task_data_freshness.py) before Phase 3
+    (``PanelScoringJob``, which runs ``ApplyShadowScoringTask``) executes.
+    What IS shadow-specific and NOT covered by that upstream gate:
+
+      1. the shadow ARTIFACT's own ``trained_date`` staleness — primary has
+         a retrain-cadence gate; a shadow artifact can silently rot behind
+         it with nothing re-checking it (real observed case: ~140d stale).
+      2. the shadow-SCORED universe's coverage of the configured watchlist —
+         shadow scorers often use different feature_cols/seq_len than
+         primary, censoring a different (often much smaller) subset, so
+         "rank 1" here is not comparable to primary's rank 1, or to a
+         different day's shadow run, without knowing n_scored/n_expected.
+
+    Fail-closed: missing/unparseable ``trained_date`` is UNKNOWN and blocks
+    — it is never treated as fresh.
+    """
+    trained_date = artifact_meta.get("trained_date")
+    age_days: float | None = None
+    if trained_date:
+        try:
+            trained_dt = datetime.datetime.strptime(
+                str(trained_date)[:10], "%Y-%m-%d").date()
+            today = (as_of_date if isinstance(as_of_date, datetime.date)
+                      else datetime.date.today())
+            age_days = float((today - trained_dt).days)
+        except (TypeError, ValueError):
+            age_days = None
+
+    tier = _freshness_tier(age_days)
+
+    # n_expected<=0 means "watchlist not configured/available" — degrade
+    # gracefully (coverage unknown, does not block) rather than fabricate
+    # a false 100% or false-fail on missing config plumbing. Distinct from
+    # a real n_expected that gives a real (possibly failing) coverage.
+    coverage = (float(n_scored) / n_expected) if n_expected else None
+    coverage_ok = coverage is None or coverage >= min_coverage
+
+    reasons: list[str] = []
+    if tier == _FRESHNESS_TIER_UNKNOWN:
+        reasons.append("trained_date missing/unparseable")
+    elif tier == _FRESHNESS_TIER_BREACH:
+        reasons.append(
+            f"artifact {age_days:.0f}d stale (breach>={_FRESHNESS_BREACH_DAYS}d)")
+    elif tier == _FRESHNESS_TIER_ESCALATE:
+        reasons.append(
+            f"artifact {age_days:.0f}d stale (escalate>={_FRESHNESS_ESCALATE_DAYS}d)")
+    if coverage is not None and not coverage_ok:
+        reasons.append(
+            f"coverage {n_scored}/{n_expected} ({coverage:.0%}) < {min_coverage:.0%}")
+
+    # Only healthy/warn tiers are actionable — escalate is one step short of
+    # breach and, per the incident this responds to, presenting it as a
+    # plain pick is exactly the overclaim risk being closed here.
+    fresh_ok = tier in (_FRESHNESS_TIER_HEALTHY, _FRESHNESS_TIER_WARN)
+    actionable = fresh_ok and coverage_ok
+
+    fingerprint = (
+        artifact_meta.get("artifact_fingerprint")
+        or artifact_meta.get("artifact_sha256")
+        or artifact_meta.get("model_content_fingerprint")
+    )
+    fingerprint_short = str(fingerprint)[:12] if fingerprint else "nofingerprint"
+    run_id = f"{as_of_date}:{name}:{fingerprint_short}"
+
+    return {
+        "verdict": tier,
+        "actionable": actionable,
+        "trained_date": trained_date,
+        "age_days": age_days,
+        "artifact_fingerprint": fingerprint,
+        "n_scored": n_scored,
+        "n_expected": n_expected if n_expected else None,
+        "coverage": round(coverage, 4) if coverage is not None else None,
+        "min_coverage": min_coverage,
+        "reasons": reasons,
+        "run_id": run_id,
+    }
+
+
 def _compute_shadow_summary(
     name: str,
     kind: str,
@@ -157,6 +313,11 @@ def _compute_shadow_summary(
     sorted_shadow: list[tuple[str, float]],
     shadow_ranks: dict[str, int],
     top_n_picks: int,
+    *,
+    as_of_date=None,
+    artifact_meta: dict | None = None,
+    n_expected_universe: int = 0,
+    min_coverage: float = _DEFAULT_MIN_COVERAGE,
 ) -> dict:
     """Build the compact per-shadow-model ntfy/audit summary dict.
 
@@ -182,6 +343,18 @@ def _compute_shadow_summary(
     primary panel score, ``shadow_dict``/``sorted_shadow``/``shadow_ranks``
     from this shadow model's own score) — this function never re-scores or
     recomputes those arrays from scratch.
+
+    2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED — see
+    doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum): a raw rank
+    is not itself an actionable recommendation. Every call now computes an
+    ``admission`` verdict (see ``_compute_admission``) binding the picks to
+    artifact freshness + scored-universe coverage, and the returned
+    ``actionable``/``run_id`` top-level keys let ``live/runner.py`` decide
+    whether to render the ranked picks at all or label them NOT ACTIONABLE.
+    ``as_of_date``/``artifact_meta``/``n_expected_universe`` are keyword-only
+    with permissive defaults so existing positional callers keep working —
+    but omitting them means ``artifact_meta`` is empty (no ``trained_date``)
+    and the verdict is fail-closed UNKNOWN/NOT-actionable, by design.
     """
     import numpy as _np  # noqa: PLC0415
 
@@ -207,7 +380,13 @@ def _compute_shadow_summary(
     top_picks = []
     for t, sc in sorted_shadow[:top_n_picks]:
         rank = shadow_ranks[t]
-        pct = (rank / n_universe * 100.0) if n_universe else float("nan")
+        # shadow_percentile: 100.0 = best (rank 1), approaches 0 as rank
+        # worsens — the conventional "higher percentile = better" reading.
+        # FIXED 2026-07-01 round 2 (Codex CHANGES_REQUESTED): was
+        # `rank / n * 100`, which gave the BEST-ranked name the LOWEST
+        # percentile (rank 1 of 83 -> 1.2), exactly backwards from how
+        # "percentile" is normally read and flagged as misleading.
+        pct = ((n_universe - rank + 1) / n_universe * 100.0) if n_universe else float("nan")
         if shadow_std and shadow_std > 1e-12:
             z = (float(sc) - shadow_mean) / shadow_std
         else:
@@ -230,6 +409,15 @@ def _compute_shadow_summary(
             "in_primary_topN": t in primary_top_n_set,
         })
 
+    admission = _compute_admission(
+        name=name,
+        as_of_date=as_of_date if as_of_date is not None else datetime.date.today(),
+        artifact_meta=artifact_meta or {},
+        n_scored=n_universe,
+        n_expected=n_expected_universe,
+        min_coverage=min_coverage,
+    )
+
     return {
         "name": name, "kind": kind,
         "top3": top3,
@@ -238,6 +426,9 @@ def _compute_shadow_summary(
         "spearman_vs_primary": rho,
         "top_picks": top_picks,
         "top_picks_n": top_n_picks,
+        "admission": admission,
+        "actionable": admission["actionable"],
+        "run_id": admission["run_id"],
     }
 
 
@@ -283,6 +474,13 @@ class ApplyShadowScoringTask(Task):
         primary_kind = panel_cfg.get("kind", "xgb")
         top_n_picks = int(panel_cfg.get("shadow_top_n_picks", _DEFAULT_TOP_N_PICKS) or
                           _DEFAULT_TOP_N_PICKS)
+        # 2026-07-01 round 2: admission-verdict inputs shared by every
+        # shadow model this cycle — see _compute_admission docstring.
+        as_of_date = getattr(ctx, "today", datetime.date.today())
+        n_expected_universe = len(ctx.config.get("watchlist", []) or [])
+        min_coverage = float(
+            panel_cfg.get("shadow_min_coverage", _DEFAULT_MIN_COVERAGE)
+            or _DEFAULT_MIN_COVERAGE)
 
         shadow_log_mlflow = bool(panel_cfg.get("shadow_log_mlflow", True))
         exp_id = None
@@ -337,6 +535,12 @@ class ApplyShadowScoringTask(Task):
                                  name, kind, exc)
                     continue
                 _SCORER_CACHE[cache_key] = scorer
+
+            # 2026-07-01 round 2: scorer.metadata carries trained_date /
+            # effective_train_cutoff_date / artifact_fingerprint, stamped by
+            # panel_scorer.stamp_artifact_metadata at load time for every
+            # registered scorer kind — feeds _compute_admission below.
+            artifact_meta = getattr(scorer, "metadata", {}) or {}
 
             target_tickers = list(primary_scores.keys())
             try:
@@ -397,7 +601,16 @@ class ApplyShadowScoringTask(Task):
                     primary_scores, sorted_primary, primary_ranks,
                     shadow_dict, sorted_shadow, shadow_ranks,
                     top_n_picks,
+                    as_of_date=as_of_date,
+                    artifact_meta=artifact_meta,
+                    n_expected_universe=n_expected_universe,
+                    min_coverage=min_coverage,
                 )
+                if not summary["actionable"]:
+                    log.warning(
+                        "ApplyShadowScoringTask: shadow %s top_picks NOT "
+                        "ACTIONABLE (%s)", name,
+                        "; ".join(summary["admission"]["reasons"]) or "n/a")
                 if not hasattr(ctx, "_shadow_summary"):
                     ctx._shadow_summary = []  # noqa: SLF001
                 ctx._shadow_summary.append(summary)  # noqa: SLF001

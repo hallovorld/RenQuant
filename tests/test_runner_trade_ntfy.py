@@ -619,9 +619,30 @@ class TestFailSafe:
         assert m.call_count == 2
 
 
-def _shadow_summary_entry(name="patchtst_v1", picks=None, **overrides):
+def _shadow_summary_entry(name="patchtst_v1", picks=None, admission=None, **overrides):
     """Build a ctx._shadow_summary entry matching the shape produced by
-    kernel.panel_pipeline.shadow_scoring._compute_shadow_summary."""
+    kernel.panel_pipeline.shadow_scoring._compute_shadow_summary.
+
+    2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426):
+    defaults to an ACTIONABLE admission verdict (fresh artifact, full
+    coverage) so the pre-existing rendering tests below keep exercising the
+    actionable path unchanged. TestShadowPicksAdmissionGate overrides
+    `admission` directly to cover the NOT-ACTIONABLE gate.
+    """
+    default_admission = {
+        "verdict": "healthy",
+        "actionable": True,
+        "trained_date": "2026-06-30",
+        "age_days": 1.0,
+        "artifact_fingerprint": "sha256:testfp1234567890",
+        "n_scored": 83,
+        "n_expected": 83,
+        "coverage": 1.0,
+        "min_coverage": 0.80,
+        "reasons": [],
+        "run_id": f"2026-07-01:{name}:sha256:testfp1",
+    }
+    admission = admission if admission is not None else default_admission
     entry = dict(
         name=name, kind="patchtst",
         top3=["OXY", "OKE", "CVX"],
@@ -629,14 +650,21 @@ def _shadow_summary_entry(name="patchtst_v1", picks=None, **overrides):
         n_candidates=83,
         spearman_vs_primary=0.42,
         top_picks=picks if picks is not None else [
+            # shadow_percentile: 100.0 = best (rank 1) — FIXED direction
+            # 2026-07-01 round 2 (was rank/n*100, best name near 1st
+            # percentile). Not itself rendered in the ntfy body (only
+            # rank + z-score are), kept here for fixture realism.
             {"ticker": "NVDA", "shadow_score": 0.05, "shadow_rank": 1,
-             "shadow_percentile": 1.2, "shadow_zscore": 2.10,
+             "shadow_percentile": 100.0, "shadow_zscore": 2.10,
              "in_primary_admitted": None, "in_primary_topN": True},
             {"ticker": "OXY", "shadow_score": -0.15, "shadow_rank": 15,
-             "shadow_percentile": 18.1, "shadow_zscore": 0.88,
+             "shadow_percentile": 83.1, "shadow_zscore": 0.88,
              "in_primary_admitted": None, "in_primary_topN": False},
         ],
         top_picks_n=5,
+        admission=admission,
+        actionable=admission.get("actionable"),
+        run_id=admission.get("run_id"),
     )
     entry.update(overrides)
     return entry
@@ -750,6 +778,120 @@ class TestShadowTopPicksNtfy:
         body = m.call_args[0][0].data.decode()
         assert "SHADOW[patchtst_v1]" in body
         assert "SHADOW-PICKS[patchtst_v1]" not in body
+
+
+class TestShadowPicksAdmissionGate:
+    """2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426): a
+    raw shadow rank must never be presented as an actionable pick when the
+    artifact is stale or the scored universe is a censored subset. Covers
+    the two REAL known examples cited in the review: PatchTST confirmed
+    ~140 days stale, and an 83/292 (~28%) censored universe.
+    """
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def _breach_admission(self, **overrides):
+        admission = dict(
+            verdict="breach", actionable=False,
+            trained_date="2026-02-11", age_days=140.0,
+            artifact_fingerprint="sha256:staleabc1234",
+            n_scored=83, n_expected=83, coverage=1.0, min_coverage=0.80,
+            reasons=["artifact 140d stale (breach>=35d)"],
+            run_id="2026-07-01:patchtst_v1:sha256:staleab",
+        )
+        admission.update(overrides)
+        return admission
+
+    def test_stale_artifact_picks_are_not_actionable(self):
+        """Real known example: PatchTST confirmed ~140 days stale — must
+        NOT present the ranked ticker breakdown as if it were current."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=self._breach_admission())
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
+        assert "140d stale" in body
+        assert "verdict=breach" in body
+        assert "NVDA(rank 1/83" not in body
+        assert "OXY(rank 15/83" not in body
+
+    def test_incomplete_coverage_picks_are_not_actionable(self):
+        """Real known example: rank 1 of an 83-name censored subset is not
+        comparable to rank 1 of the intended ~292-name watchlist."""
+        notify = self._import()
+        admission = self._breach_admission(
+            verdict="healthy", actionable=False,
+            n_scored=83, n_expected=292, coverage=83 / 292,
+            reasons=["coverage 83/292 (28%) < 80%"],
+        )
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=admission)
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
+        assert "83/292" in body
+        assert "NVDA(rank 1/83" not in body
+
+    def test_missing_admission_field_defaults_to_not_actionable(self):
+        """Fail-closed: a summary with no `admission` key at all (e.g. a
+        cached ctx from before this fix landed) must not be silently
+        treated as actionable."""
+        notify = self._import()
+        entry = _shadow_summary_entry()
+        del entry["admission"]
+        del entry["actionable"]
+        del entry["run_id"]
+        ctx = _stub_ctx(_shadow_summary=[entry])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
+        assert "no admission verdict computed" in body
+        assert "NVDA(rank 1/83" not in body
+
+    def test_actionable_case_surfaces_verdict_coverage_and_run_id(self):
+        """When actionable, the picks line binds the ranks to provenance —
+        verdict, scored-vs-expected coverage, and a run id — not just a
+        bare ranked list."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "[healthy cov=83/83 run=" in body
+
+    def test_not_actionable_body_has_no_confidence_or_recommendation_wording(self):
+        import re
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=self._breach_admission())
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert re.search(r"\d+(\.\d+)?%\s*confidence", body) is None
+        assert "confidence=" not in body
+        assert "recommend" not in body.lower()
+
+    def test_legacy_shadow_line_still_renders_when_picks_not_actionable(self):
+        """The pre-existing SHADOW[name] top3/overlap/spearman diagnostic
+        line is unaffected by the admission gate — it never claimed
+        actionability in the first place, so it is not gated."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=self._breach_admission())
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW[patchtst_v1] top3=OXY/OKE/CVX top10∩prim=4/10 ρ=+0.42 n=83" in body
 
 
 class TestNtfyBodyLengthBudget:

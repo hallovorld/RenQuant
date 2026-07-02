@@ -930,25 +930,55 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         # RELATIVE RANK / Z-SCORE ONLY (see shadow_scoring.py) — never a
         # fabricated probability. The trailing bracketed tag makes that
         # explicit in the message text itself, not just in code comments.
+        #
+        # 2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426 —
+        # see doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum): a
+        # raw rank is STILL not actionable if the artifact is stale or the
+        # scored universe is a censored subset (real case: PatchTST observed
+        # ~140d stale; rank 1 of an 83-name subset is not rank 1 of the
+        # intended ~292-name watchlist). shadow_scoring.py now binds every
+        # top_picks list to an `admission` verdict computed from the
+        # artifact's own trained_date + n_scored/n_expected coverage. Fail
+        # closed here too: a summary with no `admission` key at all (e.g. a
+        # stale cached ctx from before this fix) is treated as NOT
+        # actionable, never assumed safe.
         try:
             picks = ss.get("top_picks") or []
             if picks:
-                pick_strs = []
-                for p in picks:
-                    t = p.get("ticker", "?")
-                    r = p.get("shadow_rank", "?")
-                    z = p.get("shadow_zscore", float("nan"))
-                    try:
-                        z_str = f"{float(z):+.2f}" if z == z else "n/a"  # NaN check
-                    except (TypeError, ValueError):
-                        z_str = "n/a"
-                    also_bought = ", ALSO-BOUGHT" if t in admitted_tickers else ""
-                    pick_strs.append(f"{t}(rank {r}/{n_cand}, z={z_str}{also_bought})")
-                parts.append(
-                    f"SHADOW-PICKS[{ss.get('name', '?')}]: "
-                    + " ".join(pick_strs)
-                    + " [relative rank, not a validated confidence score]"
-                )
+                admission = ss.get("admission") or {}
+                pick_actionable = bool(ss.get("admission")) and bool(admission.get("actionable"))
+                verdict = admission.get("verdict", "unknown")
+                run_id = admission.get("run_id", "?")
+                if not pick_actionable:
+                    if ss.get("admission"):
+                        reasons = "; ".join(admission.get("reasons") or []) or "admission check failed"
+                    else:
+                        reasons = "no admission verdict computed"
+                    parts.append(
+                        f"SHADOW-PICKS[{ss.get('name', '?')}]: NOT ACTIONABLE "
+                        f"({reasons}) [verdict={verdict} run={run_id}]"
+                    )
+                else:
+                    n_scored = admission.get("n_scored", n_cand)
+                    n_expected = admission.get("n_expected")
+                    cov_str = f"{n_scored}/{n_expected}" if n_expected else f"{n_scored}/?"
+                    pick_strs = []
+                    for p in picks:
+                        t = p.get("ticker", "?")
+                        r = p.get("shadow_rank", "?")
+                        z = p.get("shadow_zscore", float("nan"))
+                        try:
+                            z_str = f"{float(z):+.2f}" if z == z else "n/a"  # NaN check
+                        except (TypeError, ValueError):
+                            z_str = "n/a"
+                        also_bought = ", ALSO-BOUGHT" if t in admitted_tickers else ""
+                        pick_strs.append(f"{t}(rank {r}/{n_cand}, z={z_str}{also_bought})")
+                    parts.append(
+                        f"SHADOW-PICKS[{ss.get('name', '?')}]: "
+                        f"[{verdict} cov={cov_str} run={run_id}] "
+                        + " ".join(pick_strs)
+                        + " [relative rank, not a validated confidence score]"
+                    )
         except Exception as exc:
             log.warning("ntfy shadow-picks segment failed: %s", exc)
 

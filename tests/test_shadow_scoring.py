@@ -11,6 +11,7 @@ Verifies:
   5. Source-level invariants (no order-placement calls)
 """
 from __future__ import annotations
+import datetime as _dt
 import sys
 from pathlib import Path
 
@@ -152,21 +153,45 @@ class TestComputeShadowSummaryTopPicks:
         "F": 0.03, "G": -0.10, "H": 0.00, "I": -0.05, "J": 0.10,
     }
 
+    # 2026-07-01 round 2 (Codex CHANGES_REQUESTED — admission gate): unless
+    # a test explicitly overrides them, _call feeds a FRESH artifact + FULL
+    # coverage so the pre-existing rank/percentile/z-score assertions below
+    # (unrelated to the admission gate) keep exercising an actionable path.
+    # TestComputeAdmission / TestComputeShadowSummaryAdmissionIntegration
+    # below cover the NOT-actionable paths explicitly.
+    DEFAULT_AS_OF_DATE = _dt.date(2026, 7, 1)
+    DEFAULT_ARTIFACT_META = {
+        "trained_date": "2026-06-30",
+        "artifact_fingerprint": "sha256:testfp1234567890",
+    }
+
     def _sorted_and_ranks(self, scores):
         sorted_scores = sorted(scores.items(), key=lambda x: -x[1])
         ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_scores)}
         return sorted_scores, ranks
 
-    def _call(self, shadow_mod, top_n_picks=5, primary=None, shadow=None):
+    def _call(self, shadow_mod, top_n_picks=5, primary=None, shadow=None,
+              as_of_date=None, artifact_meta=None, n_expected_universe=None,
+              min_coverage=None):
         primary = primary if primary is not None else self.PRIMARY
         shadow = shadow if shadow is not None else self.SHADOW
         sorted_primary, primary_ranks = self._sorted_and_ranks(primary)
         sorted_shadow, shadow_ranks = self._sorted_and_ranks(shadow)
+        kwargs = dict(
+            as_of_date=as_of_date if as_of_date is not None else self.DEFAULT_AS_OF_DATE,
+            artifact_meta=(artifact_meta if artifact_meta is not None
+                            else dict(self.DEFAULT_ARTIFACT_META)),
+            n_expected_universe=(n_expected_universe if n_expected_universe is not None
+                                   else len(shadow)),
+        )
+        if min_coverage is not None:
+            kwargs["min_coverage"] = min_coverage
         return shadow_mod._compute_shadow_summary(
             "patchtst_v1", "patchtst",
             primary, sorted_primary, primary_ranks,
             shadow, sorted_shadow, shadow_ranks,
             top_n_picks,
+            **kwargs,
         )
 
     def test_top_picks_length_respects_top_n(self, shadow_mod):
@@ -188,11 +213,24 @@ class TestComputeShadowSummaryTopPicks:
         assert ranks == [1, 2, 3, 4, 5]
 
     def test_percentile_hand_verified(self, shadow_mod):
-        """rank / n_universe * 100, n_universe=10 → clean round numbers."""
+        """(n_universe - rank + 1) / n_universe * 100, n_universe=10 → clean
+        round numbers. FIXED 2026-07-01 round 2 (Codex CHANGES_REQUESTED):
+        higher percentile = better rank, the conventional reading — was
+        inverted (rank / n * 100, best name near the 1st percentile)."""
         summary = self._call(shadow_mod)
-        expected_pct = {"A": 10.0, "B": 20.0, "C": 30.0, "D": 40.0, "E": 50.0}
+        expected_pct = {"A": 100.0, "B": 90.0, "C": 80.0, "D": 70.0, "E": 60.0}
         for p in summary["top_picks"]:
             assert p["shadow_percentile"] == expected_pct[p["ticker"]]
+
+    def test_percentile_direction_best_rank_is_highest_percentile(self, shadow_mod):
+        """Explicit direction check (not just round-number values): rank 1
+        (best) must have a STRICTLY HIGHER percentile than rank 5 (worse)."""
+        summary = self._call(shadow_mod)
+        by_rank = {p["shadow_rank"]: p["shadow_percentile"] for p in summary["top_picks"]}
+        assert by_rank[1] > by_rank[2] > by_rank[3] > by_rank[4] > by_rank[5]
+        # Best-ranked name in a 10-name universe should read as the 100th
+        # percentile, not the 10th/1st.
+        assert by_rank[1] == 100.0
 
     def test_zscore_hand_verified(self, shadow_mod):
         """(score - mean) / std over the FULL 10-ticker shadow universe.
@@ -259,6 +297,210 @@ class TestComputeShadowSummaryTopPicks:
             assert z != z, "expected NaN for zero-variance universe"  # NaN check
 
 
+class TestFreshnessTier:
+    """2026-07-01 round 2 (Codex CHANGES_REQUESTED): bucket artifact age into
+    healthy/warn/escalate/breach/unknown — mirrors the tier VOCABULARY of
+    renquant-orchestrator's model_freshness_monitor.py (separate repo, not
+    imported) so an operator reading both alert streams sees the same words.
+    """
+
+    def test_healthy_below_warn_threshold(self, shadow_mod):
+        assert shadow_mod._freshness_tier(0) == "healthy"
+        assert shadow_mod._freshness_tier(27) == "healthy"
+
+    def test_warn_band(self, shadow_mod):
+        assert shadow_mod._freshness_tier(28) == "warn"
+        assert shadow_mod._freshness_tier(32) == "warn"
+
+    def test_escalate_band(self, shadow_mod):
+        assert shadow_mod._freshness_tier(33) == "escalate"
+        assert shadow_mod._freshness_tier(34) == "escalate"
+
+    def test_breach_band(self, shadow_mod):
+        assert shadow_mod._freshness_tier(35) == "breach"
+        # Real known example from the review: PatchTST confirmed ~140 days
+        # stale in this codebase — must land squarely in breach.
+        assert shadow_mod._freshness_tier(140) == "breach"
+
+    def test_unknown_when_age_missing_or_nan(self, shadow_mod):
+        assert shadow_mod._freshness_tier(None) == "unknown"
+        assert shadow_mod._freshness_tier(float("nan")) == "unknown"
+
+    def test_documented_threshold_constants(self, shadow_mod):
+        assert shadow_mod._FRESHNESS_WARN_DAYS == 28
+        assert shadow_mod._FRESHNESS_ESCALATE_DAYS == 33
+        assert shadow_mod._FRESHNESS_BREACH_DAYS == 35
+
+
+class TestComputeAdmission:
+    """2026-07-01 round 2 (Codex CHANGES_REQUESTED on umbrella PR #426):
+    picks must be bound to an admission verdict (artifact freshness +
+    scored-universe coverage) before they can be actionable. Covers the two
+    REAL known failure modes cited in the review: a ~140d-stale PatchTST
+    artifact, and an 83/292 censored-subset universe.
+    """
+
+    AS_OF = _dt.date(2026, 7, 1)
+
+    def test_healthy_full_coverage_is_actionable(self, shadow_mod):
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={"trained_date": "2026-06-30"},
+            n_scored=83, n_expected=83, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "healthy"
+        assert admission["actionable"] is True
+        assert admission["coverage"] == 1.0
+        assert admission["reasons"] == []
+
+    def test_known_incident_140d_stale_is_breach_not_actionable(self, shadow_mod):
+        trained = (self.AS_OF - _dt.timedelta(days=140)).isoformat()
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={"trained_date": trained},
+            n_scored=83, n_expected=83, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "breach"
+        assert admission["actionable"] is False
+        assert any("stale" in r for r in admission["reasons"])
+
+    def test_escalate_tier_is_not_actionable(self, shadow_mod):
+        trained = (self.AS_OF - _dt.timedelta(days=33)).isoformat()
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF, artifact_meta={"trained_date": trained},
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "escalate"
+        assert admission["actionable"] is False
+
+    def test_missing_trained_date_is_unknown_not_actionable(self, shadow_mod):
+        """Fail-closed: no provenance is never silently treated as fresh."""
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={}, n_scored=83, n_expected=83, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["actionable"] is False
+        assert "trained_date" in admission["reasons"][0]
+
+    def test_low_coverage_blocks_even_when_artifact_is_fresh(self, shadow_mod):
+        """Real known example: an 83/292 (~28%) censored subset is not a
+        comparable "rank 1" even when the artifact itself is fresh."""
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={"trained_date": "2026-06-30"},
+            n_scored=83, n_expected=292, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "healthy"
+        assert admission["actionable"] is False
+        assert admission["coverage"] == pytest.approx(83 / 292, abs=1e-4)
+        assert any("coverage" in r for r in admission["reasons"])
+
+    def test_coverage_fraction_correctly_computed_and_surfaced(self, shadow_mod):
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={"trained_date": "2026-06-30"},
+            n_scored=150, n_expected=300, min_coverage=0.80,
+        )
+        assert admission["n_scored"] == 150
+        assert admission["n_expected"] == 300
+        assert admission["coverage"] == 0.5
+
+    def test_zero_expected_universe_degrades_gracefully_not_a_false_fail(self, shadow_mod):
+        """n_expected<=0 means the watchlist wasn't configured/available —
+        coverage is UNKNOWN (None), not fabricated as 100% or force-failed."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={"trained_date": "2026-06-30"},
+            n_scored=10, n_expected=0, min_coverage=0.80,
+        )
+        assert admission["coverage"] is None
+        assert admission["n_expected"] is None
+        assert admission["actionable"] is True
+
+    def test_run_id_binds_date_name_and_fingerprint(self, shadow_mod):
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={
+                "trained_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:abcdef0123456789",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["run_id"] == "2026-07-01:patchtst_v1:sha256:abcde"
+
+    def test_default_min_coverage_constant(self, shadow_mod):
+        assert shadow_mod._DEFAULT_MIN_COVERAGE == 0.80
+
+
+class TestComputeShadowSummaryAdmissionIntegration:
+    """``_compute_shadow_summary`` must surface the admission verdict inline
+    (``admission``/``actionable``/``run_id`` top-level keys) so callers
+    (``ApplyShadowScoringTask.run`` logging, ``live/runner.py`` ntfy
+    rendering) never need to recompute it."""
+
+    SHADOW = TestComputeShadowSummaryTopPicks.SHADOW
+    PRIMARY = TestComputeShadowSummaryTopPicks.PRIMARY
+
+    def _sorted_and_ranks(self, scores):
+        sorted_scores = sorted(scores.items(), key=lambda x: -x[1])
+        ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_scores)}
+        return sorted_scores, ranks
+
+    def test_actionable_true_when_fresh_and_full_coverage(self, shadow_mod):
+        sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
+        sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
+        summary = shadow_mod._compute_shadow_summary(
+            "patchtst_v1", "patchtst",
+            self.PRIMARY, sorted_primary, primary_ranks,
+            self.SHADOW, sorted_shadow, shadow_ranks, 5,
+            as_of_date=_dt.date(2026, 7, 1),
+            artifact_meta={"trained_date": "2026-06-30"},
+            n_expected_universe=10,
+        )
+        assert summary["actionable"] is True
+        assert summary["admission"]["verdict"] == "healthy"
+        assert summary["run_id"] == summary["admission"]["run_id"]
+        # top_picks are still fully computed even when actionable — the
+        # NOT-ACTIONABLE gate is applied by the ntfy RENDERER
+        # (live/runner.py), not by hiding data in the audit trail here.
+        assert len(summary["top_picks"]) == 5
+
+    def test_actionable_false_when_stale_but_top_picks_still_computed(self, shadow_mod):
+        """The audit trail (ctx._shadow_summary / MLflow) keeps the raw
+        ranks even when not actionable — only the ntfy BODY suppresses
+        them, so the diagnostic data isn't lost, just not presented as a
+        recommendation."""
+        sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
+        sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
+        trained = (_dt.date(2026, 7, 1) - _dt.timedelta(days=140)).isoformat()
+        summary = shadow_mod._compute_shadow_summary(
+            "patchtst_v1", "patchtst",
+            self.PRIMARY, sorted_primary, primary_ranks,
+            self.SHADOW, sorted_shadow, shadow_ranks, 5,
+            as_of_date=_dt.date(2026, 7, 1),
+            artifact_meta={"trained_date": trained},
+            n_expected_universe=10,
+        )
+        assert summary["actionable"] is False
+        assert summary["admission"]["verdict"] == "breach"
+        assert len(summary["top_picks"]) == 5
+
+    def test_omitted_admission_kwargs_default_to_not_actionable(self, shadow_mod):
+        """Fail-closed: a caller that omits as_of_date/artifact_meta (e.g.
+        an old positional-only call site) gets UNKNOWN/not-actionable, never
+        a silently-assumed-fresh pass."""
+        sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
+        sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
+        summary = shadow_mod._compute_shadow_summary(
+            "patchtst_v1", "patchtst",
+            self.PRIMARY, sorted_primary, primary_ranks,
+            self.SHADOW, sorted_shadow, shadow_ranks, 5,
+        )
+        assert summary["actionable"] is False
+        assert summary["admission"]["verdict"] == "unknown"
+
+
 class TestApplyShadowScoringTaskUsesExtractedHelper:
     """Source-level contract: run() must call the extracted pure helper
     (reuse, not a second inline re-implementation) and must wire the
@@ -275,3 +517,15 @@ class TestApplyShadowScoringTaskUsesExtractedHelper:
                / "shadow_scoring.py").read_text()
         assert "shadow_top_n_picks" in src
         assert "_DEFAULT_TOP_N_PICKS" in src
+
+    def test_admission_gate_is_wired(self):
+        """2026-07-01 round 2: run() must feed the admission gate (artifact
+        metadata + expected-universe size), not just the top-N size."""
+        src = (REPO / "backtesting/renquant_104/kernel/panel_pipeline"
+               / "shadow_scoring.py").read_text()
+        assert "def _compute_admission(" in src
+        assert "admission = _compute_admission(" in src
+        assert "artifact_meta=artifact_meta" in src
+        assert "n_expected_universe=n_expected_universe" in src
+        assert "shadow_min_coverage" in src
+        assert "_DEFAULT_MIN_COVERAGE" in src
