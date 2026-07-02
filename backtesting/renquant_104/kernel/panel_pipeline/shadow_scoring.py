@@ -129,6 +129,129 @@ _DATA_CUTOFF_FIELDS = (
     "cutoff_date",
 )
 
+# 2026-07-01 ROUND 4 (Codex CHANGES_REQUESTED on umbrella PR #426 round 4 —
+# see doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum #4): FOUR
+# remaining fail-closed gaps, plus a SCOPE NARROWING that is the main ask of
+# this round.
+#
+# GAP 1 — no ``trained_date`` fallback. A missing/unparseable binding DATA
+# cutoff is UNKNOWN, full stop; ``trained_date`` is DISPLAYED as
+# process-liveness context only and is NEVER used to compute an age or
+# certify actionability (round-3 already preferred a binding cutoff when
+# BOTH were present, but still fell back to ``trained_date`` when only it
+# was present — that fallback reopened the exact stale-data-spoof round-3
+# closed for the "both present" case: a fresh ``trained_date`` over
+# genuinely stale/absent DATA).
+#
+# GAP 2 — ``n_expected<=0`` BLOCKS. An unknown/unresolvable universe
+# denominator (watchlist not configured/available) previously degraded
+# coverage to "unknown, does not block" — this let picks pass with a
+# denominator no one can verify. Now ``n_expected<=0`` fails closed like any
+# other missing-provenance case.
+#
+# GAP 3 — a missing artifact fingerprint BLOCKS. Immutable artifact
+# identity is mandatory for an actionable verdict: a missing fingerprint
+# previously still produced a ``run_id`` keyed on the ``nofingerprint``
+# sentinel and proceeded — now it fails closed instead.
+#
+# GAP 4 — horizon-aware age compensation for ``label_observation_cutoff``.
+# For a fwd-N-session-label model, a causally valid label-observation cutoff
+# is intentionally horizon-lagged (the label needs N sessions forward to be
+# observed, so even a same-day retrain's cutoff sits ~N business days behind
+# the raw data frontier by construction) — comparing that RAW age directly
+# against a short-window freshness threshold marks genuinely fresh artifacts
+# stale. This reuses the horizon-aware age-compensation PATTERN already
+# merged in renquant-orchestrator's model_freshness_monitor.py
+# (``_subtract_business_days`` / ``_expected_lag_calendar_days`` — ported
+# here, not imported: separate Python package/deploy unit): the RAW age is
+# NEVER mutated, only the axis's own EXPECTED lag is computed and used to
+# derive a distinct, separately-persisted "horizon-compensated" age that the
+# freshness tier is judged against. The lag is keyed on the model's OWN
+# stamped horizon (``artifact_meta["lookahead_days"]``, already stamped by
+# ``hf_patchtst_scorer.py``) when present, falling back to the documented
+# PatchTST fwd_60d convention otherwise. A cutoff LATER than ``as_of_date``
+# (look-ahead) is checked against the RAW age BEFORE any compensation and
+# fails closed regardless — compensation only ever excuses an EXPECTED lag,
+# never a genuine future cutoff.
+#
+# SCOPE NARROWING (the main ask of this round): the freshness/coverage
+# thresholds throughout this module are UNVALIDATED OPERATIONAL GUESSES, not
+# empirically-grounded bands — no preregistered shadow evaluation has
+# established minimum coverage/freshness bands on fixed sessions with
+# costs/top-N stability. Per the review: "keep all picks explicitly NOT
+# ACTIONABLE by default... A config flag may enable experimental display,
+# but the safe default cannot authorize discretionary capital from
+# warn-tier/raw-rank output." This converges the feature to the same
+# "Stage-1 operations-only, no execution-quality claim until preregistered
+# validation" discipline already established this session for the
+# renquant105 architecture (observe/collect first, claim actionability only
+# after validated evidence) — the design rationale is the SAME principle,
+# not an arbitrary restriction.
+#
+# So ``actionable`` is now a two-part AND, both computed by
+# ``_compute_admission``:
+#   gates_passed = every fail-closed gate below passes (freshness tier incl.
+#                  GAP 1/4, coverage incl. GAP 2, fingerprint incl. GAP 3) —
+#                  "would be actionable if experimental display were on".
+#   actionable   = gates_passed AND the explicit opt-in
+#                  ``shadow_experimental_actionable_display`` config flag
+#                  (``ranking.panel_scoring.shadow_experimental_actionable_display``
+#                  in strategy_config*.json — mirrors the flat
+#                  ``shadow_*`` key convention this section already uses:
+#                  ``shadow_top_n_picks``, ``shadow_min_coverage``, etc.).
+# The flag can only ever RAISE an already-gates_passed verdict to
+# actionable — ``gates_passed`` is computed byte-for-byte identically
+# whether the flag is set or not, so the flag NEVER bypasses a failed gate.
+_DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY = False
+
+# GAP 4: horizon compensation applies ONLY to this axis (mirrors
+# orchestrator's ``_AXIS_EXPECTED_LAG_BDAYS``, keyed only on
+# ``label_observation_cutoff`` — every other binding-cutoff field has no
+# inherent fwd-label horizon lag).
+_LABEL_OBSERVATION_FIELD = "label_observation_cutoff"
+# Fallback business-day horizon used ONLY when the axis needs compensation
+# (binding field == ``_LABEL_OBSERVATION_FIELD``) but the artifact did not
+# stamp its own ``lookahead_days`` — the documented PatchTST fwd_60d
+# convention (matches orchestrator's ``_LABEL_OBSERVATION_LOOKAHEAD_BDAYS``).
+_DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS = 60
+
+
+def _subtract_business_days(base: datetime.date, n: int) -> datetime.date:
+    """Subtract ``n`` Mon-Fri business days from ``base`` (no holiday
+    calendar — sufficient for a fixed, documented label horizon). Ports
+    orchestrator's ``model_freshness_monitor._subtract_business_days``
+    weekday semantics (not imported: separate Python package)."""
+    current = base
+    remaining = n
+    while remaining > 0:
+        current -= datetime.timedelta(days=1)
+        if current.weekday() < 5:
+            remaining -= 1
+    return current
+
+
+def _expected_lag_calendar_days(
+    binding_field: str | None,
+    lookahead_bdays: object,
+    today: datetime.date,
+) -> float:
+    """Calendar-day width of ``binding_field``'s EXPECTED fwd-label-horizon
+    lag as of ``today`` — 0 for every axis except ``label_observation_cutoff``
+    (GAP 4). ``lookahead_bdays`` is the model's OWN stamped horizon
+    (``artifact_meta["lookahead_days"]``); a missing/unparseable/non-positive
+    value falls back to ``_DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS``. Ports
+    orchestrator's ``_expected_lag_calendar_days`` (not imported)."""
+    if binding_field != _LABEL_OBSERVATION_FIELD:
+        return 0.0
+    try:
+        bdays = int(lookahead_bdays) if lookahead_bdays else 0
+    except (TypeError, ValueError):
+        bdays = 0
+    if bdays <= 0:
+        bdays = _DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS
+    expected_frontier = _subtract_business_days(today, bdays)
+    return float((today - expected_frontier).days)
+
 
 def _parse_iso_date(value: object) -> datetime.date | None:
     if not value:
@@ -273,10 +396,11 @@ def _compute_admission(
     n_scored: int,
     n_expected: int,
     min_coverage: float,
+    experimental_actionable_display: bool = _DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY,
 ) -> dict:
     """Bind today's shadow top-picks to provenance + an actionability
     verdict. See doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum
-    (Codex CHANGES_REQUESTED round 2 on umbrella PR #426).
+    (Codex CHANGES_REQUESTED, rounds 2-4 on umbrella PR #426).
 
     This deliberately does NOT re-check feature-DATA freshness: primary and
     shadow score the SAME ``ctx._panel_matrix`` / ``panel_history``, already
@@ -294,90 +418,154 @@ def _compute_admission(
          "rank 1" here is not comparable to primary's rank 1, or to a
          different day's shadow run, without knowing n_scored/n_expected.
 
-    2026-07-01 ROUND 3 (Codex #426 review point 1 named "trained cutoff"
-    AND "feature-data cutoff" as separate provenance): the age used for the
-    verdict now PREFERS a binding DATA cutoff field (``_DATA_CUTOFF_FIELDS``
-    — e.g. ``effective_train_cutoff_date``, already stamped into
-    ``scorer.metadata`` for HF PatchTST by ``hf_patchtst_scorer.py`` at load
-    time) over ``trained_date``. ``trained_date`` is run time, not a
-    data-freshness axis, and is used ONLY as a last-resort fallback when no
-    binding cutoff field is present — a fresh ``trained_date`` over
-    stale/absent DATA must never certify freshness (this codebase's own
-    2026-06-15 "model stale-by-split-recipe" incident was exactly that bug:
-    a same-day retrain read fresh while trained on a stale val-tail cutoff).
+    ROUND 4 fail-closed gates (see the module-level comment block above
+    ``_DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY`` for the full rationale):
 
-    Fail-closed: no usable binding cutoff AND no parseable ``trained_date``
-    is UNKNOWN and blocks — never treated as fresh.
+      GAP 1 — ``trained_date`` is NEVER used to compute an age or certify
+      freshness, even when no binding DATA cutoff is present. It is
+      returned in ``trained_date`` for DISPLAY (process-liveness) only. A
+      missing/unparseable binding cutoff is UNKNOWN, full stop — no
+      fallback (round-3 still fell back to it when it was the ONLY field
+      present, reopening the stale-data spoof for that case).
+      GAP 2 — ``n_expected<=0`` (unknown/unresolvable universe size) BLOCKS
+      (``coverage_ok=False``), rather than degrading to "unknown, does not
+      block" as round-3 did.
+      GAP 3 — a missing/placeholder artifact fingerprint BLOCKS
+      (``fingerprint_ok=False``) rather than proceeding with the
+      ``"nofingerprint"`` sentinel baked into ``run_id``.
+      GAP 4 — ``label_observation_cutoff`` gets a horizon-aware age
+      compensation (``horizon_compensated_age_days``, distinct from the
+      literal, unadjusted ``age_days``) before it is tiered, so a genuinely
+      fresh fwd-N-session-label retrain does not read born-stale. A
+      look-ahead cutoff (later than ``as_of_date``) is checked against the
+      RAW age BEFORE compensation and fails closed regardless.
+
+    Fail-closed gate outcome is ``gates_passed`` — every gate above passing.
+    The final ``actionable`` is the SCOPE-NARROWED verdict:
+    ``gates_passed AND experimental_actionable_display``. The freshness/
+    coverage thresholds here are unvalidated operational guesses (no
+    preregistered shadow evaluation has run), so the safe DEFAULT
+    (``experimental_actionable_display=False``) is always NOT ACTIONABLE
+    even when every gate passes — the flag is an explicit opt-in that can
+    only ever RAISE an already-``gates_passed`` verdict, never bypass a
+    failed gate.
     """
     today = (as_of_date if isinstance(as_of_date, datetime.date)
               else datetime.date.today())
     trained_date = artifact_meta.get("trained_date")
     binding_cutoff, binding_cutoff_field = _binding_cutoff(artifact_meta)
 
+    # GAP 1: age is derived ONLY from a binding DATA cutoff. No
+    # ``trained_date`` fallback — see docstring.
     age_days: float | None = None
+    horizon_compensated_age_days: float | None = None
+    horizon_lag_days = 0.0
     if binding_cutoff is not None:
         age_days = float((today - binding_cutoff).days)
+
+    if binding_cutoff is None:
+        tier = _FRESHNESS_TIER_UNKNOWN
+    elif age_days < 0:
+        # Look-ahead: judged on the RAW age, BEFORE any horizon
+        # compensation — GAP 4 never excuses a genuine future cutoff.
+        tier = _FRESHNESS_TIER_BREACH
     else:
-        # Fallback ONLY when no binding DATA cutoff field is present — see
-        # docstring above.
-        trained_dt = _parse_iso_date(trained_date)
-        if trained_dt is not None:
-            age_days = float((today - trained_dt).days)
+        # GAP 4: widen the effective age for a fwd-N-session-label axis by
+        # its EXPECTED lag (never mutating ``age_days`` itself — persisted
+        # separately below).
+        horizon_lag_days = _expected_lag_calendar_days(
+            binding_cutoff_field, artifact_meta.get("lookahead_days"), today)
+        horizon_compensated_age_days = max(0.0, age_days - horizon_lag_days)
+        tier = _freshness_tier(horizon_compensated_age_days)
 
-    tier = _freshness_tier(age_days)
+    # GAP 2: n_expected<=0 (unknown/unresolvable universe size) BLOCKS —
+    # coverage cannot be verified, so it must not silently pass.
+    if n_expected is None or n_expected <= 0:
+        coverage = None
+        coverage_ok = False
+    else:
+        coverage = float(n_scored) / n_expected
+        coverage_ok = coverage >= min_coverage
 
-    # n_expected<=0 means "watchlist not configured/available" — degrade
-    # gracefully (coverage unknown, does not block) rather than fabricate
-    # a false 100% or false-fail on missing config plumbing. Distinct from
-    # a real n_expected that gives a real (possibly failing) coverage.
-    coverage = (float(n_scored) / n_expected) if n_expected else None
-    coverage_ok = coverage is None or coverage >= min_coverage
-
-    reasons: list[str] = []
-    cutoff_desc = (
-        f"{binding_cutoff_field}={binding_cutoff.isoformat()}" if binding_cutoff is not None
-        else (f"trained_date={trained_date} (no binding data cutoff field)" if age_days is not None
-              else "no binding data cutoff or trained_date")
-    )
-    if tier == _FRESHNESS_TIER_UNKNOWN:
-        reasons.append(f"freshness=unknown ({cutoff_desc})")
-    elif age_days is not None and age_days < 0:
-        reasons.append(f"look-ahead cutoff {cutoff_desc} is later than as_of_date={today}")
-    elif tier == _FRESHNESS_TIER_BREACH:
-        reasons.append(
-            f"artifact {age_days:.0f}d stale ({cutoff_desc}, breach>={_FRESHNESS_BREACH_DAYS}d)")
-    elif tier == _FRESHNESS_TIER_ESCALATE:
-        reasons.append(
-            f"artifact {age_days:.0f}d stale ({cutoff_desc}, escalate>={_FRESHNESS_ESCALATE_DAYS}d)")
-    if coverage is not None and not coverage_ok:
-        reasons.append(
-            f"coverage {n_scored}/{n_expected} ({coverage:.0%}) < {min_coverage:.0%}")
-
-    # Only healthy/warn tiers are actionable — escalate is one step short of
-    # breach and, per the incident this responds to, presenting it as a
-    # plain pick is exactly the overclaim risk being closed here.
-    fresh_ok = tier in (_FRESHNESS_TIER_HEALTHY, _FRESHNESS_TIER_WARN)
-    actionable = fresh_ok and coverage_ok
-
+    # GAP 3: a missing/placeholder fingerprint BLOCKS — immutable artifact
+    # identity is mandatory for an actionable verdict.
     fingerprint = (
         artifact_meta.get("artifact_fingerprint")
         or artifact_meta.get("artifact_sha256")
         or artifact_meta.get("model_content_fingerprint")
     )
-    fingerprint_short = str(fingerprint)[:12] if fingerprint else "nofingerprint"
+    fingerprint_ok = bool(fingerprint) and bool(str(fingerprint).strip())
+    fingerprint_short = str(fingerprint)[:12] if fingerprint_ok else "nofingerprint"
     run_id = f"{as_of_date}:{name}:{fingerprint_short}"
+
+    reasons: list[str] = []
+    cutoff_desc = (
+        f"{binding_cutoff_field}={binding_cutoff.isoformat()}" if binding_cutoff is not None
+        else (f"trained_date={trained_date} is informational only, not a freshness axis"
+              if trained_date else "no binding data cutoff or trained_date")
+    )
+    if tier == _FRESHNESS_TIER_UNKNOWN:
+        reasons.append(f"freshness=unknown ({cutoff_desc}); binding DATA cutoff "
+                        "missing/unparseable (fail-closed, GAP 1)")
+    elif age_days is not None and age_days < 0:
+        reasons.append(f"look-ahead cutoff {cutoff_desc} is later than as_of_date={today}")
+    elif tier == _FRESHNESS_TIER_BREACH:
+        reasons.append(
+            f"artifact {horizon_compensated_age_days:.0f}d stale (raw {age_days:.0f}d, "
+            f"{cutoff_desc}, breach>={_FRESHNESS_BREACH_DAYS}d)")
+    elif tier == _FRESHNESS_TIER_ESCALATE:
+        reasons.append(
+            f"artifact {horizon_compensated_age_days:.0f}d stale (raw {age_days:.0f}d, "
+            f"{cutoff_desc}, escalate>={_FRESHNESS_ESCALATE_DAYS}d)")
+    if not coverage_ok:
+        if coverage is None:
+            reasons.append(
+                f"n_expected={n_expected} unknown/unresolvable universe size — "
+                "coverage cannot be verified (fail-closed, GAP 2)")
+        else:
+            reasons.append(
+                f"coverage {n_scored}/{n_expected} ({coverage:.0%}) < {min_coverage:.0%}")
+    if not fingerprint_ok:
+        reasons.append(
+            "missing artifact fingerprint — immutable artifact identity required "
+            "(fail-closed, GAP 3)")
+
+    # Only healthy/warn tiers are actionable — escalate is one step short of
+    # breach and, per the incident this responds to, presenting it as a
+    # plain pick is exactly the overclaim risk being closed here.
+    fresh_ok = tier in (_FRESHNESS_TIER_HEALTHY, _FRESHNESS_TIER_WARN)
+    gates_passed = fresh_ok and coverage_ok and fingerprint_ok
+
+    # SCOPE NARROWING (round 4 main ask): default NOT ACTIONABLE regardless
+    # of gates_passed, unless the explicit opt-in flag is set. The flag
+    # never bypasses a gate — it only lets an already-gates_passed verdict
+    # render as actionable.
+    actionable = gates_passed and experimental_actionable_display
+    if gates_passed and not experimental_actionable_display:
+        reasons.append(
+            "NOT ACTIONABLE by default pending a preregistered shadow "
+            "evaluation of these freshness/coverage thresholds (Stage-1 "
+            "observability-only, matching the renquant105 discipline); set "
+            "ranking.panel_scoring.shadow_experimental_actionable_display="
+            "true to opt in once gates pass")
 
     return {
         "verdict": tier,
+        "gates_passed": gates_passed,
         "actionable": actionable,
+        "experimental_actionable_display": experimental_actionable_display,
         "trained_date": trained_date,
         "binding_cutoff": binding_cutoff.isoformat() if binding_cutoff is not None else None,
         "binding_cutoff_field": binding_cutoff_field,
         "age_days": age_days,
-        "artifact_fingerprint": fingerprint,
+        "horizon_compensated_age_days": horizon_compensated_age_days,
+        "horizon_lag_days": horizon_lag_days,
+        "artifact_fingerprint": fingerprint if fingerprint_ok else None,
+        "fingerprint_ok": fingerprint_ok,
         "n_scored": n_scored,
-        "n_expected": n_expected if n_expected else None,
+        "n_expected": n_expected if (n_expected is not None and n_expected > 0) else None,
         "coverage": round(coverage, 4) if coverage is not None else None,
+        "coverage_ok": coverage_ok,
         "min_coverage": min_coverage,
         "reasons": reasons,
         "run_id": run_id,
@@ -399,6 +587,7 @@ def _compute_shadow_summary(
     artifact_meta: dict | None = None,
     n_expected_universe: int = 0,
     min_coverage: float = _DEFAULT_MIN_COVERAGE,
+    experimental_actionable_display: bool = _DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY,
 ) -> dict:
     """Build the compact per-shadow-model ntfy/audit summary dict.
 
@@ -436,6 +625,11 @@ def _compute_shadow_summary(
     with permissive defaults so existing positional callers keep working —
     but omitting them means ``artifact_meta`` is empty (no ``trained_date``)
     and the verdict is fail-closed UNKNOWN/NOT-actionable, by design.
+
+    2026-07-01 ROUND 4: ``experimental_actionable_display`` is threaded
+    straight through to ``_compute_admission`` (see its docstring for the
+    scope-narrowing default) — omitting it keeps the safe default (always
+    NOT ACTIONABLE, even when every other gate passes).
     """
     import numpy as _np  # noqa: PLC0415
 
@@ -497,6 +691,7 @@ def _compute_shadow_summary(
         n_scored=n_universe,
         n_expected=n_expected_universe,
         min_coverage=min_coverage,
+        experimental_actionable_display=experimental_actionable_display,
     )
 
     return {
@@ -509,6 +704,7 @@ def _compute_shadow_summary(
         "top_picks_n": top_n_picks,
         "admission": admission,
         "actionable": admission["actionable"],
+        "gates_passed": admission["gates_passed"],
         "run_id": admission["run_id"],
     }
 
@@ -562,6 +758,14 @@ class ApplyShadowScoringTask(Task):
         min_coverage = float(
             panel_cfg.get("shadow_min_coverage", _DEFAULT_MIN_COVERAGE)
             or _DEFAULT_MIN_COVERAGE)
+        # 2026-07-01 ROUND 4: explicit opt-in to render gates_passed picks
+        # as actionable — see the module-level comment block above
+        # _DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY. Default False: picks
+        # always render NOT ACTIONABLE until a preregistered shadow
+        # evaluation validates these thresholds.
+        experimental_actionable_display = bool(
+            panel_cfg.get("shadow_experimental_actionable_display",
+                          _DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY))
 
         shadow_log_mlflow = bool(panel_cfg.get("shadow_log_mlflow", True))
         exp_id = None
@@ -686,6 +890,7 @@ class ApplyShadowScoringTask(Task):
                     artifact_meta=artifact_meta,
                     n_expected_universe=n_expected_universe,
                     min_coverage=min_coverage,
+                    experimental_actionable_display=experimental_actionable_display,
                 )
                 if not summary["actionable"]:
                     log.warning(

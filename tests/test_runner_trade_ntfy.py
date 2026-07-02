@@ -791,10 +791,24 @@ class TestShadowTopPicksNtfy:
 
 class TestShadowPicksAdmissionGate:
     """2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426): a
-    raw shadow rank must never be presented as an actionable pick when the
+    raw shadow rank must never be presented as an ACTIONABLE pick when the
     artifact is stale or the scored universe is a censored subset. Covers
     the two REAL known examples cited in the review: PatchTST confirmed
     ~140 days stale, and an 83/292 (~28%) censored universe.
+
+    2026-07-01 ROUND 4 (Codex CHANGES_REQUESTED — scope narrowing, see
+    doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum #4): the
+    diagnostic rank/z-score list is now ALWAYS rendered, even in the NOT
+    ACTIONABLE branch (previously fully suppressed). shadow_scoring.py's
+    ``_compute_admission`` now defaults ``actionable`` to False regardless
+    of the computed verdict (see tests/test_shadow_scoring.py
+    ``TestComputeAdmission``/``TestComputeShadowSummaryAdmissionIntegration``
+    for that gate itself) — since every cycle now renders NOT ACTIONABLE by
+    default, fully suppressing the list here would make the entire feature
+    permanently dark, defeating the PR's original observability-only
+    intent. The gate is
+    STILL enforced: the ranks are labeled diagnostic-only, never presented
+    as an actionable pick.
     """
 
     def _import(self):
@@ -803,7 +817,7 @@ class TestShadowPicksAdmissionGate:
 
     def _breach_admission(self, **overrides):
         admission = dict(
-            verdict="breach", actionable=False,
+            verdict="breach", actionable=False, gates_passed=False,
             trained_date="2026-02-11", age_days=140.0,
             artifact_fingerprint="sha256:staleabc1234",
             n_scored=83, n_expected=83, coverage=1.0, min_coverage=0.80,
@@ -813,9 +827,11 @@ class TestShadowPicksAdmissionGate:
         admission.update(overrides)
         return admission
 
-    def test_stale_artifact_picks_are_not_actionable(self):
-        """Real known example: PatchTST confirmed ~140 days stale — must
-        NOT present the ranked ticker breakdown as if it were current."""
+    def test_stale_artifact_picks_are_not_actionable_but_ranks_still_shown(self):
+        """Real known example: PatchTST confirmed ~140 days stale — the
+        line must be clearly labeled NOT ACTIONABLE, but (round 4) the raw
+        diagnostic rank/z-score breakdown is still shown for observability,
+        never presented as a pick."""
         notify = self._import()
         ctx = _stub_ctx(_shadow_summary=[
             _shadow_summary_entry(admission=self._breach_admission())
@@ -826,15 +842,17 @@ class TestShadowPicksAdmissionGate:
         assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
         assert "140d stale" in body
         assert "verdict=breach" in body
-        assert "NVDA(rank 1/83" not in body
-        assert "OXY(rank 15/83" not in body
+        assert "NVDA(rank 1/83" in body
+        assert "OXY(rank 15/83" in body
+        assert "[diagnostic rank only, not actionable]" in body
 
-    def test_incomplete_coverage_picks_are_not_actionable(self):
+    def test_incomplete_coverage_picks_are_not_actionable_but_ranks_still_shown(self):
         """Real known example: rank 1 of an 83-name censored subset is not
-        comparable to rank 1 of the intended ~292-name watchlist."""
+        comparable to rank 1 of the intended ~292-name watchlist — still
+        NOT ACTIONABLE, but (round 4) diagnostics remain visible."""
         notify = self._import()
         admission = self._breach_admission(
-            verdict="healthy", actionable=False,
+            verdict="healthy", actionable=False, gates_passed=False,
             n_scored=83, n_expected=292, coverage=83 / 292,
             reasons=["coverage 83/292 (28%) < 80%"],
         )
@@ -846,12 +864,13 @@ class TestShadowPicksAdmissionGate:
         body = m.call_args[0][0].data.decode()
         assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
         assert "83/292" in body
-        assert "NVDA(rank 1/83" not in body
+        assert "NVDA(rank 1/83" in body
 
-    def test_missing_admission_field_defaults_to_not_actionable(self):
+    def test_missing_admission_field_defaults_to_not_actionable_but_ranks_still_shown(self):
         """Fail-closed: a summary with no `admission` key at all (e.g. a
         cached ctx from before this fix landed) must not be silently
-        treated as actionable."""
+        treated as actionable — but (round 4) the raw top_picks data that
+        IS present still renders as diagnostic-only."""
         notify = self._import()
         entry = _shadow_summary_entry()
         del entry["admission"]
@@ -863,7 +882,7 @@ class TestShadowPicksAdmissionGate:
         body = m.call_args[0][0].data.decode()
         assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
         assert "no admission verdict computed" in body
-        assert "NVDA(rank 1/83" not in body
+        assert "NVDA(rank 1/83" in body
 
     def test_actionable_case_surfaces_verdict_coverage_and_run_id(self):
         """When actionable, the picks line binds the ranks to provenance —

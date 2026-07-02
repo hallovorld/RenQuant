@@ -947,6 +947,23 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         # framing is exactly what round 2/3 walked back. This is a RAW
         # RANK, gated on freshness/coverage; the trailing bracketed tag
         # below says so without using either word.
+        #
+        # 2026-07-01 ROUND 4 (Codex CHANGES_REQUESTED — scope narrowing,
+        # see doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum
+        # #4): shadow_scoring.py's ``_compute_admission`` now defaults
+        # ``actionable`` to False regardless of the computed freshness/
+        # coverage verdict (the thresholds are unvalidated operational
+        # guesses pending a preregistered shadow evaluation), only flipping
+        # to True behind an explicit opt-in config flag. Rendering here
+        # trusts whatever ``admission["actionable"]`` says — this module
+        # never recomputes the gate. BUT the diagnostic rank/z-score list
+        # itself is now ALWAYS rendered (previously suppressed entirely in
+        # the NOT ACTIONABLE branch): the PR's original intent was
+        # observability ("want to know what shadow will do"), and with
+        # ``actionable`` False by default for every cycle, fully
+        # suppressing the list would make the whole feature permanently
+        # dark. NOT ACTIONABLE still gets its own clearly-labeled line —
+        # the ranks are diagnostic-only, never presented as a pick.
         try:
             picks = ss.get("top_picks") or []
             if picks:
@@ -954,6 +971,20 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
                 pick_actionable = bool(ss.get("admission")) and bool(admission.get("actionable"))
                 verdict = admission.get("verdict", "unknown")
                 run_id = admission.get("run_id", "?")
+                n_scored = admission.get("n_scored", n_cand)
+                n_expected = admission.get("n_expected")
+                cov_str = f"{n_scored}/{n_expected}" if n_expected else f"{n_scored}/?"
+                pick_strs = []
+                for p in picks:
+                    t = p.get("ticker", "?")
+                    r = p.get("shadow_rank", "?")
+                    z = p.get("shadow_zscore", float("nan"))
+                    try:
+                        z_str = f"{float(z):+.2f}" if z == z else "n/a"  # NaN check
+                    except (TypeError, ValueError):
+                        z_str = "n/a"
+                    also_bought = ", ALSO-BOUGHT" if t in admitted_tickers else ""
+                    pick_strs.append(f"{t}(rank {r}/{n_cand}, z={z_str}{also_bought})")
                 if not pick_actionable:
                     if ss.get("admission"):
                         reasons = "; ".join(admission.get("reasons") or []) or "admission check failed"
@@ -961,23 +992,11 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
                         reasons = "no admission verdict computed"
                     parts.append(
                         f"SHADOW-PICKS[{ss.get('name', '?')}]: NOT ACTIONABLE "
-                        f"({reasons}) [verdict={verdict} run={run_id}]"
+                        f"({reasons}) [verdict={verdict} cov={cov_str} run={run_id}] "
+                        + " ".join(pick_strs)
+                        + " [diagnostic rank only, not actionable]"
                     )
                 else:
-                    n_scored = admission.get("n_scored", n_cand)
-                    n_expected = admission.get("n_expected")
-                    cov_str = f"{n_scored}/{n_expected}" if n_expected else f"{n_scored}/?"
-                    pick_strs = []
-                    for p in picks:
-                        t = p.get("ticker", "?")
-                        r = p.get("shadow_rank", "?")
-                        z = p.get("shadow_zscore", float("nan"))
-                        try:
-                            z_str = f"{float(z):+.2f}" if z == z else "n/a"  # NaN check
-                        except (TypeError, ValueError):
-                            z_str = "n/a"
-                        also_bought = ", ALSO-BOUGHT" if t in admitted_tickers else ""
-                        pick_strs.append(f"{t}(rank {r}/{n_cand}, z={z_str}{also_bought})")
                     parts.append(
                         f"SHADOW-PICKS[{ss.get('name', '?')}]: "
                         f"[{verdict} cov={cov_str} run={run_id}] "

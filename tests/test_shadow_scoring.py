@@ -338,39 +338,85 @@ class TestComputeAdmission:
     scored-universe coverage) before they can be actionable. Covers the two
     REAL known failure modes cited in the review: a ~140d-stale PatchTST
     artifact, and an 83/292 censored-subset universe.
+
+    2026-07-01 ROUND 4 (Codex CHANGES_REQUESTED — 4 fail-closed gaps + scope
+    narrowing, see doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum
+    #4): fixtures below use a binding DATA cutoff field (GAP 1 — trained_date
+    alone is never sufficient) and an artifact fingerprint (GAP 3), and pass
+    ``experimental_actionable_display=True`` explicitly whenever a test wants
+    to reach the "actionable" outcome — see
+    TestExperimentalActionableDisplayScopeNarrowing for the default-off
+    behavior itself.
     """
 
     AS_OF = _dt.date(2026, 7, 1)
+    FRESH_CUTOFF = (AS_OF - _dt.timedelta(days=1)).isoformat()
+    FINGERPRINT = "sha256:testfp1234567890"
 
-    def test_healthy_full_coverage_is_actionable(self, shadow_mod):
+    def test_healthy_full_coverage_with_flag_is_actionable(self, shadow_mod):
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={"trained_date": "2026-06-30"},
+            artifact_meta={
+                "effective_train_cutoff_date": self.FRESH_CUTOFF,
+                "artifact_fingerprint": self.FINGERPRINT,
+            },
             n_scored=83, n_expected=83, min_coverage=0.80,
+            experimental_actionable_display=True,
         )
         assert admission["verdict"] == "healthy"
+        assert admission["gates_passed"] is True
         assert admission["actionable"] is True
         assert admission["coverage"] == 1.0
         assert admission["reasons"] == []
 
-    def test_known_incident_140d_stale_is_breach_not_actionable(self, shadow_mod):
-        trained = (self.AS_OF - _dt.timedelta(days=140)).isoformat()
+    def test_healthy_full_coverage_without_flag_is_not_actionable_by_default(self, shadow_mod):
+        """SCOPE NARROWING (round 4 main ask): even when every gate passes,
+        the safe default (flag unset) is NOT ACTIONABLE — thresholds are
+        unvalidated operational guesses pending a preregistered shadow
+        evaluation."""
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={"trained_date": trained},
+            artifact_meta={
+                "effective_train_cutoff_date": self.FRESH_CUTOFF,
+                "artifact_fingerprint": self.FINGERPRINT,
+            },
             n_scored=83, n_expected=83, min_coverage=0.80,
         )
+        assert admission["verdict"] == "healthy"
+        assert admission["gates_passed"] is True
+        assert admission["actionable"] is False
+        assert admission["experimental_actionable_display"] is False
+        assert any("NOT ACTIONABLE by default" in r for r in admission["reasons"])
+
+    def test_known_incident_140d_stale_is_breach_not_actionable_even_with_flag(self, shadow_mod):
+        cutoff = (self.AS_OF - _dt.timedelta(days=140)).isoformat()
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": cutoff,
+                "artifact_fingerprint": self.FINGERPRINT,
+            },
+            n_scored=83, n_expected=83, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
         assert admission["verdict"] == "breach"
+        assert admission["gates_passed"] is False
         assert admission["actionable"] is False
         assert any("stale" in r for r in admission["reasons"])
 
-    def test_escalate_tier_is_not_actionable(self, shadow_mod):
-        trained = (self.AS_OF - _dt.timedelta(days=33)).isoformat()
+    def test_escalate_tier_is_not_actionable_even_with_flag(self, shadow_mod):
+        cutoff = (self.AS_OF - _dt.timedelta(days=33)).isoformat()
         admission = shadow_mod._compute_admission(
-            name="x", as_of_date=self.AS_OF, artifact_meta={"trained_date": trained},
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": cutoff,
+                "artifact_fingerprint": self.FINGERPRINT,
+            },
             n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
         )
         assert admission["verdict"] == "escalate"
+        assert admission["gates_passed"] is False
         assert admission["actionable"] is False
 
     def test_missing_trained_date_is_unknown_not_actionable(self, shadow_mod):
@@ -378,6 +424,7 @@ class TestComputeAdmission:
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
             artifact_meta={}, n_scored=83, n_expected=83, min_coverage=0.80,
+            experimental_actionable_display=True,
         )
         assert admission["verdict"] == "unknown"
         assert admission["actionable"] is False
@@ -388,10 +435,15 @@ class TestComputeAdmission:
         comparable "rank 1" even when the artifact itself is fresh."""
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={"trained_date": "2026-06-30"},
+            artifact_meta={
+                "effective_train_cutoff_date": self.FRESH_CUTOFF,
+                "artifact_fingerprint": self.FINGERPRINT,
+            },
             n_scored=83, n_expected=292, min_coverage=0.80,
+            experimental_actionable_display=True,
         )
         assert admission["verdict"] == "healthy"
+        assert admission["gates_passed"] is False
         assert admission["actionable"] is False
         assert admission["coverage"] == pytest.approx(83 / 292, abs=1e-4)
         assert any("coverage" in r for r in admission["reasons"])
@@ -406,17 +458,56 @@ class TestComputeAdmission:
         assert admission["n_expected"] == 300
         assert admission["coverage"] == 0.5
 
-    def test_zero_expected_universe_degrades_gracefully_not_a_false_fail(self, shadow_mod):
-        """n_expected<=0 means the watchlist wasn't configured/available —
-        coverage is UNKNOWN (None), not fabricated as 100% or force-failed."""
+    def test_zero_expected_universe_blocks_not_actionable(self, shadow_mod):
+        """ROUND 4 GAP 2 fix: n_expected<=0 means the universe denominator
+        is unknown/unresolvable — this must BLOCK picks (fail closed), not
+        degrade gracefully to "unknown, does not block" as before."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={"trained_date": "2026-06-30"},
+            artifact_meta={
+                "effective_train_cutoff_date": self.FRESH_CUTOFF,
+                "artifact_fingerprint": self.FINGERPRINT,
+            },
             n_scored=10, n_expected=0, min_coverage=0.80,
+            experimental_actionable_display=True,
         )
         assert admission["coverage"] is None
         assert admission["n_expected"] is None
-        assert admission["actionable"] is True
+        assert admission["coverage_ok"] is False
+        assert admission["gates_passed"] is False
+        assert admission["actionable"] is False
+        assert any("n_expected" in r for r in admission["reasons"])
+
+    def test_negative_expected_universe_blocks_not_actionable(self, shadow_mod):
+        """Same GAP 2 fix, a negative n_expected (also <=0) must block."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": self.FRESH_CUTOFF,
+                "artifact_fingerprint": self.FINGERPRINT,
+            },
+            n_scored=10, n_expected=-5, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["coverage"] is None
+        assert admission["coverage_ok"] is False
+        assert admission["actionable"] is False
+
+    def test_missing_fingerprint_blocks_even_when_flag_enabled(self, shadow_mod):
+        """ROUND 4 GAP 3 fix: a missing artifact fingerprint must block,
+        never proceed with the "nofingerprint" sentinel."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={"effective_train_cutoff_date": self.FRESH_CUTOFF},
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["fingerprint_ok"] is False
+        assert admission["artifact_fingerprint"] is None
+        assert admission["gates_passed"] is False
+        assert admission["actionable"] is False
+        assert any("fingerprint" in r for r in admission["reasons"])
+        assert admission["run_id"].endswith(":nofingerprint")
 
     def test_run_id_binds_date_name_and_fingerprint(self, shadow_mod):
         admission = shadow_mod._compute_admission(
@@ -431,6 +522,9 @@ class TestComputeAdmission:
 
     def test_default_min_coverage_constant(self, shadow_mod):
         assert shadow_mod._DEFAULT_MIN_COVERAGE == 0.80
+
+    def test_default_experimental_actionable_display_constant(self, shadow_mod):
+        assert shadow_mod._DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY is False
 
 
 class TestComputeAdmissionBindingDataCutoff:
@@ -482,18 +576,31 @@ class TestComputeAdmissionBindingDataCutoff:
         assert admission["binding_cutoff"] == "2026-06-29"
         assert admission["verdict"] == "healthy"
 
-    def test_trained_date_fallback_only_when_no_binding_cutoff_present(self, shadow_mod):
+    def test_no_binding_cutoff_is_unknown_trained_date_never_used_gap1(self, shadow_mod):
+        """ROUND 4 GAP 1 fix: a present ``trained_date`` with NO binding
+        DATA cutoff field is UNKNOWN, full stop — no fallback (round-3
+        still fell back to trained_date here, reopening the stale-data
+        spoof for this exact case: a fresh trained_date over genuinely
+        stale/absent DATA). trained_date is still DISPLAYED (process-
+        liveness context only)."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
             artifact_meta={"trained_date": "2026-06-30"},
             n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
         )
         assert admission["binding_cutoff"] is None
         assert admission["binding_cutoff_field"] is None
-        assert admission["age_days"] == 1.0
-        assert admission["verdict"] == "healthy"
+        assert admission["age_days"] is None
+        assert admission["horizon_compensated_age_days"] is None
+        assert admission["verdict"] == "unknown"
+        assert admission["actionable"] is False
+        assert admission["trained_date"] == "2026-06-30"  # displayed, not certifying
+        assert any("informational only" in r for r in admission["reasons"])
 
-    def test_unparseable_binding_cutoff_field_falls_back_to_trained_date(self, shadow_mod):
+    def test_unparseable_binding_cutoff_field_is_unknown_not_trained_date_fallback(self, shadow_mod):
+        """ROUND 4 GAP 1 fix: an unparseable cutoff field is treated as NO
+        binding cutoff (not silently skipped to trained_date)."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
             artifact_meta={
@@ -501,9 +608,12 @@ class TestComputeAdmissionBindingDataCutoff:
                 "effective_train_cutoff_date": "not-a-date",
             },
             n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
         )
         assert admission["binding_cutoff"] is None
-        assert admission["age_days"] == 1.0
+        assert admission["age_days"] is None
+        assert admission["verdict"] == "unknown"
+        assert admission["actionable"] is False
 
     def test_lookahead_cutoff_fails_closed_to_breach(self, shadow_mod):
         """A cutoff LATER than as_of_date (look-ahead) must never read as a
@@ -529,6 +639,166 @@ class TestComputeAdmissionBindingDataCutoff:
         assert admission["age_days"] is None
 
 
+class TestHorizonCompensation:
+    """2026-07-01 ROUND 4 GAP 4 (Codex CHANGES_REQUESTED on umbrella PR
+    #426): ``label_observation_cutoff`` is intentionally horizon-lagged for
+    a fwd-N-session-label model — comparing its RAW age directly against a
+    short-window freshness threshold marks genuinely fresh artifacts stale.
+    Reuses the horizon-aware age-compensation PATTERN already merged in
+    renquant-orchestrator's model_freshness_monitor.py
+    (``_subtract_business_days`` / ``_expected_lag_calendar_days``) — dates
+    below are independently hand-verified business-day counts (same
+    weekday-skipping semantics, cross-checked against the orchestrator's own
+    pinned 60-BD-from-a-Tuesday example: 84 calendar days).
+    """
+
+    AS_OF = _dt.date(2026, 7, 1)  # Wednesday
+    # 60 business days back from 2026-07-01 == 2026-04-08 (84 calendar days).
+    SIXTY_BD_CUTOFF = "2026-04-08"
+    SIXTY_BD_LAG_DAYS = 84
+    # 20 business days back from 2026-07-01 == 2026-06-03 (28 calendar days).
+    TWENTY_BD_CUTOFF = "2026-06-03"
+    TWENTY_BD_LAG_DAYS = 28
+
+    def test_60d_horizon_freshly_retrained_reads_healthy(self, shadow_mod):
+        """A same-day retrain's label_observation_cutoff sits EXACTLY at the
+        expected 60-BD frontier (84 raw calendar days) — the widened
+        threshold must read this as HEALTHY, not born-BREACH."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": self.SIXTY_BD_CUTOFF,
+                "lookahead_days": 60,
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["age_days"] == self.SIXTY_BD_LAG_DAYS
+        assert admission["horizon_lag_days"] == self.SIXTY_BD_LAG_DAYS
+        assert admission["horizon_compensated_age_days"] == 0.0
+        assert admission["verdict"] == "healthy"
+
+    def test_20d_horizon_freshly_retrained_reads_healthy(self, shadow_mod):
+        """Same pattern with a 20-session label horizon (a shorter-horizon
+        shadow model) — the lag width must scale with the model's OWN
+        stamped ``lookahead_days``, not a hardcoded 60."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": self.TWENTY_BD_CUTOFF,
+                "lookahead_days": 20,
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["age_days"] == self.TWENTY_BD_LAG_DAYS
+        assert admission["horizon_lag_days"] == self.TWENTY_BD_LAG_DAYS
+        assert admission["horizon_compensated_age_days"] == 0.0
+        assert admission["verdict"] == "healthy"
+
+    def test_default_lookahead_used_when_not_stamped(self, shadow_mod):
+        """No ``lookahead_days`` stamped on the artifact -> falls back to
+        the documented PatchTST fwd_60d convention (matches orchestrator's
+        default)."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={"label_observation_cutoff": self.SIXTY_BD_CUTOFF},
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["horizon_lag_days"] == self.SIXTY_BD_LAG_DAYS
+        assert admission["verdict"] == "healthy"
+
+    def test_genuine_staleness_still_breaches_despite_widening(self, shadow_mod):
+        """A globally frozen artifact (label cutoff far older than even the
+        widened ceiling) must still BREACH — compensation accounts for the
+        EXPECTED horizon, it does not launder genuine staleness."""
+        stale_cutoff = (self.AS_OF - _dt.timedelta(days=425)).isoformat()
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": stale_cutoff,
+                "lookahead_days": 60,
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["age_days"] == 425
+        assert admission["horizon_lag_days"] == self.SIXTY_BD_LAG_DAYS
+        assert admission["horizon_compensated_age_days"] == 425 - self.SIXTY_BD_LAG_DAYS
+        assert admission["verdict"] == "breach"
+
+    def test_compensation_scoped_to_label_observation_cutoff_only(self, shadow_mod):
+        """A DIFFERENT binding field (e.g. effective_train_cutoff_date) with
+        the SAME raw age + a stamped lookahead_days must get NO
+        compensation — the lag is keyed on the axis, not just "any cutoff
+        with a lookahead_days present"."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": self.TWENTY_BD_CUTOFF,  # 28d raw
+                "lookahead_days": 20,
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["binding_cutoff_field"] == "effective_train_cutoff_date"
+        assert admission["age_days"] == 28
+        assert admission["horizon_lag_days"] == 0.0
+        assert admission["horizon_compensated_age_days"] == 28.0
+        # 28d >= the 28d shadow WARN ceiling -> warn, NOT healthy (would be
+        # healthy if compensation were wrongly applied here).
+        assert admission["verdict"] == "warn"
+
+    def test_future_cutoff_fails_closed_regardless_of_horizon_compensation(self, shadow_mod):
+        """A look-ahead cutoff must fail closed to breach even on the
+        horizon-compensated axis — compensation only ever excuses an
+        EXPECTED lag, never a genuine future cutoff."""
+        future_cutoff = (self.AS_OF + _dt.timedelta(days=45)).isoformat()
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": future_cutoff,
+                "lookahead_days": 60,
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["age_days"] < 0
+        assert admission["horizon_compensated_age_days"] is None
+        assert admission["verdict"] == "breach"
+        assert admission["actionable"] is False
+        assert any("look-ahead" in r for r in admission["reasons"])
+
+    def test_raw_and_compensated_age_persisted_as_separate_fields(self, shadow_mod):
+        """The literal, unadjusted ``age_days`` and the
+        ``horizon_compensated_age_days`` used for tiering must both be
+        persisted, distinctly — never collapsed into one field."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": self.SIXTY_BD_CUTOFF,
+                "lookahead_days": 60,
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["age_days"] == 84
+        assert admission["horizon_compensated_age_days"] == 0.0
+        assert admission["age_days"] != admission["horizon_compensated_age_days"]
+
+    def test_60d_horizon_actionable_end_to_end_with_flag(self, shadow_mod):
+        """Full pipeline: horizon-compensated fresh artifact + full coverage
+        + fingerprint + explicit opt-in flag -> actionable."""
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": self.SIXTY_BD_CUTOFF,
+                "lookahead_days": 60,
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
+            n_scored=83, n_expected=83, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["verdict"] == "healthy"
+        assert admission["gates_passed"] is True
+        assert admission["actionable"] is True
+
+
 class TestComputeShadowSummaryAdmissionIntegration:
     """``_compute_shadow_summary`` must surface the admission verdict inline
     (``admission``/``actionable``/``run_id`` top-level keys) so callers
@@ -543,7 +813,10 @@ class TestComputeShadowSummaryAdmissionIntegration:
         ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_scores)}
         return sorted_scores, ranks
 
-    def test_actionable_true_when_fresh_and_full_coverage(self, shadow_mod):
+    def test_gates_passed_true_but_not_actionable_by_default(self, shadow_mod):
+        """SCOPE NARROWING (round 4): even a fresh artifact + full coverage
+        + fingerprint gets gates_passed=True but actionable=False when the
+        experimental-display flag is not set (the default)."""
         sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
         sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
         summary = shadow_mod._compute_shadow_summary(
@@ -551,36 +824,104 @@ class TestComputeShadowSummaryAdmissionIntegration:
             self.PRIMARY, sorted_primary, primary_ranks,
             self.SHADOW, sorted_shadow, shadow_ranks, 5,
             as_of_date=_dt.date(2026, 7, 1),
-            artifact_meta={"trained_date": "2026-06-30"},
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
             n_expected_universe=10,
         )
-        assert summary["actionable"] is True
+        assert summary["gates_passed"] is True
+        assert summary["actionable"] is False
         assert summary["admission"]["verdict"] == "healthy"
-        assert summary["run_id"] == summary["admission"]["run_id"]
-        # top_picks are still fully computed even when actionable — the
-        # NOT-ACTIONABLE gate is applied by the ntfy RENDERER
-        # (live/runner.py), not by hiding data in the audit trail here.
+        # top_picks are still fully computed regardless of actionability —
+        # the ntfy RENDERER (live/runner.py) shows them as diagnostic-only,
+        # never hides the audit trail.
         assert len(summary["top_picks"]) == 5
 
-    def test_actionable_false_when_stale_but_top_picks_still_computed(self, shadow_mod):
-        """The audit trail (ctx._shadow_summary / MLflow) keeps the raw
-        ranks even when not actionable — only the ntfy BODY suppresses
-        them, so the diagnostic data isn't lost, just not presented as a
-        recommendation."""
+    def test_actionable_true_when_flag_enabled_and_all_gates_pass(self, shadow_mod):
         sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
         sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
-        trained = (_dt.date(2026, 7, 1) - _dt.timedelta(days=140)).isoformat()
         summary = shadow_mod._compute_shadow_summary(
             "patchtst_v1", "patchtst",
             self.PRIMARY, sorted_primary, primary_ranks,
             self.SHADOW, sorted_shadow, shadow_ranks, 5,
             as_of_date=_dt.date(2026, 7, 1),
-            artifact_meta={"trained_date": trained},
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
             n_expected_universe=10,
+            experimental_actionable_display=True,
+        )
+        assert summary["actionable"] is True
+        assert summary["gates_passed"] is True
+        assert summary["admission"]["verdict"] == "healthy"
+        assert summary["run_id"] == summary["admission"]["run_id"]
+        assert len(summary["top_picks"]) == 5
+
+    def test_actionable_false_when_stale_even_with_flag_but_top_picks_still_computed(self, shadow_mod):
+        """The audit trail (ctx._shadow_summary / MLflow) keeps the raw
+        ranks even when not actionable — only the ntfy BODY marks them
+        diagnostic-only, so the data isn't lost, just not presented as a
+        pick. The flag never bypasses a failed gate."""
+        sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
+        sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
+        cutoff = (_dt.date(2026, 7, 1) - _dt.timedelta(days=140)).isoformat()
+        summary = shadow_mod._compute_shadow_summary(
+            "patchtst_v1", "patchtst",
+            self.PRIMARY, sorted_primary, primary_ranks,
+            self.SHADOW, sorted_shadow, shadow_ranks, 5,
+            as_of_date=_dt.date(2026, 7, 1),
+            artifact_meta={
+                "effective_train_cutoff_date": cutoff,
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
+            n_expected_universe=10,
+            experimental_actionable_display=True,
         )
         assert summary["actionable"] is False
+        assert summary["gates_passed"] is False
         assert summary["admission"]["verdict"] == "breach"
         assert len(summary["top_picks"]) == 5
+
+    def test_actionable_false_when_flag_enabled_but_coverage_gate_fails(self, shadow_mod):
+        """Flag enabled + ONE gate fails (coverage, GAP 2 shape) -> still
+        NOT actionable — the flag never bypasses a gate."""
+        sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
+        sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
+        summary = shadow_mod._compute_shadow_summary(
+            "patchtst_v1", "patchtst",
+            self.PRIMARY, sorted_primary, primary_ranks,
+            self.SHADOW, sorted_shadow, shadow_ranks, 5,
+            as_of_date=_dt.date(2026, 7, 1),
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
+            n_expected_universe=0,  # GAP 2: unresolved universe -> blocks
+            experimental_actionable_display=True,
+        )
+        assert summary["gates_passed"] is False
+        assert summary["actionable"] is False
+        assert summary["admission"]["coverage_ok"] is False
+
+    def test_actionable_false_when_flag_enabled_but_fingerprint_gate_fails(self, shadow_mod):
+        """Flag enabled + ONE gate fails (fingerprint, GAP 3 shape) -> still
+        NOT actionable."""
+        sorted_primary, primary_ranks = self._sorted_and_ranks(self.PRIMARY)
+        sorted_shadow, shadow_ranks = self._sorted_and_ranks(self.SHADOW)
+        summary = shadow_mod._compute_shadow_summary(
+            "patchtst_v1", "patchtst",
+            self.PRIMARY, sorted_primary, primary_ranks,
+            self.SHADOW, sorted_shadow, shadow_ranks, 5,
+            as_of_date=_dt.date(2026, 7, 1),
+            artifact_meta={"effective_train_cutoff_date": "2026-06-30"},  # no fingerprint
+            n_expected_universe=10,
+            experimental_actionable_display=True,
+        )
+        assert summary["gates_passed"] is False
+        assert summary["actionable"] is False
+        assert summary["admission"]["fingerprint_ok"] is False
 
     def test_omitted_admission_kwargs_default_to_not_actionable(self, shadow_mod):
         """Fail-closed: a caller that omits as_of_date/artifact_meta (e.g.
@@ -625,3 +966,14 @@ class TestApplyShadowScoringTaskUsesExtractedHelper:
         assert "n_expected_universe=n_expected_universe" in src
         assert "shadow_min_coverage" in src
         assert "_DEFAULT_MIN_COVERAGE" in src
+
+    def test_experimental_actionable_display_flag_is_wired(self):
+        """2026-07-01 ROUND 4: run() must read the explicit opt-in config
+        flag and thread it through to both the summary + admission gate —
+        the scope-narrowing default must be reachable from
+        strategy_config*.json, not just as a Python kwarg default."""
+        src = (REPO / "backtesting/renquant_104/kernel/panel_pipeline"
+               / "shadow_scoring.py").read_text()
+        assert "shadow_experimental_actionable_display" in src
+        assert "_DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY" in src
+        assert "experimental_actionable_display=experimental_actionable_display" in src

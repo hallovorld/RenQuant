@@ -238,3 +238,123 @@ checkpoint / training contract / legacy sidecar) — that data was already avail
 Still observability-only — same as rounds 1-2. This round only changes WHICH provenance field the
 admission verdict is keyed on (and adds a look-ahead guard); it does not add new gates, new I/O, or
 touch order placement / primary selection.
+
+## Round 4 (Codex CHANGES_REQUESTED — 4 fail-closed gaps + a SCOPE NARROWING)
+
+Round 3 fixed field *precedence* (bind the DATA cutoff over `trained_date` when both are present)
+but left four fail-closed gaps, and — the main ask of this round — established that the
+freshness/coverage thresholds throughout this feature are **unvalidated operational guesses**, not
+empirically-grounded bands. Per the review: "Until a preregistered shadow evaluation establishes
+minimum coverage and freshness bands on fixed sessions with costs/top-N stability, keep all picks
+explicitly NOT ACTIONABLE by default. A config flag may enable experimental display, but the safe
+default cannot authorize discretionary capital from warn-tier/raw-rank output."
+
+### The four fail-closed gaps (all fixed, `shadow_scoring.py::_compute_admission`)
+
+1. **GAP 1 — no more `trained_date` fallback.** Round 3 still fell back to `trained_date` when it
+   was the *only* field present (no binding DATA cutoff at all) — that reopened the exact
+   stale-data spoof round 3 closed for the "both present" case: a fresh `trained_date` over
+   genuinely stale/absent DATA. Now a missing/unparseable binding cutoff is `unknown`, full stop.
+   `trained_date` is still returned in the `trained_date` field for DISPLAY (process-liveness
+   context) only — never used to compute an age or certify actionability.
+2. **GAP 2 — `n_expected<=0` now BLOCKS.** Previously degraded to `coverage=None`/"does not
+   block" (an unknown/unresolvable universe denominator silently passed). Now `coverage_ok=False`
+   and the admission fails closed, surfaced via a `n_expected=... unknown/unresolvable universe
+   size` reason.
+3. **GAP 3 — missing artifact fingerprint now BLOCKS.** Previously produced `run_id` keyed on a
+   `"nofingerprint"` sentinel and proceeded. Immutable artifact identity is mandatory for an
+   actionable verdict now — a missing/placeholder fingerprint fails `fingerprint_ok` and blocks.
+4. **GAP 4 — horizon-aware age compensation for `label_observation_cutoff`.** For a
+   fwd-N-session-label model, a causally valid `label_observation_cutoff` is intentionally
+   horizon-lagged (the label needs N sessions forward to be observed, so even a same-day retrain's
+   cutoff sits ~N business days behind the raw data frontier by construction) — comparing that RAW
+   age directly against the short-window freshness threshold wrongly marked genuinely fresh
+   artifacts stale. Reused the horizon-aware age-compensation PATTERN already merged in
+   `renquant-orchestrator`'s `model_freshness_monitor.py` this same session (`#423`/`#213` round —
+   `_subtract_business_days` / `_expected_lag_calendar_days`, ported here since this module lives
+   in a separate Python package/deploy unit, not imported). The RAW `age_days` is never mutated;
+   a new, separately-persisted `horizon_compensated_age_days` field (plus `horizon_lag_days`) is
+   what the freshness tier is judged against. The lag is keyed on the model's own stamped
+   `artifact_meta["lookahead_days"]` when present, falling back to the documented PatchTST fwd_60d
+   convention otherwise, and is scoped ONLY to the `label_observation_cutoff` binding field (a
+   different binding field with the same stamped `lookahead_days` gets zero compensation — verified
+   by `TestHorizonCompensation::test_compensation_scoped_to_label_observation_cutoff_only`). A
+   look-ahead cutoff (later than `as_of_date`) is checked against the RAW age *before* any
+   compensation and still fails closed regardless of horizon compensation.
+
+### The scope narrowing (main ask)
+
+`_compute_admission` now computes two distinct outcomes:
+- `gates_passed` — every fail-closed gate above passing (freshness tier including GAPs 1/4,
+  coverage including GAP 2, fingerprint including GAP 3). This is "would be actionable if surfaced."
+- `actionable` = `gates_passed AND experimental_actionable_display`. The new opt-in config flag
+  `ranking.panel_scoring.shadow_experimental_actionable_display` (constant
+  `_DEFAULT_EXPERIMENTAL_ACTIONABLE_DISPLAY = False`, read by `ApplyShadowScoringTask.run` and
+  threaded through `_compute_shadow_summary`) defaults OFF. **With the flag unset (the default),
+  `actionable` is always `False` — even when every gate passes** — and the admission `reasons` gain
+  an explicit "NOT ACTIONABLE by default pending a preregistered shadow evaluation..." entry so an
+  operator reading the ntfy body sees *why*. The flag can only ever RAISE an already-`gates_passed`
+  verdict to actionable; it is computed identically regardless of the flag, so it never bypasses a
+  failed gate (`gates_passed` alone already tells you that).
+
+This converges the feature to the same "Stage-1 operations-only, no execution-quality claim until
+preregistered validation" discipline already established this session for the renquant105
+architecture (RFC #212 / orchestrator `model_freshness_monitor.py` design doc): observe/collect
+first, claim actionability only after validated evidence — cited explicitly as the design rationale
+here, not an arbitrary restriction.
+
+**ntfy rendering change** (`live/runner.py`, `_notify_decision`): because `actionable` is now
+`False` for effectively every cycle by default, fully suppressing the ranked ticker breakdown in
+the NOT ACTIONABLE branch (rounds 2-3's behavior) would make the entire feature permanently dark —
+defeating the PR's original observability-only intent ("want to know what shadow will do"). The
+diagnostic rank/z-score list is now **always** rendered, in both branches; only the label and
+trailing tag differ (`NOT ACTIONABLE (<reasons>) [verdict=... cov=... run=...] <picks>
+[diagnostic rank only, not actionable]` vs. the actionable-path `[verdict cov=... run=...] <picks>
+[raw rank (unvalidated, see freshness verdict)]`). The gate is still fully enforced — the ranks are
+labeled diagnostic-only, never presented as a pick, in the default (and by far most common) case.
+
+### Tests
+- `tests/test_shadow_scoring.py`: rewrote `TestComputeAdmission` fixtures to use a binding DATA
+  cutoff + fingerprint (GAP 1/3 fixtures no longer rely on `trained_date` alone) and an explicit
+  `experimental_actionable_display=True` wherever a test needs to reach the actionable outcome;
+  added default-flag-off tests (`test_healthy_full_coverage_without_flag_is_not_actionable_by_default`),
+  GAP 2 tests (`test_zero_expected_universe_blocks_not_actionable`,
+  `test_negative_expected_universe_blocks_not_actionable`), GAP 3 test
+  (`test_missing_fingerprint_blocks_even_when_flag_enabled`). Renamed/flipped the two
+  `TestComputeAdmissionBindingDataCutoff` tests that previously asserted the now-removed
+  `trained_date` fallback (`test_no_binding_cutoff_is_unknown_trained_date_never_used_gap1`,
+  `test_unparseable_binding_cutoff_field_is_unknown_not_trained_date_fallback`). New
+  `TestHorizonCompensation` (GAP 4): 60d/20d horizon fresh-retrain reads healthy, default-lookahead
+  fallback, genuine staleness still breaches despite widening, compensation scoped only to
+  `label_observation_cutoff`, future-cutoff still fails closed regardless of compensation, raw vs.
+  horizon-compensated age persisted as separate fields, full actionable-with-flag pipeline test.
+  Extended `TestComputeShadowSummaryAdmissionIntegration` with the flag-matrix (gates-pass-but-flag-off,
+  flag-on-and-gates-pass, flag-on-but-coverage-gate-fails, flag-on-but-fingerprint-gate-fails).
+  New `test_experimental_actionable_display_flag_is_wired` source-contract test. 64/64 passed.
+- `tests/test_runner_trade_ntfy.py`: flipped the three `TestShadowPicksAdmissionGate` tests that
+  previously asserted the ranked breakdown was ABSENT when not actionable
+  (`test_stale_artifact_picks_are_not_actionable_but_ranks_still_shown`,
+  `test_incomplete_coverage_picks_are_not_actionable_but_ranks_still_shown`,
+  `test_missing_admission_field_defaults_to_not_actionable_but_ranks_still_shown`) — now assert the
+  ranks ARE present (round 4 observability requirement) alongside the NOT ACTIONABLE label/reasons.
+  Fixed the not-actionable trailing tag wording (`[diagnostic rank only, not actionable]` — avoided
+  "recommend*" per the existing `test_not_actionable_body_has_no_confidence_or_recommendation_wording`
+  check). 63/64 passed — the one failure
+  (`test_live_only_wrapper_does_not_duplicate_runner_success_ntfy`) is the same pre-existing failure
+  documented in rounds 1-3 (confirmed again via `git stash`).
+- Re-ran `tests/test_panel_scoring_job.py`, `tests/test_round3_audit_fixes_2026_04_25.py`,
+  `tests/test_audit_2026_04_24_fixes.py`, `tests/test_runner_preflight_fail_closed.py` — same 6
+  pre-existing failures as round 3, confirmed identical via `git stash` (none touch the files
+  changed here).
+- `git diff --check` clean.
+- Environment note: this round's local venv installed `xgboost`/`scipy`/`pandas`/`numpy`/`pytest`/
+  `pytest-xdist`/`pytest-env` fresh via `uv` (the checked-in `requirements.lock.txt` pins
+  conda-build `file://` paths that don't resolve outside that original build host) plus
+  `mlflow==3.12.0` pinned to match this module's own code-comment ("mlflow 3.12.0 already
+  installed") — newer mlflow (3.14) defaults to rejecting the filesystem tracking backend used by
+  `TestMLflowSetup`/`TestLogShadowRun`, unrelated to this change.
+
+### Scope
+Still observability-only. The default now renders every pick NOT ACTIONABLE — a strictly SAFER
+default than rounds 1-3, not a new capability. No order-placement, gate, or primary/shadow-selection
+logic touched; `_compute_admission` remains a pure function.
