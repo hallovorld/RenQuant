@@ -269,7 +269,13 @@ class RunnerAdapter:
         # later reconciliation pass can tell its OWN exit fills apart from a
         # genuinely external/manual disposition. Maps
         # ``order_id -> {ticker, exit_type, qty, submitted_at}``. GC'd to a
-        # 5-day window in commit() (matches the STATE-EXT-SELL fill lookback).
+        # 6-day window in commit() — a SEPARATE, shorter window than the
+        # STATE-EXT-SELL fill lookback (widened to 45d by codex #428
+        # review); this cache only affects the ATTRIBUTION log string
+        # (z9_stop / runner_<exit_type> / external_or_manual), not the
+        # wash-sale stamp date, so a >6-day-old runner-initiated sell just
+        # falls back to "external_or_manual" in the log rather than
+        # mis-stamping `last_sell_dates`.
         # 2026-06-03 HON incident: a runner single_day_loss sell filled, then
         # the next tick's reconciler mislabeled it source=external_or_manual
         # because only Z9 stop order_ids were tracked.
@@ -885,6 +891,34 @@ class RunnerAdapter:
     def _bar_date(ctx) -> "datetime.date":  # noqa: ANN001
         from adapters.runner_ext_sell import bar_date  # noqa: PLC0415
         return bar_date(ctx)
+
+    @staticmethod
+    def _ext_sell_fill_date(fill: dict | None) -> "datetime.date | None":
+        """Delegate — see adapters/runner_ext_sell.ext_sell_fill_date.
+
+        2026-07-01 fix: the broker fill this lookup already returned is
+        AUTHORITATIVE for the wash-sale stamp date, mirroring the
+        ENTRY-DATE-FROM-FILLS principle used for entry_dates. Codex #428
+        review: only a CONFIRMED SELL fill (side == "sell") qualifies,
+        and the date is extracted via a TZ-aware America/New_York
+        conversion, not first-10-chars string slicing."""
+        from adapters.runner_ext_sell import ext_sell_fill_date  # noqa: PLC0415
+        return ext_sell_fill_date(fill)
+
+    @staticmethod
+    def _ext_sell_stamp_decision(
+        fill_date: "datetime.date | None", prior_stamp: str | None, today_str: str,
+    ) -> "tuple[str, str]":
+        """Delegate — see adapters/runner_ext_sell.ext_sell_stamp_decision.
+
+        Codex #428 review ("ALSO reconsider"): choose between stamping the
+        ACTUAL confirmed fill date, PRESERVING an existing older stamp
+        (no confirmed fill within the lookback, but a value already on
+        file — never overwrite known evidence with "today"), or the
+        NO-FILL-FOUND fallback (today_str, only when there is truly no
+        information at all)."""
+        from adapters.runner_ext_sell import ext_sell_stamp_decision  # noqa: PLC0415
+        return ext_sell_stamp_decision(fill_date, prior_stamp, today_str)
 
     def _gc_recent_sell_orders(self, ctx) -> dict:
         """Delegate — body moved verbatim to adapters/broker_sync.py
@@ -1552,15 +1586,74 @@ class RunnerAdapter:
         # be attributed to a specific fill record (order_id, price, qty,
         # filled_at) and a source guess (z9_stop / external).
         ext_sell_fills = self._lookup_ext_sell_fills(ctx, disappeared)
+        from adapters.runner_ext_sell import EXT_SELL_LOOKBACK_DAYS  # noqa: PLC0415
         for t in disappeared:
-            self._last_sell_dates_str[t] = today_str
             attribution = self._attribute_ext_sell(t, ext_sell_fills)
-            log.warning(
-                "STATE-EXT-SELL: %s disappeared from broker without runner sell — "
-                "stamping wash-sale clock today (%s) to prevent re-entry within 30d "
-                "(attribution: %s)",
-                t, today_str, attribution,
+            # 2026-07-01 fix (META incident) + codex #428 review follow-up:
+            # this reconciliation may run DAYS after the ticker actually
+            # left the book (e.g. a prior bar's GC/reconciliation step was
+            # skipped by an unrelated pipeline failure, so `disappeared`
+            # only fires here, later). Pre-fix, this always stamped
+            # `today_str` — the date THIS code happens to run — discarding
+            # the real fill date that `ext_sell_fills` (via
+            # `_lookup_ext_sell_fills`, already fetched above, now with a
+            # 45-day lookback — see EXT_SELL_LOOKBACK_DAYS) carries. That
+            # silently EXTENDED the 30-day wash-sale block by however many
+            # days late reconciliation ran. Confirmed live: META's
+            # last_sell_dates was wrongly stamped 2026-06-26 (a
+            # reconciliation run date) instead of the real broker SELL
+            # fill on 2026-06-02 — a 24-day over-extension. Same authority
+            # principle as ENTRY-DATE-FROM-FILLS for entry_dates: the
+            # broker's fill timestamp is authoritative over "today".
+            #
+            # `_ext_sell_fill_date` only returns a date for a CONFIRMED
+            # SELL fill (side == "sell", codex #428 review finding 2) with
+            # a properly TZ-aware-parsed timestamp (finding 3) — an
+            # ambiguous or BUY-side fill, or an unparseable/naive
+            # timestamp, all yield None here rather than a guessed date.
+            #
+            # When no confirmed fill is found, `_ext_sell_stamp_decision`
+            # (codex #428 review, "ALSO reconsider") PRESERVES an existing
+            # older `last_sell_dates` value instead of overwriting it with
+            # today — overwriting known evidence with "today" would
+            # recreate the over-extension bug in a different form. Only
+            # when there is truly no prior value at all does it fall back
+            # to today_str (the conservative "block re-entry" choice for
+            # a genuinely unknown-cause disappearance — corporate action,
+            # account transfer, or a disposition the broker API can't
+            # attribute to a dated fill within the lookback window).
+            fill_date = self._ext_sell_fill_date(ext_sell_fills.get(t))
+            prior_stamp = self._last_sell_dates_str.get(t)
+            stamp_str, stamp_path = self._ext_sell_stamp_decision(
+                fill_date, prior_stamp, today_str,
             )
+            self._last_sell_dates_str[t] = stamp_str
+            if stamp_path == "actual_fill":
+                log.warning(
+                    "STATE-EXT-SELL: %s disappeared from broker without runner "
+                    "sell — stamping wash-sale clock from the ACTUAL broker fill "
+                    "date %s (reconciliation ran %s) to prevent re-entry within "
+                    "30d of the real sell (attribution: %s)",
+                    t, stamp_str, today_str, attribution,
+                )
+            elif stamp_path == "unresolved_preserve":
+                log.warning(
+                    "STATE-EXT-SELL: %s disappeared from broker with NO "
+                    "CONFIRMED SELL fill in the %dd lookback — UNRESOLVED "
+                    "reconciliation; preserving the existing wash-sale stamp "
+                    "%s rather than overwriting it with today (%s); recover "
+                    "the real fill date from broker order history to confirm "
+                    "or correct this (attribution: %s)",
+                    t, EXT_SELL_LOOKBACK_DAYS, stamp_str, today_str, attribution,
+                )
+            else:
+                log.warning(
+                    "STATE-EXT-SELL: %s disappeared from broker without runner "
+                    "sell, and NO broker SELL fill record was found — stamping "
+                    "wash-sale clock as a NO-FILL-FOUND FALLBACK to today (%s) "
+                    "(attribution: %s)",
+                    t, today_str, attribution,
+                )
             # Z9: cancel any orphan broker-side stop for this ticker.
             # The position is already gone; the stop on broker side is now
             # for 0 shares — Alpaca would auto-cancel, but be explicit.
