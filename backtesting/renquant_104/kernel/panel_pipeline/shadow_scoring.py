@@ -105,6 +105,55 @@ _FRESHNESS_TIER_UNKNOWN = "unknown"
 # clearly under any threshold in that band.
 _DEFAULT_MIN_COVERAGE = 0.80
 
+# 2026-07-01 ROUND 3 (Codex #426 review point 1 named BOTH "trained cutoff"
+# AND "feature-data cutoff" as separate provenance to bind): binding
+# DATA-cutoff field priority, most-binding first — mirrors orchestrator's
+# model_freshness_monitor.py DATA_CUTOFF_FIELDS. Preferred over
+# ``trained_date`` whenever present: ``trained_date`` is run time, not a
+# data-freshness axis, and a fresh ``trained_date`` over stale/absent DATA
+# must never certify freshness — this codebase hit exactly that bug class
+# before (2026-06-15 "model stale-by-split-recipe" incident: a live model
+# failed WF sanity because a fresh-looking retrain was still keyed to a
+# stale val-tail cutoff). ``hf_patchtst_scorer.py`` already stamps
+# ``effective_train_cutoff_date`` into ``scorer.metadata`` at load time
+# (from ckpt/contract/sidecar, ``_coalesce``) for exactly this reason — the
+# real PatchTST-shadow incident this round responds to has this field
+# available; round-2 computed age from ``trained_date`` alone and left it
+# unused.
+_DATA_CUTOFF_FIELDS = (
+    "label_observation_cutoff",
+    "effective_selection_cutoff_date",
+    "effective_train_cutoff_date",
+    "data_cutoff_date",
+    "live_train_end",
+    "cutoff_date",
+)
+
+
+def _parse_iso_date(value: object) -> datetime.date | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if len(text) < 10:
+        return None
+    try:
+        return datetime.date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _binding_cutoff(artifact_meta: dict) -> tuple[datetime.date | None, Optional[str]]:
+    """First present, parseable field in ``_DATA_CUTOFF_FIELDS`` (most
+    binding first). ``(None, None)`` when no binding DATA cutoff is present
+    — this is UNKNOWN provenance, not automatically "old"; the caller falls
+    back to ``trained_date`` (a strictly weaker signal — see module note
+    above) only in that case."""
+    for field_name in _DATA_CUTOFF_FIELDS:
+        parsed = _parse_iso_date(artifact_meta.get(field_name))
+        if parsed is not None:
+            return parsed, field_name
+    return None, None
+
 
 def _ensure_mlflow_setup(tracking_uri: Optional[str] = None,
                          experiment_name: Optional[str] = None) -> str:
@@ -185,11 +234,17 @@ def _log_shadow_run(experiment_id: str, as_of_date, shadow_name: str,
 def _freshness_tier(age_days: float | None) -> str:
     """Bucket artifact age into healthy/warn/escalate/breach/unknown.
 
-    ``None``/non-finite age (missing or unparseable ``trained_date``) is
-    UNKNOWN, never a silent pass — mirrors this repo's own P-MODEL-STALENESS
+    ``None``/non-finite age (missing or unparseable cutoff) is UNKNOWN,
+    never a silent pass — mirrors this repo's own P-MODEL-STALENESS
     convention (renquant-pipeline
     kernel/preflight_pipeline/tasks/staleness.py: missing provenance is a
     fail, not a skip).
+
+    2026-07-01 ROUND 3: a NEGATIVE age (a cutoff LATER than ``as_of_date`` —
+    a look-ahead) fails closed to ``breach`` rather than reading as healthy
+    (mirrors orchestrator's model_freshness_monitor.py look-ahead guard —
+    PR #211 lesson there: a window bounded on only one side lets a negative
+    age silently read healthy).
     """
     if age_days is None:
         return _FRESHNESS_TIER_UNKNOWN
@@ -199,6 +254,8 @@ def _freshness_tier(age_days: float | None) -> str:
         return _FRESHNESS_TIER_UNKNOWN
     if age != age or age in (float("inf"), float("-inf")):  # NaN/inf check
         return _FRESHNESS_TIER_UNKNOWN
+    if age < 0:
+        return _FRESHNESS_TIER_BREACH  # look-ahead cutoff, never healthy
     if age >= _FRESHNESS_BREACH_DAYS:
         return _FRESHNESS_TIER_BREACH
     if age >= _FRESHNESS_ESCALATE_DAYS:
@@ -228,7 +285,7 @@ def _compute_admission(
     (``PanelScoringJob``, which runs ``ApplyShadowScoringTask``) executes.
     What IS shadow-specific and NOT covered by that upstream gate:
 
-      1. the shadow ARTIFACT's own ``trained_date`` staleness — primary has
+      1. the shadow ARTIFACT's own training-cutoff staleness — primary has
          a retrain-cadence gate; a shadow artifact can silently rot behind
          it with nothing re-checking it (real observed case: ~140d stale).
       2. the shadow-SCORED universe's coverage of the configured watchlist —
@@ -237,20 +294,35 @@ def _compute_admission(
          "rank 1" here is not comparable to primary's rank 1, or to a
          different day's shadow run, without knowing n_scored/n_expected.
 
-    Fail-closed: missing/unparseable ``trained_date`` is UNKNOWN and blocks
-    — it is never treated as fresh.
+    2026-07-01 ROUND 3 (Codex #426 review point 1 named "trained cutoff"
+    AND "feature-data cutoff" as separate provenance): the age used for the
+    verdict now PREFERS a binding DATA cutoff field (``_DATA_CUTOFF_FIELDS``
+    — e.g. ``effective_train_cutoff_date``, already stamped into
+    ``scorer.metadata`` for HF PatchTST by ``hf_patchtst_scorer.py`` at load
+    time) over ``trained_date``. ``trained_date`` is run time, not a
+    data-freshness axis, and is used ONLY as a last-resort fallback when no
+    binding cutoff field is present — a fresh ``trained_date`` over
+    stale/absent DATA must never certify freshness (this codebase's own
+    2026-06-15 "model stale-by-split-recipe" incident was exactly that bug:
+    a same-day retrain read fresh while trained on a stale val-tail cutoff).
+
+    Fail-closed: no usable binding cutoff AND no parseable ``trained_date``
+    is UNKNOWN and blocks — never treated as fresh.
     """
+    today = (as_of_date if isinstance(as_of_date, datetime.date)
+              else datetime.date.today())
     trained_date = artifact_meta.get("trained_date")
+    binding_cutoff, binding_cutoff_field = _binding_cutoff(artifact_meta)
+
     age_days: float | None = None
-    if trained_date:
-        try:
-            trained_dt = datetime.datetime.strptime(
-                str(trained_date)[:10], "%Y-%m-%d").date()
-            today = (as_of_date if isinstance(as_of_date, datetime.date)
-                      else datetime.date.today())
+    if binding_cutoff is not None:
+        age_days = float((today - binding_cutoff).days)
+    else:
+        # Fallback ONLY when no binding DATA cutoff field is present — see
+        # docstring above.
+        trained_dt = _parse_iso_date(trained_date)
+        if trained_dt is not None:
             age_days = float((today - trained_dt).days)
-        except (TypeError, ValueError):
-            age_days = None
 
     tier = _freshness_tier(age_days)
 
@@ -262,14 +334,21 @@ def _compute_admission(
     coverage_ok = coverage is None or coverage >= min_coverage
 
     reasons: list[str] = []
+    cutoff_desc = (
+        f"{binding_cutoff_field}={binding_cutoff.isoformat()}" if binding_cutoff is not None
+        else (f"trained_date={trained_date} (no binding data cutoff field)" if age_days is not None
+              else "no binding data cutoff or trained_date")
+    )
     if tier == _FRESHNESS_TIER_UNKNOWN:
-        reasons.append("trained_date missing/unparseable")
+        reasons.append(f"freshness=unknown ({cutoff_desc})")
+    elif age_days is not None and age_days < 0:
+        reasons.append(f"look-ahead cutoff {cutoff_desc} is later than as_of_date={today}")
     elif tier == _FRESHNESS_TIER_BREACH:
         reasons.append(
-            f"artifact {age_days:.0f}d stale (breach>={_FRESHNESS_BREACH_DAYS}d)")
+            f"artifact {age_days:.0f}d stale ({cutoff_desc}, breach>={_FRESHNESS_BREACH_DAYS}d)")
     elif tier == _FRESHNESS_TIER_ESCALATE:
         reasons.append(
-            f"artifact {age_days:.0f}d stale (escalate>={_FRESHNESS_ESCALATE_DAYS}d)")
+            f"artifact {age_days:.0f}d stale ({cutoff_desc}, escalate>={_FRESHNESS_ESCALATE_DAYS}d)")
     if coverage is not None and not coverage_ok:
         reasons.append(
             f"coverage {n_scored}/{n_expected} ({coverage:.0%}) < {min_coverage:.0%}")
@@ -292,6 +371,8 @@ def _compute_admission(
         "verdict": tier,
         "actionable": actionable,
         "trained_date": trained_date,
+        "binding_cutoff": binding_cutoff.isoformat() if binding_cutoff is not None else None,
+        "binding_cutoff_field": binding_cutoff_field,
         "age_days": age_days,
         "artifact_fingerprint": fingerprint,
         "n_scored": n_scored,

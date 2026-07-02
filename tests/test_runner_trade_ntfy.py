@@ -671,10 +671,15 @@ def _shadow_summary_entry(name="patchtst_v1", picks=None, admission=None, **over
 
 
 class TestShadowTopPicksNtfy:
-    """2026-07-01: genuine, actionable shadow-model recommendation with an
-    HONEST relative-rank indicator (operator incident: a
-    "[SHADOW]...BUY OXY" ntfy was misread as "the shadow PatchTST model
-    recommends OXY" — see doc/progress/2026-07-01-shadow-ntfy-top-picks.md).
+    """2026-07-01: shadow-model top-N RAW RANK diagnostic (operator
+    incident: a "[SHADOW]...BUY OXY" ntfy was misread as "the shadow
+    PatchTST model recommends OXY" — see
+    doc/progress/2026-07-01-shadow-ntfy-top-picks.md).
+
+    ROUND 3 (Codex #426 review point 3): deliberately never called a
+    "recommendation" or "confidence" score in the rendered ntfy text — see
+    TestShadowPicksAdmissionGate for the freshness/coverage admission gate
+    that suppresses picks entirely when they would not be actionable.
     """
 
     def _import(self):
@@ -692,14 +697,18 @@ class TestShadowTopPicksNtfy:
         assert "NVDA(rank 1/83, z=+2.10" in body
 
     def test_shadow_picks_segment_is_labeled_relative_not_confidence(self):
-        """The message TEXT itself (not just a code comment) must say this
-        is a relative-rank indicator, not a validated confidence score."""
+        """2026-07-01 ROUND 3 (Codex #426 review point 3, "stop calling the
+        line a recommendation or confidence"): the message TEXT itself (not
+        just a code comment) must say this is a raw, unvalidated rank —
+        without using the word "confidence" at all in the actionable-path
+        tag."""
         notify = self._import()
         ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
         with patch("urllib.request.urlopen") as m:
             notify("RENQUANT-104", "full", ctx)
         body = m.call_args[0][0].data.decode()
-        assert "[relative rank, not a validated confidence score]" in body
+        assert "[raw rank (unvalidated, see freshness verdict)]" in body
+        assert "recommend" not in body.lower()
 
     def test_no_fabricated_probability_confidence_wording(self):
         """Must never render a bare '%' confidence claim (e.g. '73%

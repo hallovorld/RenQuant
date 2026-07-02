@@ -180,3 +180,61 @@ Still observability-only. The admission gate only decides whether the ntfy body 
 already-computed picks — it does not feed into order placement, primary/shadow selection, or any
 gate. `_compute_admission` is a pure function (no I/O beyond the `scorer.metadata` dict already
 loaded by the existing scorer-loading path).
+
+## Round 3 (Codex #426 review point 1: "trained cutoff" AND "feature-data cutoff" named separately)
+
+Round 2's `_compute_admission` computed the freshness age from `artifact_meta["trained_date"]`
+alone. That is run time, not a data-freshness axis — a fresh `trained_date` over stale/absent
+DATA must never certify freshness. This codebase already hit exactly that bug class once
+(2026-06-15 "model stale-by-split-recipe": a live model looked freshly-trained but was keyed to a
+stale val-tail cutoff). Codex's review named "trained cutoff" and "feature-data cutoff" as two
+separate provenance items to bind — round 2 only bound the first.
+
+Concretely: `hf_patchtst_scorer.py` (the real PatchTST-shadow path this incident is about) already
+stamps `effective_train_cutoff_date` into `scorer.metadata` at load time (via `_coalesce` from the
+checkpoint / training contract / legacy sidecar) — that data was already available and unused.
+
+### Changes
+1. **`_DATA_CUTOFF_FIELDS` + `_binding_cutoff`** (`shadow_scoring.py`): binding DATA-cutoff field
+   priority, most-binding first (`label_observation_cutoff`, `effective_selection_cutoff_date`,
+   `effective_train_cutoff_date`, `data_cutoff_date`, `live_train_end`, `cutoff_date`) — mirrors
+   the orchestrator's `model_freshness_monitor.py` `DATA_CUTOFF_FIELDS` order.
+2. **`_compute_admission` now prefers the binding cutoff over `trained_date`.** `trained_date` is
+   used ONLY as a last-resort fallback when no binding cutoff field is present in `artifact_meta`.
+   The verdict's `reasons` now name which cutoff field/value drove the age
+   (`effective_train_cutoff_date=2024-11-13`, etc.) instead of only `trained_date`. New output
+   keys `binding_cutoff` / `binding_cutoff_field` (additive — existing keys unchanged).
+3. **Look-ahead guard** (`_freshness_tier`): a NEGATIVE age (a cutoff later than `as_of_date`) now
+   fails closed to `breach` instead of silently reading `healthy` — mirrors the orchestrator's own
+   look-ahead guard (its docstring cites this as a real prior lesson, PR #211).
+4. **Wording** (`live/runner.py`, review point 3 "stop calling the line a recommendation or
+   confidence"): the actionable-path trailing tag changed from `[relative rank, not a validated
+   confidence score]` (which still used the word "confidence") to `[raw rank (unvalidated, see
+   freshness verdict)]`. The stale round-1 comment block describing this as a "genuine, actionable
+   recommendation with an HONEST confidence indicator" was also corrected — that framing is
+   exactly what rounds 2/3 walked back.
+
+### Tests
+- `tests/test_shadow_scoring.py`: new `TestComputeAdmissionBindingDataCutoff` — binding cutoff
+  preferred over a recent `trained_date` when the underlying data is old (the real PatchTST shape:
+  retrained recently, `effective_train_cutoff_date` ~596d stale → still `breach`); DATA_CUTOFF_FIELDS
+  priority order; `trained_date` fallback only when no binding field present; unparseable binding
+  field falls back to `trained_date`; look-ahead cutoff → `breach`; no cutoff and no `trained_date`
+  → `unknown`. All prior `TestComputeAdmission`/`TestFreshnessTier` cases pass UNCHANGED (they only
+  ever passed `trained_date`, so `_binding_cutoff` returns `(None, None)` for them and the fallback
+  path is identical to round 2's behavior). 48/48 passed in `test_shadow_scoring.py`.
+- `tests/test_runner_trade_ntfy.py`: updated the actionable-path wording assertion + added a
+  `"recommend" not in body.lower()` check. 62/63 passed — the one failure
+  (`test_live_only_wrapper_does_not_duplicate_runner_success_ntfy`) is the same pre-existing
+  failure confirmed via `git stash` in rounds 1 and 2.
+- Re-ran `tests/test_panel_scoring_job.py`, `tests/test_round3_audit_fixes_2026_04_25.py`,
+  `tests/test_audit_2026_04_24_fixes.py`, `tests/test_runner_preflight_fail_closed.py` — same 6
+  pre-existing failures as before this round (confirmed unrelated: none touch the files changed
+  here).
+- `py_compile` on all touched files + `git diff --check` clean. Did not run the full repo suite
+  (same reason as rounds 1-2).
+
+### Scope
+Still observability-only — same as rounds 1-2. This round only changes WHICH provenance field the
+admission verdict is keyed on (and adds a look-ahead guard); it does not add new gates, new I/O, or
+touch order placement / primary selection.

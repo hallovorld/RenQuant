@@ -433,6 +433,102 @@ class TestComputeAdmission:
         assert shadow_mod._DEFAULT_MIN_COVERAGE == 0.80
 
 
+class TestComputeAdmissionBindingDataCutoff:
+    """2026-07-01 ROUND 3 (Codex #426 review point 1 named "trained cutoff"
+    AND "feature-data cutoff" as separate provenance to bind): the age used
+    for the verdict must PREFER a binding DATA cutoff field over
+    ``trained_date`` whenever one is present — mirrors orchestrator's
+    model_freshness_monitor.py DATA_CUTOFF_FIELDS priority. Real motivating
+    case: hf_patchtst_scorer.py already stamps
+    ``effective_train_cutoff_date`` into ``scorer.metadata`` at load time;
+    round 2 computed age from ``trained_date`` alone and left that field
+    unused, reintroducing the "fresh trained_date over stale data" risk
+    this codebase already hit once (2026-06-15 model-stale-by-split-recipe).
+    """
+
+    AS_OF = _dt.date(2026, 7, 1)
+
+    def test_binding_cutoff_preferred_over_trained_date(self, shadow_mod):
+        """A recent trained_date with an OLD effective_train_cutoff_date
+        (the real PatchTST shape: retrained recently but on stale data)
+        must be judged on the cutoff, not the retrain run time."""
+        admission = shadow_mod._compute_admission(
+            name="patchtst_v1", as_of_date=self.AS_OF,
+            artifact_meta={
+                "trained_date": "2026-06-30",  # 1d old -> would read healthy
+                "effective_train_cutoff_date": "2024-11-13",  # ~596d stale
+            },
+            n_scored=83, n_expected=83, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "breach"
+        assert admission["actionable"] is False
+        assert admission["binding_cutoff"] == "2024-11-13"
+        assert admission["binding_cutoff_field"] == "effective_train_cutoff_date"
+        assert admission["age_days"] > 500
+
+    def test_data_cutoff_field_priority_matches_orchestrator_order(self, shadow_mod):
+        """label_observation_cutoff outranks effective_train_cutoff_date
+        when both are present — same field priority as the orchestrator's
+        DATA_CUTOFF_FIELDS."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": "2026-06-29",
+                "effective_train_cutoff_date": "2020-01-01",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["binding_cutoff_field"] == "label_observation_cutoff"
+        assert admission["binding_cutoff"] == "2026-06-29"
+        assert admission["verdict"] == "healthy"
+
+    def test_trained_date_fallback_only_when_no_binding_cutoff_present(self, shadow_mod):
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={"trained_date": "2026-06-30"},
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["binding_cutoff"] is None
+        assert admission["binding_cutoff_field"] is None
+        assert admission["age_days"] == 1.0
+        assert admission["verdict"] == "healthy"
+
+    def test_unparseable_binding_cutoff_field_falls_back_to_trained_date(self, shadow_mod):
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "trained_date": "2026-06-30",
+                "effective_train_cutoff_date": "not-a-date",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["binding_cutoff"] is None
+        assert admission["age_days"] == 1.0
+
+    def test_lookahead_cutoff_fails_closed_to_breach(self, shadow_mod):
+        """A cutoff LATER than as_of_date (look-ahead) must never read as a
+        negative age / healthy."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={"effective_train_cutoff_date": "2026-08-15"},
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["age_days"] < 0
+        assert admission["verdict"] == "breach"
+        assert admission["actionable"] is False
+        assert any("look-ahead" in r for r in admission["reasons"])
+
+    def test_binding_cutoff_none_and_no_trained_date_is_unknown(self, shadow_mod):
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF, artifact_meta={},
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["actionable"] is False
+        assert admission["binding_cutoff"] is None
+        assert admission["age_days"] is None
+
+
 class TestComputeShadowSummaryAdmissionIntegration:
     """``_compute_shadow_summary`` must surface the admission verdict inline
     (``admission``/``actionable``/``run_id`` top-level keys) so callers

@@ -923,13 +923,8 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         # misread as "the shadow PatchTST model recommends OXY" when it was
         # actually the primary XGB decision echoed through the readonly
         # broker; PatchTST's own view of OXY that day was rank 15/83,
-        # z≈+0.88 — not a top pick. Operator mandate: "shadow的message应该
-        # 给出带有信心指数的推荐" — give a genuine, actionable
-        # recommendation with an HONEST confidence indicator). Additive
-        # line, separate from SHADOW[...] above. Confidence here is
-        # RELATIVE RANK / Z-SCORE ONLY (see shadow_scoring.py) — never a
-        # fabricated probability. The trailing bracketed tag makes that
-        # explicit in the message text itself, not just in code comments.
+        # z≈+0.88 — not a top pick). Additive line, separate from
+        # SHADOW[...] above.
         #
         # 2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426 —
         # see doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum): a
@@ -938,10 +933,20 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         # ~140d stale; rank 1 of an 83-name subset is not rank 1 of the
         # intended ~292-name watchlist). shadow_scoring.py now binds every
         # top_picks list to an `admission` verdict computed from the
-        # artifact's own trained_date + n_scored/n_expected coverage. Fail
-        # closed here too: a summary with no `admission` key at all (e.g. a
-        # stale cached ctx from before this fix) is treated as NOT
-        # actionable, never assumed safe.
+        # artifact's own trained_date (or, since ROUND 3, a binding DATA
+        # cutoff field when present — see shadow_scoring.py
+        # `_compute_admission`) + n_scored/n_expected coverage. Fail closed
+        # here too: a summary with no `admission` key at all (e.g. a stale
+        # cached ctx from before this fix) is treated as NOT actionable,
+        # never assumed safe.
+        #
+        # 2026-07-01 ROUND 3 (Codex review point 3, "stop calling the line
+        # a recommendation or confidence"): the round-1 framing above this
+        # comment used to describe this as a "genuine, actionable
+        # recommendation with an HONEST confidence indicator" — that
+        # framing is exactly what round 2/3 walked back. This is a RAW
+        # RANK, gated on freshness/coverage; the trailing bracketed tag
+        # below says so without using either word.
         try:
             picks = ss.get("top_picks") or []
             if picks:
@@ -977,7 +982,7 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
                         f"SHADOW-PICKS[{ss.get('name', '?')}]: "
                         f"[{verdict} cov={cov_str} run={run_id}] "
                         + " ".join(pick_strs)
-                        + " [relative rank, not a validated confidence score]"
+                        + " [raw rank (unvalidated, see freshness verdict)]"
                     )
         except Exception as exc:
             log.warning("ntfy shadow-picks segment failed: %s", exc)
