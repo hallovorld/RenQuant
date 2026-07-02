@@ -207,15 +207,20 @@ class TestAlwaysFiresOnCycle:
         assert req.headers.get("Title") == "RENQUANT-104 [sell-only] TRADE"
 
     def test_shadow_exit_is_marked_hypothetical_not_live_trade(self):
+        """2026-07-01: title prefix renamed [SHADOW] -> [READONLY] so the
+        broker-mode title token no longer collides with the per-model
+        SHADOW[name]/SHADOW-PICKS[name] body segments (see
+        TestShadowRecommendations below and the title-prefix disambiguation
+        tests)."""
         notify = self._import()
         exit_sig = SimpleNamespace(ticker="FTNT", exit_type="qp_sell")
         ctx = _stub_ctx(exits=[exit_sig])
         with patch("urllib.request.urlopen") as m:
-            notify("[SHADOW]RENQUANT-104", "full", ctx)
+            notify("[READONLY]RENQUANT-104", "full", ctx)
         req = m.call_args[0][0]
         body = req.data.decode()
         assert req.headers.get("Title") == (
-            "[SHADOW]RENQUANT-104 [full] SHADOW-ACTION"
+            "[READONLY]RENQUANT-104 [full] SHADOW-ACTION"
         )
         assert req.headers.get("Priority") == "default"
         assert "SHADOW/HYPOTHETICAL (no live orders)" in body
@@ -612,6 +617,418 @@ class TestFailSafe:
                 notify("RENQUANT-104", "sell-only", ctx)
                 notify("RENQUANT-104", "sell-only", ctx)
         assert m.call_count == 2
+
+
+def _shadow_summary_entry(name="patchtst_v1", picks=None, admission=None, **overrides):
+    """Build a ctx._shadow_summary entry matching the shape produced by
+    kernel.panel_pipeline.shadow_scoring._compute_shadow_summary.
+
+    2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426):
+    defaults to an ACTIONABLE admission verdict (fresh artifact, full
+    coverage) so the pre-existing rendering tests below keep exercising the
+    actionable path unchanged. TestShadowPicksAdmissionGate overrides
+    `admission` directly to cover the NOT-ACTIONABLE gate.
+    """
+    default_admission = {
+        "verdict": "healthy",
+        "actionable": True,
+        "trained_date": "2026-06-30",
+        "age_days": 1.0,
+        "artifact_fingerprint": "sha256:testfp1234567890",
+        "n_scored": 83,
+        "n_expected": 83,
+        "coverage": 1.0,
+        "min_coverage": 0.80,
+        "reasons": [],
+        "run_id": f"2026-07-01:{name}:sha256:testfp1",
+    }
+    admission = admission if admission is not None else default_admission
+    entry = dict(
+        name=name, kind="patchtst",
+        top3=["OXY", "OKE", "CVX"],
+        top10_overlap=4,
+        n_candidates=83,
+        spearman_vs_primary=0.42,
+        top_picks=picks if picks is not None else [
+            # shadow_percentile: 100.0 = best (rank 1) — FIXED direction
+            # 2026-07-01 round 2 (was rank/n*100, best name near 1st
+            # percentile). Not itself rendered in the ntfy body (only
+            # rank + z-score are), kept here for fixture realism.
+            {"ticker": "NVDA", "shadow_score": 0.05, "shadow_rank": 1,
+             "shadow_percentile": 100.0, "shadow_zscore": 2.10,
+             "in_primary_admitted": None, "in_primary_topN": True},
+            {"ticker": "OXY", "shadow_score": -0.15, "shadow_rank": 15,
+             "shadow_percentile": 83.1, "shadow_zscore": 0.88,
+             "in_primary_admitted": None, "in_primary_topN": False},
+        ],
+        top_picks_n=5,
+        admission=admission,
+        actionable=admission.get("actionable"),
+        run_id=admission.get("run_id"),
+    )
+    entry.update(overrides)
+    return entry
+
+
+class TestShadowTopPicksNtfy:
+    """2026-07-01: shadow-model top-N RAW RANK diagnostic (operator
+    incident: a "[SHADOW]...BUY OXY" ntfy was misread as "the shadow
+    PatchTST model recommends OXY" — see
+    doc/progress/2026-07-01-shadow-ntfy-top-picks.md).
+
+    ROUND 3 (Codex #426 review point 3): deliberately never called a
+    "recommendation" or "confidence" score in the rendered ntfy text — see
+    TestShadowPicksAdmissionGate for the freshness/coverage admission gate
+    that suppresses picks entirely when they would not be actionable.
+    """
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def test_shadow_picks_segment_rendered_with_rank_and_zscore(self):
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]:" in body
+        assert "OXY(rank 15/83, z=+0.88)" in body
+        assert "NVDA(rank 1/83, z=+2.10" in body
+
+    def test_shadow_picks_segment_is_labeled_relative_not_confidence(self):
+        """2026-07-01 ROUND 3 (Codex #426 review point 3, "stop calling the
+        line a recommendation or confidence"): the message TEXT itself (not
+        just a code comment) must say this is a raw, unvalidated rank —
+        without using the word "confidence" at all in the actionable-path
+        tag."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "[raw rank (unvalidated, see freshness verdict)]" in body
+        assert "recommend" not in body.lower()
+
+    def test_no_fabricated_probability_confidence_wording(self):
+        """Must never render a bare '%' confidence claim (e.g. '73%
+        confidence') — only rank/percentile/z-score, always honestly
+        labeled. shadow_percentile itself is NOT rendered as a standalone
+        '%' claim in the compact ntfy line (only rank + z-score are)."""
+        import re
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert re.search(r"\d+(\.\d+)?%\s*confidence", body) is None
+        assert "confidence=" not in body
+
+    def test_legacy_shadow_line_kept_byte_for_byte_backward_compat(self):
+        """The pre-existing SHADOW[name] top3=.../top10.../ρ=... line must
+        be unchanged — some downstream tooling may parse this exact
+        format."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW[patchtst_v1] top3=OXY/OKE/CVX top10∩prim=4/10 ρ=+0.42 n=83" in body
+
+    def test_also_bought_tag_when_primary_actually_bought_the_pick(self):
+        """in_primary_admitted is None at shadow_scoring.py build time (not
+        determinable — SelectionJob hasn't run yet). live/runner.py must
+        overlay the REAL value from ctx.orders_placed at ntfy-render time,
+        since the full pipeline has run by _notify_decision."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            orders=[{"ticker": "NVDA", "shares": 2, "price": 900.0}],
+            orders_placed=[{"ticker": "NVDA", "shares": 2, "price": 900.0}],
+            _shadow_summary=[_shadow_summary_entry()],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "NVDA(rank 1/83, z=+2.10, ALSO-BOUGHT)" in body
+        # OXY was NOT bought today — must not carry the ALSO-BOUGHT tag.
+        assert "OXY(rank 15/83, z=+0.88, ALSO-BOUGHT)" not in body
+        assert "OXY(rank 15/83, z=+0.88)" in body
+
+    def test_no_also_bought_tag_when_primary_bought_nothing(self):
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "ALSO-BOUGHT" not in body
+
+    def test_multiple_shadow_models_each_get_own_picks_segment(self):
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(name="patchtst_v1"),
+            _shadow_summary_entry(name="ngboost_v2", top3=["MU", "AMD", "TSM"]),
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]:" in body
+        assert "SHADOW-PICKS[ngboost_v2]:" in body
+
+    def test_missing_top_picks_does_not_break_legacy_line(self):
+        """Older/degenerate summary dicts without top_picks (e.g. from a
+        stale cached run) must not raise — legacy SHADOW[...] line still
+        renders, SHADOW-PICKS[...] segment simply omitted."""
+        notify = self._import()
+        legacy_entry = _shadow_summary_entry()
+        del legacy_entry["top_picks"]
+        ctx = _stub_ctx(_shadow_summary=[legacy_entry])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW[patchtst_v1]" in body
+        assert "SHADOW-PICKS[patchtst_v1]" not in body
+
+
+class TestShadowPicksAdmissionGate:
+    """2026-07-01 ROUND 2 (Codex CHANGES_REQUESTED on umbrella PR #426): a
+    raw shadow rank must never be presented as an ACTIONABLE pick when the
+    artifact is stale or the scored universe is a censored subset. Covers
+    the two REAL known examples cited in the review: PatchTST confirmed
+    ~140 days stale, and an 83/292 (~28%) censored universe.
+
+    2026-07-01 ROUND 4 (Codex CHANGES_REQUESTED — scope narrowing, see
+    doc/progress/2026-07-01-shadow-ntfy-top-picks.md addendum #4): the
+    diagnostic rank/z-score list is now ALWAYS rendered, even in the NOT
+    ACTIONABLE branch (previously fully suppressed). shadow_scoring.py's
+    ``_compute_admission`` now defaults ``actionable`` to False regardless
+    of the computed verdict (see tests/test_shadow_scoring.py
+    ``TestComputeAdmission``/``TestComputeShadowSummaryAdmissionIntegration``
+    for that gate itself) — since every cycle now renders NOT ACTIONABLE by
+    default, fully suppressing the list here would make the entire feature
+    permanently dark, defeating the PR's original observability-only
+    intent. The gate is
+    STILL enforced: the ranks are labeled diagnostic-only, never presented
+    as an actionable pick.
+    """
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def _breach_admission(self, **overrides):
+        admission = dict(
+            verdict="breach", actionable=False, gates_passed=False,
+            trained_date="2026-02-11", age_days=140.0,
+            artifact_fingerprint="sha256:staleabc1234",
+            n_scored=83, n_expected=83, coverage=1.0, min_coverage=0.80,
+            reasons=["artifact 140d stale (breach>=35d)"],
+            run_id="2026-07-01:patchtst_v1:sha256:staleab",
+        )
+        admission.update(overrides)
+        return admission
+
+    def test_stale_artifact_picks_are_not_actionable_but_ranks_still_shown(self):
+        """Real known example: PatchTST confirmed ~140 days stale — the
+        line must be clearly labeled NOT ACTIONABLE, but (round 4) the raw
+        diagnostic rank/z-score breakdown is still shown for observability,
+        never presented as a pick."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=self._breach_admission())
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
+        assert "140d stale" in body
+        assert "verdict=breach" in body
+        assert "NVDA(rank 1/83" in body
+        assert "OXY(rank 15/83" in body
+        assert "[diagnostic rank only, not actionable]" in body
+
+    def test_incomplete_coverage_picks_are_not_actionable_but_ranks_still_shown(self):
+        """Real known example: rank 1 of an 83-name censored subset is not
+        comparable to rank 1 of the intended ~292-name watchlist — still
+        NOT ACTIONABLE, but (round 4) diagnostics remain visible."""
+        notify = self._import()
+        admission = self._breach_admission(
+            verdict="healthy", actionable=False, gates_passed=False,
+            n_scored=83, n_expected=292, coverage=83 / 292,
+            reasons=["coverage 83/292 (28%) < 80%"],
+        )
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=admission)
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
+        assert "83/292" in body
+        assert "NVDA(rank 1/83" in body
+
+    def test_missing_admission_field_defaults_to_not_actionable_but_ranks_still_shown(self):
+        """Fail-closed: a summary with no `admission` key at all (e.g. a
+        cached ctx from before this fix landed) must not be silently
+        treated as actionable — but (round 4) the raw top_picks data that
+        IS present still renders as diagnostic-only."""
+        notify = self._import()
+        entry = _shadow_summary_entry()
+        del entry["admission"]
+        del entry["actionable"]
+        del entry["run_id"]
+        ctx = _stub_ctx(_shadow_summary=[entry])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW-PICKS[patchtst_v1]: NOT ACTIONABLE" in body
+        assert "no admission verdict computed" in body
+        assert "NVDA(rank 1/83" in body
+
+    def test_actionable_case_surfaces_verdict_coverage_and_run_id(self):
+        """When actionable, the picks line binds the ranks to provenance —
+        verdict, scored-vs-expected coverage, and a run id — not just a
+        bare ranked list."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "[healthy cov=83/83 run=" in body
+
+    def test_not_actionable_body_has_no_confidence_or_recommendation_wording(self):
+        import re
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=self._breach_admission())
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert re.search(r"\d+(\.\d+)?%\s*confidence", body) is None
+        assert "confidence=" not in body
+        assert "recommend" not in body.lower()
+
+    def test_legacy_shadow_line_still_renders_when_picks_not_actionable(self):
+        """The pre-existing SHADOW[name] top3/overlap/spearman diagnostic
+        line is unaffected by the admission gate — it never claimed
+        actionability in the first place, so it is not gated."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(admission=self._breach_admission())
+        ])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "SHADOW[patchtst_v1] top3=OXY/OKE/CVX top10∩prim=4/10 ρ=+0.42 n=83" in body
+
+
+class TestNtfyBodyLengthBudget:
+    """ntfy's practical body limit is ~4096 bytes. No truncation guard
+    existed before 2026-07-01; the new SHADOW-PICKS segments (one per
+    configured shadow model) made an unbounded body more likely, so an
+    explicit, honest truncation was added rather than letting the
+    transport silently cut the message."""
+
+    def test_truncate_helper_noop_under_budget(self):
+        from live.runner import _truncate_ntfy_body
+        assert _truncate_ntfy_body("short body") == "short body"
+
+    def test_truncate_helper_caps_and_marks_long_body(self):
+        from live.runner import _truncate_ntfy_body, _NTFY_BODY_MAX_BYTES
+        body = "x" * (_NTFY_BODY_MAX_BYTES * 2)
+        out = _truncate_ntfy_body(body)
+        assert len(out.encode("utf-8")) <= _NTFY_BODY_MAX_BYTES
+        assert out.endswith("…[truncated]")
+
+    def test_truncate_helper_is_utf8_safe(self):
+        """Must not cut in the middle of a multi-byte character (ρ is used
+        throughout the shadow segments)."""
+        from live.runner import _truncate_ntfy_body
+        body = "ρ" * 5000
+        out = _truncate_ntfy_body(body, max_bytes=101)
+        # Must decode cleanly (no UnicodeDecodeError) and respect budget.
+        assert len(out.encode("utf-8")) <= 101
+        out.encode("utf-8").decode("utf-8")  # raises if a char was split
+
+    def test_many_shadow_models_still_yields_bounded_body(self):
+        """End-to-end: enough shadow models/picks to blow past budget if
+        unbounded must still respect the byte cap."""
+        from live.runner import _NTFY_BODY_MAX_BYTES
+        from live.runner import _notify_decision
+        picks = [
+            {"ticker": f"TCK{i:03d}", "shadow_score": 0.01 * i, "shadow_rank": i + 1,
+             "shadow_percentile": 1.0, "shadow_zscore": 0.12,
+             "in_primary_admitted": None, "in_primary_topN": False}
+            for i in range(20)
+        ]
+        ctx = _stub_ctx(_shadow_summary=[
+            _shadow_summary_entry(name=f"shadow_model_{i}", picks=picks)
+            for i in range(10)
+        ])
+        with patch("urllib.request.urlopen") as m:
+            _notify_decision("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert len(body.encode("utf-8")) <= _NTFY_BODY_MAX_BYTES
+
+
+class TestTitlePrefixDisambiguation:
+    """2026-07-01 fix: [SHADOW] title prefix ("this ran via the readonly
+    broker") was colliding with the unrelated body segments SHADOW[name] /
+    SHADOW-PICKS[name] ("this alternate MODEL's own view"), which is what
+    caused the operator to misread a "[SHADOW]...BUY OXY" ntfy as a
+    PatchTST recommendation. Renamed the broker-mode title token to
+    [READONLY] (Option A — repo-wide grep found no external consumer
+    pattern-matching the literal "[SHADOW]" title substring)."""
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def test_readonly_prefix_triggers_shadow_broker_behavior(self):
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch("urllib.request.urlopen") as m:
+            notify("[READONLY]RENQUANT-104", "full", ctx)
+        req = m.call_args[0][0]
+        # is_shadow=True (readonly broker) still tags SHADOW-DECISION /
+        # SHADOW-ACTION — that classification is unaffected by the rename,
+        # only the title token changed from [SHADOW] to [READONLY].
+        assert req.headers.get("Title") == "[READONLY]RENQUANT-104 [full] SHADOW-DECISION"
+        body = req.data.decode()
+        assert "SHADOW/HYPOTHETICAL (no live orders)" in body
+
+    def test_legacy_shadow_prefix_no_longer_treated_as_readonly_broker(self):
+        """Documents the intentional behavior change: an old caller passing
+        the stale "[SHADOW]" prefix is NOT treated as a readonly-broker run
+        any more — is_shadow now keys off "[READONLY]" only."""
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch("urllib.request.urlopen") as m:
+            notify("[SHADOW]RENQUANT-104", "full", ctx)
+        req = m.call_args[0][0]
+        body = req.data.decode()
+        assert req.headers.get("Title") == "[SHADOW]RENQUANT-104 [full] DECISION"
+        assert "SHADOW/HYPOTHETICAL (no live orders)" not in body
+
+    def test_title_prefix_token_distinct_from_body_shadow_model_segments(self):
+        """The title prefix (broker mode) and the body's per-model labels
+        (alternate MODEL's own view) must not share the same ambiguous
+        "[SHADOW]" token any more."""
+        notify = self._import()
+        ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
+        with patch("urllib.request.urlopen") as m:
+            notify("[READONLY]RENQUANT-104", "full", ctx)
+        req = m.call_args[0][0]
+        title = req.headers.get("Title")
+        body = req.data.decode()
+        assert title.startswith("[READONLY]")
+        assert "[SHADOW]" not in title
+        # Body segments use the OTHER concept (alternate model's own view) —
+        # still literally "SHADOW[...]" / "SHADOW-PICKS[...]", but no longer
+        # colliding with the title's broker-mode meaning since the title no
+        # longer uses that token at all.
+        assert "SHADOW[patchtst_v1]" in body
+        assert "SHADOW-PICKS[patchtst_v1]" in body
 
 
 if __name__ == "__main__":

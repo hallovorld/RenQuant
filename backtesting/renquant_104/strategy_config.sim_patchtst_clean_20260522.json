@@ -699,7 +699,7 @@
   "ranking": {
     "blend_updated": "2026-05-06",
     "blend_n_symbols": 103,
-    "_2026-05-19_shadow_purpose": "Shadow config for full-e2e shadow run. Cloned from strategy_config.json, swapped panel scorer XGB\u2192HF PatchTST. Hard-isolated state via --broker readonly-alpaca (broker_name=alpaca_shadow \u2192 live_state.alpaca_shadow.json + runs_alpaca_shadow.db). Run AFTER prod via daily_104.sh. ntfy gets [SHADOW] prefix.",
+    "_2026-05-19_shadow_purpose": "Shadow config for full-e2e shadow run. Cloned from strategy_config.json, swapped panel scorer XGB\u2192HF PatchTST. Hard-isolated state via --broker readonly-alpaca (broker_name=alpaca_shadow \u2192 live_state.alpaca_shadow.json + runs_alpaca_shadow.db). Run AFTER prod via daily_104.sh. ntfy title gets [READONLY] prefix (renamed from [SHADOW] 2026-07-01 to stop colliding with the unrelated body-level SHADOW[name]/SHADOW-PICKS[name] per-model comparison segments).",
     "_2026-05-22_patchtst_contract": "Updated from old canonical seed44 to strict-contract PT07 seed44: tail-val 10%, 60BD embargo, train-only label winsor, seq_len=24, lr=1e-4, wd=0.3, warmup=0.1. Final min-regime IC=+0.0307. This is a cleaner shadow instrument, not a promotion claim.",
     "panel_scoring": {
       "enabled": true,

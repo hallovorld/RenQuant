@@ -259,6 +259,26 @@ class HFPatchTSTPanelScorer:
                            "_contract_sidecar_path"),
                        "per_regime_ic": ckpt.get("per_regime_ic", {}),
                    }, path)
+        # 2026-07-02 (#426 round 9, Codex CHANGES_REQUESTED): READ the
+        # persisted provenance_schema_version/recipe_id/required_axis_fields
+        # directly from the checkpoint — do NOT re-derive them here. Round
+        # 8's approach (coalescing cutoff fields and re-resolving a recipe
+        # at LOAD time) could never bind the result into
+        # artifact_fingerprint/artifact_sha256, because that whole-file hash
+        # is computed by stamp_artifact_metadata() below over bytes that
+        # were already written to disk before this derivation ran — a
+        # tampered/relabeled recipe_id would change nothing about that hash.
+        # scripts/patchtst_hf.py --save-model now stamps these three fields
+        # INTO the checkpoint dict before torch.save, so they are part of
+        # the .pt file's own serialized content and are therefore covered
+        # by the whole-file hash. A checkpoint saved before that fix (no
+        # persisted stamp) is treated as UNSTAMPED here — fail-closed
+        # downstream in shadow_scoring.py._compute_admission (NOT ACTIONABLE
+        # for any legacy .pt saved under the round-8-or-earlier code path).
+        for _field in ("provenance_schema_version", "recipe_id", "required_axis_fields"):
+            _val = ckpt.get(_field)
+            if _val is not None:
+                metadata[_field] = _val
         return cls(model=model, feature_cols=ckpt["feature_cols"],
                    seq_len=ckpt["seq_len"], metadata=metadata)
 

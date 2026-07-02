@@ -52,6 +52,7 @@ STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: E402
+from kernel.panel_pipeline.panel_scorer import stamp_provenance_schema  # noqa: E402
 
 PARAMS = {"objective":"rank:pairwise","eta":0.05,"max_depth":5,"min_child_weight":50,
           "subsample":0.7,"colsample_bytree":0.7,"nthread":_XGB_NTHREAD,"verbosity":0,"seed":42}
@@ -944,6 +945,26 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         artifact["effective_train_cutoff_date"] = (
             cutoff_date - pd.offsets.BDay(artifact["cutoff_embargo_days"])
         ).isoformat()
+    # 2026-07-02 (#426 round 8, Codex CHANGES_REQUESTED): stamp the
+    # provenance-schema/recipe identity HERE, at training time, from the
+    # cutoff fields THIS build actually just wrote above — never inferred
+    # downstream from an artifact's contents by a later consumer (that was
+    # round 7's gap: shadow_scoring.py re-derived a recipe from whichever
+    # fields happened to be present, with no way to prove which stamping
+    # contract produced any given artifact). `resolve_recipe_id`/
+    # `RECIPE_REQUIRED_AXES` (kernel/panel_pipeline/panel_scorer.py) is the
+    # single canonical taxonomy both this file and hf_patchtst_scorer.py
+    # stamp against, so a downstream admission gate can require an EXACT
+    # match against a self-declared, immutable contract instead of guessing.
+    # `provenance_schema_version`/`recipe_id`/`required_axis_fields` are not
+    # in `_MUTABLE_ARTIFACT_KEYS`, so they are automatically part of
+    # `model_content_sha256`'s hashed content — bound into the immutable
+    # artifact fingerprint with no separate hashing step.
+    _present_confirmed = {
+        f for f in ("label_observation_cutoff", "effective_train_cutoff_date")
+        if artifact.get(f)
+    }
+    stamp_provenance_schema(artifact, _present_confirmed)
     # ``effective_selection_cutoff_date`` is intentionally NOT stamped. The
     # panel has no DERIVABLE held-out model-selection information date: CV
     # validation, recipe/factor choice, hyperparameter choice, acceptance, and

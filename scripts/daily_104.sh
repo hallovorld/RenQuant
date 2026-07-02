@@ -577,9 +577,12 @@ fi
 # clean diff between prod and shadow outcomes, and sends one wrapper ntfy by
 # default so a broken shadow path is not silent.
 #
-# ntfy uses "[SHADOW]RENQUANT-104" prefix on success. If shadow preflight
-# fails, daily_104 owns the single non-fatal wrapper alert; suppress the
-# inner runner preflight ntfy to avoid duplicate phone errors.
+# ntfy uses "[READONLY]RENQUANT-104" prefix on success (renamed from
+# "[SHADOW]" 2026-07-01 — the old title token collided with the unrelated
+# body-level SHADOW[name]/SHADOW-PICKS[name] per-model comparison segments,
+# see live/runner.py). If shadow preflight fails, daily_104 owns the single
+# non-fatal wrapper alert; suppress the inner runner preflight ntfy to avoid
+# duplicate phone errors.
 echo "--- Step 4: Shadow e2e run (HF PatchTST primary, no real orders) ---"
 SHADOW_LOG="$LOG_DIR/${DATE}_shadow.log"
 # Readonly comparison e2e is a full pass: live broker reads, panel-frame
