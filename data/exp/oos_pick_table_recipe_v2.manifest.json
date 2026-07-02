@@ -4,11 +4,13 @@
     "n_names": 292,
     "n_rows": 147066
   },
-  "note": "wall-clock generation timestamp intentionally omitted for determinism/reproducibility framing; generator_commit + the input hashes are the provenance record, not a run timestamp.",
-  "object_uri": "NOT PERSISTED - no DVC/LFS/object-storage backend is configured for this repo yet. The durable artifact is THIS manifest plus the pinned input hashes above; the parquet payload is regeneratable on demand via `python3 scripts/regen_oos_pick_table.py` against the SAME pinned manifest_input/reference_artifact (hash-verified against the fields above), and is deliberately NOT committed to git (matches PROD_PATH_RULES in renquant-orchestrator's agent_workflows.py: `data/.*\\.parquet$` is a protected production-data path).",
+  "note": "wall-clock generation timestamp intentionally omitted for determinism/reproducibility framing; generator_sha256 + the input hashes are the provenance record, not a run timestamp.",
+  "object_uri": "NOT PERSISTED - no DVC/LFS/object-storage backend is configured for this repo yet. This manifest is a REPRODUCIBILITY RECIPE, not the durable artifact itself: the parquet payload (the actual data) is regeneratable on demand via `python3 scripts/regen_oos_pick_table.py` against the SAME pinned manifest_input/reference_artifact (hash-verified against the fields above, generator hash-verified against generator_sha256), and is deliberately NOT committed to git (matches PROD_PATH_RULES in renquant-orchestrator's agent_workflows.py: `data/.*\\.parquet$` is a protected production-data path).",
   "recipe": {
     "generator": "scripts/regen_oos_pick_table.py",
-    "generator_commit": "a29511d501f91124ad0118cebf2153e7240ba949",
+    "generator_commit": "3baa7a7f2aad0f2f545f0b244a8106b82c585a40",
+    "generator_commit_note": "best-effort `git rev-parse HEAD` at generation time \u2014 informational only, NOT the provenance anchor (a later commit to this script would leave this field stale in an already-committed manifest with no way to detect it; generator_sha256 above is a content hash of the generator's own bytes and is always self-consistent regardless of git history/commit timing)",
+    "generator_sha256": "9ae778c86c4ca3e38c6f33157449de36e93120cc201fe46dbcc69917d8d78ee4",
     "label": "fwd_60d_excess",
     "manifest_input": "backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.json",
     "manifest_input_sha256": "ee7684a6240825dc5c50f84cfc43ef007e45b6963b0f25ba4d2f18682f2b5e8b",

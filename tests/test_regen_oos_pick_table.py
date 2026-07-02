@@ -192,6 +192,42 @@ def test_build_manifest_never_embeds_the_parquet_payload_path_as_object_uri(tmp_
     assert out["recipe"]["manifest_input_sha256"] == hashlib.sha256(b"{}").hexdigest()
 
 
+def test_build_manifest_generator_sha256_matches_the_actual_checked_out_script(tmp_path):
+    """Codex review round 2 (#430): a git-commit-hash self-reference is
+    unreliable — a later commit to this script leaves an already-committed
+    manifest's `generator_commit` stale with no way to detect the mismatch.
+    `generator_sha256` must instead be a content hash of the generator's OWN
+    bytes, valid for whatever version of the script actually ran regardless
+    of git history/commit timing. This test proves that property directly:
+    hand-compute the sha256 of the real, on-disk `regen_oos_pick_table.py`
+    (the same file this test itself imports from) and assert it matches what
+    `build_manifest` stamps — for ANY commit this repo is ever checked out
+    at, the stamped hash always describes the script that is actually
+    present, never a different, historical version."""
+    import hashlib
+    from pathlib import Path as _Path
+
+    from scripts.regen_oos_pick_table import build_manifest
+
+    manifest_path = tmp_path / "wf_manifest.json"
+    manifest_path.write_text("{}")
+    artifact_path = tmp_path / "artifact.json"
+    artifact_path.write_text("{}")
+    meta = {"label": "fwd_60d_excess", "val_cut": "2024-02-01",
+            "n_rows": 100, "n_dates": 10, "n_names": 20}
+
+    out = build_manifest(meta, manifest_path=manifest_path, reference_artifact_path=artifact_path)
+
+    script_path = _Path(__file__).resolve().parent.parent / "scripts" / "regen_oos_pick_table.py"
+    expected = hashlib.sha256(script_path.read_bytes()).hexdigest()
+    assert out["recipe"]["generator_sha256"] == expected
+    assert len(out["recipe"]["generator_sha256"]) == 64
+    # generator_commit stays present (informational) but is documented as
+    # non-authoritative, distinct from the verifiable sha256 anchor.
+    assert "generator_commit_note" in out["recipe"]
+    assert "NOT the provenance anchor" in out["recipe"]["generator_commit_note"]
+
+
 def test_main_writes_manifest_json_and_gitignored_parquet(tmp_path, monkeypatch):
     """End-to-end check of main()'s two-output contract, without running the
     expensive real scoring pipeline: stub build_oos_pick_table."""

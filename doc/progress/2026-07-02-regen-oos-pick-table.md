@@ -8,7 +8,7 @@ WHAT: `scripts/regen_oos_pick_table.py` — a committed, re-runnable generator t
 prod GBDT walk-forward manifest (`backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.json`,
 43 point-in-time artifacts) read-only through the SAME point-in-time manifest contract the walk-forward
 gate itself uses (`scripts.run_wf_gate._score_manifest_sanity` / `WalkForwardModelLoader`), and persists
-the per-(date, name) result as `data/exp/oos_pick_table_recipe_v2.parquet` — the durable table the
+the per-(date, name) result as `data/exp/oos_pick_table_recipe_v2.parquet` — the table the
 renquant-orchestrator direction-decision doc (`doc/design/2026-06-28-renquant105-direction-decision.md`
 §4) said did not yet exist as a committed artifact, and the 2026-07-01 design-review amendments doc
 (A7) elevated to "the evidence base of the 105 direction itself."
@@ -16,15 +16,28 @@ renquant-orchestrator direction-decision doc (`doc/design/2026-06-28-renquant105
 ROUND-2 CORRECTION (Codex review): the parquet payload matches renquant-orchestrator's
 `agent_workflows.PROD_PATH_RULES` protected-path regex (`(^|/)data/.*\.parquet$`) — a
 mechanically-enforced merge-review check — so it is no longer committed to git (removed via
-`git rm --cached`; `.gitignore` now excludes `/data/exp/*.parquet` explicitly). The durable,
-committed artifact is instead `data/exp/oos_pick_table_recipe_v2.manifest.json`, which the
-generator now ALSO writes on every run: schema, row/date/name counts, the generator's own git
-commit, and sha256 hashes of both the walk-forward manifest input and the reference artifact —
-enough to prove, byte-for-byte, that a later re-run against the SAME pinned inputs reproduces the
-SAME table. No DVC/LFS/object-storage backend is configured anywhere in this repo (verified: no
-`.gitattributes`, no dvc config) — the manifest states this plainly rather than claiming a storage
-location that doesn't exist; the parquet itself is a regeneratable local output, not a persisted
-asset.
+`git rm --cached`; `.gitignore` now excludes `/data/exp/*.parquet` explicitly). The manifest
+`data/exp/oos_pick_table_recipe_v2.manifest.json`, which the generator ALSO writes on every run
+(schema, row/date/name counts, hashes), is a REPRODUCIBILITY RECIPE — not the durable artifact
+itself, since it does not contain or stand in for the data. No DVC/LFS/object-storage backend is
+configured anywhere in this repo (verified: no `.gitattributes`, no dvc config) — the manifest
+states this plainly rather than claiming a storage location that doesn't exist; the parquet itself
+is a regeneratable local output, not a persisted asset.
+
+ROUND-3 CORRECTION (Codex review): the manifest's `generator_commit` field is populated from a
+LIVE `git rev-parse HEAD` at generation time (never hardcoded) — but the committed manifest
+FILE itself is a snapshot from the run that produced it, so it necessarily goes stale the moment
+any LATER commit changes the generator (exactly what round 2's own parquet-removal fix did: the
+manifest committed alongside it still named the round-1 commit, `a29511d5`, as its
+`generator_commit`, even though the manifest-writing feature and the fields it produces did not
+exist as of that commit — "a consumer checking out the stamped commit does not get the reviewed
+generator/manifest contract"). Fixed by adding `generator_sha256` — a content hash of
+`scripts/regen_oos_pick_table.py`'s own bytes, computed fresh on every run — as the actual
+verifiable provenance anchor; `generator_commit` is kept only as best-effort informational
+context, explicitly labeled non-authoritative via a new `generator_commit_note` field. New test
+`test_build_manifest_generator_sha256_matches_the_actual_checked_out_script` proves the stamped
+hash always matches whatever script is actually on disk, for any commit this repo is checked out
+at — the self-reference problem cannot recur by construction, not by commit-discipline.
 WHY/DIR: the A1 audit that anchors the entire renquant105 direction (no robust directional edge
 surfaced; apparent skill is a thin BEAR-regime slice; BULL_CALM ~79% of live time reads near-zero)
 lived only as deleted `/tmp` scratch from unmerged scripts — not re-fetchable by a reviewer, not

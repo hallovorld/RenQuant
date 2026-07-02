@@ -242,16 +242,33 @@ def build_manifest(
     manifest_path: Path,
     reference_artifact_path: Path,
 ) -> dict:
-    """The durable, committed record of how to REGENERATE the pick table
-    byte-for-byte, since the parquet payload itself is deliberately NOT
-    committed to git (Codex review on #430: `data/exp/oos_pick_table_recipe_v2.parquet`
-    matches renquant-orchestrator's `agent_workflows.PROD_PATH_RULES` protected-
-    path regex `(^|/)data/.*\\.parquet$` — a mechanically-enforced merge-review
+    """A REPRODUCIBILITY RECIPE for regenerating the pick table byte-for-byte —
+    explicitly NOT "the durable artifact" itself, since the parquet payload
+    (the actual data PAYLOAD) is deliberately NOT committed to git (Codex
+    review on #430: `data/exp/oos_pick_table_recipe_v2.parquet` matches
+    renquant-orchestrator's `agent_workflows.PROD_PATH_RULES` protected-path
+    regex `(^|/)data/.*\\.parquet$` — a mechanically-enforced merge-review
     check, not a style preference). No DVC/LFS/object-storage backend is
     configured anywhere in this repo (checked: no `.gitattributes`, no dvc
-    config) — so this manifest, plus the pinned input hashes below, plus the
-    generator script, IS the durable artifact; the parquet is a regeneratable
-    on-demand output, not itself persisted."""
+    config), so there is nowhere durable for the payload itself to live yet —
+    this manifest only tells a future reader/script exactly how to REGENERATE
+    it on demand; it does not contain or stand in for the data.
+
+    Codex review round 2 (#430): a git COMMIT hash for the generator is
+    self-referential and unreliable — the manifest is written by a run of
+    THIS script, so any commit-hash it stamps necessarily predates (or is
+    unrelated to) whatever commit the manifest itself eventually lands in;
+    a later change to this script (e.g. this very fix) leaves a stale,
+    wrong `generator_commit` sitting in the previously-committed manifest
+    with no mechanical way to detect the mismatch. Fixed by stamping a
+    CONTENT hash of the generator script's own bytes (``generator_sha256``)
+    instead — a pure function of what actually ran, valid regardless of git
+    history or commit timing. ``generator_commit`` (best-effort ``git
+    rev-parse HEAD`` at generation time) is kept as informational context
+    only; ``generator_sha256`` is the verifiable provenance anchor a
+    consumer should actually check (see ``tests/test_regen_oos_pick_table.py``
+    for a test that a fresh checkout's on-disk script hash still matches)."""
+    generator_path = Path(__file__).resolve()
     return {
         "schema": {
             "columns": ["date", "name", "score", "decile_rank", "fwd_60d_excess", "regime"],
@@ -265,7 +282,17 @@ def build_manifest(
         },
         "recipe": {
             "generator": "scripts/regen_oos_pick_table.py",
+            "generator_sha256": _sha256_file(generator_path),
             "generator_commit": _git_head_commit(REPO),
+            "generator_commit_note": (
+                "best-effort `git rev-parse HEAD` at generation time — "
+                "informational only, NOT the provenance anchor (a later commit "
+                "to this script would leave this field stale in an "
+                "already-committed manifest with no way to detect it; "
+                "generator_sha256 above is a content hash of the generator's "
+                "own bytes and is always self-consistent regardless of git "
+                "history/commit timing)"
+            ),
             "manifest_input": _relpath(manifest_path, REPO),
             "manifest_input_sha256": _sha256_file(manifest_path),
             "reference_artifact": _relpath(reference_artifact_path, REPO),
@@ -280,17 +307,19 @@ def build_manifest(
         },
         "object_uri": (
             "NOT PERSISTED - no DVC/LFS/object-storage backend is configured for "
-            "this repo yet. The durable artifact is THIS manifest plus the pinned "
-            "input hashes above; the parquet payload is regeneratable on demand "
-            "via `python3 scripts/regen_oos_pick_table.py` against the SAME "
-            "pinned manifest_input/reference_artifact (hash-verified against the "
-            "fields above), and is deliberately NOT committed to git (matches "
-            "PROD_PATH_RULES in renquant-orchestrator's agent_workflows.py: "
-            "`data/.*\\.parquet$` is a protected production-data path)."
+            "this repo yet. This manifest is a REPRODUCIBILITY RECIPE, not the "
+            "durable artifact itself: the parquet payload (the actual data) is "
+            "regeneratable on demand via `python3 scripts/regen_oos_pick_table.py` "
+            "against the SAME pinned manifest_input/reference_artifact "
+            "(hash-verified against the fields above, generator hash-verified "
+            "against generator_sha256), and is deliberately NOT committed to git "
+            "(matches PROD_PATH_RULES in renquant-orchestrator's "
+            "agent_workflows.py: `data/.*\\.parquet$` is a protected "
+            "production-data path)."
         ),
         "note": (
             "wall-clock generation timestamp intentionally omitted for "
-            "determinism/reproducibility framing; generator_commit + the input "
+            "determinism/reproducibility framing; generator_sha256 + the input "
             "hashes are the provenance record, not a run timestamp."
         ),
     }
