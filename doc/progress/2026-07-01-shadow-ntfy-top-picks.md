@@ -744,3 +744,64 @@ Training-side files (`hf_patchtst_scorer.py`, `train_production_model.py`) are g
 sensitive than `shadow_scoring.py` alone — this round only ADDS new stamped keys, never changes
 any existing stamped value, computed score, or control-flow branch in either file. Still
 observability-only on the `shadow_scoring.py` side; default NOT ACTIONABLE unchanged.
+
+## Round 9 (Codex CHANGES_REQUESTED — the HF/PatchTST path still derived its stamp post-hash)
+
+Round 8 fixed the XGB JSON path for real (recipe_id is part of the hashed payload) but left
+`hf_patchtst_scorer.py::HFPatchTSTPanelScorer.load` DERIVING `provenance_schema_version`/
+`recipe_id` at LOAD time from whichever cutoff fields coalesced — after `stamp_artifact_metadata`
+had already computed `artifact_sha256`/`artifact_fingerprint` as a whole-file hash of the `.pt`
+bytes on disk. A round-8 code comment claimed this "binds into artifact_fingerprint/
+artifact_sha256"; that claim was false — a hash computed over bytes already written to disk
+cannot reflect anything derived from those bytes afterward. Confirmed directly: for a `.pt`
+artifact, `model_content_sha256_from_path` fails `json.loads` on the binary file and falls back
+to `artifact_sha256` (the same whole-file hash) — so BOTH fingerprint fields were identical and
+neither ever moved when the derived recipe_id changed.
+
+### Fix
+- `scripts/patchtst_hf.py --save-model`: now stamps `provenance_schema_version`/`recipe_id`/
+  `required_axis_fields` INTO the checkpoint dict passed to `torch.save`, computed via the same
+  canonical `resolve_recipe_id`/`RECIPE_REQUIRED_AXES` from `panel_scorer.py` (deferred import,
+  matching this script's existing kernel.* import-deferral convention — it's dynamically
+  `importlib`'d by `hf_patchtst_scorer.py`). `model_fp` (the whole-file hash written into the
+  `.metadata.json` sidecar) is computed AFTER this save, so it now genuinely covers the stamp.
+  An unrecognized field combination stays unstamped — never fabricated.
+- `hf_patchtst_scorer.py::HFPatchTSTPanelScorer.load`: the round-8 coalesce-and-derive block is
+  GONE. The loader now only reads `provenance_schema_version`/`recipe_id`/`required_axis_fields`
+  directly off the loaded `ckpt` dict, copying them into `metadata` iff present — no fallback, no
+  re-derivation. A checkpoint saved before this fix (or one the training script chose not to
+  stamp) simply lacks these keys and is correctly NOT ACTIONABLE downstream in
+  `shadow_scoring.py::_compute_admission` (unchanged from round 8 — that gate was already
+  model-family-agnostic; only the loader's INPUT to it was wrong).
+- `tests/test_patchtst_hf.py::TestSourceContracts::test_loc_budget`: raised 780→820 LOC, following
+  this test's own documented trajectory convention (audit-metadata additions, not training logic)
+  — the stamping code itself is ~25 real lines; comment trimming alone couldn't close the gap
+  since the budget only counts non-comment lines.
+
+### Tests
+- `tests/test_hf_patchtst_scorer.py`, new `TestProvenanceStampBinding` (3 tests, all build a real
+  tiny `HFPatchTSTRanker` + genuine `torch.save` fixture via `_load_patchtst_hf_mod()` — the same
+  pattern `TestLoaderArchitectureMismatch` already used, NOT skip-gated, no real production
+  artifact needed): a checkpoint with a persisted stamp loads it verbatim; a checkpoint without
+  one stays unstamped (no fallback); and — the core proof — two otherwise-identical checkpoints
+  differing ONLY in their stamped `recipe_id` produce DIFFERENT `artifact_sha256`, proving the
+  stamp is genuinely bound into the hash now, not just present-but-unverified metadata.
+- The pre-existing skip-gated `test_load_stamps_provenance_schema_when_cutoff_coalesces` (real-
+  artifact-only) renamed/rewritten to `test_load_reads_provenance_schema_stamped_by_real_training_run`
+  and updated to check for the persisted stamp rather than the now-removed coalesce derivation;
+  still skips cleanly if the sandbox's one real artifact predates this fix (correctly NOT
+  ACTIONABLE, nothing to assert).
+- Full sweep: `test_shadow_scoring.py` + `test_hf_patchtst_scorer.py` + `test_patchtst_hf.py` +
+  `test_hf_patchtst_scorer_cross_stock.py` → 145 passed, 5 skipped (no real `.pt` artifact in this
+  sandbox — unchanged from prior rounds), 0 failed. `py_compile` clean on both changed source
+  files.
+
+### Scope
+Touches `scripts/patchtst_hf.py` (training-side, save path only — no change to what gets trained,
+only what gets stamped into the already-existing checkpoint dict before `torch.save`) and
+`hf_patchtst_scorer.py` (load path — removes derivation, adds direct read). No change to
+`shadow_scoring.py`'s admission logic itself; it already read these fields generically. Still
+observability-only; default NOT ACTIONABLE unchanged.
+
+NEXT (unchanged from round 8, now genuinely closer): a preregistered shadow evaluation is still
+required before `shadow_experimental_actionable_display` is ever safe to enable.

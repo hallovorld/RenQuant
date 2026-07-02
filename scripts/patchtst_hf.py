@@ -810,8 +810,23 @@ def train_one(args: argparse.Namespace) -> dict:
         json.dumps(summary, indent=2, default=str))
 
     if args.save_model:
+        # 2026-07-02 (#426 r9): stamp provenance_schema_version/recipe_id
+        # into the checkpoint dict BEFORE torch.save, so they're covered by
+        # the whole-file artifact_sha256/artifact_fingerprint below (r8's
+        # load-time derivation predated that hash and could never bind to
+        # it). Deferred kernel.* import per the note above (avoids the
+        # circular importlib load from hf_patchtst_scorer.py).
+        sys.path.insert(0, str(STRATEGY_DIR))
+        from kernel.panel_pipeline.panel_scorer import (  # noqa: PLC0415
+            PROVENANCE_SCHEMA_VERSION, RECIPE_REQUIRED_AXES, resolve_recipe_id,
+        )
+        _confirmed_axes = {
+            f for f in ("effective_train_cutoff_date",)
+            if training_contract.get(f)
+        }
+        _recipe_id = resolve_recipe_id(_confirmed_axes)
         model_path = out_dir / f"hf_patchtst_{args.cut}_seed{args.seed}_model.pt"
-        torch.save({
+        _ckpt: dict = {
             "state_dict": model.state_dict(),
             "config_dict": cfg.to_dict(),
             "feature_cols": feat_cols,
@@ -834,7 +849,13 @@ def train_one(args: argparse.Namespace) -> dict:
             "uses_winsorize_label_preprocessing": True,
             "training_contract": training_contract,
             "per_regime_ic": summary["per_regime_ic"],
-        }, model_path)
+        }
+        if _recipe_id is not None:
+            _ckpt["provenance_schema_version"] = PROVENANCE_SCHEMA_VERSION
+            _ckpt["recipe_id"] = _recipe_id
+            _ckpt["required_axis_fields"] = sorted(RECIPE_REQUIRED_AXES[_recipe_id])
+        # else: leave unstamped — fail-closed downstream, never fabricated.
+        torch.save(_ckpt, model_path)
         model_fp = "sha256:" + hashlib.sha256(model_path.read_bytes()).hexdigest()
         sidecar = dict(summary)
         sidecar.update({
@@ -842,6 +863,10 @@ def train_one(args: argparse.Namespace) -> dict:
             "artifact_sha256": model_fp,
             "artifact_fingerprint": model_fp,
         })
+        if _recipe_id is not None:
+            sidecar["provenance_schema_version"] = PROVENANCE_SCHEMA_VERSION
+            sidecar["recipe_id"] = _recipe_id
+            sidecar["required_axis_fields"] = sorted(RECIPE_REQUIRED_AXES[_recipe_id])
         (model_path.with_name(model_path.name + ".metadata.json")).write_text(
             json.dumps(sidecar, indent=2, default=str))
         log.info("model saved: %s", model_path)

@@ -175,20 +175,21 @@ class TestLoadScore:
     @pytest.mark.skipif(
         not list((REPO / "artifacts/hf_patchtst_prod").rglob("*_model.pt")),
         reason="no HF PatchTST model artifact yet (train pending)")
-    def test_load_stamps_provenance_schema_when_cutoff_coalesces(self, scorer_mod):
-        """2026-07-02 (#426 round 8): if effective_train_cutoff_date
-        coalesced to a real value from ckpt/contract/sidecar, the loader
-        must stamp provenance_schema_version/recipe_id=walkforward_only_v1
-        — the same canonical taxonomy the XGB path stamps against (see
-        tests/test_train_production_model_cutoff.py::
-        TestProvenanceSchemaStamp), so shadow_scoring.py's admission gate
-        can validate either artifact kind identically."""
+    def test_load_reads_provenance_schema_stamped_by_real_training_run(self, scorer_mod):
+        """2026-07-02 (#426 round 9): scripts/patchtst_hf.py --save-model
+        now stamps provenance_schema_version/recipe_id INTO the checkpoint
+        at save time (not derived here at load time — see
+        TestProvenanceStampBinding for the synthetic-fixture coverage of
+        that contract). A real production training run should therefore
+        carry the stamp already; skip (not fail) if this specific artifact
+        predates that fix, rather than asserting a stamp it was never
+        given the chance to carry."""
         from kernel.panel_pipeline.panel_scorer import PROVENANCE_SCHEMA_VERSION
         artifact = next((REPO / "artifacts/hf_patchtst_prod").rglob("*_model.pt"))
         scorer = scorer_mod.HFPatchTSTPanelScorer.load(artifact)
-        if not scorer.metadata.get("effective_train_cutoff_date"):
-            pytest.skip("this artifact's ckpt/contract/sidecar never coalesced "
-                        "effective_train_cutoff_date — nothing to stamp against")
+        if not scorer.metadata.get("recipe_id"):
+            pytest.skip("this artifact predates the #426 r9 save-time stamp — "
+                        "correctly NOT ACTIONABLE downstream, nothing to assert here")
         assert scorer.metadata["provenance_schema_version"] == PROVENANCE_SCHEMA_VERSION
         assert scorer.metadata["recipe_id"] == "walkforward_only_v1"
         assert scorer.metadata["required_axis_fields"] == ["effective_train_cutoff_date"]
@@ -215,6 +216,94 @@ class TestLoadScore:
         assert len(scores) == 3
         assert scores.notna().all()
         assert scores.name == "panel_score"
+
+
+class TestProvenanceStampBinding:
+    """2026-07-02 (#426 round 9): the loader must READ a persisted
+    provenance_schema_version/recipe_id from the checkpoint, never
+    re-derive it — and that persisted stamp must be part of what
+    artifact_fingerprint/artifact_sha256 actually hashes (round 8's gap:
+    a load-time-derived recipe_id could never bind into a hash computed
+    over bytes written before the derivation ran)."""
+
+    @staticmethod
+    def _tiny_ckpt(tmp_path, name: str, extra: dict) -> Path:
+        import torch
+        from transformers import PatchTSTConfig
+
+        cfg = PatchTSTConfig(
+            num_input_channels=3, context_length=8, patch_length=4,
+            patch_stride=4, d_model=16, num_attention_heads=4,
+            num_hidden_layers=1, ffn_dim=32,
+        )
+        mod = _load_patchtst_hf_mod()
+        model = mod.HFPatchTSTRanker(
+            cfg, use_distributional_head=False, use_film_regime=False,
+            use_cross_stock_attn=False,
+        )
+        ckpt = {
+            "config_dict": cfg.to_dict(),
+            "state_dict": model.state_dict(),
+            "feature_cols": ["f1", "f2", "f3"],
+            "seq_len": 8,
+            "uses_distributional_head": False,
+            "uses_film_regime": False,
+            "uses_cross_stock_attn": False,
+        }
+        ckpt.update(extra)
+        path = tmp_path / name
+        torch.save(ckpt, path)
+        return path
+
+    def test_load_reads_persisted_stamp(self, scorer_mod, tmp_path):
+        from kernel.panel_pipeline.panel_scorer import PROVENANCE_SCHEMA_VERSION
+        artifact = self._tiny_ckpt(tmp_path, "stamped.pt", {
+            "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
+            "recipe_id": "walkforward_only_v1",
+            "required_axis_fields": ["effective_train_cutoff_date"],
+        })
+        scorer = scorer_mod.HFPatchTSTPanelScorer.load(artifact)
+        assert scorer.metadata["provenance_schema_version"] == PROVENANCE_SCHEMA_VERSION
+        assert scorer.metadata["recipe_id"] == "walkforward_only_v1"
+        assert scorer.metadata["required_axis_fields"] == ["effective_train_cutoff_date"]
+
+    def test_load_leaves_legacy_unstamped_checkpoint_unstamped(self, scorer_mod, tmp_path):
+        """No fallback derivation — a checkpoint saved before this fix (or
+        any checkpoint the training script chose not to stamp) must NOT
+        get a recipe_id from anywhere else. Downstream, shadow_scoring.py
+        treats a missing recipe_id as NOT ACTIONABLE."""
+        artifact = self._tiny_ckpt(tmp_path, "legacy.pt", {
+            "effective_train_cutoff_date": "2026-01-01",  # present but NOT stamped
+        })
+        scorer = scorer_mod.HFPatchTSTPanelScorer.load(artifact)
+        assert "recipe_id" not in scorer.metadata
+        assert "provenance_schema_version" not in scorer.metadata
+
+    def test_tampered_recipe_id_changes_the_fingerprint(self, scorer_mod, tmp_path):
+        """The persisted stamp is part of the checkpoint's own bytes, so
+        tampering it (with everything else held constant) must change the
+        whole-file artifact_sha256/artifact_fingerprint — proving the
+        stamp is cryptographically bound, not just present-but-unverified
+        metadata alongside an unrelated hash."""
+        from kernel.panel_pipeline.panel_scorer import PROVENANCE_SCHEMA_VERSION
+        real = self._tiny_ckpt(tmp_path, "real.pt", {
+            "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
+            "recipe_id": "walkforward_only_v1",
+            "required_axis_fields": ["effective_train_cutoff_date"],
+        })
+        # Same construction, but load the state_dict/config fresh so the
+        # only intended difference is the tampered recipe_id — reuse the
+        # helper with a distinct recipe_id string standing in for tamper.
+        tampered = self._tiny_ckpt(tmp_path, "tampered.pt", {
+            "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
+            "recipe_id": "full_history_only_v1",  # tampered value
+            "required_axis_fields": ["effective_train_cutoff_date"],
+        })
+        real_scorer = scorer_mod.HFPatchTSTPanelScorer.load(real)
+        tampered_scorer = scorer_mod.HFPatchTSTPanelScorer.load(tampered)
+        assert (real_scorer.metadata["artifact_sha256"]
+                != tampered_scorer.metadata["artifact_sha256"])
+        assert real_scorer.metadata["recipe_id"] != tampered_scorer.metadata["recipe_id"]
 
 
 class TestLoaderArchitectureMismatch:

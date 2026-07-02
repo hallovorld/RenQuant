@@ -25,7 +25,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 import numpy as np
 import pandas as pd
 
-from kernel.panel_pipeline.panel_scorer import stamp_artifact_metadata, stamp_provenance_schema
+from kernel.panel_pipeline.panel_scorer import stamp_artifact_metadata
 
 log = logging.getLogger("kernel.panel_pipeline.hf_patchtst_scorer")
 
@@ -259,29 +259,26 @@ class HFPatchTSTPanelScorer:
                            "_contract_sidecar_path"),
                        "per_regime_ic": ckpt.get("per_regime_ic", {}),
                    }, path)
-        # 2026-07-02 (#426 round 8, Codex CHANGES_REQUESTED): stamp the
-        # provenance-schema/recipe identity from the cutoff fields THIS
-        # checkpoint/contract/sidecar actually coalesced above — this loader
-        # never stamps `label_observation_cutoff` (that is XGB-only, via
-        # `train_production_model.py::build_artifact`), so an hf_patchtst
-        # artifact resolves to `walkforward_only_v1` whenever
-        # `effective_train_cutoff_date` coalesced to a real value, else stays
-        # unstamped (fail-closed downstream — see `panel_scorer.
-        # stamp_provenance_schema`). NOTE: unlike the XGB JSON-artifact path,
-        # this is derived at LOAD time from the immutable ckpt/contract/
-        # sidecar record (not written into the `.pt` file's own bytes at
-        # `--save-model` time), so it binds into `artifact_fingerprint`/
-        # `artifact_sha256` (whole-file hash, always stamped by
-        # `stamp_artifact_metadata`) rather than into a separate
-        # content-only hash the way the XGB JSON path's
-        # `model_content_fingerprint` does — see the progress doc's NEXT
-        # section for what a true training-time (`--save-model`) stamp would
-        # additionally buy.
-        _present_confirmed = {
-            f for f in ("effective_train_cutoff_date",)
-            if metadata.get(f)
-        }
-        stamp_provenance_schema(metadata, _present_confirmed)
+        # 2026-07-02 (#426 round 9, Codex CHANGES_REQUESTED): READ the
+        # persisted provenance_schema_version/recipe_id/required_axis_fields
+        # directly from the checkpoint — do NOT re-derive them here. Round
+        # 8's approach (coalescing cutoff fields and re-resolving a recipe
+        # at LOAD time) could never bind the result into
+        # artifact_fingerprint/artifact_sha256, because that whole-file hash
+        # is computed by stamp_artifact_metadata() below over bytes that
+        # were already written to disk before this derivation ran — a
+        # tampered/relabeled recipe_id would change nothing about that hash.
+        # scripts/patchtst_hf.py --save-model now stamps these three fields
+        # INTO the checkpoint dict before torch.save, so they are part of
+        # the .pt file's own serialized content and are therefore covered
+        # by the whole-file hash. A checkpoint saved before that fix (no
+        # persisted stamp) is treated as UNSTAMPED here — fail-closed
+        # downstream in shadow_scoring.py._compute_admission (NOT ACTIONABLE
+        # for any legacy .pt saved under the round-8-or-earlier code path).
+        for _field in ("provenance_schema_version", "recipe_id", "required_axis_fields"):
+            _val = ckpt.get(_field)
+            if _val is not None:
+                metadata[_field] = _val
         return cls(model=model, feature_cols=ckpt["feature_cols"],
                    seq_len=ckpt["seq_len"], metadata=metadata)
 

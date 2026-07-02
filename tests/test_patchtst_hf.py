@@ -110,17 +110,21 @@ class TestSourceContracts:
         assert "val_preds.parquet" in src
 
     def test_loc_budget(self):
-        """HF Trainer wrapper + dual head + FiLM + artifact contract: 780 LOC.
+        """HF Trainer wrapper + dual head + FiLM + artifact contract: 820 LOC.
 
         Trajectory: 350 (pre-refactor) → 450 (HF Trainer + dual head + per-
         regime callback) → 550 (+ FiLM Pillar B) → 720 (train-fit
         preprocessing + config/model contract stamps) → 780 (point-in-time WF
-        window + sidecar artifact identity). All additions are config flags /
-        canonical-lib glue / audit metadata, not custom training infrastructure."""
+        window + sidecar artifact identity) → 820 (#426 r9: stamp
+        provenance_schema_version/recipe_id into the checkpoint dict at
+        --save-model time, so they're covered by the whole-file artifact
+        hash — audit metadata, not training logic). All additions are config
+        flags / canonical-lib glue / audit metadata, not custom training
+        infrastructure."""
         src = SCRIPT.read_text()
         loc = sum(1 for line in src.splitlines()
                   if line.strip() and not line.strip().startswith("#"))
-        assert loc <= 780, f"wrapper grew to {loc} LOC — too thick"
+        assert loc <= 820, f"wrapper grew to {loc} LOC — too thick"
 
     def test_film_layer_class_exported(self):
         """FiLM (Perez 2017) regime conditioning module — Pillar B foundation."""
