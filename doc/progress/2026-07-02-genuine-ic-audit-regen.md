@@ -1,11 +1,17 @@
 # Reproduce analyze_manifest_sanity_placebo.py's aligned_real_ic against the durable OOS table
 
-STATUS: revised after Codex round-9 review — metric identity corrected (round 8), every
-reconciliation-protocol parameter now actually pinned with no researcher discretion left
-(round 9: exact Algorithm B construction, exact fixture seeds/tolerances, exact
-adjudication-slice selection rule, exact disagreement threshold, exact decision mapping)
-— still UNRESOLVED (not a confirmation of either cited figure; the protocol is frozen,
-not executed)
+STATUS: revised after Codex round-10 review — metric identity corrected (round 8), every
+reconciliation-protocol parameter pinned with no further researcher discretion (round 9:
+exact Algorithm B construction, exact fixture seeds/tolerances, exact adjudication-slice
+selection rule, exact disagreement threshold, exact decision mapping), AND (round 10,
+this revision) the protocol's own EVIDENTIARY STATUS corrected: pinning parameters after
+already seeing the results they'd be applied to is EXPLORATORY/RETROSPECTIVE, not
+confirmatory — round 10 relabels the whole protocol accordingly and defines the actual
+confirmatory design (≥60 genuinely-new trading sessions past 2026-02-11, frozen procedure
+applied verbatim, no re-tuning). Still UNRESOLVED (not a confirmation of either cited
+figure; the mechanical procedure is frozen and fixture-tested but has not been — and, as
+currently scoped against already-seen data, CANNOT be — executed as a valid confirmatory
+test)
 WHAT: follow-up to A7 (PR #430, `feat/regen-oos-pick-table`, not yet merged), which
 landed a durable, re-runnable OOS pick table replacing the deleted `/tmp` scratch the
 renquant105 "no directional edge" direction decision was based on. That PR's own naive
@@ -93,15 +99,38 @@ EVIDENCE:
 - `py_compile` clean. No code was modified — this PR only runs an existing, unmodified
   script and commits its durable output.
 
-## Reconciliation protocol (ACTUALLY FROZEN spec, round 2 — NOT executed by this PR)
+## Reconciliation protocol (round 3 — EXPLORATORY/RETROSPECTIVE, not confirmatory; NOT executed by this PR)
+
+**Codex round 10 correction — read this before anything below.** Round 2 (below) pinned
+every remaining parameter of this protocol to a concrete, no-further-discretion value —
+but "no further discretion left NOW" is not the same as "was never subject to discretion."
+The adjudication-slice rule (`sorted(unique_dates)[-90:]`) and the disagreement margin
+(`0.02`) were BOTH selected AFTER the full 508-date table, including those same last 90
+dates, had already been scored and inspected in this PR (the +0.044 / +0.027 numbers
+reported above). The 90-date slice was not chosen blind; the 0.02 margin was explicitly
+picked as "roughly half the gap already observed" between those two already-seen numbers.
+Freezing those choices now stops them drifting further, but it does **not** restore
+holdout status, and it does **not** make this a preregistered threshold — pre-registration
+exists specifically to prevent choosing test parameters with knowledge of results that
+would be run against those parameters, which is exactly what happened here.
+
+**This protocol is therefore EXPLORATORY/RETROSPECTIVE, not confirmatory.** It may be
+executed and reported as an informative data point, but it must **NOT**, by itself,
+authorize any Track-A or 105-route decision (the direction-decision doc §4 GO/STOP
+criteria, or PRs #228/#230/#231's dependency gates on the BULL_CALM premise) — see the
+corrected NEXT section at the bottom. A genuine confirmatory test requires the different
+design in "Path to an actual confirmatory test" below.
 
 Codex round 9 correctly found round 1 of this protocol was a menu of deferred choices
 ("Algorithm B is deferred", "shift window... chosen", adjudication slice "e.g. ...") —
 not actually frozen, since a researcher could still make each of those choices AFTER
-seeing results, defeating the whole point of pre-registration. This revision pins every
-one of those choices to a concrete, mechanical, no-further-discretion value. It is a
-pre-registration for whoever executes the reconciliation next; **this PR still does not
-execute it.**
+seeing results, defeating the whole point of pre-registration. Round 2 (immediately below)
+pins every one of those choices to a concrete, mechanical, no-further-discretion value —
+useful as a fully-specified MECHANICAL PROCEDURE (reusable verbatim by the confirmatory
+test below), but, per the round-10 correction above, not itself a valid confirmatory
+pre-registration because of when its parameters were chosen. It is still a
+pre-registration for whoever executes the reconciliation next in EXPLORATORY mode; **this
+PR still does not execute it.**
 
 **0. Pinned data (unchanged from round 1).** Both algorithms run against
 `backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.json`
@@ -190,34 +219,82 @@ roughly half the gap already observed between this PR's BULL_CALM `aligned_real_
 (+0.044) and `model_placebo_ic` (+0.027) on the full window — a conservative margin,
 not tuned against the adjudication slice itself, which is untouched per step 4).
 
-**6. Decision mapping — exact, exhaustive, pre-committed.**
-- **`real_ic > persistence_ic + 0.02`** → the real model's BULL_CALM signal exceeds what
-  pure persistence alone produces under this methodology → the original "≈0 / coin-flip
-  / no demonstrated skill" framing for BULL_CALM does NOT hold as stated → the 105
-  direction (per amendment A7's own rule: "if the durable regeneration materially
-  changes A1, the direction is re-opened") is formally reopened for operator/Codex
-  discussion — not automatically reversed, but no longer citable as settled.
+**6. Decision mapping — exact, exhaustive, pre-committed, EXPLORATORY ONLY (round-10
+correction: none of these outcomes authorizes a Track-A/route decision by itself — see
+above).** Algorithm A vs Algorithm B is a comparison between the reused committed proxy
+and a newly-invented lagged-score comparator built for this reconciliation effort —
+**neither outcome says anything about whether the deleted original scripts would have
+agreed with either one.** Do not read "A and B agree" as "reproduces the deleted
+methodology."
+- **`real_ic > persistence_ic + 0.02`** → the real model's BULL_CALM signal, under
+  Algorithm A, exceeds what the Algorithm-B persistence comparator alone produces →
+  *exploratory* evidence AGAINST the original "≈0 / coin-flip / no demonstrated skill"
+  framing for BULL_CALM → flags the 105 direction as worth a confirmatory look (per
+  amendment A7's own rule: "if the durable regeneration materially changes A1, the
+  direction is re-opened") — raises the question for operator/Codex, does **not** by
+  itself reopen or settle it; a genuine reopening decision should wait for (or be made
+  explicitly despite) the confirmatory test below.
 - **`real_ic ≤ persistence_ic + 0.02`** → the real model's BULL_CALM signal is NOT
-  distinguishable from persistence contamination under this methodology → consistent
-  with (though this specific protocol alone does not PROVE) the original "≈0, no
-  demonstrated skill" framing → PRs #228/#230/#231 may cite BULL_CALM as
-  no-demonstrated-directional-edge, still noting this is Algorithm A/B agreement, not a
-  reproduction of the deleted original scripts.
+  distinguishable from the Algorithm-B persistence comparator → *exploratory* evidence
+  CONSISTENT WITH the original "≈0, no demonstrated skill" framing → still does **not**
+  itself authorize PRs #228/#230/#231 to cite BULL_CALM as settled no-edge; those PRs may
+  cite this outcome only as "consistent with, exploratory, not confirmatory."
 - **Either algorithm fails step 3's fixtures** → neither algorithm may adjudicate the
-  real data; escalate to operator/Codex for a different methodology; render NO verdict
-  on BULL_CALM from this protocol.
+  real data even exploratorily; escalate to operator/Codex for a different methodology;
+  render NO verdict on BULL_CALM from this protocol.
 - **This protocol is never averaged, never re-run with different parameters after
   seeing the adjudication-slice result, and never used to retroactively justify a
-  DIFFERENT margin/threshold than the one frozen in step 5.**
+  DIFFERENT margin/threshold than the one frozen in step 5** — this discipline is worth
+  keeping even in exploratory mode, and is exactly what step 3-5's mechanical procedure
+  should be REUSED VERBATIM for once a genuine confirmatory design (below) is available.
 
-NEXT: **explicit downstream blocker, unchanged in substance, now backed by an actually-
-frozen protocol** — until the reconciliation protocol above is executed exactly as
-specified, PRs #228/#230/#231 (and any future Track-A GO/STOP decision per the
-direction-decision doc §4) must NOT cite either the −0.003 or the +0.044 figure as a
-settled premise for the BULL_CALM skill question. This PR does not choose which number
-is authoritative and does not execute the protocol — it corrects the metric-identity
-labeling (round 1) and freezes every remaining protocol parameter (round 2, this
-revision) so execution requires no further judgment calls. The actual reconciliation run
-(or an explicit operator/Codex decision to proceed without it, e.g. treating both
-figures as within-noise-of-each-other near zero given Track A's own +50bps/yr economic
-GO bar) is future work.
+## Path to an actual confirmatory test (round 10, new)
+
+The mechanical procedure in steps 0-6 above (data pin, Algorithm A, Algorithm B
+construction, fixture tests, primary metric, disagreement rule, decision mapping) is
+worth keeping and reusing verbatim — it is fully specified and fixture-tested. What makes
+the CURRENT run of it merely exploratory is only WHICH DATA it was pointed at (a slice
+already seen). Two ways to get a genuine confirmatory result from the same procedure:
+
+- **(a) Wait for genuinely future, unobserved sessions (RECOMMENDED).** The pinned
+  table's window ends 2026-02-11. Re-run `scripts/regen_oos_pick_table.py` (PR #430) at a
+  later date once real trading sessions have accrued PAST 2026-02-11, take ONLY the new
+  dates (never seen in this analysis) as the adjudication slice, and apply the
+  ALREADY-FROZEN Algorithm A/B code and the already-frozen `0.02` disagreement threshold
+  from steps 1-5 above VERBATIM — no re-tuning permitted now that this document is
+  published. Minimum sample: propose **≥60 new trading sessions** before running the
+  confirmatory test (roughly one label horizon's worth of fresh dates — matches this
+  repo's own `label_observation_cutoff` / `lookahead_days=60` convention used throughout
+  this analysis, and is enough for `regime_shift_diagnostics`' existing `min_names`/date
+  floor to produce a non-degenerate per-regime read). This is the straightforward,
+  clearly-valid option: the new dates cannot have influenced a threshold that was
+  published before they existed.
+- **(b) A cryptographically sealed historical partition (NOT pursued here).** In
+  principle, an existing historical slice could serve as a valid holdout if a commitment
+  to the exact frozen protocol (steps 0-6) had been independently hashed/timestamped
+  BEFORE that specific partition was ever inspected. No such prior commitment exists for
+  any slice of the current 508-date table — every date in it was already scored and
+  visible before this document existed. Constructing one retroactively is not possible
+  (that is precisely the problem being corrected here), and this repo/session has no
+  existing infrastructure for independently-timestamped commitments. Option (a) above is
+  the only currently-practical path; (b) is documented for completeness, not proposed as
+  actionable.
+
+NEXT: **explicit downstream blocker, strengthened by the round-10 correction** — until a
+GENUINE confirmatory reconciliation executes (option (a) above: the already-frozen
+Algorithm A/B procedure applied to ≥60 genuinely-new, never-before-seen trading sessions
+past 2026-02-11), PRs #228/#230/#231 (and any future Track-A GO/STOP decision per the
+direction-decision doc §4) must NOT cite either the −0.003 or the +0.044 figure — nor any
+future EXPLORATORY run of this protocol against the existing 508-date table — as a
+settled premise for the BULL_CALM skill question. Running the frozen protocol against the
+already-seen data (if anyone does, for curiosity) produces an EXPLORATORY data point only,
+per the decision-mapping correction above, never a decision-authorizing result. This PR
+does not choose which number is authoritative, does not execute the protocol, and — as of
+this revision — does not claim the frozen procedure is a valid confirmatory test against
+the data it currently has: it corrects the metric-identity labeling (round 1), freezes
+every remaining mechanical parameter (round 2), and corrects the holdout-validity claim
+(round 3, this revision) by defining what a genuine confirmatory run actually requires. An
+explicit operator/Codex decision to proceed WITHOUT any reconciliation (e.g. treating both
+figures as within-noise-of-each-other near zero given Track A's own +50bps/yr economic GO
+bar) remains available at any time as a separate, recorded risk-acceptance path — that is
+not this protocol, and does not require waiting for it.
