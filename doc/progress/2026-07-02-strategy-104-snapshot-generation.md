@@ -21,6 +21,24 @@ WHY/DIR: amendment A6, `doc/design/2026-07-01-104-105-design-review-amendments.m
 stay truthful at this change frequency, and staleness here has already cost a
 full review round elsewhere.
 EVIDENCE:
+- §4(b) evidence block (`doc/AGENT-RETROSPECTIVE.md`):
+  ```
+  artifact:      scripts/render_strategy_104_snapshot.py, doc/arch/strategy-104-snapshot.md
+  prod or exp:   prod (reads the PINNED backtesting/renquant_104/strategy_config.json —
+                 the config weekly_wf_promote.sh treats as canonical — read-only; writes
+                 only a new doc file, never touches the prod config/artifacts themselves)
+  existing data: grepped doc/arch/strategy-104.md's hand-written table (dated 2026-06-08,
+                 unchanged since despite later prod/shadow switches) and confirmed via
+                 direct read of strategy_config.json / strategy_config.golden.json that
+                 the live pinned kind is currently hf_patchtst-primary/xgb-shadow — see the
+                 "Correction to the amendment doc's own premise" note below
+  best-known?:   this is the first and only current-state generator for this doc; no
+                 prior variant to compare against (the thing it replaces is unversioned
+                 hand-edited prose, not a competing generator)
+  scope:         this is scripts/render_strategy_104_snapshot.py, prod (reads pinned
+                 config read-only), vs the prior state of manually-edited, silently-stale
+                 markdown with no freshness gate at all
+  ```
 - Ran the generator against the REAL live config in this repo (read-only):
   `python3 scripts/render_strategy_104_snapshot.py` → `doc/arch/strategy-104-snapshot.md`.
   Output: primary `kind="hf_patchtst"`, artifact
@@ -47,13 +65,38 @@ EVIDENCE:
 - `python3 scripts/render_strategy_104_snapshot.py --check` → exit 0 against the
   freshly-generated file (proves the check-mode gate works: exact regeneration
   match, not a day-count heuristic).
-- `tests/test_render_strategy_104_snapshot.py` (6 new tests, synthetic fixtures
+- **Round-2 (Codex CHANGES_REQUESTED) fixes:**
+  1. Field extraction is now a STRUCTURAL whitelist, not an emergent property of
+     one function's code: new `_ALLOWED_METADATA_FIELDS` constant + `_extract_allowed()`
+     — the ONLY point in the module that reads artifact-metadata field *values*;
+     every other function receives data only through it. Proven by
+     `test_metadata_whitelist_excludes_secrets_credentials_and_free_form_notes`
+     (synthetic metadata carrying `api_key`, `broker_credentials`,
+     `_local_debug_path`, `internal_notes`, `aws_access_key_id` alongside the
+     legitimate fields — asserts none of it reaches the snapshot dict or the
+     rendered markdown).
+  2. New `_relativize_for_display()`: an artifact path inside the repo root is
+     rendered relative to it; one outside is redacted to `<redacted-external-path>/
+     <basename>` — never a raw absolute local path. Proven by
+     `test_absolute_artifact_path_is_relativized_or_redacted_never_leaked_raw`.
+  3. Tightened both the generated file's own header and the `strategy-104.md`
+     pointer note to state explicitly that the generated snapshot is a
+     **current fact** ("the pinned config says X, as of the last regeneration"),
+     never a historical/promotion claim ("active since <date>") — that dated
+     narrative stays in `strategy-104.md` only.
+  4. Re-ran the generator against the REAL config after these changes — `git diff
+     doc/arch/strategy-104-snapshot.md` is EMPTY (the whitelist doesn't drop
+     anything the real artifacts actually stamp; this was a defense-in-depth
+     hardening, not a behavior change for today's data), and `--check` still
+     passes.
+- `tests/test_render_strategy_104_snapshot.py` (8 tests total, synthetic fixtures
   only — no dependency on real repo config/artifacts existing) →
   `/Users/renhao/git/github/RenQuant/.venv/bin/python -m pytest tests/test_render_strategy_104_snapshot.py -q`
-  → 6 passed. Covers: inline-JSON primary+shadow with cutoff-field priority,
+  → 8 passed. Covers: inline-JSON primary+shadow with cutoff-field priority,
   binary-checkpoint-via-sidecar metadata, missing-artifact graceful handling,
-  markdown rendering, and the `--check` stale/fresh gate itself.
-- `py_compile` clean on both new files.
+  markdown rendering, the `--check` stale/fresh gate, the metadata whitelist
+  leak-proof fixture, and the absolute-path redaction fixture.
+- `py_compile` clean on both changed files.
 - New `.github/workflows/strategy-104-snapshot-fresh.yml` (mirrors the existing
   `subrepo-pin-ci-green.yml` style) runs `render_strategy_104_snapshot.py --check`
   on every PR/push to main — fails if the committed snapshot doesn't exactly

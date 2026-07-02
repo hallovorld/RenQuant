@@ -175,6 +175,95 @@ def test_check_mode_fails_when_output_is_stale(tmp_path, capsys):
     assert "STALE" in capsys.readouterr().err
 
 
+def test_metadata_whitelist_excludes_secrets_credentials_and_free_form_notes(tmp_path):
+    """Codex review (PR #429): the renderer must WHITELIST fields, not
+    serialize arbitrary artifact metadata. Construct metadata carrying
+    obviously sensitive/unapproved keys alongside the legitimate ones and
+    prove none of the sensitive content ever reaches the rendered output."""
+    mod = _load_module()
+    strategy_dir = tmp_path / "backtesting" / "renquant_104"
+    strategy_dir.mkdir(parents=True)
+
+    _write_json(strategy_dir / "artifacts" / "prod" / "primary.json", {
+        # legitimate, whitelisted fields:
+        "trained_date": "2026-06-30",
+        "effective_train_cutoff_date": "2026-05-01",
+        "lookahead_days": 60,
+        "config_fingerprint": "sha256:abc123",
+        # everything below must NEVER appear in rendered output:
+        "api_key": "sk-secret-do-not-leak-123",
+        "broker_credentials": {"user": "alice", "password": "hunter2"},
+        "_local_debug_path": "/Users/someone/private/notes.txt",
+        "internal_notes": "do not ship this text externally, contains PII",
+        "aws_access_key_id": "AKIAABCDEFGHIJKLMNOP",
+    })
+
+    config_path = strategy_dir / "strategy_config.json"
+    _write_json(config_path, {
+        "ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/prod/primary.json",
+            "shadow_models": [],
+        }},
+        "watchlist": ["AAPL"],
+    })
+
+    snapshot = mod.collect_snapshot(config_path)
+    rendered = mod.render_markdown(snapshot)
+
+    # legitimate fields present:
+    assert "trained_date=2026-06-30" in rendered
+    assert "sha256:abc123" in rendered
+
+    # nothing sensitive ever reaches the snapshot dict OR the rendered text:
+    sensitive_strings = (
+        "sk-secret-do-not-leak-123", "hunter2", "alice",
+        "/Users/someone/private/notes.txt", "do not ship this text externally",
+        "AKIAABCDEFGHIJKLMNOP", "broker_credentials", "api_key",
+        "internal_notes", "aws_access_key_id", "_local_debug_path",
+    )
+    for secret in sensitive_strings:
+        assert secret not in rendered, f"leaked into rendered output: {secret!r}"
+    assert str(snapshot["primary"]) .find("hunter2") == -1
+    for secret in sensitive_strings:
+        assert secret not in str(snapshot), f"leaked into snapshot dict: {secret!r}"
+
+
+def test_absolute_artifact_path_is_relativized_or_redacted_never_leaked_raw(tmp_path):
+    """Codex review (PR #429): the rendered snapshot must never contain an
+    absolute local filesystem path. Today's config only stores relative
+    paths, but the renderer must defend against a future absolute one."""
+    mod = _load_module()
+    fake_repo_root = tmp_path / "repo"
+    strategy_dir = fake_repo_root / "backtesting" / "renquant_104"
+    strategy_dir.mkdir(parents=True)
+
+    # An artifact path INSIDE the fake repo root, given as absolute:
+    inside_artifact = strategy_dir / "artifacts" / "prod" / "primary.json"
+    _write_json(inside_artifact, {"trained_date": "2026-06-30"})
+
+    row_inside = mod._describe_model(
+        role="primary", kind="xgb", artifact_rel=str(inside_artifact),
+        strategy_dir=strategy_dir, repo_root=fake_repo_root,
+    )
+    assert not Path(row_inside["artifact_path"]).is_absolute()
+    assert str(fake_repo_root) not in row_inside["artifact_path"]
+
+    # An artifact path OUTSIDE the fake repo root entirely (e.g. some other
+    # local machine path) must be redacted to just its basename, never
+    # echoed as a full local path:
+    outside_artifact = tmp_path / "elsewhere" / "model.json"
+    outside_artifact.parent.mkdir(parents=True)
+    _write_json(outside_artifact, {"trained_date": "2026-06-30"})
+
+    row_outside = mod._describe_model(
+        role="primary", kind="xgb", artifact_rel=str(outside_artifact),
+        strategy_dir=strategy_dir, repo_root=fake_repo_root,
+    )
+    assert str(tmp_path) not in row_outside["artifact_path"]
+    assert row_outside["artifact_path"] == "<redacted-external-path>/model.json"
+
+
 def test_check_mode_passes_after_regeneration(tmp_path):
     mod = _load_module()
     strategy_dir = tmp_path / "backtesting" / "renquant_104"

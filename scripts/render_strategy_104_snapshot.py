@@ -49,6 +49,42 @@ _DATA_CUTOFF_FIELDS = (
 
 _BINARY_ARTIFACT_SUFFIXES = {".pt", ".pth", ".bin", ".ckpt", ".safetensors", ".onnx"}
 
+# Codex review (PR #429): the generated snapshot must WHITELIST fields rather
+# than serialize arbitrary artifact metadata — an artifact's metadata JSON
+# could, in principle, ever carry an operational/internal key (a credential,
+# a local debug path, free-form notes) alongside the legitimate provenance
+# fields, and a generic "copy every key" renderer would leak it into a
+# committed, widely-read doc. `_describe_model` below only ever reads the
+# fields named here, by explicit dict-literal construction — never
+# `for k, v in meta.items(): ...`. This constant exists so that guarantee is
+# visible and auditable at a glance, not just an emergent property of one
+# function's code, and so extending the rendered fields later is a deliberate
+# one-line addition here, not an accidental widening.
+_ALLOWED_METADATA_FIELDS = (
+    "trained_date",
+    *_DATA_CUTOFF_FIELDS,
+    "lookahead_days",
+    "config_fingerprint",
+)
+
+
+def _relativize_for_display(raw: str, *, repo_root: Path) -> str:
+    """Defense-in-depth (Codex review, PR #429): the rendered snapshot must
+    never contain an absolute local filesystem path — today's
+    strategy_config.json only ever stores repo-relative artifact paths, but
+    this guards against a future hand-edited config regressing that. An
+    absolute path found to be inside ``repo_root`` is rewritten relative to
+    it; one found to be outside is redacted to just its basename with a
+    marker, rather than ever echoing a full local path into a committed doc.
+    """
+    p = Path(raw)
+    if not p.is_absolute():
+        return raw
+    try:
+        return str(p.relative_to(repo_root))
+    except ValueError:
+        return f"<redacted-external-path>/{p.name}"
+
 
 def _resolve_artifact_path(raw: str, *, strategy_dir: Path) -> Path:
     """Artifact paths in strategy_config.json are relative to STRATEGY_DIR
@@ -82,18 +118,33 @@ def _load_artifact_metadata(artifact_path: Path) -> dict[str, Any]:
 
 def _binding_cutoff(meta: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
     for field in _DATA_CUTOFF_FIELDS:
+        assert field in _ALLOWED_METADATA_FIELDS  # structural whitelist guard
         val = meta.get(field)
         if val:
             return field, str(val)[:10]
     return None, None
 
 
+def _extract_allowed(meta: dict[str, Any]) -> dict[str, Any]:
+    """The ONLY point in this module that reads artifact metadata field
+    values — every other function receives its data from HERE, never from
+    ``meta`` directly. Returns exactly the ``_ALLOWED_METADATA_FIELDS`` keys
+    present in ``meta``; anything else in the source metadata (whatever it
+    might be — a credential, a local debug path, free-form notes) is
+    structurally unreachable past this point."""
+    return {field: meta[field] for field in _ALLOWED_METADATA_FIELDS if field in meta}
+
+
 def _describe_model(
     *, role: str, kind: Optional[str], artifact_rel: Optional[str],
-    strategy_dir: Path, name: Optional[str] = None,
+    strategy_dir: Path, repo_root: Path = REPO_ROOT, name: Optional[str] = None,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
-        "role": role, "name": name, "kind": kind, "artifact_path": artifact_rel,
+        "role": role, "name": name, "kind": kind,
+        "artifact_path": (
+            _relativize_for_display(artifact_rel, repo_root=repo_root)
+            if artifact_rel else artifact_rel
+        ),
         "trained_date": None, "binding_cutoff_field": None, "binding_cutoff": None,
         "lookahead_days": None, "config_fingerprint": None,
         "metadata_source": None,
@@ -101,9 +152,10 @@ def _describe_model(
     if not artifact_rel:
         return row
     resolved = _resolve_artifact_path(artifact_rel, strategy_dir=strategy_dir)
-    meta = _load_artifact_metadata(resolved)
-    if not meta:
+    raw_meta = _load_artifact_metadata(resolved)
+    if not raw_meta:
         return row
+    meta = _extract_allowed(raw_meta)  # whitelist boundary — see docstring
     row["trained_date"] = meta.get("trained_date")
     row["binding_cutoff_field"], row["binding_cutoff"] = _binding_cutoff(meta)
     row["lookahead_days"] = meta.get("lookahead_days")
@@ -114,9 +166,13 @@ def _describe_model(
     return row
 
 
-def collect_snapshot(config_path: Path, *, strategy_dir: Optional[Path] = None) -> dict[str, Any]:
+def collect_snapshot(
+    config_path: Path, *, strategy_dir: Optional[Path] = None, repo_root: Path = REPO_ROOT,
+) -> dict[str, Any]:
     """Pure function: config -> snapshot dict. No I/O beyond reading config +
-    referenced artifact metadata files."""
+    referenced artifact metadata files. ``repo_root`` is exposed (default the
+    real repo root) so tests can prove the absolute-path redaction in
+    ``_relativize_for_display`` without touching the real filesystem."""
     strategy_dir = strategy_dir or config_path.parent
     config = json.loads(config_path.read_text(encoding="utf-8"))
     panel_scoring = (config.get("ranking") or {}).get("panel_scoring") or {}
@@ -124,19 +180,20 @@ def collect_snapshot(config_path: Path, *, strategy_dir: Optional[Path] = None) 
     primary = _describe_model(
         role="primary", kind=panel_scoring.get("kind"),
         artifact_rel=panel_scoring.get("artifact_path"), strategy_dir=strategy_dir,
+        repo_root=repo_root,
     )
     shadows = [
         _describe_model(
             role="shadow", kind=sm.get("kind"), artifact_rel=sm.get("artifact_path"),
-            strategy_dir=strategy_dir, name=sm.get("name"),
+            strategy_dir=strategy_dir, name=sm.get("name"), repo_root=repo_root,
         )
         for sm in (panel_scoring.get("shadow_models") or [])
     ]
     watchlist = config.get("watchlist") or []
 
     return {
-        "config_path": str(config_path.relative_to(REPO_ROOT))
-        if config_path.is_relative_to(REPO_ROOT) else str(config_path),
+        "config_path": str(config_path.relative_to(repo_root))
+        if config_path.is_relative_to(repo_root) else str(config_path),
         "primary": primary,
         "shadows": shadows,
         "watchlist_size": len(watchlist),
@@ -171,10 +228,14 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
         "",
         "Rendered directly from the PINNED config + each referenced artifact's own",
         "stamped metadata (never hand-maintained prose) — see amendment A6,",
-        "doc/design/2026-07-01-104-105-design-review-amendments.md. Fields with no",
-        "clean current-state source (a specific WF run's mean IC, a regime-detector",
-        "commit hash, etc.) are NOT rendered here; those stay as narrative in",
-        "doc/arch/strategy-104.md.",
+        "doc/design/2026-07-01-104-105-design-review-amendments.md. This states ONLY",
+        "what the pinned config says AS OF the last regeneration (CI-enforced fresh —",
+        "see the workflow below) — a current fact, never a historical/promotion claim",
+        "(\"active since <date>\", \"promoted on <date>\"); that narrative, with its own",
+        "dating and provenance, belongs in doc/arch/strategy-104.md instead. Fields",
+        "with no clean current-state source (a specific WF run's mean IC, a",
+        "regime-detector commit hash, etc.) are NOT rendered here either, for the",
+        "same reason — they stay as dated narrative in doc/arch/strategy-104.md.",
         "",
         f"Source config: `{snapshot['config_path']}`",
         "",
