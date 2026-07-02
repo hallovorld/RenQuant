@@ -25,7 +25,10 @@ def _run(root: Path, notify_log: Path, lock_file: Path) -> subprocess.CompletedP
         "RQ_WEEKLY_PROMOTE_NOTIFY_LOG": str(notify_log),
         "RQ_WEEKLY_PROMOTE_LOCK_FILE": str(lock_file),
         "RQ_WF_GATE_RUNNER": "umbrella",
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        # Shims FIRST: notify() must observe via RQ_WEEKLY_PROMOTE_NOTIFY_LOG
+        # only — never POST test noise (e.g. a fake "SNAPSHOT STALE" alert)
+        # to the real ntfy topic or pop real desktop notifications.
+        "PATH": f"{fixture.shim_bin_dir(root)}:/usr/bin:/bin:/usr/local/bin",
         "HOME": str(root),
     }
     return subprocess.run(

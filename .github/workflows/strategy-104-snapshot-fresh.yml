@@ -65,7 +65,8 @@ jobs:
             tests/test_restamp_prod_fingerprint_snapshot_backstop.py \
             tests/test_weekly_wf_promote_snapshot_backstop.py \
             tests/test_manual_promote_snapshot_backstop.py \
-            tests/test_promote_shadow_patchtst.py
+            tests/test_promote_shadow_patchtst.py \
+            tests/test_promote_shadow_patchtst_snapshot_backstop.py
 
   verify-pinned-declaration:
     runs-on: ubuntu-latest

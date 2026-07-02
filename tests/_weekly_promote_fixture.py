@@ -225,9 +225,28 @@ def promote(src, dst):
     if subrepo_env_src.exists():
         (root / "scripts" / "subrepo_env.sh").write_bytes(subrepo_env_src.read_bytes())
 
+    # PATH shims for notify()'s outbound channels: WITHOUT these, running
+    # the real weekly_wf_promote.sh under test would POST real test-noise
+    # notifications (including a fake "SNAPSHOT STALE" alert) to the
+    # OPERATOR'S production ntfy topic via the real curl, and pop real
+    # desktop notifications via terminal-notifier on a macOS dev machine.
+    # Tests must prepend shim_bin_dir(root) to the subprocess PATH; the
+    # RQ_WEEKLY_PROMOTE_NOTIFY_LOG hook (not these shims) is what the
+    # notification assertions observe.
+    testbin = shim_bin_dir(root)
+    _write_executable(testbin / "curl", "#!/bin/bash\nexit 0\n")
+    _write_executable(testbin / "terminal-notifier", "#!/bin/bash\nexit 0\n")
+
     (root / ".env").write_text("", encoding="utf-8")
     (root / "doc").mkdir(parents=True, exist_ok=True)
     return mod
+
+
+def shim_bin_dir(root: Path) -> Path:
+    """Directory of no-op curl/terminal-notifier shims (created by
+    build_fixture_repo); prepend to PATH so notify() cannot reach the real
+    ntfy topic or the desktop notifier from a test run."""
+    return root / ".testbin"
 
 
 def make_snapshot_stale(root: Path, mod) -> None:

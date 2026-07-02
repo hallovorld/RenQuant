@@ -239,3 +239,38 @@ committed snapshot stale, AND (b) has that behavior proven by an executed test t
 actually runs — not merely a correct-by-inspection code review. The "deployed but dark"
 gap this task exists to close is closed, with the closure itself demonstrated rather
 than asserted.
+
+## Round 5.1 (green the round-5 push + close two holes found in review of it)
+
+The round-5 commit was correct in structure but its first CI run went RED and
+two real defects surfaced on inspection; fixed forward:
+
+- **CI red root cause (3 failures in `tests/test_promote_pin.py`):** the
+  `bump --apply` tests relied on the DEFAULT verify step being skipped
+  (`check_conviction_admits.py` absent). On the hosted runner's full checkout
+  the script exists, ran against the synthetic lock fixture, failed for lack
+  of live data, and auto-reverted the bump before the behavior under test was
+  reached (locally it silently passed because that script reads the LIVE
+  run bundle and exited 0 — an environment-dependent test, the actual bug).
+  All four such invocations now pass an explicit `--verify-cmd true`,
+  hermetic in both environments.
+- **Real ntfy/notifier leak in the weekly harness:** running the real
+  `weekly_wf_promote.sh` under test still executed the real `curl` POST to
+  the production `ntfy.sh/renquant` topic (including a fake
+  "SNAPSHOT STALE" alert — a false alarm into the live operator channel on
+  every CI/local run) and real `terminal-notifier` popups on macOS.
+  `tests/_weekly_promote_fixture.py` now installs no-op `curl` /
+  `terminal-notifier` PATH shims (`shim_bin_dir()`), prepended to the
+  subprocess PATH; assertions observe `RQ_WEEKLY_PROMOTE_NOTIFY_LOG` as
+  before.
+- **Successful-swap WIRING proof:** the round-5 shadow tests exercise
+  `_apply_snapshot_freshness_backstop` in isolation but never prove
+  `run_promote()` reaches it on the successful-swap path. New
+  `tests/test_promote_shadow_patchtst_snapshot_backstop.py` drives
+  `run_promote()` through a REAL executed `--apply` swap (write-new copy,
+  config backup, atomic pin rewrite, promote log) with the checker injected
+  via the `promote_pin` module seam: stale flips rc after the swap without
+  reverting the on-disk pin; fresh keeps `RC_OK`; dry-run never consults the
+  checker. Added to the CI suite list.
+
+Exact CI command re-run locally after these fixes: **124 passed**.

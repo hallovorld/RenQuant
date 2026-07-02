@@ -75,9 +75,15 @@ def test_cli_apply_writes_pin_and_backup_then_revert(tmp_path):
     # mechanics only, against a synthetic lock file with no matching
     # .subrepo_runtime tree — the snapshot backstop is covered separately in
     # test_snapshot_freshness_check_* below.
+    # --verify-cmd true: hermetic — without it, the DEFAULT verify
+    # (check_conviction_admits.py, present in a full checkout such as the
+    # hosted CI runner but absent from some dev worktrees) would run against
+    # this synthetic lock, fail for lack of live data, and auto-revert the
+    # bump before the behavior under test is reached.
     p = tmp_path / "lock.json"; pp.atomic_write_json(p, _lock())
     rc = pp.main(["bump", "--subrepo", "renquant-pipeline", "--commit", "ccccccc3",
-                  "--lock", str(p), "--no-sync", "--apply", "--skip-snapshot-check"])
+                  "--lock", str(p), "--no-sync", "--apply", "--skip-snapshot-check",
+                  "--verify-cmd", "true"])
     assert rc == 0
     assert pp.load_lock(p)["subrepos"][0]["commit"] == "ccccccc3"   # applied
     assert pp.latest_backup(p) is not None                          # backup made
@@ -100,7 +106,7 @@ def test_bump_apply_defaults_to_checking_snapshot_freshness(tmp_path, monkeypatc
 
     monkeypatch.setattr(pp, "check_snapshot_freshness", fake_check)
     rc = pp.main(["bump", "--subrepo", "renquant-pipeline", "--commit", "ccccccc3",
-                  "--lock", str(p), "--no-sync", "--apply"])
+                  "--lock", str(p), "--no-sync", "--apply", "--verify-cmd", "true"])
     assert rc == 1, "a stale snapshot must make the command exit non-zero"
     assert len(calls) == 1
     # The pin itself is NOT reverted — only the snapshot needs a follow-up.
@@ -113,7 +119,8 @@ def test_bump_apply_skip_snapshot_check_flag_bypasses_the_backstop(tmp_path, mon
     monkeypatch.setattr(pp, "check_snapshot_freshness",
                          lambda *a, **k: called.append(1) or (False, "should not run"))
     rc = pp.main(["bump", "--subrepo", "renquant-pipeline", "--commit", "ccccccc3",
-                  "--lock", str(p), "--no-sync", "--apply", "--skip-snapshot-check"])
+                  "--lock", str(p), "--no-sync", "--apply", "--skip-snapshot-check",
+                  "--verify-cmd", "true"])
     assert rc == 0
     assert not called
 
@@ -121,7 +128,8 @@ def test_bump_apply_skip_snapshot_check_flag_bypasses_the_backstop(tmp_path, mon
 def test_revert_apply_also_checks_snapshot_freshness(tmp_path, monkeypatch):
     p = tmp_path / "lock.json"; pp.atomic_write_json(p, _lock())
     pp.main(["bump", "--subrepo", "renquant-pipeline", "--commit", "ccccccc3",
-             "--lock", str(p), "--no-sync", "--apply", "--skip-snapshot-check"])
+             "--lock", str(p), "--no-sync", "--apply", "--skip-snapshot-check",
+             "--verify-cmd", "true"])
     calls = []
     monkeypatch.setattr(pp, "check_snapshot_freshness",
                          lambda *a, **k: calls.append(1) or (True, "fresh"))
