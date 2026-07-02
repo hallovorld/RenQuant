@@ -25,8 +25,18 @@ is not an importable package), and assert:
     CURRENT source panel on disk fails closed (drift with no receipt);
   - a corpus whose provenance horizon doesn't match the script's HORIZON
     fails closed;
-  - a fully-validated, matching-digest/horizon corpus is ADMITTED and trains
-    end-to-end: NGBoost fits and a real artifact is written to disk.
+  - a corpus TAMPERED/REPLACED after validation (bytes changed, sidecar left
+    as-is, source_panel_sha256 and horizon both still matching) fails closed
+    on the rawlabel_sha256 check — this is the specific gap the coordinated
+    renquant-orchestrator #218 + RenQuant #427 fix closes: previously only
+    the INPUT (source panel) was digest-bound, never the OUTPUT (the corpus
+    itself);
+  - a provenance sidecar missing rawlabel_sha256 or schema_version entirely
+    (a pre-fix producer) fails closed rather than being silently admitted;
+  - a provenance sidecar declaring a schema_version this consumer doesn't
+    recognize fails closed;
+  - a fully-validated, matching-digest/horizon/schema corpus is ADMITTED and
+    trains end-to-end: NGBoost fits and a real artifact is written to disk.
 """
 from __future__ import annotations
 
@@ -81,10 +91,27 @@ def _build_rawlabel_panel(source: pd.DataFrame, path: Path) -> None:
 
 
 def _write_provenance(
-    rawlabel_path: Path, *, horizon: int, source_panel_sha256: str, n_rows: int, n_tickers: int
+    rawlabel_path: Path,
+    *,
+    horizon: int,
+    source_panel_sha256: str,
+    n_rows: int,
+    n_tickers: int,
+    rawlabel_sha256: str | None = None,
+    schema_version: int | None = 1,
 ) -> None:
+    """Write a provenance sidecar. By default ``rawlabel_sha256`` is computed
+    from the CURRENT on-disk ``rawlabel_path`` bytes (i.e. a "correctly
+    matching" sidecar, matching what renquant-orchestrator's
+    RefreshSigmaHeadRawLabelTask actually stamps post-swap) and
+    ``schema_version`` defaults to the current schema (1) — so every existing
+    call site that only cares about some OTHER field (horizon, source-panel
+    digest, ...) gets a valid rawlabel digest "for free" and isolates the
+    failure it's actually testing. Pass ``rawlabel_sha256=`` explicitly to
+    simulate a tampered/replaced corpus, or ``schema_version=None`` to omit
+    the key entirely (simulating a pre-schema-versioning producer)."""
     prov = rawlabel_path.with_name(rawlabel_path.name + ".provenance.json")
-    prov.write_text(json.dumps({
+    payload = {
         "n_rows": n_rows,
         "n_tickers": n_tickers,
         "finite_fraction": 1.0,
@@ -93,7 +120,13 @@ def _write_provenance(
         "source_panel_frontier": "2024-01-01",
         "rawlabel": str(rawlabel_path),
         "built_at": "2026-07-01T00:00:00Z",
-    }, indent=2))
+        "rawlabel_sha256": (
+            rawlabel_sha256 if rawlabel_sha256 is not None else _sha256_file(rawlabel_path)
+        ),
+    }
+    if schema_version is not None:
+        payload["schema_version"] = schema_version
+    prov.write_text(json.dumps(payload, indent=2))
 
 
 def _write_invalid_receipt(rawlabel_path: Path, *, reason: str) -> None:
@@ -218,6 +251,113 @@ def test_horizon_mismatch_fails_closed(tmp_path):
     _write_provenance(
         rawlabel_path, horizon=30,  # script's HORIZON constant is 60
         source_panel_sha256=_sha256_file(source_path), n_rows=len(source), n_tickers=6,
+    )
+
+    rc, out_path = _run(tmp_path, panel_path=rawlabel_path, source_panel_path=source_path)
+
+    assert rc == 3
+    assert not out_path.exists()
+
+
+# ─── rawlabel_sha256 / schema_version — closes the Codex #218/#427 gap ──────
+# The producer's success provenance recorded source_panel_sha256 (the INPUT
+# digest) but never a digest of the VALIDATED RAWLABEL CORPUS itself (the
+# OUTPUT this admission gate is meant to protect). A later replacement/edit
+# of rawlabel.parquet with the sidecar left intact — and the source panel
+# UNCHANGED — was indistinguishable from the originally-validated bytes and
+# would have been wrongly admitted by source_panel_sha256 + horizon alone.
+# These tests prove that gap is now closed.
+
+
+def test_tampered_rawlabel_corpus_fails_closed_even_with_matching_source_and_horizon(tmp_path):
+    """THE core regression from the review: bytes of the corpus itself are
+    changed AFTER validation (replaced/edited/corrupted), the sidecar is left
+    completely untouched, source_panel_sha256 and horizon both still match
+    the live source panel — only rawlabel_sha256 can catch this."""
+    source_path = tmp_path / "source.parquet"
+    source = _build_source_panel(source_path, n_dates=10, n_tickers=6)
+    rawlabel_path = tmp_path / "rawlabel.parquet"
+    _build_rawlabel_panel(source, rawlabel_path)
+    # Provenance stamped against the ORIGINAL (validated) corpus bytes —
+    # rawlabel_sha256 defaults to the digest of rawlabel_path AT THIS POINT.
+    _write_provenance(
+        rawlabel_path, horizon=60,
+        source_panel_sha256=_sha256_file(source_path), n_rows=len(source), n_tickers=6,
+    )
+
+    # Out-of-band replacement of the corpus file — sidecar (and source panel)
+    # left untouched, exactly the scenario the review flagged.
+    rawlabel_path.write_bytes(b"TAMPERED-BYTES-NEVER-VALIDATED-BY-THE-REFRESH-TASK")
+
+    rc, out_path = _run(tmp_path, panel_path=rawlabel_path, source_panel_path=source_path)
+
+    assert rc == 3
+    assert not out_path.exists()
+
+
+def test_missing_rawlabel_sha256_fails_closed(tmp_path):
+    """A provenance sidecar predating the rawlabel_sha256 field (an older
+    producer, or a hand-crafted receipt) must not be trusted merely because
+    source_panel_sha256 + horizon happen to match — the OUTPUT was never
+    bound to a digest at all, so it fails closed rather than being silently
+    treated as admitted."""
+    source_path = tmp_path / "source.parquet"
+    source = _build_source_panel(source_path, n_dates=10, n_tickers=6)
+    rawlabel_path = tmp_path / "rawlabel.parquet"
+    _build_rawlabel_panel(source, rawlabel_path)
+    prov = rawlabel_path.with_name(rawlabel_path.name + ".provenance.json")
+    prov.write_text(json.dumps({
+        "n_rows": len(source),
+        "n_tickers": 6,
+        "finite_fraction": 1.0,
+        "horizon": 60,
+        "source_panel_sha256": _sha256_file(source_path),
+        "source_panel_frontier": "2024-01-01",
+        "rawlabel": str(rawlabel_path),
+        "built_at": "2026-07-01T00:00:00Z",
+        "schema_version": 1,
+        # rawlabel_sha256 deliberately omitted.
+    }, indent=2))
+
+    rc, out_path = _run(tmp_path, panel_path=rawlabel_path, source_panel_path=source_path)
+
+    assert rc == 3
+    assert not out_path.exists()
+
+
+def test_schema_version_mismatch_fails_closed(tmp_path):
+    """A provenance sidecar declaring an older/different schema_version than
+    this consumer understands must not be trusted, even if every field this
+    consumer happens to look for is present and matching — schema drift is a
+    contract violation independent of any single field's content."""
+    source_path = tmp_path / "source.parquet"
+    source = _build_source_panel(source_path, n_dates=10, n_tickers=6)
+    rawlabel_path = tmp_path / "rawlabel.parquet"
+    _build_rawlabel_panel(source, rawlabel_path)
+    _write_provenance(
+        rawlabel_path, horizon=60,
+        source_panel_sha256=_sha256_file(source_path), n_rows=len(source), n_tickers=6,
+        schema_version=0,  # not the schema this consumer understands (1)
+    )
+
+    rc, out_path = _run(tmp_path, panel_path=rawlabel_path, source_panel_path=source_path)
+
+    assert rc == 3
+    assert not out_path.exists()
+
+
+def test_missing_schema_version_fails_closed(tmp_path):
+    """A pre-schema-versioning provenance sidecar (predates this field
+    entirely) is treated the same as a recognized-wrong version: untrusted,
+    fail closed."""
+    source_path = tmp_path / "source.parquet"
+    source = _build_source_panel(source_path, n_dates=10, n_tickers=6)
+    rawlabel_path = tmp_path / "rawlabel.parquet"
+    _build_rawlabel_panel(source, rawlabel_path)
+    _write_provenance(
+        rawlabel_path, horizon=60,
+        source_panel_sha256=_sha256_file(source_path), n_rows=len(source), n_tickers=6,
+        schema_version=None,  # omit the key entirely
     )
 
     rc, out_path = _run(tmp_path, panel_path=rawlabel_path, source_panel_path=source_path)
