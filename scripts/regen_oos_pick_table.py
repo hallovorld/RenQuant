@@ -200,6 +200,53 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def canonical_table_content_hash(table: pd.DataFrame) -> str:
+    """SHA256 of `table`'s CONTENT — the actual scores/labels/regimes, not
+    just its shape.
+
+    Codex review round 3 (#430): the manifest previously hashed the
+    generator + its inputs but never the OUTPUT table itself, so counts and
+    schema could match between two runs while scores, labels, regimes, or
+    row order silently differed — "ran the same recipe" is not "got the
+    same evidence." This closes that gap.
+
+    Two properties are deliberately engineered in, both required for a hash
+    that means "the CONTENT reproduced," not "these particular bytes
+    reproduced":
+      * ORDER-INDEPENDENT — the table is canonically re-sorted by (date,
+        name) here regardless of the caller's row order, so two logically
+        identical tables built via different code paths/insertion orders
+        hash identically.
+      * PLATFORM-STABLE FLOAT REPRESENTATION — `score`/`fwd_60d_excess` are
+        formatted to a fixed 10-decimal-place string (not hashed as raw
+        float64 bytes), because IEEE-754 byte representation of "the same"
+        value can differ subtly across platforms/numpy versions even when
+        every value it means is identical; a fixed-precision decimal string
+        is portable. 10 decimal places is far beyond this data's real
+        precision (scores/returns are noisy float signals, not exact
+        values) — the point is a STABLE, reproducible string, not
+        additional significant digits.
+
+    Any change to a `score`/`decile_rank`/`fwd_60d_excess`/`regime` value
+    for any (date, name) changes this hash; so does adding, removing, or
+    (before canonical re-sort) reordering rows.
+    """
+    canon = table[["date", "name", "score", "decile_rank", "fwd_60d_excess", "regime"]].copy()
+    canon["date"] = pd.to_datetime(canon["date"]).dt.strftime("%Y-%m-%d")
+    canon["name"] = canon["name"].astype(str)
+    canon["score"] = canon["score"].astype(float).map(lambda v: f"{v:.10f}")
+    canon["decile_rank"] = canon["decile_rank"].astype(int)
+    canon["fwd_60d_excess"] = canon["fwd_60d_excess"].astype(float).map(lambda v: f"{v:.10f}")
+    canon["regime"] = canon["regime"].astype(str)
+    canon = canon.sort_values(["date", "name"]).reset_index(drop=True)
+    lines = [
+        "|".join(str(v) for v in row)
+        for row in canon.itertuples(index=False, name=None)
+    ]
+    payload = ("\n".join(lines) + "\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _git_head_commit(repo: Path) -> str | None:
     """Best-effort HEAD sha at generation time — not a promise the working
     tree was clean, just provenance of which generator revision ran."""
@@ -241,6 +288,8 @@ def build_manifest(
     *,
     manifest_path: Path,
     reference_artifact_path: Path,
+    output_content_sha256: str,
+    output_parquet_sha256: str,
 ) -> dict:
     """A REPRODUCIBILITY RECIPE for regenerating the pick table byte-for-byte —
     explicitly NOT "the durable artifact" itself, since the parquet payload
@@ -267,7 +316,21 @@ def build_manifest(
     rev-parse HEAD`` at generation time) is kept as informational context
     only; ``generator_sha256`` is the verifiable provenance anchor a
     consumer should actually check (see ``tests/test_regen_oos_pick_table.py``
-    for a test that a fresh checkout's on-disk script hash still matches)."""
+    for a test that a fresh checkout's on-disk script hash still matches).
+
+    Codex review round 3 (#430): hashing the generator + its inputs proves
+    "the same recipe ran" but NOT "the same evidence came out" — counts and
+    schema could match between two runs while scores/labels/regimes/row
+    order silently differed (float non-determinism, an unstable sort, a
+    dependency version change). ``output_content_sha256``
+    (:func:`canonical_table_content_hash` — order-independent, platform-
+    stable float formatting) is the field a future regeneration must match
+    to actually PROVE it reproduced this evidence table's content, not just
+    its shape. ``output_parquet_sha256`` is a secondary, weaker TRANSPORT
+    hash of the literal on-disk `.parquet` file bytes — useful for
+    detecting local file corruption, but NOT portable across parquet
+    library/compression-setting versions even for identical logical
+    content, so it is not the field to check for reproducibility."""
     generator_path = Path(__file__).resolve()
     return {
         "schema": {
@@ -305,6 +368,29 @@ def build_manifest(
             "n_dates": meta["n_dates"],
             "n_names": meta["n_names"],
         },
+        "output": {
+            "output_content_sha256": output_content_sha256,
+            "output_content_sha256_note": (
+                "the PROVENANCE ANCHOR — sha256 of the table's actual content "
+                "(canonically re-sorted by (date, name), floats formatted to a "
+                "fixed 10-decimal-place string), NOT its shape. A fresh "
+                "regeneration's output_content_sha256 must match this stamped "
+                "value to actually PROVE it reproduced this evidence table's "
+                "content — matching n_rows/n_dates/n_names alone does not "
+                "(Codex review round 3: counts/schema can match while scores, "
+                "labels, regimes, or row ordering differ). See "
+                "canonical_table_content_hash() for the exact algorithm."
+            ),
+            "output_parquet_sha256": output_parquet_sha256,
+            "output_parquet_sha256_note": (
+                "a SECONDARY, weaker transport hash of the literal on-disk "
+                ".parquet file bytes — detects local file corruption, but is "
+                "NOT portable across parquet library/compression-setting "
+                "versions even for identical logical content. Use "
+                "output_content_sha256 above to verify reproducibility, not "
+                "this field."
+            ),
+        },
         "object_uri": (
             "NOT PERSISTED - no DVC/LFS/object-storage backend is configured for "
             "this repo yet. This manifest is a REPRODUCIBILITY RECIPE, not the "
@@ -312,10 +398,13 @@ def build_manifest(
             "regeneratable on demand via `python3 scripts/regen_oos_pick_table.py` "
             "against the SAME pinned manifest_input/reference_artifact "
             "(hash-verified against the fields above, generator hash-verified "
-            "against generator_sha256), and is deliberately NOT committed to git "
-            "(matches PROD_PATH_RULES in renquant-orchestrator's "
-            "agent_workflows.py: `data/.*\\.parquet$` is a protected "
-            "production-data path)."
+            "against generator_sha256, and — new in round 3 — the regenerated "
+            "table's own content is now hash-verifiable against "
+            "output_content_sha256 above, so a fresh run can prove it reproduced "
+            "the SAME evidence, not merely the same recipe), and is deliberately "
+            "NOT committed to git (matches PROD_PATH_RULES in "
+            "renquant-orchestrator's agent_workflows.py: `data/.*\\.parquet$` is "
+            "a protected production-data path)."
         ),
         "note": (
             "wall-clock generation timestamp intentionally omitted for "
@@ -351,10 +440,15 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     table.to_parquet(out_path, index=False)
 
+    output_content_sha256 = canonical_table_content_hash(table)
+    output_parquet_sha256 = _sha256_file(out_path)
+
     regen_manifest = build_manifest(
         meta,
         manifest_path=manifest_path,
         reference_artifact_path=Path(meta["reference_artifact"]),
+        output_content_sha256=output_content_sha256,
+        output_parquet_sha256=output_parquet_sha256,
     )
     manifest_out_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_out_path.write_text(json.dumps(regen_manifest, indent=2, sort_keys=True) + "\n")
@@ -365,6 +459,8 @@ def main() -> None:
     print(f"  reference_artifact={meta['reference_artifact']}")
     print(f"  label={meta['label']} val_cut={meta['val_cut']}")
     print(f"  n_rows={meta['n_rows']} n_dates={meta['n_dates']} n_names={meta['n_names']}")
+    print(f"  output_content_sha256={output_content_sha256} (verify a future regeneration against this)")
+    print(f"  output_parquet_sha256={output_parquet_sha256} (transport hash, secondary)")
 
     overall = summarize_ic(
         table["score"], table["fwd_60d_excess"], table["date"], min_names=args.min_names

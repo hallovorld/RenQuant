@@ -174,7 +174,10 @@ def test_build_manifest_never_embeds_the_parquet_payload_path_as_object_uri(tmp_
     meta = {"label": "fwd_60d_excess", "val_cut": "2024-02-01",
             "n_rows": 100, "n_dates": 10, "n_names": 20}
 
-    out = build_manifest(meta, manifest_path=manifest_path, reference_artifact_path=artifact_path)
+    out = build_manifest(
+        meta, manifest_path=manifest_path, reference_artifact_path=artifact_path,
+        output_content_sha256="0" * 64, output_parquet_sha256="1" * 64,
+    )
 
     assert out["schema"]["columns"] == [
         "date", "name", "score", "decile_rank", "fwd_60d_excess", "regime",
@@ -190,6 +193,113 @@ def test_build_manifest_never_embeds_the_parquet_payload_path_as_object_uri(tmp_
     # the hash is REAL, not a stub
     import hashlib
     assert out["recipe"]["manifest_input_sha256"] == hashlib.sha256(b"{}").hexdigest()
+    # Codex review round 3: the manifest must record an OUTPUT content hash,
+    # not just input/generator hashes — proves "same evidence," not merely
+    # "same recipe ran."
+    assert out["output"]["output_content_sha256"] == "0" * 64
+    assert out["output"]["output_parquet_sha256"] == "1" * 64
+    assert "output_content_sha256" in out["output"]["output_content_sha256_note"] \
+        or "PROVENANCE ANCHOR" in out["output"]["output_content_sha256_note"]
+    assert "transport" in out["output"]["output_parquet_sha256_note"].lower()
+
+
+class TestCanonicalTableContentHash:
+    """Codex review round 3 (#430): the manifest must actually be able to
+    PROVE a future regeneration reproduced this table's content, not just
+    its shape (counts/schema could match while scores/labels/regimes/row
+    order silently differed)."""
+
+    def _table(self, **overrides):
+        base = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+            "name": ["AAPL", "MSFT", "AAPL"],
+            "score": [0.10000001, -0.2, 0.05],
+            "decile_rank": [9, 0, 5],
+            "fwd_60d_excess": [0.021, -0.013, 0.004],
+            "regime": ["BULL_CALM", "BULL_CALM", "CHOPPY"],
+        })
+        for k, v in overrides.items():
+            base[k] = v
+        return base
+
+    def test_mutating_one_score_changes_the_hash(self):
+        """The core proof this fix requires: content actually matters, not
+        just row/date counts."""
+        from scripts.regen_oos_pick_table import canonical_table_content_hash
+
+        original = self._table()
+        mutated = original.copy()
+        mutated.loc[0, "score"] = 0.999  # same n_rows, n_dates, n_names, schema
+
+        h_orig = canonical_table_content_hash(original)
+        h_mut = canonical_table_content_hash(mutated)
+        assert h_orig != h_mut
+        # sanity: mutation did not change shape, so a naive counts-only check
+        # would have missed this — the whole point of the fix.
+        assert len(original) == len(mutated)
+        assert set(original["date"]) == set(mutated["date"])
+
+    def test_mutating_one_fwd_60d_excess_changes_the_hash(self):
+        from scripts.regen_oos_pick_table import canonical_table_content_hash
+
+        original = self._table()
+        mutated = original.copy()
+        mutated.loc[2, "fwd_60d_excess"] = -0.5
+
+        assert canonical_table_content_hash(original) != canonical_table_content_hash(mutated)
+
+    def test_mutating_regime_changes_the_hash(self):
+        from scripts.regen_oos_pick_table import canonical_table_content_hash
+
+        original = self._table()
+        mutated = original.copy()
+        mutated.loc[1, "regime"] = "BEAR"
+
+        assert canonical_table_content_hash(original) != canonical_table_content_hash(mutated)
+
+    def test_row_order_does_not_affect_the_hash(self):
+        """Two logically-identical tables built via different insertion
+        order (e.g. a different code path, a different groupby iteration
+        order) must hash identically — the hash proves CONTENT reproduced,
+        not incidental row ordering."""
+        from scripts.regen_oos_pick_table import canonical_table_content_hash
+
+        original = self._table()
+        shuffled = original.iloc[::-1].reset_index(drop=True)
+
+        assert canonical_table_content_hash(original) == canonical_table_content_hash(shuffled)
+
+    def test_identical_content_built_two_ways_hashes_identically(self):
+        """Two DataFrames built from independently-constructed data (not
+        just a shuffle of the same object) still hash identically when the
+        logical content matches — proves the canonicalization is a pure
+        function of content, not an accidental artifact of one construction
+        path."""
+        from scripts.regen_oos_pick_table import canonical_table_content_hash
+
+        a = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+            "name": ["AAPL", "AAPL"],
+            "score": [0.1, 0.05],
+            "decile_rank": [9, 5],
+            "fwd_60d_excess": [0.021, 0.004],
+            "regime": ["BULL_CALM", "CHOPPY"],
+        })
+        b = pd.DataFrame([
+            {"date": pd.Timestamp("2024-01-03"), "name": "AAPL", "score": 0.05,
+             "decile_rank": 5, "fwd_60d_excess": 0.004, "regime": "CHOPPY"},
+            {"date": pd.Timestamp("2024-01-02"), "name": "AAPL", "score": 0.1,
+             "decile_rank": 9, "fwd_60d_excess": 0.021, "regime": "BULL_CALM"},
+        ])
+
+        assert canonical_table_content_hash(a) == canonical_table_content_hash(b)
+
+    def test_returns_sha256_hex_digest(self):
+        from scripts.regen_oos_pick_table import canonical_table_content_hash
+
+        h = canonical_table_content_hash(self._table())
+        assert len(h) == 64
+        assert all(c in "0123456789abcdef" for c in h)
 
 
 def test_build_manifest_generator_sha256_matches_the_actual_checked_out_script(tmp_path):
@@ -216,7 +326,10 @@ def test_build_manifest_generator_sha256_matches_the_actual_checked_out_script(t
     meta = {"label": "fwd_60d_excess", "val_cut": "2024-02-01",
             "n_rows": 100, "n_dates": 10, "n_names": 20}
 
-    out = build_manifest(meta, manifest_path=manifest_path, reference_artifact_path=artifact_path)
+    out = build_manifest(
+        meta, manifest_path=manifest_path, reference_artifact_path=artifact_path,
+        output_content_sha256="0" * 64, output_parquet_sha256="1" * 64,
+    )
 
     script_path = _Path(__file__).resolve().parent.parent / "scripts" / "regen_oos_pick_table.py"
     expected = hashlib.sha256(script_path.read_bytes()).hexdigest()
@@ -267,3 +380,9 @@ def test_main_writes_manifest_json_and_gitignored_parquet(tmp_path, monkeypatch)
     written = json.loads(out_manifest.read_text())
     assert written["counts"] == {"n_rows": 2, "n_dates": 1, "n_names": 2}
     assert "NOT PERSISTED" in written["object_uri"]
+    # Codex review round 3: main() must actually stamp the output-content
+    # hash end-to-end, not just when build_manifest() is called directly.
+    assert len(written["output"]["output_content_sha256"]) == 64
+    assert len(written["output"]["output_parquet_sha256"]) == 64
+    from scripts.regen_oos_pick_table import canonical_table_content_hash
+    assert written["output"]["output_content_sha256"] == canonical_table_content_hash(fake_table)

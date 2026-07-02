@@ -1,8 +1,10 @@
 # Regenerate the durable OOS pick table — Track A evidence-base prerequisite
 
-STATUS: revised after Codex CHANGES_REQUESTED (round 2) — committed generator + regeneration
-manifest; the parquet PAYLOAD itself is deliberately NOT committed (protected-path rule, see
-WHAT); the leak-controlled "genuine IC" re-audit is #431 (separate PR, in flight) and Track A's
+STATUS: revised after Codex CHANGES_REQUESTED (round 3) — the manifest now records a canonical
+OUTPUT-content hash (not just input/generator hashes), so a future regeneration can actually
+PROVE it reproduced this table's content, not merely that it ran the same recipe; the parquet
+PAYLOAD itself is still deliberately NOT committed (protected-path rule, see WHAT); the
+leak-controlled "genuine IC" re-audit is #431 (separate PR, in flight) and Track A's
 conditional-pick-quality test is explicitly still NOT in scope — see NEXT
 WHAT: `scripts/regen_oos_pick_table.py` — a committed, re-runnable generator that re-scores the
 prod GBDT walk-forward manifest (`backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.json`,
@@ -107,6 +109,30 @@ scope:         this is scripts/regen_oos_pick_table.py, experiment, vs the delet
   (row/date-count-verified against the original audit), but it is NOT comparable to the doc's "genuine"
   figure without redoing that leak-adjustment step, which is out of scope here and flagged below.
 - `git diff --check` clean.
+- **Round 3 (Codex CHANGES_REQUESTED): the manifest previously hashed the generator + its inputs,
+  proving "the same recipe ran" but NOT "the same evidence came out"** — counts/schema could match
+  between two runs while scores/labels/regimes/row order silently differed (float non-determinism,
+  an unstable sort, a dependency version bump). Fixed: `scripts/regen_oos_pick_table.py` now computes
+  `canonical_table_content_hash()` — a sha256 of the table's actual content, canonically re-sorted by
+  `(date, name)` (order-independent) with floats formatted to a fixed 10-decimal-place string
+  (platform-stable, not raw float64 bytes) — and stamps it as `output.output_content_sha256` in the
+  manifest, the field a future regeneration must match to actually PROVE it reproduced this evidence
+  table. A secondary `output.output_parquet_sha256` (a literal file-bytes hash of the on-disk parquet)
+  is also stamped and explicitly documented as a weaker, non-portable TRANSPORT hash — the content
+  hash is the one to check for reproducibility, not this one.
+  - Re-ran the generator twice end-to-end against the real manifest/panel
+    (`PYTHONPATH` extended with sibling-repo `src/` dirs, `/Users/renhao/git/github/RenQuant/.venv/bin/python`):
+    identical `output_content_sha256=ba964b407ec1e0a5a25b5f733c91588822e24c3e56b8f53c71096c2cc57b0125`
+    and identical `output_parquet_sha256` across both independent runs — proves genuine determinism,
+    not merely that a hash field exists. Row/date/name counts unchanged (147,066/508/292).
+  - 5 new tests in `TestCanonicalTableContentHash` (`tests/test_regen_oos_pick_table.py`): mutating one
+    `score`, one `fwd_60d_excess`, or one `regime` value (with row/date counts UNCHANGED) each change
+    the hash — the core proof the verification is content-sensitive, not shape-only; row order does NOT
+    affect the hash; two independently-constructed DataFrames with identical logical content hash
+    identically. Plus updated assertions in the existing `build_manifest`/`main()` tests for the new
+    `output` block. `tests/test_regen_oos_pick_table.py` → 20/20 passed
+    (`/Users/renhao/git/github/RenQuant/.venv/bin/python -m pytest tests/test_regen_oos_pick_table.py -q`).
+  - `py_compile` clean.
 NEXT: (0) **EXPLICIT DOWNSTREAM BLOCKER (round 2):** PR #431 (`feat/genuine-ic-audit-regen`, in
 flight) ran the existing, already-committed `analyze_manifest_sanity_placebo.py` shift/placebo
 decomposition against this SAME table and got BULL_CALM `aligned_real_ic = +0.044` — positive, not
