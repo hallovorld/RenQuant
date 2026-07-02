@@ -25,9 +25,13 @@ class one level down. This version therefore reads:
   relative to <repo>/backtesting/renquant_104 (the historical artifact base).
 
 Output is deterministic (byte-for-byte reproducible given the same inputs;
-the single ``Generated-at:`` line is excluded from the ``--check``
-comparison), so ``--check`` can assert "regenerating now produces exactly the
-committed file" as the staleness gate, not a day-count heuristic.
+the ``Source fingerprint:`` line is itself a hash over the per-file source
+hashes below it, so it changes iff the actual sources change — no wall-clock
+field to exclude from anything), so ``--check`` can assert "regenerating now
+produces exactly the committed file" as the staleness gate, not a day-count
+heuristic. A pinned-runtime/lock mismatch (PIN DRIFT) makes both the default
+render and ``--check`` refuse outright unless ``--allow-pin-drift`` is passed
+explicitly for a diagnostic (never-committed) render.
 
 Missing files or fields NEVER crash the render — they are stated explicitly
 as ``unknown (field absent)`` / ``unknown (file missing: ...)`` so the
@@ -44,6 +48,11 @@ Modes
   where the hosted runner has no ``.subrepo_runtime`` and no live artifacts).
 * ``--selftest``:     build a synthetic fixture tree in a temp dir and prove
   render / check / verify behave, without touching any real source.
+* ``--allow-pin-drift``: DIAGNOSTIC ONLY, combine with default or ``--check``.
+  Without it, both refuse outright when the pinned runtime checkout's HEAD
+  disagrees with ``subrepos.lock.json`` — a drifted-but-unflagged snapshot
+  would legitimize an unpinned runtime as pin-aligned. Never commit output
+  produced with this flag as the canonical snapshot.
 
 Not every historical "Production snapshot" row has a clean current-state
 source (e.g. a specific walk-forward run's mean IC, or a regime-detector
@@ -79,7 +88,8 @@ DEFAULT_OUTPUT = REPO_ROOT / "doc" / "arch" / "strategy-104-snapshot.md"
 
 UNKNOWN_ABSENT = "unknown (field absent)"
 
-GENERATED_AT_PREFIX = "Generated-at:"
+SOURCE_FINGERPRINT_PREFIX = "Source fingerprint:"
+PIN_DRIFT_MARKER = "PIN DRIFT"
 MACHINE_BLOCK_BEGIN = "<!-- snapshot-machine-block"
 MACHINE_BLOCK_END = "-->"
 
@@ -512,7 +522,7 @@ def collect_snapshot(
                 break
     if runtime_head and lock_pin and runtime_head != lock_pin:
         warnings.append(
-            f"PIN DRIFT: pinned runtime checkout HEAD {runtime_head} != "
+            f"{PIN_DRIFT_MARKER}: pinned runtime checkout HEAD {runtime_head} != "
             f"subrepos.lock.json {PINNED_SUBREPO_NAME} pin {lock_pin}"
         )
 
@@ -665,10 +675,22 @@ def _machine_block(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _source_fingerprint(sources: dict[str, Optional[str]]) -> str:
+    """Deterministic aggregate over the per-file source hashes — changes iff
+    the actual pinned/artifact content changes, unlike a wall-clock
+    timestamp (which churned the committed doc on every regeneration with
+    zero semantic change, per Codex review round 3)."""
+    joined = "\n".join(f"{path}:{digest or ''}" for path, digest in sorted(sources.items()))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
 def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = None) -> str:
-    generated_at = generated_at or _dt.datetime.now(_dt.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    # `generated_at` is accepted for backward-compatible call sites (tests,
+    # --selftest) but no longer rendered: a wall-clock value churned the
+    # committed doc on every regeneration with zero semantic change (Codex
+    # review round 3). The doc instead carries a deterministic fingerprint
+    # over the actual source hashes below.
+    del generated_at
     policy = snapshot.get("policy") or {}
     lines = [
         "# renquant_104 — generated production snapshot",
@@ -689,9 +711,11 @@ def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = N
         "doc/arch/strategy-104.md instead. Fields the sources do not stamp are",
         "rendered as explicit unknowns, never invented.",
         "",
-        f"{GENERATED_AT_PREFIX} {generated_at} (informational only — excluded from"
-        " the `--check` staleness comparison, which is byte-exact on everything"
-        " else)",
+        f"{SOURCE_FINGERPRINT_PREFIX} "
+        f"{_source_fingerprint(snapshot.get('sources') or {})} "
+        "(sha256 over the sorted per-file source hashes below — deterministic;"
+        " changes iff pinned/artifact CONTENT changes, never on a bare"
+        " regeneration)",
         "",
         "## Provenance",
         "",
@@ -796,11 +820,6 @@ def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = N
     return "\n".join(lines)
 
 
-def _strip_generated_at(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines()
-        if not line.startswith(GENERATED_AT_PREFIX)
-    )
 
 
 def parse_machine_block(text: str) -> Optional[dict[str, Any]]:
@@ -1070,7 +1089,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     ap.add_argument(
         "--check", action="store_true",
         help="do not write; exit 1 if a fresh render differs from --output "
-             "(the Generated-at line is excluded from the comparison)",
+             "(byte-exact; the source fingerprint line is itself deterministic "
+             "and part of the comparison)",
     )
     ap.add_argument(
         "--verify-pinned-declaration", action="store_true",
@@ -1079,6 +1099,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     ap.add_argument("--selftest", action="store_true",
                     help="run the built-in fixture selftest and exit")
+    ap.add_argument(
+        "--allow-pin-drift", action="store_true",
+        help="DIAGNOSTIC MODE ONLY: proceed even if the pinned runtime checkout's "
+             "HEAD disagrees with subrepos.lock.json. Without this flag, both "
+             "generation and --check refuse to treat a drifted runtime as a valid "
+             "source for the canonical snapshot (a drifted-but-unflagged snapshot "
+             "would legitimize an unpinned runtime while claiming pin alignment).",
+    )
     return ap.parse_args(argv)
 
 
@@ -1103,10 +1131,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     snapshot = collect_snapshot(
         args.repo_root, configs_dir=args.configs_dir, lock_path=args.lock_file,
     )
+    pin_drift = [w for w in (snapshot.get("warnings") or []) if PIN_DRIFT_MARKER in w]
+    if pin_drift and not args.allow_pin_drift:
+        for w in pin_drift:
+            sys.stderr.write(f"REFUSED: {w}\n")
+        sys.stderr.write(
+            "The pinned runtime checkout does not match subrepos.lock.json — "
+            "generating or checking the CANONICAL snapshot against a drifted "
+            "runtime would legitimize an unpinned state as pin-aligned. Sync the "
+            "runtime to its pin first, or pass --allow-pin-drift for an explicit "
+            "diagnostic render (never commit that output as the canonical snapshot).\n"
+        )
+        return 1
     rendered = render_markdown(snapshot)
     if args.check:
         existing = args.output.read_text(encoding="utf-8") if args.output.exists() else None
-        if existing is None or _strip_generated_at(existing) != _strip_generated_at(rendered):
+        if existing is None or existing != rendered:
             sys.stderr.write(
                 f"{args.output} is STALE relative to the pinned sources under "
                 f"{args.repo_root} — regenerate with: "

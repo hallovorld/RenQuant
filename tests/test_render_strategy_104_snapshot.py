@@ -173,6 +173,45 @@ def test_pin_drift_between_runtime_checkout_and_lock_is_flagged(tmp_path):
     assert any("PIN DRIFT" in w for w in snapshot["warnings"])
 
 
+def test_pin_drift_fails_closed_in_generation_mode(tmp_path, capsys):
+    """Codex round-3 review: PIN DRIFT was only ever a warning baked into the
+    rendered doc, never a refusal — the canonical committed snapshot could
+    legitimize an unpinned runtime while claiming pin alignment."""
+    mod = _load_module()
+    root = _fixture_root(mod, tmp_path)
+    (root / mod.PINNED_GIT_DIR_REL / "HEAD").write_text("d" * 40 + "\n", encoding="utf-8")
+    out = tmp_path / "snapshot.md"
+
+    rc = mod.main(["--repo-root", str(root), "--output", str(out)])
+    assert rc == 1
+    assert "PIN DRIFT" in capsys.readouterr().err
+    assert not out.exists(), "must refuse to write a canonical snapshot over drifted pins"
+
+
+def test_pin_drift_fails_closed_in_check_mode(tmp_path, capsys):
+    mod = _load_module()
+    root = _fixture_root(mod, tmp_path)
+    out = tmp_path / "snapshot.md"
+    assert mod.main(["--repo-root", str(root), "--output", str(out)]) == 0
+
+    (root / mod.PINNED_GIT_DIR_REL / "HEAD").write_text("d" * 40 + "\n", encoding="utf-8")
+    rc = mod.main(["--repo-root", str(root), "--output", str(out), "--check"])
+    assert rc == 1
+    assert "PIN DRIFT" in capsys.readouterr().err
+
+
+def test_pin_drift_allowed_in_explicit_diagnostic_mode(tmp_path):
+    mod = _load_module()
+    root = _fixture_root(mod, tmp_path)
+    (root / mod.PINNED_GIT_DIR_REL / "HEAD").write_text("d" * 40 + "\n", encoding="utf-8")
+    out = tmp_path / "snapshot.md"
+
+    rc = mod.main(["--repo-root", str(root), "--output", str(out), "--allow-pin-drift"])
+    assert rc == 0
+    assert out.exists()
+    assert "PIN DRIFT" in out.read_text(encoding="utf-8")
+
+
 def test_collect_snapshot_handles_missing_artifact_metadata_gracefully(tmp_path):
     mod = _load_module()
     root = _fixture_root(mod, tmp_path)
@@ -273,7 +312,11 @@ def test_absolute_artifact_path_is_relativized_or_redacted_never_leaked_raw(tmp_
     assert row_outside["artifact_path"] == "<redacted-external-path>/model.json"
 
 
-def test_check_mode_passes_after_regeneration_and_ignores_generated_at(tmp_path):
+def test_check_mode_passes_after_regeneration_deterministically(tmp_path):
+    """Codex round-3 review: a wall-clock Generated-at line churned the
+    committed doc on every regeneration with zero semantic change. It is
+    replaced with a deterministic source fingerprint that is part of the
+    byte-exact --check comparison (no special-casing needed)."""
     mod = _load_module()
     root = _fixture_root(mod, tmp_path)
     out = tmp_path / "snapshot.md"
@@ -281,15 +324,38 @@ def test_check_mode_passes_after_regeneration_and_ignores_generated_at(tmp_path)
     assert mod.main(["--repo-root", str(root), "--output", str(out)]) == 0
     assert mod.main(["--repo-root", str(root), "--output", str(out), "--check"]) == 0
 
-    # Rewriting ONLY the Generated-at line must not trip the check:
-    text = out.read_text(encoding="utf-8")
-    text = "\n".join(
-        f"{mod.GENERATED_AT_PREFIX} 1999-01-01T00:00:00Z (rewritten)"
-        if line.startswith(mod.GENERATED_AT_PREFIX) else line
-        for line in text.splitlines()
-    ) + "\n"
-    out.write_text(text, encoding="utf-8")
-    assert mod.main(["--repo-root", str(root), "--output", str(out), "--check"]) == 0
+    # Regenerating again with IDENTICAL sources must byte-for-byte match —
+    # no timestamp field left to churn.
+    first = out.read_text(encoding="utf-8")
+    assert mod.main(["--repo-root", str(root), "--output", str(out)]) == 0
+    second = out.read_text(encoding="utf-8")
+    assert first == second
+    assert mod.SOURCE_FINGERPRINT_PREFIX in first
+
+
+def test_source_fingerprint_changes_only_when_source_content_changes(tmp_path):
+    mod = _load_module()
+    root = _fixture_root(mod, tmp_path)
+    out = tmp_path / "snapshot.md"
+    mod.main(["--repo-root", str(root), "--output", str(out)])
+    rendered_before = out.read_text(encoding="utf-8")
+    fp_before = next(
+        line for line in rendered_before.splitlines()
+        if line.startswith(mod.SOURCE_FINGERPRINT_PREFIX)
+    )
+
+    config_path = root / mod.PINNED_CONFIGS_REL / mod.ACTIVE_CONFIG_NAME
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["ranking"]["panel_scoring"]["kind"] = "hf_patchtst"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    mod.main(["--repo-root", str(root), "--output", str(out)])
+    rendered_after = out.read_text(encoding="utf-8")
+    fp_after = next(
+        line for line in rendered_after.splitlines()
+        if line.startswith(mod.SOURCE_FINGERPRINT_PREFIX)
+    )
+    assert fp_before != fp_after, "source fingerprint must change when source content changes"
 
 
 def test_check_mode_fails_when_pinned_config_changes(tmp_path, capsys):

@@ -13,8 +13,15 @@ name: strategy-104-snapshot-fresh
 #      changes the production declaration without a regenerated snapshot.
 #
 # The byte-exact staleness check (`make snapshot-check`) runs where the real
-# sources live — the operator machine — wired into the post-promote /
-# weekly ops loop.
+# sources live — the operator machine — and IS genuinely event-driven there
+# (round-3 fix, not just a manual make target): scripts/promote_pin.py's
+# `bump --apply` and `revert --apply` regenerate-and-compare the snapshot by
+# default after every successful sync+verify (never auto-committing; a stale
+# result exits non-zero with an actionable diff, `--skip-snapshot-check` to
+# opt out), and scripts/system_doctor.py's `make doctor` (the weekly-ops
+# health check) always runs `render_strategy_104_snapshot.py --check` too,
+# catching out-of-band artifact/calibrator edits that never go through
+# promote_pin.py at all.
 
 on:
   pull_request:
