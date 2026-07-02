@@ -80,3 +80,25 @@ echo "REMINDER: run scripts/weekly_wf_promote.sh within 24h to validate."
 "$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \
     --out "$REPO_DIR/doc/dashboard.md" 2>&1 | tail -3 \
     || echo "dashboard refresh failed (non-fatal)"
+
+# strategy-104 snapshot freshness backstop (M9/A6 round 4, same as
+# weekly_wf_promote.sh): this is the OTHER path that can change the active
+# artifact this snapshot declares, and it bypasses weekly_wf_promote.sh
+# entirely by design (that's the point of an emergency promote). Reuses
+# promote_pin.py's scratch-rendered, diff-preview, never-auto-commits check;
+# does NOT revert the emergency promote for a stale-snapshot finding alone.
+echo "--- strategy-104 snapshot freshness backstop ---"
+if ! "$PYTHON" - <<PY
+import sys
+sys.path.insert(0, "$REPO_DIR/scripts")
+from promote_pin import check_snapshot_freshness
+fresh, msg = check_snapshot_freshness("$PYTHON", repo=__import__("pathlib").Path("$REPO_DIR"))
+print(msg)
+raise SystemExit(0 if fresh else 1)
+PY
+then
+    echo "Snapshot freshness backstop FAILED — the emergency promote above is"
+    echo "NOT being reverted for this reason alone; run 'make snapshot' from"
+    echo "$REPO_DIR, review the diff, and commit it."
+    exit 1
+fi

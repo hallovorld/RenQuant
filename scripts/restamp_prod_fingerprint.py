@@ -121,6 +121,23 @@ def main() -> int:
         print(f"VERIFY FAILED: residual diff after stamp {residual}")
         return 1
     print("VERIFY OK: artifact fingerprint now matches live config (0 diff).")
+
+    # strategy-104 snapshot freshness backstop (M9/A6 round 4, same as
+    # weekly_wf_promote.sh/manual_promote.sh): this re-stamp just mutated the
+    # active production artifact's metadata in place — exactly the state
+    # doc/arch/strategy-104-snapshot.md declares. Reuses promote_pin.py's
+    # scratch-rendered, diff-preview, never-auto-commits check; does NOT
+    # revert the already-verified re-stamp for a stale-snapshot finding alone.
+    sys.path.insert(0, str(REPO / "scripts"))
+    from promote_pin import check_snapshot_freshness  # noqa: E402
+
+    fresh, msg = check_snapshot_freshness(sys.executable, repo=REPO)
+    print(msg)
+    if not fresh:
+        print("Snapshot freshness backstop FAILED — the re-stamp above is NOT "
+              "being reverted for this reason alone; run 'make snapshot' from "
+              f"{REPO}, review the diff, and commit it.")
+        return 1
     return 0
 
 

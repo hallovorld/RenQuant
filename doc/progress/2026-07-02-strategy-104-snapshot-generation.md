@@ -107,3 +107,66 @@ remembers to re-run the script by hand) was deliberately deferred — that's a
 live production promote pipeline and this PR did not want to touch it. Until
 that's wired, the CI check (this PR) is what actually enforces freshness: any
 PR that changes the pinned config without regenerating the snapshot fails CI.
+
+## Round 4 (Codex CHANGES_REQUESTED, round-3 follow-up): the real model-promotion path was still uncovered
+
+**Finding.** Round 3 wired `promote_pin.py` (subrepo-pin bump/revert) and `system_doctor.py`
+(daily backstop) — real, correct fixes — but explicitly disclosed the remaining gap:
+`weekly_wf_promote.sh`, the ACTUAL model-promotion path (retrain → WF gate → swap active
+artifact+calibrator), had no inline check. It could successfully promote a new model and
+exit 0 while leaving the committed snapshot stale, with only the NEXT daily
+`system_doctor` run eventually reporting it — asynchronous, delayed detection, not the
+synchronous same-run enforcement the review required. Round 3's own PR body still
+described post-promote enforcement as "merely recommended," contradicting what round 3's
+code had actually implemented for `promote_pin.py`.
+
+**Fix.** Wired the SAME `promote_pin.check_snapshot_freshness()` (scratch-rendered,
+diff-preview, never auto-commits, never reverts the promotion for a stale-snapshot
+finding alone) into every script that mutates the active artifact/calibrator/pin state
+this snapshot declares:
+- `scripts/weekly_wf_promote.sh` — new Step 7, after the dashboard refresh (Step 6) and
+  before the final `PASSED`/`WEEKLY-PROMOTE ✓` success signal. On failure: prints the diff
+  preview, sends a distinct `WEEKLY-PROMOTE — SNAPSHOT STALE` ntfy alert (so it's
+  distinguishable from a genuine promote failure), and `exit 1` — the promotion itself is
+  NOT undone.
+- `scripts/manual_promote.sh` — the emergency operator path (bypasses the WF gate by
+  design). Same check added at the end, same no-revert contract, same `exit 1` on
+  staleness (even though this is an interactive script nobody automates on today, failing
+  closed costs nothing and is safer if that ever changes).
+- `scripts/restamp_prod_fingerprint.py` — re-stamps the active artifact's fingerprint
+  fields in place (a sector-map-only legacy repair, no retrain). Same check added right
+  before its final `return 0`; returns 1 on staleness without reverting the (already
+  verified-consistent) re-stamp.
+- `scripts/promote_shadow_patchtst.py` — the SHADOW PatchTST served-pin swap. Same check
+  added right after `rep.rc = RC_OK` is set following a real (non-dry-run) swap; sets
+  `rep.rc = RC_GATE_FAILED` on staleness and appends the message to `rep.verdict`. This
+  scorer moves no capital, but `collect_snapshot()` reads BOTH the active AND shadow
+  config, so a stale snapshot doc from a shadow-pin change is still real drift worth
+  surfacing.
+
+Searched for other promotion/rollback/re-stamp wrappers touching the same declared state
+(`grep`-based sweep across `scripts/` for `promote(`/`def promote`) — these four are the
+complete set found; no other wrapper mutates the artifact/calibrator/pin state this
+snapshot represents.
+
+**Tests.** New `tests/test_restamp_prod_fingerprint_snapshot_backstop.py` (3 tests, via a
+synthetic sector-only-diff fixture + monkeypatched `promote_pin.check_snapshot_freshness`):
+proves (a) a stale snapshot fails the run (`rc == 1`) even though the re-stamp itself
+still gets applied (no revert), (b) a fresh snapshot succeeds normally, (c) `--dry-run`
+never reaches the backstop at all (nothing was actually promoted yet). Existing
+`tests/test_promote_pin.py`/`test_system_doctor.py` suites (which already cover
+`check_snapshot_freshness` itself end-to-end, real non-mocked regenerate-and-diff) pass
+unchanged — 45 tests total across the touched-adjacent suites, all green.
+
+**Honest gap:** `promote_shadow_patchtst.py` has an existing 72-test suite, but none of
+those tests exercise a REAL (non-dry-run) successful swap all the way through its several
+gates (freshness/parity/smoke-inference/non-degenerate/resource/sanity-floor) — building
+that fixture is a substantial undertaking distinct from this fix's scope, so the new
+snapshot-backstop code path in that script is verified by manual code-reading + syntax
+check, not by an executed test. Flagging this explicitly rather than claiming coverage
+that doesn't exist.
+
+**M9/A6 closure status:** with this round, every real production path that can change the
+active model/calibrator/pin state now synchronously fails (not just the next daily
+doctor run) when it would leave the committed snapshot stale. The "deployed but dark"
+gap this task exists to close is now genuinely closed for all four identified paths.

@@ -326,6 +326,34 @@ fi
     --out "$REPO_DIR/doc/dashboard.md" 2>&1 | tail -5 \
     || echo "dashboard refresh failed (non-fatal)"
 
+# ── Step 7: strategy-104 snapshot freshness backstop (M9/A6 round 4) ──────
+# Codex review (PR #432): the promotion above just changed the active
+# artifact/calibrator, exactly the state doc/arch/strategy-104-snapshot.md
+# declares — but this script is the REAL model-promotion path and, unlike
+# promote_pin.py's bump/revert, had no synchronous check of its own; only
+# the NEXT daily system_doctor run would eventually notice drift. Reuse
+# promote_pin.py's check_snapshot_freshness (scratch-rendered, diff-preview,
+# never auto-commits, never touches the promotion that just succeeded) and
+# fail THIS run non-zero before reporting overall success.
+echo "--- Step 7: strategy-104 snapshot freshness backstop ---"
+if ! "$PYTHON" - <<PY
+import sys
+sys.path.insert(0, "$REPO_DIR/scripts")
+from promote_pin import check_snapshot_freshness
+fresh, msg = check_snapshot_freshness("$PYTHON", repo=__import__("pathlib").Path("$REPO_DIR"))
+print(msg)
+raise SystemExit(0 if fresh else 1)
+PY
+then
+    echo "Snapshot freshness backstop FAILED — model promotion above already"
+    echo "completed and is NOT being reverted for this reason alone; only"
+    echo "doc/arch/strategy-104-snapshot.md needs a follow-up: run"
+    echo "'make snapshot' from $REPO_DIR, review the diff, and commit it."
+    notify "RenQuant 104 WEEKLY-PROMOTE — SNAPSHOT STALE" \
+        "Model promoted ($GATE_SUMMARY) but doc/arch/strategy-104-snapshot.md is now stale. Run 'make snapshot' and commit. Check $LOG."
+    exit 1
+fi
+
 echo "=== weekly_wf_promote PASSED at $(date) — $GATE_SUMMARY ==="
 notify "RenQuant 104 WEEKLY-PROMOTE ✓" \
     "Walk-forward gate passed. New model promoted to production. $GATE_SUMMARY"

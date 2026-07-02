@@ -1085,6 +1085,22 @@ def run_promote(args) -> PromoteReport:
     rep.superseded_backup = backup
     rep.verdict = f"PROMOTED{label}: {served_pin} -> {promoted_pin}"
     rep.rc = RC_OK
+
+    # strategy-104 snapshot freshness backstop (M9/A6 round 4, same as
+    # weekly_wf_promote.sh/manual_promote.sh/restamp_prod_fingerprint.py):
+    # this swap just changed strategy_config.shadow.json's served pin, which
+    # doc/arch/strategy-104-snapshot.md's collect_snapshot() also reads.
+    # Reuses promote_pin.py's scratch-rendered, diff-preview, never-auto-
+    # commits check; does NOT revert the already-executed swap for a
+    # stale-snapshot finding alone (this scorer is shadow-scoped and moves
+    # no capital, but a stale snapshot doc is still a real drift to surface).
+    sys.path.insert(0, str(repo / "scripts"))
+    from promote_pin import check_snapshot_freshness  # noqa: E402
+
+    fresh, msg = check_snapshot_freshness(sys.executable, repo=repo)
+    rep.verdict += f" | snapshot: {msg}"
+    if not fresh:
+        rep.rc = RC_GATE_FAILED
     return rep
 
 
