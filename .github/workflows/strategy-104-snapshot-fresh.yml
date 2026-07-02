@@ -1,5 +1,21 @@
 name: strategy-104-snapshot-fresh
 
+# Guards doc/arch/strategy-104-snapshot.md (the machine-generated production
+# snapshot — amendment A6 / unified-107 M9) on the hosted runner, which has
+# no .subrepo_runtime checkout and no live artifact tree. Two layers:
+#
+#   1. selftest + unit tests — always; fixture-based, fully deterministic.
+#   2. verify-pinned-declaration — only when subrepos.lock.json changes:
+#      clone renquant-strategy-104 at the lock pin and semantically compare
+#      the committed snapshot's machine block (active kind / artifact,
+#      shadow kinds, recorded pin) against the pinned config. This catches
+#      the A6 rot class at the moment it is introduced: a pin bump that
+#      changes the production declaration without a regenerated snapshot.
+#
+# The byte-exact staleness check (`make snapshot-check`) runs where the real
+# sources live — the operator machine — wired into the post-promote /
+# weekly ops loop.
+
 on:
   pull_request:
   push:
@@ -10,11 +26,70 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  selftest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify generated production snapshot is not stale
+      - name: Snapshot renderer selftest (fixture-based, deterministic)
         run: |
           set -euo pipefail
-          python3 scripts/render_strategy_104_snapshot.py --check
+          python3 scripts/render_strategy_104_snapshot.py --selftest
+      - name: Install test tools
+        run: python3 -m pip install pytest
+      - name: Snapshot renderer unit tests
+        run: python3 -m pytest -q -o addopts='' tests/test_render_strategy_104_snapshot.py
+
+  verify-pinned-declaration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect lock changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          ZERO_SHA="0000000000000000000000000000000000000000"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git fetch --no-tags origin "${BASE_SHA}"
+            RANGE="${BASE_SHA}..HEAD"
+          elif [ -n "${BEFORE_SHA:-}" ] && [ "${BEFORE_SHA}" != "${ZERO_SHA}" ]; then
+            RANGE="${BEFORE_SHA}..HEAD"
+          else
+            RANGE="HEAD^..HEAD"
+          fi
+          if git diff --name-only "${RANGE}" | grep -qx 'subrepos.lock.json'; then
+            echo "lock_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lock_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Read strategy-104 pin from subrepos.lock.json
+        if: steps.changes.outputs.lock_changed == 'true'
+        id: pin
+        run: |
+          set -euo pipefail
+          PIN="$(python3 -c "import json; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == 'renquant-strategy-104'))")"
+          test -n "${PIN}"
+          echo "commit=${PIN}" >> "$GITHUB_OUTPUT"
+      - name: Check out renquant-strategy-104 at the lock pin
+        if: steps.changes.outputs.lock_changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-strategy-104
+          ref: ${{ steps.pin.outputs.commit }}
+          path: pinned-strategy-104
+          # Private subrepo: needs a PAT/App token with read access (same
+          # fallback chain as subrepo-pin-ci-green.yml).
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+      - name: Verify snapshot matches the pinned production declaration
+        if: steps.changes.outputs.lock_changed == 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/render_strategy_104_snapshot.py \
+            --verify-pinned-declaration \
+            --configs-dir pinned-strategy-104/configs \
+            --lock-file subrepos.lock.json \
+            --output doc/arch/strategy-104-snapshot.md
