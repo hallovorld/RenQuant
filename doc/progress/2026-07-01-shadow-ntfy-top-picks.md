@@ -1,5 +1,27 @@
 # Shadow ntfy: honest top-N recommendation + disambiguate [SHADOW]-broker vs shadow-model labeling
 
+STATUS: revised after Codex CHANGES_REQUESTED round 6 (PR #426)
+WHAT: `shadow_scoring.py`'s per-model top-N ntfy recommendation now binds every pick to an
+explicit freshness/coverage/fingerprint admission verdict, defaults every pick to NOT ACTIONABLE
+(an explicit opt-in flag is required to ever render one as a recommendation), evaluates EVERY
+present cutoff provenance axis independently (worst tier wins; a present-but-malformed axis fails
+closed rather than being silently dropped as though absent), and requires at least one
+code-guaranteed cutoff field to be present before an artifact can ever be certified fresh.
+WHY/DIR: operator misread a `[SHADOW]`-broker ntfy as a PatchTST buy recommendation (see Incident
+below) and asked for a genuine, confidence-scored recommendation; six rounds of Codex review
+progressively closed provenance-spoofing gaps that would have let a stale, partially-stamped, or
+malformed artifact still render as an actionable pick.
+EVIDENCE: `tests/test_shadow_scoring.py` — 70/70 passed
+(`/Users/renhao/git/github/RenQuant/.venv/bin/python -m pytest tests/test_shadow_scoring.py -q`);
+`tests/test_runner_trade_ntfy.py` run alongside — 132/133 passed, the one failure
+(`test_live_only_wrapper_does_not_duplicate_runner_success_ntfy`) is pre-existing and unrelated
+(reconfirmed via `git stash`, see Round 5/6 sections below for detail); `py_compile` clean.
+NEXT: a preregistered shadow evaluation (fixed historical sessions: coverage sensitivity, top-N
+stability, forward net return, turnover/cost, regime slices) is required before
+`shadow_experimental_actionable_display` is ever safe to flip on in a live config — no such
+evaluation has run yet, so the safe default (NOT ACTIONABLE) stays load-bearing indefinitely
+until one does.
+
 2026-07-01.
 
 ## Incident
@@ -432,3 +454,95 @@ accepted. Two remaining ways the experimental opt-in could certify unsupported f
 Unchanged: still observability-only, default NOT ACTIONABLE, `_compute_admission` remains a pure
 function. This round only tightens WHICH artifacts can ever reach `gates_passed=True` under the
 experimental opt-in — it does not add or remove a code path.
+
+## Round 6 (Codex CHANGES_REQUESTED — one fail-open axis + missing required-provenance semantics)
+
+Round 5's two fixes accepted for VALID inputs. Two remaining gaps in the same provenance surface,
+plus a mechanical progress-doc schema fix:
+
+1. **`_all_present_cutoffs()` silently dropped a present-but-unparseable field.** If, e.g.,
+   `label_observation_cutoff="bad"` was present while `effective_train_cutoff_date` was recent and
+   parseable, the malformed required axis simply disappeared from evaluation — indistinguishable
+   from never having been stamped at all — and the artifact could still become `gates_passed`
+   under the experimental flag on the strength of the healthy secondary axis alone. "A malformed
+   provenance axis is not equivalent to an absent optional axis" (review).
+2. **No required-axis semantics — only axes that happen to be present are ever evaluated.** An
+   artifact presenting ONLY a weak/legacy cutoff field (e.g. `cutoff_date`), with NEITHER of this
+   repo's two actually-guaranteed cutoff fields present at all, could still certify `healthy` on
+   the strength of that one weak field.
+
+### Investigation that corrected round 5's own framing
+
+Round 5's comment claimed this module "ships exactly ONE shadow-model recipe (PatchTST)" as the
+justification for not building a per-recipe required-axis registry. That claim was **not actually
+verified** and turned out to be wrong: `model_registry.py` registers FOUR kinds
+(`xgb`/`patchtst`/`hf_patchtst`/`regime_router`), and the **live production** shadow-model config
+(`strategy_config.json`/`strategy_config.golden.json` — the actual config behind the `[SHADOW]...BUY
+OXY` incident that started this whole PR) configures the shadow slot as `kind="xgb"`, **not
+PatchTST**. So the fallback plan sketched in round 5 ("introduce a per-model-kind mapping once a
+second kind ships") was already overdue on the facts.
+
+Reading the ACTUAL stamping code (rather than assuming) across both live paths:
+
+- `hf_patchtst_scorer.py`'s `stamp_artifact_metadata` call ALWAYS stamps
+  `effective_train_cutoff_date` (from ckpt/contract/sidecar, `_coalesce`) for hf_patchtst/patchtst
+  artifacts.
+- `train_production_model.py::build_artifact` ALWAYS stamps `label_observation_cutoff`
+  (`train["date"].max()`) on BOTH the walk-forward and full-history XGB paths, and
+  `effective_train_cutoff_date` additionally on the walk-forward path (Codex #423, merged
+  2026-07-01T22:09:36Z — the SAME day as this PR, a genuinely load-bearing companion fix).
+- No other `_DATA_CUTOFF_FIELDS` entry (`effective_selection_cutoff_date`, `data_cutoff_date`,
+  `live_train_end`, `cutoff_date`) has an equivalent confirmed, code-guaranteed stamping contract
+  anywhere in this repo as of this round.
+
+Given that, a per-"kind" mapping would have been the WRONG shape anyway (the walk-forward/
+full-history split inside "xgb" alone already produces two different stamped fields, and
+`_compute_admission` doesn't even receive `kind`). The required-axis check implemented below is
+keyed on the two CONFIRMED fields directly, not on kind — simpler, more robust, and grounded in
+what the training code actually does rather than a guess about "the sole recipe."
+
+### Changes (`shadow_scoring.py`)
+
+- `_all_present_cutoffs` → renamed `_all_present_cutoff_fields`: now returns every present
+  (truthy) `_DATA_CUTOFF_FIELDS` RAW value, parsed or not — parsing moved into `_axis_verdict`,
+  which returns a proper UNKNOWN axis result (never a silent drop) when a value fails to parse.
+- New `_CONFIRMED_STAMPED_CUTOFF_FIELDS = ("label_observation_cutoff",
+  "effective_train_cutoff_date")`. `_compute_admission` now additionally requires at least one of
+  these to be among the axes actually present (whether or not it parsed — an attempted-but-
+  malformed stamp still counts as "attempted", already handled by its own UNKNOWN axis result);
+  when neither is present, the overall tier is forced to `unknown` regardless of what a weaker
+  field says, with a distinct `reasons` entry naming the gap explicitly.
+- `cutoffs_evaluated` entries now allow `"cutoff": null` for a malformed axis (previously assumed
+  every evaluated axis had successfully parsed a date).
+
+### Tests (`tests/test_shadow_scoring.py`) — new `TestMalformedCutoffAxesAndRequiredProvenance`
+- `test_malformed_high_priority_axis_with_healthy_secondary_is_unknown` — malformed
+  `label_observation_cutoff` + healthy `effective_train_cutoff_date` → unknown (the exact "mixed
+  high-priority + healthy secondary" scenario the review named).
+- `test_healthy_compensated_label_with_malformed_secondary_is_unknown` — healthy compensated
+  `label_observation_cutoff` + malformed `effective_train_cutoff_date` → unknown (the review's
+  second named scenario).
+- `test_future_axis_with_malformed_axis_is_unknown_not_breach` — a look-ahead BREACH axis +
+  a malformed UNKNOWN axis → unknown wins over breach, not just over healthy (the review's third
+  named scenario; also proves `_TIER_SEVERITY`'s `unknown > breach` ordering end-to-end).
+- `test_weak_field_alone_cannot_certify_without_a_confirmed_axis` — only `cutoff_date` present,
+  fresh, and parseable → still unknown; the axis itself reads `healthy` in `cutoffs_evaluated` but
+  the overall verdict does not, proving the required-axis check is a SEPARATE gate from per-axis
+  freshness.
+- `test_confirmed_axis_present_alongside_weak_field_certifies_normally` — sanity check the new
+  gate is additive: a confirmed field present and healthy alongside a weak field still reaches
+  `gates_passed`/`actionable` normally.
+- `tests/test_shadow_scoring.py` — 70/70 passed. `tests/test_runner_trade_ntfy.py` run alongside —
+  132/133, same one pre-existing failure as every prior round (reconfirmed via `git stash`).
+  `py_compile` clean.
+
+### Progress-doc schema (mechanical)
+The control-plane queue reported this doc's schema as missing literal `STATUS:`/`WHAT:`/
+`WHY/DIR:`/`EVIDENCE:`/`NEXT:` fields despite five rounds of detailed narrative content. Added
+those fields at the top of this file (see header above); the narrative sections below are
+unchanged and remain the durable per-round record.
+
+### Scope
+Unchanged: still observability-only, default NOT ACTIONABLE, `_compute_admission` remains a pure
+function. This round only tightens WHICH artifacts can ever reach `gates_passed=True` under the
+experimental opt-in, plus the mechanical doc-schema fix — neither adds nor removes a code path.

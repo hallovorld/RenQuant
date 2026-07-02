@@ -847,6 +847,138 @@ class TestHorizonCompensation:
         assert admission["actionable"] is True
 
 
+class TestMalformedCutoffAxesAndRequiredProvenance:
+    """2026-07-01 ROUND 6 (Codex CHANGES_REQUESTED on umbrella PR #426):
+
+    (1) A cutoff field that is PRESENT but does not parse must be evaluated
+    as its OWN UNKNOWN axis, never silently dropped from consideration as
+    though the field were simply absent — "a malformed provenance axis is
+    not equivalent to an absent optional axis."
+
+    (2) At least one of the two fields this repo's training code actually
+    GUARANTEES a stamp for (``label_observation_cutoff``,
+    ``effective_train_cutoff_date`` — see ``_CONFIRMED_STAMPED_CUTOFF_FIELDS``)
+    must be present, or a weaker/legacy field alone cannot certify an
+    artifact no matter how fresh it looks.
+
+    Round-6 correction to round 5's own reasoning: this module does NOT ship
+    "exactly one PatchTST recipe" — ``model_registry.py`` registers xgb,
+    patchtst, hf_patchtst, and regime_router, and the LIVE production shadow
+    slot (``strategy_config.json``) is configured ``kind="xgb"``, not
+    PatchTST. The required-axis check below is therefore NOT keyed on
+    "kind" (this module doesn't even receive it) but on the two fields
+    independently confirmed, by reading the actual stamping code, to be
+    guaranteed by ANY of this repo's training paths.
+    """
+
+    AS_OF = _dt.date(2026, 7, 1)
+
+    def test_malformed_high_priority_axis_with_healthy_secondary_is_unknown(self, shadow_mod):
+        """label_observation_cutoff present but malformed + a healthy,
+        parseable effective_train_cutoff_date -> the malformed axis's
+        UNKNOWN tier (severity 4) beats the healthy secondary (severity 0);
+        the artifact must NOT read healthy just because ONE axis looks
+        fine."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": "bad",
+                "effective_train_cutoff_date": "2026-06-30",  # 1d old, would be healthy
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["gates_passed"] is False
+        by_field = {c["field"]: c for c in admission["cutoffs_evaluated"]}
+        assert by_field["label_observation_cutoff"]["tier"] == "unknown"
+        assert by_field["label_observation_cutoff"]["cutoff"] is None
+        assert by_field["effective_train_cutoff_date"]["tier"] == "healthy"
+        assert any("label_observation_cutoff" in r and "did not parse" in r
+                   for r in admission["reasons"])
+
+    def test_healthy_compensated_label_with_malformed_secondary_is_unknown(self, shadow_mod):
+        """A properly horizon-compensated, healthy label_observation_cutoff
+        + a malformed effective_train_cutoff_date -> still unknown; a
+        healthy PRIMARY axis must not hide a malformed secondary one
+        either (worst wins regardless of which side is "primary")."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": "2026-04-08",  # compensates to healthy
+                "lookahead_days": 60,
+                "effective_train_cutoff_date": "not-a-date",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["gates_passed"] is False
+        by_field = {c["field"]: c for c in admission["cutoffs_evaluated"]}
+        assert by_field["label_observation_cutoff"]["tier"] == "healthy"
+        assert by_field["effective_train_cutoff_date"]["tier"] == "unknown"
+        assert any("effective_train_cutoff_date" in r and "did not parse" in r
+                   for r in admission["reasons"])
+
+    def test_future_axis_with_malformed_axis_is_unknown_not_breach(self, shadow_mod):
+        """A genuine look-ahead cutoff (BREACH, severity 3) alongside a
+        malformed axis (UNKNOWN, severity 4) -> UNKNOWN wins, demonstrating
+        unknown outranks a known-bad tier, not just a healthy one."""
+        future_cutoff = (self.AS_OF + _dt.timedelta(days=45)).isoformat()
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": future_cutoff,
+                "lookahead_days": 60,
+                "effective_train_cutoff_date": "garbage",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["actionable"] is False
+        by_field = {c["field"]: c for c in admission["cutoffs_evaluated"]}
+        assert by_field["label_observation_cutoff"]["tier"] == "breach"
+        assert by_field["effective_train_cutoff_date"]["tier"] == "unknown"
+
+    def test_weak_field_alone_cannot_certify_without_a_confirmed_axis(self, shadow_mod):
+        """Only a WEAK/legacy field (cutoff_date — no confirmed,
+        code-guaranteed stamping contract found anywhere in this repo) is
+        present, fresh, and parseable -> still UNKNOWN. A weak field alone
+        must never certify an artifact regardless of how healthy it looks;
+        at least one of label_observation_cutoff/effective_train_cutoff_date
+        must be present."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={"cutoff_date": "2026-06-30"},  # 1d old, would read healthy
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["gates_passed"] is False
+        assert admission["actionable"] is False
+        by_field = {c["field"]: c for c in admission["cutoffs_evaluated"]}
+        assert by_field["cutoff_date"]["tier"] == "healthy"  # the axis itself is fine...
+        assert any("confirmed code-guaranteed axis" in r for r in admission["reasons"])
+
+    def test_confirmed_axis_present_alongside_weak_field_certifies_normally(self, shadow_mod):
+        """Sanity check the required-axis gate is additive, not a new
+        blanket restriction: a confirmed field present (and healthy)
+        alongside a weak field still reaches gates_passed/actionable
+        normally."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["verdict"] == "healthy"
+        assert admission["gates_passed"] is True
+        assert admission["actionable"] is True
+
+
 class TestComputeShadowSummaryAdmissionIntegration:
     """``_compute_shadow_summary`` must surface the admission verdict inline
     (``admission``/``actionable``/``run_id`` top-level keys) so callers

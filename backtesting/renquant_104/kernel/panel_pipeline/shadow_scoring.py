@@ -304,9 +304,55 @@ _TIER_SEVERITY = {
 }
 
 
-def _all_present_cutoffs(artifact_meta: dict) -> list[tuple[str, datetime.date]]:
-    """Every ``_DATA_CUTOFF_FIELDS`` axis actually present/parseable in
-    ``artifact_meta``, in priority (most-binding-first) order.
+# 2026-07-01 ROUND 6 (Codex CHANGES_REQUESTED on umbrella PR #426): minimum
+# REQUIRED provenance — at least one CONFIRMED, code-guaranteed axis must be
+# present, or a weaker/legacy field must not be able to certify an artifact
+# alone. Investigated (not guessed) while implementing this round: this
+# module does NOT actually ship "exactly one PatchTST recipe" as round 5's
+# comment claimed — `model_registry.py` registers FOUR kinds (xgb, patchtst,
+# hf_patchtst, regime_router), and the LIVE production config
+# (`strategy_config.json`/`strategy_config.golden.json`) configures the
+# shadow slot as ``kind="xgb"``, not PatchTST at all. That correction matters
+# here: rather than a single per-"kind" required field (which would need
+# `_compute_admission` to know the artifact's kind, and still be wrong for
+# the walk-forward vs. full-history split within "xgb" alone — see below),
+# the two fields this repo's training code actually, verifiably GUARANTEES
+# are stamped are used directly, regardless of kind:
+#   * ``effective_train_cutoff_date`` — ALWAYS stamped by
+#     ``hf_patchtst_scorer.py``'s ``stamp_artifact_metadata`` call (from
+#     ckpt/contract/sidecar, ``_coalesce``) for hf_patchtst/patchtst
+#     artifacts, and by ``train_production_model.py::build_artifact`` on the
+#     walk-forward XGB path (Codex #423, merged 2026-07-01).
+#   * ``label_observation_cutoff`` — ALWAYS stamped by
+#     ``train_production_model.py::build_artifact`` on BOTH the walk-forward
+#     and full-history XGB paths (``train["date"].max()``; also Codex #423).
+# The remaining ``_DATA_CUTOFF_FIELDS`` entries (``effective_selection_cutoff_
+# date``, ``data_cutoff_date``, ``live_train_end``, ``cutoff_date``) have no
+# equivalent confirmed, code-guaranteed stamping contract found anywhere in
+# this repo as of this round — an artifact presenting ONLY one of those, with
+# NEITHER confirmed axis present, has genuinely unverifiable provenance no
+# matter how fresh the weak field looks.
+_CONFIRMED_STAMPED_CUTOFF_FIELDS = (
+    "label_observation_cutoff",
+    "effective_train_cutoff_date",
+)
+
+
+def _all_present_cutoff_fields(artifact_meta: dict) -> list[tuple[str, object]]:
+    """Every ``_DATA_CUTOFF_FIELDS`` entry whose RAW value is present
+    (truthy) in ``artifact_meta``, in priority (most-binding-first) order —
+    regardless of whether it PARSES.
+
+    ROUND 6 correction (Codex): the previous version of this helper called
+    ``_parse_iso_date`` here and only kept a field when it returned non-None
+    — a MALFORMED value (present but unparseable, e.g.
+    ``label_observation_cutoff="bad"``) was therefore indistinguishable from
+    the field never having been stamped at all, and could silently disappear
+    from evaluation entirely while a healthy secondary axis let the artifact
+    still become ``gates_passed``. "A malformed provenance axis is not
+    equivalent to an absent optional axis" (review). The RAW value is
+    returned unparsed; ``_axis_verdict`` does the parsing and returns an
+    UNKNOWN axis result — never a silently dropped one — when it fails.
 
     ROUND 5 (Codex): the PREVIOUS single-axis ``_binding_cutoff`` picked the
     first present field and stopped — a compensated-recent
@@ -316,37 +362,39 @@ def _all_present_cutoffs(artifact_meta: dict) -> list[tuple[str, datetime.date]]
     evaluated independently (see ``_axis_verdict``) and the overall verdict
     binds to the WORST of them (``_compute_admission``), not merely the
     first one found.
-
-    This module currently ships exactly ONE shadow-model recipe (PatchTST),
-    for which every ``_DATA_CUTOFF_FIELDS`` entry is a legitimate freshness
-    axis when present — so "evaluate every present axis, worst wins" is
-    already the correct, conservative behavior with no per-recipe ambiguity
-    to resolve. If/when a second shadow-model kind ships with genuinely
-    different axis semantics (e.g. a field that is an ALTERNATIVE to another
-    rather than an independent axis for that kind), that is the point to
-    introduce an explicit per-model-kind required-axis mapping (fingerprinted
-    per kind, per the review) — building that registry now, for a
-    still-single-recipe module, would be speculative structure with nothing
-    real to validate it against.
     """
-    out: list[tuple[str, datetime.date]] = []
+    out: list[tuple[str, object]] = []
     for field_name in _DATA_CUTOFF_FIELDS:
-        parsed = _parse_iso_date(artifact_meta.get(field_name))
-        if parsed is not None:
-            out.append((field_name, parsed))
+        raw = artifact_meta.get(field_name)
+        if raw:
+            out.append((field_name, raw))
     return out
 
 
 def _axis_verdict(
     field_name: str,
-    cutoff: datetime.date,
+    raw_value: object,
     artifact_meta: dict,
     today: datetime.date,
 ) -> dict:
-    """Independent freshness verdict for ONE present cutoff axis — age,
-    (if applicable) horizon compensation, and tier. Does not touch coverage
-    or fingerprint; those are whole-artifact gates, not per-axis (see
-    ``_compute_admission``)."""
+    """Independent freshness verdict for ONE present cutoff axis — parse,
+    age, (if applicable) horizon compensation, and tier. Does not touch
+    coverage or fingerprint; those are whole-artifact gates, not per-axis
+    (see ``_compute_admission``)."""
+    cutoff = _parse_iso_date(raw_value)
+    if cutoff is None:
+        # ROUND 6: present but unparseable — UNKNOWN, not silently dropped
+        # and not treated as though the field were simply absent.
+        return {
+            "field": field_name, "cutoff": None, "age_days": None,
+            "horizon_lag_days": 0.0, "horizon_compensated_age_days": None,
+            "tier": _FRESHNESS_TIER_UNKNOWN,
+            "reason": (
+                f"{field_name}={raw_value!r} is present but did not parse as "
+                "an ISO date — a malformed axis is not equivalent to an "
+                "absent one (fail-closed, round 6)"
+            ),
+        }
     age_days = float((today - cutoff).days)
     if age_days < 0:
         # Look-ahead: judged on the RAW age, BEFORE any horizon
@@ -575,16 +623,21 @@ def _compute_admission(
     # just the first/most-binding one — a compensated-recent
     # label_observation_cutoff must not hide an older, off-SLA
     # effective_selection_cutoff_date/effective_train_cutoff_date present on
-    # the SAME artifact. The verdict binds to the WORST axis (highest
+    # the SAME artifact. ROUND 6 (Codex): a field that is PRESENT but does
+    # not PARSE is likewise evaluated (as an UNKNOWN axis, see
+    # ``_axis_verdict``), never silently dropped from the list as though
+    # never stamped. The verdict binds to the WORST axis (highest
     # _TIER_SEVERITY); ties break toward the more-binding field via stable
-    # iteration order (_all_present_cutoffs already returns priority order).
+    # iteration order (``_all_present_cutoff_fields`` already returns
+    # priority order).
     axis_results = [
-        _axis_verdict(field_name, cutoff, artifact_meta, today)
-        for field_name, cutoff in _all_present_cutoffs(artifact_meta)
+        _axis_verdict(field_name, raw_value, artifact_meta, today)
+        for field_name, raw_value in _all_present_cutoff_fields(artifact_meta)
     ]
     cutoffs_evaluated = [
         {
-            "field": r["field"], "cutoff": r["cutoff"].isoformat(),
+            "field": r["field"],
+            "cutoff": r["cutoff"].isoformat() if r["cutoff"] is not None else None,
             "age_days": r["age_days"], "horizon_lag_days": r["horizon_lag_days"],
             "horizon_compensated_age_days": r["horizon_compensated_age_days"],
             "tier": r["tier"],
@@ -597,9 +650,20 @@ def _compute_admission(
         # fallback — see docstring.
         tier = _FRESHNESS_TIER_UNKNOWN
         worst = None
+        missing_confirmed_axis = True
     else:
         worst = max(axis_results, key=lambda r: _TIER_SEVERITY[r["tier"]])
         tier = worst["tier"]
+        # ROUND 6 required-axis gap: at least one CONFIRMED, code-guaranteed
+        # field (see ``_CONFIRMED_STAMPED_CUTOFF_FIELDS``) must be among the
+        # axes actually present (whether or not it parsed — an attempted
+        # stamp that failed to parse is still "attempted", handled above via
+        # its own UNKNOWN axis result) — a weaker/legacy field alone must
+        # never certify an artifact no matter how fresh it looks.
+        present_fields = {r["field"] for r in axis_results}
+        missing_confirmed_axis = not (present_fields & set(_CONFIRMED_STAMPED_CUTOFF_FIELDS))
+        if missing_confirmed_axis:
+            tier = _FRESHNESS_TIER_UNKNOWN
 
     binding_cutoff = worst["cutoff"] if worst is not None else None
     binding_cutoff_field = worst["field"] if worst is not None else None
@@ -638,6 +702,14 @@ def _compute_admission(
     if not axis_results:
         reasons.append(f"freshness=unknown ({cutoff_desc}); binding DATA cutoff "
                         "missing/unparseable (fail-closed, GAP 1)")
+    elif missing_confirmed_axis:
+        reasons.append(
+            f"present cutoff field(s) {sorted({r['field'] for r in axis_results})} do "
+            f"not include a confirmed code-guaranteed axis "
+            f"({', '.join(_CONFIRMED_STAMPED_CUTOFF_FIELDS)}) — provenance unverified "
+            "regardless of what a weaker/legacy field shows (fail-closed, "
+            "required-axis, round 6)"
+        )
     elif worst["reason"] is not None:
         reasons.append(worst["reason"])
     # Every OTHER present axis that is itself not healthy/warn also gets its
