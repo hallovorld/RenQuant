@@ -48,6 +48,10 @@ import pandas as pd
 
 from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Job, Task
+from kernel.panel_pipeline.panel_scorer import (
+    PROVENANCE_SCHEMA_VERSION as _PROVENANCE_SCHEMA_VERSION,
+    RECIPE_REQUIRED_AXES as _RECIPE_REQUIRED_AXES,
+)
 
 log = logging.getLogger("kernel.panel_pipeline.shadow_scoring")
 
@@ -332,65 +336,39 @@ _TIER_SEVERITY = {
 # this repo as of this round — an artifact presenting ONLY one of those, with
 # NEITHER confirmed axis present, has genuinely unverifiable provenance no
 # matter how fresh the weak field looks.
-_CONFIRMED_STAMPED_CUTOFF_FIELDS = (
-    "label_observation_cutoff",
-    "effective_train_cutoff_date",
-)
-
-# 2026-07-02 ROUND 7 (Codex CHANGES_REQUESTED on umbrella PR #426): binding
-# admission to a provenance-schema/recipe version, not just "some confirmed
-# field is present". Round 6's check alone is CODE-GLOBAL: it re-evaluates
-# THIS module's CURRENT understanding of "which fields count as confirmed"
-# against whatever the artifact happens to carry, with no way to prove which
-# STAMPING CONTRACT actually produced that artifact. If a future change to
-# `_CONFIRMED_STAMPED_CUTOFF_FIELDS` (or to what the training scripts stamp)
-# drifts out of sync with an already-produced artifact, the gate would
-# silently keep evaluating it under a rule it was never built against.
+# 2026-07-02 ROUND 8 (Codex CHANGES_REQUESTED on umbrella PR #426): round 7's
+# `_PROVENANCE_SCHEMA_VERSION` / `_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS` were
+# still CODE-LOCAL — this module INFERRED a recipe from whichever confirmed
+# fields the artifact happened to carry, which proves nothing about which
+# stamping contract actually PRODUCED the artifact. A legacy or manually
+# edited artifact presenting the same field combination was silently
+# admitted under a contract it was never validated against.
 #
-# No artifact anywhere in this repo stamps an explicit `schema_version` /
-# `recipe_id` field today (checked: neither `hf_patchtst_scorer.py`'s
-# `stamp_artifact_metadata` call nor `train_production_model.py::
-# build_artifact` write one) — adding that stamp is a cross-repo,
-# training-side change out of scope for this shadow-scoring-focused PR (see
-# the progress doc's NEXT section). Within this file's own scope, the
-# equivalent signal is made EXPLICIT and VALIDATED instead of implicit:
-# `_PROVENANCE_SCHEMA_VERSION` versions THIS MODULE's admission-contract
-# rules (the GAP 1-4 gates, `_CONFIRMED_STAMPED_CUTOFF_FIELDS`,
-# `_DATA_CUTOFF_FIELDS`, `_TIER_SEVERITY` — bump it whenever any of those
-# change in a way that could change which artifacts pass), and
-# `_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS` maps the EXACT set of confirmed axes
-# an artifact presents to a named recipe/schema this version of the module
-# knows how to evaluate. An artifact whose confirmed-field combination is
-# not in this map (e.g. a future third confirmed field added to
-# `_CONFIRMED_STAMPED_CUTOFF_FIELDS` without updating this map too) resolves
-# to `None` and is fail-closed to UNKNOWN by `_compute_admission` — the same
-# treatment as no confirmed field being present at all — rather than being
-# silently admitted under a combination this version of the contract was
-# never validated against.
-_PROVENANCE_SCHEMA_VERSION = "v1"
-_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS: dict[frozenset, str] = {
-    # hf_patchtst / patchtst (stamp_artifact_metadata, always), OR an XGB
-    # walk-forward artifact that only carries the walk-forward-only field.
-    frozenset({"effective_train_cutoff_date"}): "walkforward_only_v1",
-    # XGB full-history (train_production_model.py::build_artifact, always
-    # stamps this on both training paths; walk-forward-only artifacts that
-    # DON'T also carry effective_train_cutoff_date are not currently
-    # expected to exist, but this entry covers the field alone regardless).
-    frozenset({"label_observation_cutoff"}): "full_history_only_v1",
-    # XGB walk-forward (train_production_model.py::build_artifact stamps
-    # BOTH fields on the walk-forward path — the most complete provenance).
-    frozenset({"label_observation_cutoff", "effective_train_cutoff_date"}): (
-        "walkforward_dual_axis_v1"
-    ),
-}
-
-
-def _resolve_recipe_schema(present_confirmed_fields: set) -> Optional[str]:
-    """The named recipe/schema this version of the admission contract
-    recognizes for EXACTLY this combination of confirmed axes, or ``None``
-    if the combination is not a known, validated one (fail-closed — see the
-    module comment above ``_PROVENANCE_SCHEMA_VERSION``)."""
-    return _RECIPE_SCHEMA_BY_CONFIRMED_FIELDS.get(frozenset(present_confirmed_fields))
+# The real fix: `provenance_schema_version` / `recipe_id` /
+# `required_axis_fields` are now STAMPED AT THE SOURCE —
+# `train_production_model.py::build_artifact` (XGB, genuinely at training
+# time, written into the persisted JSON payload — and therefore
+# automatically part of `model_content_sha256`'s hashed content, since those
+# three keys are not in `panel_scorer._MUTABLE_ARTIFACT_KEYS`: bound into the
+# immutable `model_content_fingerprint` with no separate hashing step) and
+# `hf_patchtst_scorer.py` (hf_patchtst/patchtst, derived at load time from
+# the immutable ckpt/contract/sidecar record — binds into
+# `artifact_fingerprint`/`artifact_sha256`, the whole-file hash, rather than
+# the content-only hash; see that file's own comment for the distinction).
+# Both call the SAME canonical `panel_scorer.stamp_provenance_schema` /
+# `panel_scorer.RECIPE_REQUIRED_AXES` — imported here as
+# `_PROVENANCE_SCHEMA_VERSION` / `_RECIPE_REQUIRED_AXES` — so this module and
+# every artifact-producing path share one taxonomy, not three independent
+# copies that could drift.
+#
+# `_compute_admission` below now requires an EXACT match against the
+# artifact's OWN stamped declaration — not an inference — AND cross-checks
+# that the artifact still actually carries the fields its declared
+# `recipe_id` claims (defense in depth against a stamp that was copied onto
+# an artifact that doesn't actually satisfy it). An artifact missing the
+# stamp entirely (every artifact produced before this round, by
+# construction) is UNKNOWN / NOT ACTIONABLE — intentional and correct: this
+# is a NEW requirement, so no pre-existing artifact can satisfy it yet.
 
 
 def _all_present_cutoff_fields(artifact_meta: dict) -> list[tuple[str, object]]:
@@ -701,6 +679,8 @@ def _compute_admission(
     ]
 
     resolved_recipe_schema: Optional[str] = None
+    stamped_schema_version = artifact_meta.get("provenance_schema_version")
+    stamped_recipe_id = artifact_meta.get("recipe_id")
     if not axis_results:
         # GAP 1: no binding DATA cutoff present at all. No ``trained_date``
         # fallback — see docstring.
@@ -710,23 +690,25 @@ def _compute_admission(
     else:
         worst = max(axis_results, key=lambda r: _TIER_SEVERITY[r["tier"]])
         tier = worst["tier"]
-        # ROUND 6 required-axis gap: at least one CONFIRMED, code-guaranteed
-        # field (see ``_CONFIRMED_STAMPED_CUTOFF_FIELDS``) must be among the
-        # axes actually present (whether or not it parsed — an attempted
-        # stamp that failed to parse is still "attempted", handled above via
-        # its own UNKNOWN axis result) — a weaker/legacy field alone must
-        # never certify an artifact no matter how fresh it looks.
-        present_fields = {r["field"] for r in axis_results}
-        present_confirmed = present_fields & set(_CONFIRMED_STAMPED_CUTOFF_FIELDS)
-        # ROUND 7: presence alone is not enough — the EXACT combination of
-        # confirmed axes must also resolve to a recipe/schema THIS version
-        # of the contract explicitly knows how to evaluate (see
-        # ``_resolve_recipe_schema`` / ``_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS``
-        # above). An unrecognized combination is treated exactly like "no
-        # confirmed field present" — fail-closed, never silently admitted
-        # under a contract version it was never validated against.
-        resolved_recipe_schema = _resolve_recipe_schema(present_confirmed)
-        missing_confirmed_axis = not present_confirmed or resolved_recipe_schema is None
+        # ROUND 8: admission requires the artifact's OWN stamped
+        # ``provenance_schema_version``/``recipe_id`` — never inferred from
+        # whichever cutoff fields happen to be present (see module comment
+        # above). Defense in depth: a stamped recipe_id is not trusted
+        # blindly either — the artifact must actually carry present AND
+        # PARSED values for every field its own declared recipe requires
+        # (``panel_scorer.RECIPE_REQUIRED_AXES``); a stamp copied onto an
+        # artifact that doesn't actually satisfy it is not admitted.
+        recipe_required_axes = _RECIPE_REQUIRED_AXES.get(stamped_recipe_id)
+        schema_version_ok = stamped_schema_version == _PROVENANCE_SCHEMA_VERSION
+        recipe_recognized = recipe_required_axes is not None
+        present_and_parsed = {r["field"] for r in axis_results if r["cutoff"] is not None}
+        recipe_satisfied = bool(
+            recipe_recognized and recipe_required_axes <= present_and_parsed
+        )
+        resolved_recipe_schema = (
+            stamped_recipe_id if (schema_version_ok and recipe_satisfied) else None
+        )
+        missing_confirmed_axis = resolved_recipe_schema is None
         if missing_confirmed_axis:
             tier = _FRESHNESS_TIER_UNKNOWN
 
@@ -756,11 +738,11 @@ def _compute_admission(
     )
     fingerprint_ok = bool(fingerprint) and bool(str(fingerprint).strip())
     fingerprint_short = str(fingerprint)[:12] if fingerprint_ok else "nofingerprint"
-    # ROUND 7: the provenance-schema version + resolved recipe are part of
-    # the immutable run identity — an audit trail entry must be able to tell
-    # "evaluated under schema v1, recipe walkforward_dual_axis_v1" apart from
-    # any future schema/recipe without ambiguity, not just "some fingerprint
-    # from some artifact".
+    # ROUND 7/8: the provenance-schema version + the artifact's OWN stamped
+    # recipe are part of the immutable run identity — an audit trail entry
+    # must be able to tell "evaluated under schema v1, recipe
+    # walkforward_dual_axis_v1" apart from any future schema/recipe without
+    # ambiguity, not just "some fingerprint from some artifact".
     recipe_schema_short = resolved_recipe_schema or "unresolved-recipe"
     run_id = (
         f"{as_of_date}:{name}:{fingerprint_short}:"
@@ -777,28 +759,42 @@ def _compute_admission(
         reasons.append(f"freshness=unknown ({cutoff_desc}); binding DATA cutoff "
                         "missing/unparseable (fail-closed, GAP 1)")
     elif missing_confirmed_axis:
-        present_confirmed_desc = sorted(
-            {r["field"] for r in axis_results} & set(_CONFIRMED_STAMPED_CUTOFF_FIELDS)
-        )
-        if not present_confirmed_desc:
+        # ROUND 8: fail-closed reasons keyed on the ARTIFACT'S OWN stamp,
+        # not an inference from present fields — distinguish "never
+        # stamped" from "stamped but wrong version" from "stamped but the
+        # artifact doesn't actually carry what it claims", so an operator
+        # auditing a NOT ACTIONABLE verdict can tell which repair is needed.
+        if not stamped_recipe_id or not stamped_schema_version:
             reasons.append(
-                f"present cutoff field(s) {sorted({r['field'] for r in axis_results})} do "
-                f"not include a confirmed code-guaranteed axis "
-                f"({', '.join(_CONFIRMED_STAMPED_CUTOFF_FIELDS)}) — provenance unverified "
-                "regardless of what a weaker/legacy field shows (fail-closed, "
-                "required-axis, round 6)"
+                "artifact does not stamp provenance_schema_version/recipe_id — "
+                "provenance unverified, cannot prove which stamping contract "
+                "produced it (fail-closed, required-recipe-schema, round 8)"
+            )
+        elif stamped_schema_version != _PROVENANCE_SCHEMA_VERSION:
+            reasons.append(
+                f"artifact stamps provenance_schema_version={stamped_schema_version!r}, "
+                f"this admission gate validates {_PROVENANCE_SCHEMA_VERSION!r} only "
+                "(fail-closed, required-recipe-schema, round 8)"
+            )
+        elif stamped_recipe_id not in _RECIPE_REQUIRED_AXES:
+            reasons.append(
+                f"artifact stamps recipe_id={stamped_recipe_id!r}, not a recognized "
+                f"recipe under provenance schema {_PROVENANCE_SCHEMA_VERSION} "
+                "(fail-closed, required-recipe-schema, round 8)"
             )
         else:
-            # ROUND 7: a confirmed field WAS present, but this exact
-            # combination does not resolve to a recipe/schema this version
-            # of the contract has validated — fail-closed the same way as
-            # "no confirmed field at all", not silently admitted.
+            present_and_parsed_desc = {
+                r["field"] for r in axis_results if r["cutoff"] is not None
+            }
+            missing_axes = sorted(
+                _RECIPE_REQUIRED_AXES[stamped_recipe_id] - present_and_parsed_desc
+            )
             reasons.append(
-                f"confirmed cutoff field(s) {present_confirmed_desc} present, but this "
-                f"combination does not resolve to a known recipe/schema under "
-                f"provenance schema {_PROVENANCE_SCHEMA_VERSION} "
-                f"(_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS) — provenance schema unverified "
-                "(fail-closed, required-recipe-schema, round 7)"
+                f"artifact declares recipe_id={stamped_recipe_id!r} (requires "
+                f"{sorted(_RECIPE_REQUIRED_AXES[stamped_recipe_id])}), but does not "
+                f"actually carry present+parseable values for {missing_axes} — a "
+                "stamped recipe is not trusted without the fields it claims "
+                "(fail-closed, required-recipe-schema, round 8)"
             )
     elif worst["reason"] is not None:
         reasons.append(worst["reason"])

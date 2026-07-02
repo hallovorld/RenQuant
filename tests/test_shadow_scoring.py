@@ -27,6 +27,28 @@ def shadow_mod():
     return shadow_scoring
 
 
+def _stamped(artifact_meta: dict) -> dict:
+    """2026-07-02 round 8: test fixtures now need the artifact's OWN
+    provenance_schema_version/recipe_id stamp — round 8 removed the old
+    inference-from-present-fields fallback, so a fixture without this stamp
+    correctly reads NOT ACTIONABLE regardless of its cutoff fields. This
+    helper adds the CORRECT stamp for whichever of the two confirmed axes
+    the given dict already carries, via the same canonical taxonomy
+    production code stamps against — never hand-picks a recipe_id string
+    that might drift from the real mapping."""
+    from kernel.panel_pipeline.panel_scorer import resolve_recipe_id, PROVENANCE_SCHEMA_VERSION
+    present = {
+        f for f in ("label_observation_cutoff", "effective_train_cutoff_date")
+        if artifact_meta.get(f)
+    }
+    recipe_id = resolve_recipe_id(present)
+    out = dict(artifact_meta)
+    if recipe_id is not None:
+        out["provenance_schema_version"] = PROVENANCE_SCHEMA_VERSION
+        out["recipe_id"] = recipe_id
+    return out
+
+
 class TestSourceContracts:
     """Pin behavior strings so future refactors can't silently change semantics."""
 
@@ -356,10 +378,10 @@ class TestComputeAdmission:
     def test_healthy_full_coverage_with_flag_is_actionable(self, shadow_mod):
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": self.FRESH_CUTOFF,
                 "artifact_fingerprint": self.FINGERPRINT,
-            },
+            }),
             n_scored=83, n_expected=83, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -376,10 +398,10 @@ class TestComputeAdmission:
         evaluation."""
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": self.FRESH_CUTOFF,
                 "artifact_fingerprint": self.FINGERPRINT,
-            },
+            }),
             n_scored=83, n_expected=83, min_coverage=0.80,
         )
         assert admission["verdict"] == "healthy"
@@ -392,10 +414,10 @@ class TestComputeAdmission:
         cutoff = (self.AS_OF - _dt.timedelta(days=140)).isoformat()
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": cutoff,
                 "artifact_fingerprint": self.FINGERPRINT,
-            },
+            }),
             n_scored=83, n_expected=83, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -408,10 +430,10 @@ class TestComputeAdmission:
         cutoff = (self.AS_OF - _dt.timedelta(days=33)).isoformat()
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": cutoff,
                 "artifact_fingerprint": self.FINGERPRINT,
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -423,7 +445,7 @@ class TestComputeAdmission:
         """Fail-closed: no provenance is never silently treated as fresh."""
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={}, n_scored=83, n_expected=83, min_coverage=0.80,
+            artifact_meta=_stamped({}), n_scored=83, n_expected=83, min_coverage=0.80,
             experimental_actionable_display=True,
         )
         assert admission["verdict"] == "unknown"
@@ -435,10 +457,10 @@ class TestComputeAdmission:
         comparable "rank 1" even when the artifact itself is fresh."""
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": self.FRESH_CUTOFF,
                 "artifact_fingerprint": self.FINGERPRINT,
-            },
+            }),
             n_scored=83, n_expected=292, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -451,7 +473,7 @@ class TestComputeAdmission:
     def test_coverage_fraction_correctly_computed_and_surfaced(self, shadow_mod):
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={"trained_date": "2026-06-30"},
+            artifact_meta=_stamped({"trained_date": "2026-06-30"}),
             n_scored=150, n_expected=300, min_coverage=0.80,
         )
         assert admission["n_scored"] == 150
@@ -464,10 +486,10 @@ class TestComputeAdmission:
         degrade gracefully to "unknown, does not block" as before."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": self.FRESH_CUTOFF,
                 "artifact_fingerprint": self.FINGERPRINT,
-            },
+            }),
             n_scored=10, n_expected=0, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -482,10 +504,10 @@ class TestComputeAdmission:
         """Same GAP 2 fix, a negative n_expected (also <=0) must block."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": self.FRESH_CUTOFF,
                 "artifact_fingerprint": self.FINGERPRINT,
-            },
+            }),
             n_scored=10, n_expected=-5, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -498,7 +520,7 @@ class TestComputeAdmission:
         never proceed with the "nofingerprint" sentinel."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={"effective_train_cutoff_date": self.FRESH_CUTOFF},
+            artifact_meta=_stamped({"effective_train_cutoff_date": self.FRESH_CUTOFF}),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -516,10 +538,10 @@ class TestComputeAdmission:
     def test_run_id_binds_date_name_and_fingerprint(self, shadow_mod):
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "trained_date": "2026-06-30",
                 "artifact_fingerprint": "sha256:abcdef0123456789",
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         # ROUND 7: run_id now also carries the provenance-schema version +
@@ -559,10 +581,10 @@ class TestComputeAdmissionBindingDataCutoff:
         must be judged on the cutoff, not the retrain run time."""
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "trained_date": "2026-06-30",  # 1d old -> would read healthy
                 "effective_train_cutoff_date": "2024-11-13",  # ~596d stale
-            },
+            }),
             n_scored=83, n_expected=83, min_coverage=0.80,
         )
         assert admission["verdict"] == "breach"
@@ -582,11 +604,11 @@ class TestComputeAdmissionBindingDataCutoff:
         below for the case where severities actually differ)."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": "2026-06-29",
                 "lookahead_days": 60,
                 "effective_train_cutoff_date": "2026-06-29",  # same raw age, also healthy
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["binding_cutoff_field"] == "label_observation_cutoff"
@@ -604,11 +626,11 @@ class TestComputeAdmissionBindingDataCutoff:
         label_observation_cutoff is the more-binding field by priority."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": "2026-04-08",  # compensates to healthy (60BD)
                 "lookahead_days": 60,
                 "effective_train_cutoff_date": "2020-01-01",  # genuinely ancient, no compensation
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["binding_cutoff_field"] == "effective_train_cutoff_date"
@@ -633,7 +655,7 @@ class TestComputeAdmissionBindingDataCutoff:
         liveness context only)."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={"trained_date": "2026-06-30"},
+            artifact_meta=_stamped({"trained_date": "2026-06-30"}),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -651,10 +673,10 @@ class TestComputeAdmissionBindingDataCutoff:
         binding cutoff (not silently skipped to trained_date)."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "trained_date": "2026-06-30",
                 "effective_train_cutoff_date": "not-a-date",
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -668,7 +690,7 @@ class TestComputeAdmissionBindingDataCutoff:
         negative age / healthy."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={"effective_train_cutoff_date": "2026-08-15"},
+            artifact_meta=_stamped({"effective_train_cutoff_date": "2026-08-15"}),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["age_days"] < 0
@@ -678,7 +700,7 @@ class TestComputeAdmissionBindingDataCutoff:
 
     def test_binding_cutoff_none_and_no_trained_date_is_unknown(self, shadow_mod):
         admission = shadow_mod._compute_admission(
-            name="x", as_of_date=self.AS_OF, artifact_meta={},
+            name="x", as_of_date=self.AS_OF, artifact_meta=_stamped({}),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["verdict"] == "unknown"
@@ -714,10 +736,10 @@ class TestHorizonCompensation:
         threshold must read this as HEALTHY, not born-BREACH."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": self.SIXTY_BD_CUTOFF,
                 "lookahead_days": 60,
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["age_days"] == self.SIXTY_BD_LAG_DAYS
@@ -731,10 +753,10 @@ class TestHorizonCompensation:
         stamped ``lookahead_days``, not a hardcoded 60."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": self.TWENTY_BD_CUTOFF,
                 "lookahead_days": 20,
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["age_days"] == self.TWENTY_BD_LAG_DAYS
@@ -755,7 +777,7 @@ class TestHorizonCompensation:
         be used to compute ``horizon_compensated_age_days`` or the tier."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={"label_observation_cutoff": self.SIXTY_BD_CUTOFF},
+            artifact_meta=_stamped({"label_observation_cutoff": self.SIXTY_BD_CUTOFF}),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["horizon_lag_days"] == self.SIXTY_BD_LAG_DAYS  # diagnostic only
@@ -772,10 +794,10 @@ class TestHorizonCompensation:
         stale_cutoff = (self.AS_OF - _dt.timedelta(days=425)).isoformat()
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": stale_cutoff,
                 "lookahead_days": 60,
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["age_days"] == 425
@@ -790,10 +812,10 @@ class TestHorizonCompensation:
         with a lookahead_days present"."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": self.TWENTY_BD_CUTOFF,  # 28d raw
                 "lookahead_days": 20,
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["binding_cutoff_field"] == "effective_train_cutoff_date"
@@ -811,10 +833,10 @@ class TestHorizonCompensation:
         future_cutoff = (self.AS_OF + _dt.timedelta(days=45)).isoformat()
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": future_cutoff,
                 "lookahead_days": 60,
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -830,10 +852,10 @@ class TestHorizonCompensation:
         persisted, distinctly — never collapsed into one field."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": self.SIXTY_BD_CUTOFF,
                 "lookahead_days": 60,
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["age_days"] == 84
@@ -845,11 +867,11 @@ class TestHorizonCompensation:
         + fingerprint + explicit opt-in flag -> actionable."""
         admission = shadow_mod._compute_admission(
             name="patchtst_v1", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": self.SIXTY_BD_CUTOFF,
                 "lookahead_days": 60,
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_scored=83, n_expected=83, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -892,10 +914,10 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         fine."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": "bad",
                 "effective_train_cutoff_date": "2026-06-30",  # 1d old, would be healthy
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["verdict"] == "unknown"
@@ -904,7 +926,14 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         assert by_field["label_observation_cutoff"]["tier"] == "unknown"
         assert by_field["label_observation_cutoff"]["cutoff"] is None
         assert by_field["effective_train_cutoff_date"]["tier"] == "healthy"
-        assert any("label_observation_cutoff" in r and "did not parse" in r
+        # ROUND 8: the malformed axis ALSO breaks the artifact's own stamped
+        # recipe_id's required-axis guarantee (walkforward_dual_axis_v1
+        # requires BOTH fields to actually parse) — that recipe-validation
+        # failure is now the surfaced top-level reason (more informative:
+        # it names the broken CONTRACT, not just the one broken field). The
+        # per-axis breakdown above still independently proves the malformed
+        # field itself reads unknown.
+        assert any("recipe_id" in r and "walkforward_dual_axis_v1" in r
                    for r in admission["reasons"])
 
     def test_healthy_compensated_label_with_malformed_secondary_is_unknown(self, shadow_mod):
@@ -914,11 +943,11 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         either (worst wins regardless of which side is "primary")."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": "2026-04-08",  # compensates to healthy
                 "lookahead_days": 60,
                 "effective_train_cutoff_date": "not-a-date",
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["verdict"] == "unknown"
@@ -926,7 +955,12 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         by_field = {c["field"]: c for c in admission["cutoffs_evaluated"]}
         assert by_field["label_observation_cutoff"]["tier"] == "healthy"
         assert by_field["effective_train_cutoff_date"]["tier"] == "unknown"
-        assert any("effective_train_cutoff_date" in r and "did not parse" in r
+        # ROUND 8: same reasoning as the sibling test above — the malformed
+        # secondary axis breaks the stamped recipe_id's required-axis
+        # guarantee, so the recipe-validation failure is the surfaced
+        # top-level reason; the per-axis breakdown above independently
+        # proves the malformed field itself reads unknown.
+        assert any("recipe_id" in r and "walkforward_dual_axis_v1" in r
                    for r in admission["reasons"])
 
     def test_future_axis_with_malformed_axis_is_unknown_not_breach(self, shadow_mod):
@@ -936,11 +970,11 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         future_cutoff = (self.AS_OF + _dt.timedelta(days=45)).isoformat()
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "label_observation_cutoff": future_cutoff,
                 "lookahead_days": 60,
                 "effective_train_cutoff_date": "garbage",
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -959,7 +993,7 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         must be present."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={"cutoff_date": "2026-06-30"},  # 1d old, would read healthy
+            artifact_meta=_stamped({"cutoff_date": "2026-06-30"}),  # 1d old, would read healthy
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -968,7 +1002,13 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         assert admission["actionable"] is False
         by_field = {c["field"]: c for c in admission["cutoffs_evaluated"]}
         assert by_field["cutoff_date"]["tier"] == "healthy"  # the axis itself is fine...
-        assert any("confirmed code-guaranteed axis" in r for r in admission["reasons"])
+        # ROUND 8: no confirmed axis present -> no recipe stamp resolvable ->
+        # the artifact never got a provenance_schema_version/recipe_id at
+        # all (round 8's "artifact does not stamp..." reason), superseding
+        # round 6's "does not include a confirmed code-guaranteed axis"
+        # wording with a more precise one naming what's actually missing.
+        assert any("does not stamp provenance_schema_version/recipe_id" in r
+                   for r in admission["reasons"])
 
     def test_confirmed_axis_present_alongside_weak_field_certifies_normally(self, shadow_mod):
         """Sanity check the required-axis gate is additive, not a new
@@ -977,11 +1017,11 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
         normally."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": "2026-06-30",
                 "cutoff_date": "2026-06-30",
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -991,14 +1031,21 @@ class TestMalformedCutoffAxesAndRequiredProvenance:
 
 
 class TestProvenanceSchemaVersionBinding:
-    """2026-07-02 ROUND 7 (Codex CHANGES_REQUESTED on umbrella PR #426):
+    """2026-07-02 ROUND 7+8 (Codex CHANGES_REQUESTED on umbrella PR #426):
     "at least one confirmed field present" alone (round 6) is code-global —
     it re-evaluates the CURRENT code's rule against whatever the artifact
     carries, with no way to prove which stamping CONTRACT actually produced
-    it. Admission is now bound to a provenance-schema/recipe version
-    (``_PROVENANCE_SCHEMA_VERSION`` / ``_RECIPE_SCHEMA_BY_CONFIRMED_FIELDS``)
-    resolved from the EXACT combination of confirmed axes present, not just
-    "some confirmed field, any combination"."""
+    it. Round 7 bound admission to a provenance-schema/recipe version
+    INFERRED from the exact combination of confirmed axes present — still
+    code-local, still not proof of which contract produced the artifact.
+    Round 8 closes that: ``provenance_schema_version``/``recipe_id`` are now
+    STAMPED AT THE SOURCE (``kernel.panel_pipeline.panel_scorer.
+    stamp_provenance_schema``, called from ``train_production_model.py`` and
+    ``hf_patchtst_scorer.py``) and ``_compute_admission`` requires an EXACT
+    match against the artifact's OWN declared stamp — plus a defense-in-depth
+    cross-check that the artifact still actually carries the fields its
+    stamped recipe claims — never an inference from whichever fields happen
+    to be present."""
 
     AS_OF = _dt.date(2026, 7, 1)
 
@@ -1008,10 +1055,10 @@ class TestProvenanceSchemaVersionBinding:
         the new gate is additive, not a new blanket restriction."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": "2026-06-30",
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
@@ -1028,63 +1075,104 @@ class TestProvenanceSchemaVersionBinding:
         own distinct recipe name and still certifies."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": "2026-06-30",
                 "label_observation_cutoff": "2026-06-30",
                 "lookahead_days": 60,  # required for label_observation_cutoff (GAP 4b)
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_scored=10, n_expected=10, min_coverage=0.80,
             experimental_actionable_display=True,
         )
         assert admission["resolved_recipe_schema"] == "walkforward_dual_axis_v1"
         assert admission["gates_passed"] is True
 
-    def test_unrecognized_confirmed_field_combination_fails_closed(self, shadow_mod):
-        """A confirmed field IS present, but simulate a future
-        _CONFIRMED_STAMPED_CUTOFF_FIELDS growing without the recipe map
-        keeping up: monkeypatch a THIRD confirmed field in so the present
-        combination is no longer a key in _RECIPE_SCHEMA_BY_CONFIRMED_FIELDS
-        — must fail closed to unknown, exactly like no confirmed field being
-        present at all, never silently admitted under an unvalidated
-        combination."""
-        original_confirmed = shadow_mod._CONFIRMED_STAMPED_CUTOFF_FIELDS
-        try:
-            shadow_mod._CONFIRMED_STAMPED_CUTOFF_FIELDS = original_confirmed + (
-                "cutoff_date",
-            )
-            admission = shadow_mod._compute_admission(
-                name="x", as_of_date=self.AS_OF,
-                artifact_meta={
-                    "effective_train_cutoff_date": "2026-06-30",
-                    "cutoff_date": "2026-06-30",
-                    "artifact_fingerprint": "sha256:testfp1234567890",
-                },
-                n_scored=10, n_expected=10, min_coverage=0.80,
-                experimental_actionable_display=True,
-            )
-        finally:
-            shadow_mod._CONFIRMED_STAMPED_CUTOFF_FIELDS = original_confirmed
+    def test_unrecognized_stamped_recipe_id_fails_closed(self, shadow_mod):
+        """ROUND 8: an artifact stamping a well-formed but UNRECOGNIZED
+        recipe_id (e.g. a future recipe this deployed code version predates,
+        or simply corrupted/hand-edited metadata) must fail closed to
+        unknown — never silently admitted just because SOME recipe_id
+        string is present and the underlying cutoff field happens to look
+        fine."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+                "provenance_schema_version": "v1",
+                "recipe_id": "some_future_recipe_v2",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
         assert admission["resolved_recipe_schema"] is None
         assert admission["verdict"] == "unknown"
         assert admission["gates_passed"] is False
         assert admission["actionable"] is False
-        assert any("required-recipe-schema" in r for r in admission["reasons"])
+        assert any("not a recognized recipe" in r for r in admission["reasons"])
 
-    def test_resolve_recipe_schema_helper_direct(self, shadow_mod):
-        """Direct unit coverage of the resolver: known combinations resolve,
-        unknown ones return None."""
-        assert shadow_mod._resolve_recipe_schema(
+    def test_unrecognized_schema_version_fails_closed(self, shadow_mod):
+        """ROUND 8: an artifact stamping a recognized recipe_id but under a
+        provenance_schema_version this code doesn't validate (e.g. a
+        future schema bump) must also fail closed — the version and the
+        recipe are both part of the exact-match requirement."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "effective_train_cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+                "provenance_schema_version": "v2-not-yet-supported",
+                "recipe_id": "walkforward_only_v1",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["gates_passed"] is False
+        assert any("provenance_schema_version" in r and "v2-not-yet-supported" in r
+                   for r in admission["reasons"])
+
+    def test_stamped_recipe_not_backed_by_actual_fields_fails_closed(self, shadow_mod):
+        """ROUND 8's defense-in-depth: a recognized, correctly-versioned
+        recipe_id stamp is NOT trusted blindly — if the artifact doesn't
+        actually carry (present + parsed) the fields its own declared
+        recipe requires (e.g. a stamp copied from a different artifact, or
+        hand-edited metadata), admission still fails closed."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                # declares the DUAL-axis recipe but only actually carries one
+                # field — the stamp lies about what this artifact has.
+                "effective_train_cutoff_date": "2026-06-30",
+                "artifact_fingerprint": "sha256:testfp1234567890",
+                "provenance_schema_version": "v1",
+                "recipe_id": "walkforward_dual_axis_v1",
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+            experimental_actionable_display=True,
+        )
+        assert admission["verdict"] == "unknown"
+        assert admission["gates_passed"] is False
+        assert any("does not actually carry present+parseable values" in r
+                   for r in admission["reasons"])
+
+    def test_resolve_recipe_id_helper_direct(self, shadow_mod):
+        """Direct unit coverage of the canonical resolver (now in
+        panel_scorer, the shared source every stamping site AND this
+        module's consumer-side check import from): known combinations
+        resolve, unknown ones return None."""
+        from kernel.panel_pipeline.panel_scorer import resolve_recipe_id
+        assert resolve_recipe_id(
             {"effective_train_cutoff_date"}
         ) == "walkforward_only_v1"
-        assert shadow_mod._resolve_recipe_schema(
+        assert resolve_recipe_id(
             {"label_observation_cutoff"}
         ) == "full_history_only_v1"
-        assert shadow_mod._resolve_recipe_schema(
+        assert resolve_recipe_id(
             {"label_observation_cutoff", "effective_train_cutoff_date"}
         ) == "walkforward_dual_axis_v1"
-        assert shadow_mod._resolve_recipe_schema(set()) is None
-        assert shadow_mod._resolve_recipe_schema({"some_future_field"}) is None
+        assert resolve_recipe_id(set()) is None
+        assert resolve_recipe_id({"some_future_field"}) is None
 
 
 class TestComputeShadowSummaryAdmissionIntegration:
@@ -1112,10 +1200,10 @@ class TestComputeShadowSummaryAdmissionIntegration:
             self.PRIMARY, sorted_primary, primary_ranks,
             self.SHADOW, sorted_shadow, shadow_ranks, 5,
             as_of_date=_dt.date(2026, 7, 1),
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": "2026-06-30",
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_expected_universe=10,
         )
         assert summary["gates_passed"] is True
@@ -1134,10 +1222,10 @@ class TestComputeShadowSummaryAdmissionIntegration:
             self.PRIMARY, sorted_primary, primary_ranks,
             self.SHADOW, sorted_shadow, shadow_ranks, 5,
             as_of_date=_dt.date(2026, 7, 1),
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": "2026-06-30",
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_expected_universe=10,
             experimental_actionable_display=True,
         )
@@ -1160,10 +1248,10 @@ class TestComputeShadowSummaryAdmissionIntegration:
             self.PRIMARY, sorted_primary, primary_ranks,
             self.SHADOW, sorted_shadow, shadow_ranks, 5,
             as_of_date=_dt.date(2026, 7, 1),
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": cutoff,
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_expected_universe=10,
             experimental_actionable_display=True,
         )
@@ -1182,10 +1270,10 @@ class TestComputeShadowSummaryAdmissionIntegration:
             self.PRIMARY, sorted_primary, primary_ranks,
             self.SHADOW, sorted_shadow, shadow_ranks, 5,
             as_of_date=_dt.date(2026, 7, 1),
-            artifact_meta={
+            artifact_meta=_stamped({
                 "effective_train_cutoff_date": "2026-06-30",
                 "artifact_fingerprint": "sha256:testfp1234567890",
-            },
+            }),
             n_expected_universe=0,  # GAP 2: unresolved universe -> blocks
             experimental_actionable_display=True,
         )
@@ -1203,7 +1291,7 @@ class TestComputeShadowSummaryAdmissionIntegration:
             self.PRIMARY, sorted_primary, primary_ranks,
             self.SHADOW, sorted_shadow, shadow_ranks, 5,
             as_of_date=_dt.date(2026, 7, 1),
-            artifact_meta={"effective_train_cutoff_date": "2026-06-30"},  # no fingerprint
+            artifact_meta=_stamped({"effective_train_cutoff_date": "2026-06-30"}),  # no fingerprint
             n_expected_universe=10,
             experimental_actionable_display=True,
         )

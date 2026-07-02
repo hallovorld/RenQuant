@@ -174,6 +174,27 @@ class TestLoadScore:
 
     @pytest.mark.skipif(
         not list((REPO / "artifacts/hf_patchtst_prod").rglob("*_model.pt")),
+        reason="no HF PatchTST model artifact yet (train pending)")
+    def test_load_stamps_provenance_schema_when_cutoff_coalesces(self, scorer_mod):
+        """2026-07-02 (#426 round 8): if effective_train_cutoff_date
+        coalesced to a real value from ckpt/contract/sidecar, the loader
+        must stamp provenance_schema_version/recipe_id=walkforward_only_v1
+        — the same canonical taxonomy the XGB path stamps against (see
+        tests/test_train_production_model_cutoff.py::
+        TestProvenanceSchemaStamp), so shadow_scoring.py's admission gate
+        can validate either artifact kind identically."""
+        from kernel.panel_pipeline.panel_scorer import PROVENANCE_SCHEMA_VERSION
+        artifact = next((REPO / "artifacts/hf_patchtst_prod").rglob("*_model.pt"))
+        scorer = scorer_mod.HFPatchTSTPanelScorer.load(artifact)
+        if not scorer.metadata.get("effective_train_cutoff_date"):
+            pytest.skip("this artifact's ckpt/contract/sidecar never coalesced "
+                        "effective_train_cutoff_date — nothing to stamp against")
+        assert scorer.metadata["provenance_schema_version"] == PROVENANCE_SCHEMA_VERSION
+        assert scorer.metadata["recipe_id"] == "walkforward_only_v1"
+        assert scorer.metadata["required_axis_fields"] == ["effective_train_cutoff_date"]
+
+    @pytest.mark.skipif(
+        not list((REPO / "artifacts/hf_patchtst_prod").rglob("*_model.pt")),
         reason="no HF PatchTST model artifact yet")
     def test_score_with_history_runs(self, scorer_mod):
         artifact = next((REPO / "artifacts/hf_patchtst_prod").rglob("*_model.pt"))

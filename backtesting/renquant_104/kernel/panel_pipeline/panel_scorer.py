@@ -138,6 +138,68 @@ def model_content_sha256_from_path(path: str | Path) -> str:
         return artifact_sha256(p)
 
 
+# 2026-07-02 (#426 round 8, Codex CHANGES_REQUESTED): the canonical
+# provenance-schema/recipe taxonomy shadow_scoring.py's admission gate
+# validates against. Defined HERE — not in shadow_scoring.py — so every
+# artifact-producing path (this module's own XGB stamping below,
+# hf_patchtst_scorer.py, scripts/train_production_model.py::build_artifact)
+# imports the SAME canonical source and stamps it once, at/near artifact
+# construction, rather than a downstream consumer re-INFERRING a recipe from
+# whichever cutoff fields happen to be present on any given artifact (round
+# 7's gap: inference re-evaluates the CURRENT code's understanding against
+# an artifact with no way to prove which stamping contract actually built
+# it — a legacy or hand-edited artifact with a matching field combination
+# was silently admitted under a contract it was never validated against).
+#
+# `resolve_recipe_id` is the single function every stamping site calls;
+# `RECIPE_REQUIRED_AXES` is the single map every stamping site AND every
+# consumer reads. A consumer must additionally re-verify (not merely trust)
+# that the artifact still actually carries the fields its own stamped
+# `recipe_id` claims — see shadow_scoring.py `_compute_admission`.
+PROVENANCE_SCHEMA_VERSION = "v1"
+RECIPE_REQUIRED_AXES: dict[str, frozenset] = {
+    # hf_patchtst / patchtst (hf_patchtst_scorer.py stamps only this field),
+    # or an XGB walk-forward artifact carrying only the walk-forward axis.
+    "walkforward_only_v1": frozenset({"effective_train_cutoff_date"}),
+    # XGB full-history (train_production_model.py::build_artifact stamps
+    # this on BOTH training paths).
+    "full_history_only_v1": frozenset({"label_observation_cutoff"}),
+    # XGB walk-forward (train_production_model.py::build_artifact stamps
+    # BOTH fields on the walk-forward path — the most complete provenance).
+    "walkforward_dual_axis_v1": frozenset(
+        {"label_observation_cutoff", "effective_train_cutoff_date"}
+    ),
+}
+
+
+def resolve_recipe_id(present_confirmed_fields: Iterable[str]) -> str | None:
+    """The canonical `recipe_id` for an EXACT set of confirmed provenance
+    axes under `PROVENANCE_SCHEMA_VERSION`, or `None` if the combination is
+    not a recognized, validated contract (fail-closed — callers must treat
+    `None` as UNKNOWN, never guess or admit under an unrecognized shape)."""
+    fs = frozenset(present_confirmed_fields)
+    for recipe_id, required in RECIPE_REQUIRED_AXES.items():
+        if fs == required:
+            return recipe_id
+    return None
+
+
+def stamp_provenance_schema(artifact: dict, present_confirmed_fields: Iterable[str]) -> dict:
+    """Mutate `artifact` in place, adding `provenance_schema_version` /
+    `recipe_id` / `required_axis_fields` when `present_confirmed_fields`
+    resolves to a recognized recipe — the single stamping call every
+    artifact-producing path should use so the taxonomy is applied
+    identically everywhere. No-ops (stamps nothing) when the combination is
+    unrecognized; callers must not fabricate a recipe_id for an unrecognized
+    shape. Returns `artifact` for chaining."""
+    recipe_id = resolve_recipe_id(present_confirmed_fields)
+    if recipe_id is not None:
+        artifact["provenance_schema_version"] = PROVENANCE_SCHEMA_VERSION
+        artifact["recipe_id"] = recipe_id
+        artifact["required_axis_fields"] = sorted(RECIPE_REQUIRED_AXES[recipe_id])
+    return artifact
+
+
 def stamp_artifact_metadata(
     metadata: dict | None,
     path: str | Path,

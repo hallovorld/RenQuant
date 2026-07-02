@@ -359,6 +359,79 @@ class TestFullHistoryDataCutoffStamp:
             train["date"].max()).isoformat()
 
 
+class TestProvenanceSchemaStamp:
+    """2026-07-02 (#426 round 8, Codex CHANGES_REQUESTED): build_artifact
+    must stamp provenance_schema_version/recipe_id AT TRAINING TIME, derived
+    from whichever of the two confirmed cutoff fields THIS build actually
+    wrote — never left for a downstream consumer (shadow_scoring.py) to
+    infer. Uses kernel.panel_pipeline.panel_scorer.RECIPE_REQUIRED_AXES as
+    the single canonical source, so this test and the consumer-side gate
+    can never independently drift."""
+
+    def test_full_history_path_stamps_full_history_only_recipe(self):
+        """Full-history build (no --train-cutoff) only ever produces
+        label_observation_cutoff -> recipe_id=full_history_only_v1."""
+        from kernel.panel_pipeline.panel_scorer import PROVENANCE_SCHEMA_VERSION
+        train = _make_synthetic_panel(
+            n_tickers=4, n_dates=60, start="2024-01-01"
+        ).dropna(subset=["fwd_60d_excess"])
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        art = TPM.build_artifact(
+            booster, ["feat_a"], np.zeros(1), np.ones(1), train,
+            cutoff_date=None, side_label=None, train_run_id="abc12345",
+        )
+        assert art["provenance_schema_version"] == PROVENANCE_SCHEMA_VERSION
+        assert art["recipe_id"] == "full_history_only_v1"
+        assert art["required_axis_fields"] == ["label_observation_cutoff"]
+
+    def test_walkforward_path_stamps_dual_axis_recipe(self):
+        """Walk-forward build (--train-cutoff set) produces BOTH confirmed
+        fields -> recipe_id=walkforward_dual_axis_v1, the most complete
+        provenance this taxonomy recognizes."""
+        from kernel.panel_pipeline.panel_scorer import PROVENANCE_SCHEMA_VERSION
+        train = _make_synthetic_panel(
+            n_tickers=3, n_dates=30, start="2023-06-01"
+        ).dropna(subset=["fwd_60d_excess"])
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        art = TPM.build_artifact(
+            booster, ["feat_a"], np.zeros(1), np.ones(1), train,
+            cutoff_date=pd.Timestamp("2024-01-01"),
+            side_label="walkforward_v2_2024-01-01",
+            train_run_id="abc12345",
+        )
+        assert art["provenance_schema_version"] == PROVENANCE_SCHEMA_VERSION
+        assert art["recipe_id"] == "walkforward_dual_axis_v1"
+        assert set(art["required_axis_fields"]) == {
+            "label_observation_cutoff", "effective_train_cutoff_date",
+        }
+
+    def test_stamped_fields_survive_into_model_content_fingerprint(self):
+        """The whole point of stamping at training time: provenance_schema_
+        version/recipe_id/required_axis_fields are NOT in
+        panel_scorer._MUTABLE_ARTIFACT_KEYS, so they are automatically part
+        of model_content_sha256's hashed content — an artifact whose
+        recipe_id is tampered with post-hoc changes its content fingerprint,
+        proving the binding is real, not cosmetic."""
+        from kernel.panel_pipeline.panel_scorer import model_content_sha256
+        train = _make_synthetic_panel(
+            n_tickers=4, n_dates=60, start="2024-01-01"
+        ).dropna(subset=["fwd_60d_excess"])
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        art = TPM.build_artifact(
+            booster, ["feat_a"], np.zeros(1), np.ones(1), train,
+            cutoff_date=None, side_label=None, train_run_id="abc12345",
+        )
+        art["booster_raw_json"] = "{}"  # required predictive-content hint
+        original_hash = model_content_sha256(art)
+        tampered = dict(art)
+        tampered["recipe_id"] = "walkforward_dual_axis_v1"  # a different claim
+        tampered_hash = model_content_sha256(tampered)
+        assert original_hash != tampered_hash
+
+
 class TestPromotePreservesDataCutoff:
     """The active-swap promote() must not drop the freshness/provenance fields
     — it copies the whole artifact, so a promoted panel keeps the fields the
