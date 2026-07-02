@@ -40,8 +40,15 @@ catboost_info/
 # Local data cache — huge training panels stay ignored, but data/exp/ is a
 # deliberate, small, committed experiment-evidence path (2026-07-02, Track A
 # regen_oos_pick_table.py) that must NOT be swept up by the blanket rule.
+# CORRECTION (Codex review on #430): a committed .parquet under data/exp/
+# still matches renquant-orchestrator's agent_workflows.PROD_PATH_RULES
+# protected-path regex (`(^|/)data/.*\.parquet$`) and is mechanically
+# rejected at merge review — parquet payloads under data/exp/ stay
+# git-ignored; only the durable regeneration manifest (.manifest.json) and
+# other small non-parquet evidence commit.
 /data/*
 !/data/exp/
+/data/exp/*.parquet
 
 # Live trading and daily run logs
 live/logs/

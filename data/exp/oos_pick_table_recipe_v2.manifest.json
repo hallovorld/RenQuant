@@ -1,0 +1,30 @@
+{
+  "counts": {
+    "n_dates": 508,
+    "n_names": 292,
+    "n_rows": 147066
+  },
+  "note": "wall-clock generation timestamp intentionally omitted for determinism/reproducibility framing; generator_commit + the input hashes are the provenance record, not a run timestamp.",
+  "object_uri": "NOT PERSISTED - no DVC/LFS/object-storage backend is configured for this repo yet. The durable artifact is THIS manifest plus the pinned input hashes above; the parquet payload is regeneratable on demand via `python3 scripts/regen_oos_pick_table.py` against the SAME pinned manifest_input/reference_artifact (hash-verified against the fields above), and is deliberately NOT committed to git (matches PROD_PATH_RULES in renquant-orchestrator's agent_workflows.py: `data/.*\\.parquet$` is a protected production-data path).",
+  "recipe": {
+    "generator": "scripts/regen_oos_pick_table.py",
+    "generator_commit": "a29511d501f91124ad0118cebf2153e7240ba949",
+    "label": "fwd_60d_excess",
+    "manifest_input": "backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.json",
+    "manifest_input_sha256": "ee7684a6240825dc5c50f84cfc43ef007e45b6963b0f25ba4d2f18682f2b5e8b",
+    "reference_artifact": "backtesting/renquant_104/artifacts/walkforward_gbdt_prod_recipe_v2/2026-03-02/panel-ltr.json",
+    "reference_artifact_sha256": "8fd7d51e517d38728845ebb7a085394f2e1806c138c118bfcfb4702795512351",
+    "val_cut": "2024-02-01"
+  },
+  "schema": {
+    "columns": [
+      "date",
+      "name",
+      "score",
+      "decile_rank",
+      "fwd_60d_excess",
+      "regime"
+    ],
+    "description": "one row per (date, name); score = point-in-time model raw score (mu); decile_rank = cross-sectional decile within date, 0(worst)-9(best/top); fwd_60d_excess = RAW unclipped realized forward-60-trading-day excess return; regime = live regime label at pick date"
+  }
+}

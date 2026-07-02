@@ -39,7 +39,9 @@ instead of depending on ephemeral scratch.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -190,10 +192,117 @@ def build_oos_pick_table(
     return table, meta
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_head_commit(repo: Path) -> str | None:
+    """Best-effort HEAD sha at generation time — not a promise the working
+    tree was clean, just provenance of which generator revision ran."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(repo),
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _relpath(path: Path, root: Path) -> str:
+    """Portable-as-possible reference for the manifest: relative to REPO when
+    the path genuinely lives under this checkout; falls back to the
+    ``backtesting/...`` suffix (stable across any clone/worktree of this
+    repo, since that layout is repo-internal) when it doesn't — e.g. a
+    worktree whose local input files are symlinked to a sibling checkout's
+    absolute path, which must never leak that machine's home directory into
+    a committed artifact. Only falls back to a genuine absolute path if
+    neither resolves, so this stays informational, never load-bearing (the
+    sha256 alongside it is the actual durable identity)."""
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(root.resolve()))
+    except ValueError:
+        pass
+    marker = "backtesting/"
+    text = str(resolved)
+    idx = text.find(marker)
+    if idx != -1:
+        return text[idx:]
+    return str(path)
+
+
+def build_manifest(
+    meta: dict,
+    *,
+    manifest_path: Path,
+    reference_artifact_path: Path,
+) -> dict:
+    """The durable, committed record of how to REGENERATE the pick table
+    byte-for-byte, since the parquet payload itself is deliberately NOT
+    committed to git (Codex review on #430: `data/exp/oos_pick_table_recipe_v2.parquet`
+    matches renquant-orchestrator's `agent_workflows.PROD_PATH_RULES` protected-
+    path regex `(^|/)data/.*\\.parquet$` — a mechanically-enforced merge-review
+    check, not a style preference). No DVC/LFS/object-storage backend is
+    configured anywhere in this repo (checked: no `.gitattributes`, no dvc
+    config) — so this manifest, plus the pinned input hashes below, plus the
+    generator script, IS the durable artifact; the parquet is a regeneratable
+    on-demand output, not itself persisted."""
+    return {
+        "schema": {
+            "columns": ["date", "name", "score", "decile_rank", "fwd_60d_excess", "regime"],
+            "description": (
+                "one row per (date, name); score = point-in-time model raw score "
+                "(mu); decile_rank = cross-sectional decile within date, "
+                "0(worst)-9(best/top); fwd_60d_excess = RAW unclipped realized "
+                "forward-60-trading-day excess return; regime = live regime label "
+                "at pick date"
+            ),
+        },
+        "recipe": {
+            "generator": "scripts/regen_oos_pick_table.py",
+            "generator_commit": _git_head_commit(REPO),
+            "manifest_input": _relpath(manifest_path, REPO),
+            "manifest_input_sha256": _sha256_file(manifest_path),
+            "reference_artifact": _relpath(reference_artifact_path, REPO),
+            "reference_artifact_sha256": _sha256_file(reference_artifact_path),
+            "label": meta["label"],
+            "val_cut": meta["val_cut"],
+        },
+        "counts": {
+            "n_rows": meta["n_rows"],
+            "n_dates": meta["n_dates"],
+            "n_names": meta["n_names"],
+        },
+        "object_uri": (
+            "NOT PERSISTED - no DVC/LFS/object-storage backend is configured for "
+            "this repo yet. The durable artifact is THIS manifest plus the pinned "
+            "input hashes above; the parquet payload is regeneratable on demand "
+            "via `python3 scripts/regen_oos_pick_table.py` against the SAME "
+            "pinned manifest_input/reference_artifact (hash-verified against the "
+            "fields above), and is deliberately NOT committed to git (matches "
+            "PROD_PATH_RULES in renquant-orchestrator's agent_workflows.py: "
+            "`data/.*\\.parquet$` is a protected production-data path)."
+        ),
+        "note": (
+            "wall-clock generation timestamp intentionally omitted for "
+            "determinism/reproducibility framing; generator_commit + the input "
+            "hashes are the provenance record, not a run timestamp."
+        ),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
     ap.add_argument("--output", default=str(DEFAULT_OUTPUT))
+    ap.add_argument("--manifest-output", default=None,
+                     help="path for the durable regeneration manifest JSON; "
+                          "default is <output stem>.manifest.json next to --output")
     ap.add_argument("--min-names", type=int, default=5,
                      help="minimum names per date for a cross-sectional IC to count")
     return ap.parse_args()
@@ -203,13 +312,26 @@ def main() -> None:
     args = parse_args()
     manifest_path = Path(args.manifest).resolve()
     out_path = Path(args.output).resolve()
+    manifest_out_path = (
+        Path(args.manifest_output).resolve() if args.manifest_output
+        else out_path.with_suffix("").with_suffix(".manifest.json")
+    )
 
     table, meta = build_oos_pick_table(manifest_path=manifest_path, min_names=args.min_names)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     table.to_parquet(out_path, index=False)
 
-    print(f"wrote {out_path}")
+    regen_manifest = build_manifest(
+        meta,
+        manifest_path=manifest_path,
+        reference_artifact_path=Path(meta["reference_artifact"]),
+    )
+    manifest_out_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_out_path.write_text(json.dumps(regen_manifest, indent=2, sort_keys=True) + "\n")
+
+    print(f"wrote {out_path} (NOT committed to git — see {manifest_out_path})")
+    print(f"wrote durable regeneration manifest {manifest_out_path}")
     print(f"  manifest={meta['manifest']}")
     print(f"  reference_artifact={meta['reference_artifact']}")
     print(f"  label={meta['label']} val_cut={meta['val_cut']}")
@@ -218,13 +340,16 @@ def main() -> None:
     overall = summarize_ic(
         table["score"], table["fwd_60d_excess"], table["date"], min_names=args.min_names
     )
-    print(f"  overall genuine IC: mean={overall['mean_ic']} n_dates={overall['n_dates']} "
-          f"n_rows={overall['n_rows']}")
+    # NOT "genuine (leak-controlled)" IC — this is the naive per-date Spearman
+    # IC only, with no placebo/persistence-injection adjustment. See #431 for
+    # the leak-controlled reproduction and why the two must not be conflated.
+    print(f"  overall naive IC (no leak-control adjustment): mean={overall['mean_ic']} "
+          f"n_dates={overall['n_dates']} n_rows={overall['n_rows']}")
     for regime_val, sub in table.groupby("regime", dropna=False):
         r = summarize_ic(
             sub["score"], sub["fwd_60d_excess"], sub["date"], min_names=args.min_names
         )
-        print(f"  regime={regime_val}: mean_ic={r['mean_ic']} n_dates={r['n_dates']} "
+        print(f"  regime={regime_val}: naive mean_ic={r['mean_ic']} n_dates={r['n_dates']} "
               f"n_rows={r['n_rows']}")
 
 
