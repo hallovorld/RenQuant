@@ -10,12 +10,24 @@ ifneq ($(strip $(EXECUTE)),)
 SUBREPO_DAILY_ARGS += --execute
 endif
 
-.PHONY: doctor subrepo-doctor subrepo-test subrepo-assemble subrepo-runtime-root subrepo-runtime-sanity subrepo-smoke subrepo-daily-contract subrepo-ops-contract subrepo-pin-ci-green ops-preinstall-ready ops-install-launchagents ops-deployment-ready
+.PHONY: doctor subrepo-doctor subrepo-test subrepo-assemble subrepo-runtime-root subrepo-runtime-sanity subrepo-smoke subrepo-daily-contract subrepo-ops-contract subrepo-pin-ci-green ops-preinstall-ready ops-install-launchagents ops-deployment-ready snapshot snapshot-check
 
 # One-command live-system health check: pin/runtime drift, lock integrity,
 # bundle self-consistency, promote-backup hygiene. Exit non-zero on any RED.
 doctor:
 	$(PYTHON) scripts/system_doctor.py
+
+# Regenerate the machine-generated strategy-104 production snapshot from the
+# PINNED subrepo config + artifact metadata (A6 / unified-107 M9). Run this
+# after any promote/rollback or lock-pin bump, then commit the result.
+snapshot:
+	$(PYTHON) scripts/render_strategy_104_snapshot.py
+
+# Staleness guard: exit non-zero if regenerating the snapshot from this
+# machine's pinned sources produces anything different from the committed
+# doc/arch/strategy-104-snapshot.md.
+snapshot-check:
+	$(PYTHON) scripts/render_strategy_104_snapshot.py --check
 
 subrepo-doctor:
 	$(PYTHON) scripts/subrepo_doctor.py

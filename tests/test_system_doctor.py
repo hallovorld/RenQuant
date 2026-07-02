@@ -2,13 +2,27 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
     "system_doctor", Path(__file__).resolve().parent.parent / "scripts" / "system_doctor.py")
 sd = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(sd)
+
+_SNAPSHOT_TEST_MODULE_PATH = (
+    Path(__file__).resolve().parent / "test_render_strategy_104_snapshot.py"
+)
+_SNAPSHOT_SPEC = importlib.util.spec_from_file_location(
+    "test_render_strategy_104_snapshot_for_doctor", _SNAPSHOT_TEST_MODULE_PATH)
+_snapshot_test_mod = importlib.util.module_from_spec(_SNAPSHOT_SPEC)
+_SNAPSHOT_SPEC.loader.exec_module(_snapshot_test_mod)
+
+_RENDERER_PATH = (
+    Path(__file__).resolve().parent.parent / "scripts" / "render_strategy_104_snapshot.py"
+)
 
 GOOD = "a" * 40
 
@@ -86,3 +100,57 @@ def test_pin_runtime_drift_detects_mismatch_and_dirt(tmp_path):
 def test_unmaterialized_runtime_is_skip_not_red(tmp_path):
     res = sd.check_pin_runtime_drift(_lock(), tmp_path / "nope")
     assert all(c["ok"] for c in res) and res[0].get("skip")
+
+
+def _committed_snapshot_repo(tmp_path):
+    """A fixture repo with a genuinely fresh, committed
+    doc/arch/strategy-104-snapshot.md — the state check_strategy_snapshot
+    should report green against, before any out-of-band mutation."""
+    renderer = _snapshot_test_mod._load_module()
+    root = _snapshot_test_mod._fixture_root(renderer, tmp_path)
+    out = root / "doc" / "arch" / "strategy-104-snapshot.md"
+    rc = renderer.main(["--repo-root", str(root), "--output", str(out)])
+    assert rc == 0
+    return root
+
+
+def test_strategy_snapshot_check_green_when_fresh(tmp_path):
+    root = _committed_snapshot_repo(tmp_path)
+    res = sd.check_strategy_snapshot(repo=root, python=sys.executable, renderer_path=_RENDERER_PATH)
+    assert res["ok"], res["detail"]
+
+
+def test_strategy_snapshot_check_fails_on_artifact_metadata_change(tmp_path):
+    """Codex PR #432 round-3 review: an out-of-band artifact metadata edit
+    (never going through promote_pin.py) must surface as a doctor RED, not
+    persist silently until a human remembers to run `make snapshot-check`."""
+    root = _committed_snapshot_repo(tmp_path)
+    renderer = _snapshot_test_mod._load_module()
+    artifact_path = root / renderer.STRATEGY_DIR_REL / "artifacts" / "prod" / "primary.json"
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact["trained_date"] = "2099-01-01"  # out-of-band edit, no promote
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    res = sd.check_strategy_snapshot(repo=root, python=sys.executable, renderer_path=_RENDERER_PATH)
+    assert not res["ok"]
+    assert "STALE" in res["detail"]
+
+
+def test_strategy_snapshot_check_fails_on_active_calibrator_change(tmp_path):
+    root = _committed_snapshot_repo(tmp_path)
+    renderer = _snapshot_test_mod._load_module()
+    calib_path = root / renderer.STRATEGY_DIR_REL / "artifacts" / "prod" / "calib.json"
+    calib = json.loads(calib_path.read_text(encoding="utf-8"))
+    calib["metadata"]["pool_ic"] = 0.5  # out-of-band edit, no promote
+    calib_path.write_text(json.dumps(calib), encoding="utf-8")
+
+    res = sd.check_strategy_snapshot(repo=root, python=sys.executable, renderer_path=_RENDERER_PATH)
+    assert not res["ok"]
+    assert "STALE" in res["detail"]
+
+
+def test_strategy_snapshot_check_skips_when_renderer_absent(tmp_path):
+    root = tmp_path / "no-renderer-repo"
+    root.mkdir()
+    res = sd.check_strategy_snapshot(repo=root, python=sys.executable)
+    assert res["ok"] and res.get("skip")

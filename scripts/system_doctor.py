@@ -16,6 +16,13 @@ model-fixes-cant-reach-production postmortem):
      runtime; reports SKIP (not RED) when unavailable.
   4. PROMOTE-BACKUP HYGIENE — warns if stale subrepos.lock.json.promote-bak.*
      backups have piled up (a half-finished promote leaves one behind).
+  5. STRATEGY-104 SNAPSHOT FRESHNESS — the committed production snapshot
+     (doc/arch/strategy-104-snapshot.md, M9/A6) must match a fresh render of the
+     pinned config + artifact/calibrator metadata. This is the event-driven
+     backstop for out-of-band artifact/calibrator edits that never go through
+     promote_pin.py: without it, `make snapshot-check` is a manual step nobody
+     is forced to run, and the committed snapshot can silently rot indefinitely
+     (Codex review, PR #432 round 3).
 
 Exit 0 = all green, 1 = at least one RED. --json for automation. Read-only.
 """
@@ -24,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -115,6 +123,35 @@ def check_bundle(python: str | None = None) -> dict:
             "detail": "deploy_ready" if ok else (p.stdout or p.stderr)[-200:]}
 
 
+def check_strategy_snapshot(
+    repo: Path = REPO, python: str | None = None, renderer_path: Path | None = None,
+) -> dict:
+    """Always-on (not opt-in): a fresh render of the pinned strategy-104
+    config/artifacts must byte-match the committed
+    doc/arch/strategy-104-snapshot.md. Catches artifact/calibrator metadata
+    edits that never go through promote_pin.py — the event-driven backstop
+    Codex's PR #432 round-3 review required, since `make snapshot-check` is
+    otherwise a manual step nobody is forced to run.
+
+    ``renderer_path`` defaults to ``<repo>/scripts/render_strategy_104_snapshot.py``;
+    tests may point it at the real renderer while ``repo`` is a fixture tree,
+    since a fixture tree does not itself contain a copy of this repo's scripts.
+    """
+    renderer = renderer_path or (repo / "scripts" / "render_strategy_104_snapshot.py")
+    if not renderer.exists():
+        return {"check": "strategy_104_snapshot_fresh", "ok": True, "skip": True,
+                "detail": "renderer not present in this checkout — SKIP"}
+    py = python or sys.executable
+    p = subprocess.run(
+        [py, str(renderer), "--repo-root", str(repo),
+         "--output", str(repo / "doc" / "arch" / "strategy-104-snapshot.md"), "--check"],
+        capture_output=True, text=True,
+    )
+    ok = p.returncode == 0
+    return {"check": "strategy_104_snapshot_fresh", "ok": ok,
+            "detail": "fresh" if ok else (p.stdout + p.stderr)[-400:]}
+
+
 def run_all(lock_path: Path = LOCK, runtime_root: Path = RUNTIME_ROOT) -> dict:
     lock = load_lock(lock_path)
     checks: list[dict] = []
@@ -123,6 +160,7 @@ def run_all(lock_path: Path = LOCK, runtime_root: Path = RUNTIME_ROOT) -> dict:
     checks += check_pin_runtime_drift(lock, runtime_root)
     checks += check_promote_backups(lock_path)
     checks.append(check_bundle())
+    checks.append(check_strategy_snapshot())
     red = [c for c in checks if not c["ok"]]
     return {"ok": not red, "red": [c["check"] for c in red], "checks": checks}
 

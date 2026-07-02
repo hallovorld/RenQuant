@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import json
 import os
 import subprocess
@@ -31,6 +32,52 @@ LOCK = REPO / "subrepos.lock.json"
 ASSEMBLE = REPO / "scripts" / "subrepo_assemble.py"
 DEFAULT_RUNTIME_ROOT = REPO / ".subrepo_runtime" / "repos"
 BACKUP_SUFFIX = ".promote-bak."
+SNAPSHOT_RENDERER = REPO / "scripts" / "render_strategy_104_snapshot.py"
+SNAPSHOT_OUTPUT = REPO / "doc" / "arch" / "strategy-104-snapshot.md"
+
+
+def check_snapshot_freshness(python: str, repo: Path = REPO) -> tuple[bool, str]:
+    """Regenerate-and-compare the strategy-104 production snapshot (M9/A6)
+    against what a pin bump/rollback just produced. Renders to a SCRATCH path
+    only — never auto-commits the regenerated content as the committed
+    doc/arch/strategy-104-snapshot.md (per Codex review, PR #432 round 3);
+    this only detects and reports drift so a human can review + commit the
+    diff themselves. Returns (fresh, message)."""
+    import tempfile
+
+    renderer = repo / "scripts" / "render_strategy_104_snapshot.py"
+    committed = repo / "doc" / "arch" / "strategy-104-snapshot.md"
+    if not renderer.exists():
+        return True, "snapshot renderer not present in this checkout — skipped"
+    with tempfile.TemporaryDirectory(prefix="snapshot-freshness-") as td:
+        scratch = Path(td) / "fresh.md"
+        rendered = subprocess.run(
+            [python, str(renderer), "--repo-root", str(repo), "--output", str(scratch)],
+            capture_output=True, text=True,
+        )
+        if rendered.returncode != 0:
+            # Pin drift (or another refusal) — surfaced by the renderer
+            # itself, not something this backstop can resolve; report it.
+            return False, (
+                "ACTION REQUIRED: strategy-104 snapshot could not be regenerated:\n"
+                + (rendered.stdout + rendered.stderr)[-1000:]
+            )
+        fresh_text = scratch.read_text(encoding="utf-8")
+        committed_text = committed.read_text(encoding="utf-8") if committed.exists() else None
+        if committed_text == fresh_text:
+            return True, "strategy-104 snapshot is fresh"
+        diff_preview = "".join(difflib.unified_diff(
+            (committed_text or "").splitlines(keepends=True),
+            fresh_text.splitlines(keepends=True),
+            fromfile=str(committed), tofile="regenerated (not committed)", n=2,
+        ))[:2000]
+        return False, (
+            "ACTION REQUIRED: doc/arch/strategy-104-snapshot.md is STALE relative "
+            "to the sources this promote/rollback just changed. Regenerate and "
+            "commit it yourself: `make snapshot`, then review + commit the diff. "
+            "This tool does NOT auto-commit the regenerated snapshot.\n"
+            + diff_preview
+        )
 
 
 def load_lock(path: Path) -> dict:
@@ -102,6 +149,17 @@ def main(argv=None) -> int:
         p.add_argument("--verify-cmd", default=None,
                        help="shell command run after sync; non-zero → auto-revert")
         p.add_argument("--lock", default=str(LOCK))
+        p.add_argument(
+            "--skip-snapshot-check", action="store_true",
+            help="skip the strategy-104 snapshot freshness backstop (M9/A6). "
+                 "Default is ON: after a successful sync+verify, this tool "
+                 "regenerates the snapshot to a scratch path and compares it "
+                 "against the committed doc — if they differ, the command "
+                 "exits non-zero with an actionable message. It never "
+                 "auto-commits the regenerated snapshot and never reverts a "
+                 "pin change for this reason alone (the pin change itself may "
+                 "be entirely correct; only the doc needs a follow-up commit).",
+        )
     args = ap.parse_args(argv)
     lock_path = Path(args.lock)
     runtime_root = Path(args.runtime_root)
@@ -116,11 +174,16 @@ def main(argv=None) -> int:
         if not args.apply:
             return 0
         atomic_write_json(lock_path, json.loads(bak.read_text(encoding="utf-8")))
+        rc = 0
         if not args.no_sync:
             rc, out = _sync(runtime_root, args.python)
             print(out)
-            return rc
-        return 0
+        if rc == 0 and not args.skip_snapshot_check:
+            fresh, msg = check_snapshot_freshness(args.python)
+            print(f"  {msg}")
+            if not fresh:
+                rc = 1
+        return rc
 
     # bump
     lock = load_lock(lock_path)
@@ -160,6 +223,17 @@ def main(argv=None) -> int:
             return rollback(f"verify ({verify_cmd!r})")
     print(f"  OK. revert with:  promote_pin.py revert --apply   "
           f"(or restore {bak.name})")
+    if not args.skip_snapshot_check:
+        # NOT gated on the pin being renquant-strategy-104 specifically: any
+        # subrepo bump can indirectly change what the snapshot renders (e.g.
+        # via an artifact/calibrator dependency), so the backstop always
+        # runs. The pin change itself is NOT reverted for a stale-snapshot
+        # finding alone — it may be entirely correct; only the doc needs a
+        # follow-up commit.
+        fresh, msg = check_snapshot_freshness(args.python)
+        print(f"  {msg}")
+        if not fresh:
+            return 1
     return 0
 
 

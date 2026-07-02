@@ -1085,7 +1085,32 @@ def run_promote(args) -> PromoteReport:
     rep.superseded_backup = backup
     rep.verdict = f"PROMOTED{label}: {served_pin} -> {promoted_pin}"
     rep.rc = RC_OK
+
+    _apply_snapshot_freshness_backstop(repo, rep)
     return rep
+
+
+def _apply_snapshot_freshness_backstop(repo: Path, rep: "PromoteReport") -> None:
+    """strategy-104 snapshot freshness backstop (M9/A6 round 4, same as
+    weekly_wf_promote.sh/manual_promote.sh/restamp_prod_fingerprint.py): a
+    successful swap just changed strategy_config.shadow.json's served pin,
+    which doc/arch/strategy-104-snapshot.md's collect_snapshot() also reads.
+    Reuses promote_pin.py's scratch-rendered, diff-preview, never-auto-
+    commits check; does NOT revert the already-executed swap for a
+    stale-snapshot finding alone (this scorer is shadow-scoped and moves no
+    capital, but a stale snapshot doc is still a real drift to surface).
+
+    Extracted as its own function (Codex PR #432 round 5 review) so it can
+    be tested in isolation via monkeypatching check_snapshot_freshness,
+    without needing to construct every unrelated gate run_promote() checks
+    before reaching a successful swap."""
+    sys.path.insert(0, str(repo / "scripts"))
+    from promote_pin import check_snapshot_freshness  # noqa: E402
+
+    fresh, msg = check_snapshot_freshness(sys.executable, repo=repo)
+    rep.verdict += f" | snapshot: {msg}"
+    if not fresh:
+        rep.rc = RC_GATE_FAILED
 
 
 def _parity_gate(cand: dict, cand_pt: Path, served_config: Path, stamp_script: Path,

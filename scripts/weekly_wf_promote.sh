@@ -27,11 +27,15 @@
 #   - Promote fail (e.g. acceptance G1-G11 fail) → prior artifact preserved
 set -uo pipefail
 
-REPO_DIR="/Users/renhao/git/github/RenQuant"
+# Overridable only for the test harness (tests/test_weekly_wf_promote_
+# snapshot_backstop.sh) — every default below is byte-identical to the
+# prior hardcoded values, so production behavior is unchanged when these
+# env vars are unset.
+REPO_DIR="${RQ_WEEKLY_PROMOTE_REPO_DIR:-/Users/renhao/git/github/RenQuant}"
 VENV_DIR="$REPO_DIR/.venv"
-PYTHON="$VENV_DIR/bin/python"
+PYTHON="${RQ_WEEKLY_PROMOTE_PYTHON:-$VENV_DIR/bin/python}"
 LOG_DIR="$REPO_DIR/logs/weekly_wf_promote"
-NTFY_TOPIC="renquant"
+NTFY_TOPIC="${RQ_WEEKLY_PROMOTE_NTFY_TOPIC:-renquant}"
 mkdir -p "$LOG_DIR"
 
 DATE=$(date +%Y-%m-%d)
@@ -40,6 +44,13 @@ LOG="$LOG_DIR/$DATE.log"
 
 notify() {
     local title="$1" body="$2"
+    # Test-only observability hook: when set, notify() ALSO appends "TITLE:
+    # body" to this file so a test can assert exactly which notifications
+    # fired without needing network access or touching the real ntfy topic.
+    # No effect on production (unset by default).
+    if [ -n "${RQ_WEEKLY_PROMOTE_NOTIFY_LOG:-}" ]; then
+        printf '%s: %s\n' "$title" "$body" >> "$RQ_WEEKLY_PROMOTE_NOTIFY_LOG"
+    fi
     if command -v terminal-notifier &>/dev/null; then
         terminal-notifier -title "$title" -message "$body" -sound Glass 2>/dev/null || true
     fi
@@ -114,7 +125,7 @@ echo "=== weekly_wf_promote started at $(date) ==="
 
 # Lock — prevent concurrent runs (a 90-min job can stack if the user
 # triggers a manual rerun before the previous finishes).
-LOCK_FILE="/tmp/renquant_104_weekly_wf.lock"
+LOCK_FILE="${RQ_WEEKLY_PROMOTE_LOCK_FILE:-/tmp/renquant_104_weekly_wf.lock}"
 if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
     EXISTING=$(cat "$LOCK_FILE" 2>/dev/null || echo "?")
     if [ "$EXISTING" != "?" ] && ! kill -0 "$EXISTING" 2>/dev/null; then
@@ -325,6 +336,34 @@ fi
 "$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \
     --out "$REPO_DIR/doc/dashboard.md" 2>&1 | tail -5 \
     || echo "dashboard refresh failed (non-fatal)"
+
+# ── Step 7: strategy-104 snapshot freshness backstop (M9/A6 round 4) ──────
+# Codex review (PR #432): the promotion above just changed the active
+# artifact/calibrator, exactly the state doc/arch/strategy-104-snapshot.md
+# declares — but this script is the REAL model-promotion path and, unlike
+# promote_pin.py's bump/revert, had no synchronous check of its own; only
+# the NEXT daily system_doctor run would eventually notice drift. Reuse
+# promote_pin.py's check_snapshot_freshness (scratch-rendered, diff-preview,
+# never auto-commits, never touches the promotion that just succeeded) and
+# fail THIS run non-zero before reporting overall success.
+echo "--- Step 7: strategy-104 snapshot freshness backstop ---"
+if ! "$PYTHON" - <<PY
+import sys
+sys.path.insert(0, "$REPO_DIR/scripts")
+from promote_pin import check_snapshot_freshness
+fresh, msg = check_snapshot_freshness("$PYTHON", repo=__import__("pathlib").Path("$REPO_DIR"))
+print(msg)
+raise SystemExit(0 if fresh else 1)
+PY
+then
+    echo "Snapshot freshness backstop FAILED — model promotion above already"
+    echo "completed and is NOT being reverted for this reason alone; only"
+    echo "doc/arch/strategy-104-snapshot.md needs a follow-up: run"
+    echo "'make snapshot' from $REPO_DIR, review the diff, and commit it."
+    notify "RenQuant 104 WEEKLY-PROMOTE — SNAPSHOT STALE" \
+        "Model promoted ($GATE_SUMMARY) but doc/arch/strategy-104-snapshot.md is now stale. Run 'make snapshot' and commit. Check $LOG."
+    exit 1
+fi
 
 echo "=== weekly_wf_promote PASSED at $(date) — $GATE_SUMMARY ==="
 notify "RenQuant 104 WEEKLY-PROMOTE ✓" \
