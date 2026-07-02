@@ -560,21 +560,58 @@ class TestComputeAdmissionBindingDataCutoff:
         assert admission["binding_cutoff_field"] == "effective_train_cutoff_date"
         assert admission["age_days"] > 500
 
-    def test_data_cutoff_field_priority_matches_orchestrator_order(self, shadow_mod):
-        """label_observation_cutoff outranks effective_train_cutoff_date
-        when both are present — same field priority as the orchestrator's
-        DATA_CUTOFF_FIELDS."""
+    def test_data_cutoff_field_priority_breaks_ties_when_severities_match(self, shadow_mod):
+        """2026-07-01 ROUND 5 (Codex CHANGES_REQUESTED): field priority
+        (label_observation_cutoff outranks effective_train_cutoff_date, same
+        order as the orchestrator's DATA_CUTOFF_FIELDS) is now purely a
+        TIE-BREAK between axes that land in the SAME tier — round 3-4's
+        "first present field always wins" rule was replaced by "every
+        present axis is evaluated independently, the WORST wins" (see
+        ``test_worst_axis_wins_even_when_it_is_not_the_most_binding_field``
+        below for the case where severities actually differ)."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
             artifact_meta={
                 "label_observation_cutoff": "2026-06-29",
-                "effective_train_cutoff_date": "2020-01-01",
+                "lookahead_days": 60,
+                "effective_train_cutoff_date": "2026-06-29",  # same raw age, also healthy
             },
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
         assert admission["binding_cutoff_field"] == "label_observation_cutoff"
         assert admission["binding_cutoff"] == "2026-06-29"
         assert admission["verdict"] == "healthy"
+
+    def test_worst_axis_wins_even_when_it_is_not_the_most_binding_field(self, shadow_mod):
+        """2026-07-01 ROUND 5 (Codex CHANGES_REQUESTED) — the exact bug
+        motivating this round: "A compensated-recent label cutoff can
+        therefore hide an older effective_selection_cutoff_date or
+        effective_train_cutoff_date." A fresh, horizon-compensated
+        label_observation_cutoff must NOT hide a genuinely stale
+        effective_train_cutoff_date present on the SAME artifact — the
+        overall verdict binds to the WORST present axis, even though
+        label_observation_cutoff is the more-binding field by priority."""
+        admission = shadow_mod._compute_admission(
+            name="x", as_of_date=self.AS_OF,
+            artifact_meta={
+                "label_observation_cutoff": "2026-04-08",  # compensates to healthy (60BD)
+                "lookahead_days": 60,
+                "effective_train_cutoff_date": "2020-01-01",  # genuinely ancient, no compensation
+            },
+            n_scored=10, n_expected=10, min_coverage=0.80,
+        )
+        assert admission["binding_cutoff_field"] == "effective_train_cutoff_date"
+        assert admission["binding_cutoff"] == "2020-01-01"
+        assert admission["verdict"] == "breach"
+        assert admission["gates_passed"] is False
+        # the healthy label_observation_cutoff axis is still visible in the
+        # audit trail, distinct from the axis that actually decided the
+        # verdict — it was evaluated, not silently discarded.
+        by_field = {c["field"]: c for c in admission["cutoffs_evaluated"]}
+        assert set(by_field) == {"label_observation_cutoff", "effective_train_cutoff_date"}
+        assert by_field["label_observation_cutoff"]["tier"] == "healthy"
+        assert by_field["effective_train_cutoff_date"]["tier"] == "breach"
+        assert any("effective_train_cutoff_date" in r for r in admission["reasons"])
 
     def test_no_binding_cutoff_is_unknown_trained_date_never_used_gap1(self, shadow_mod):
         """ROUND 4 GAP 1 fix: a present ``trained_date`` with NO binding
@@ -694,17 +731,28 @@ class TestHorizonCompensation:
         assert admission["horizon_compensated_age_days"] == 0.0
         assert admission["verdict"] == "healthy"
 
-    def test_default_lookahead_used_when_not_stamped(self, shadow_mod):
-        """No ``lookahead_days`` stamped on the artifact -> falls back to
-        the documented PatchTST fwd_60d convention (matches orchestrator's
-        default)."""
+    def test_missing_lookahead_fails_closed_not_guessed(self, shadow_mod):
+        """2026-07-01 ROUND 5 (Codex CHANGES_REQUESTED): no ``lookahead_days``
+        stamped on an artifact whose binding cutoff IS
+        ``label_observation_cutoff`` must NOT silently assume the documented
+        60-BD default and certify a healthy verdict — this module supports
+        more than one shadow-model kind and cannot prove every artifact uses
+        the PatchTST fwd-60d convention, and guessing turns unknown
+        provenance into gates_passed/actionable. UNKNOWN, full stop. The
+        60-BD default may still be shown DIAGNOSTICALLY via
+        ``horizon_lag_days`` (what the lag WOULD have been), but must never
+        be used to compute ``horizon_compensated_age_days`` or the tier."""
         admission = shadow_mod._compute_admission(
             name="x", as_of_date=self.AS_OF,
             artifact_meta={"label_observation_cutoff": self.SIXTY_BD_CUTOFF},
             n_scored=10, n_expected=10, min_coverage=0.80,
         )
-        assert admission["horizon_lag_days"] == self.SIXTY_BD_LAG_DAYS
-        assert admission["verdict"] == "healthy"
+        assert admission["horizon_lag_days"] == self.SIXTY_BD_LAG_DAYS  # diagnostic only
+        assert admission["horizon_compensated_age_days"] is None
+        assert admission["verdict"] == "unknown"
+        assert admission["gates_passed"] is False
+        assert admission["actionable"] is False
+        assert any("lookahead_days" in r and "GAP 4b" in r for r in admission["reasons"])
 
     def test_genuine_staleness_still_breaches_despite_widening(self, shadow_mod):
         """A globally frozen artifact (label cutoff far older than even the

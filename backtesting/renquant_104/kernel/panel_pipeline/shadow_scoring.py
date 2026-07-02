@@ -234,23 +234,46 @@ def _expected_lag_calendar_days(
     binding_field: str | None,
     lookahead_bdays: object,
     today: datetime.date,
-) -> float:
+) -> tuple[float | None, float]:
     """Calendar-day width of ``binding_field``'s EXPECTED fwd-label-horizon
     lag as of ``today`` — 0 for every axis except ``label_observation_cutoff``
-    (GAP 4). ``lookahead_bdays`` is the model's OWN stamped horizon
-    (``artifact_meta["lookahead_days"]``); a missing/unparseable/non-positive
-    value falls back to ``_DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS``. Ports
-    orchestrator's ``_expected_lag_calendar_days`` (not imported)."""
+    (GAP 4). Returns ``(compensation_lag, diagnostic_lag)``:
+
+      * ``compensation_lag`` is the value ADMISSION may actually use to widen
+        ``age_days``. It requires the model's OWN stamped horizon
+        (``artifact_meta["lookahead_days"]``) to be a genuine positive
+        integer — 2026-07-01 ROUND 5 (Codex CHANGES_REQUESTED on umbrella PR
+        #426): a missing/unparseable/non-positive value must NOT be silently
+        assumed to be ``_DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS`` for
+        admission purposes — this module supports more than one shadow-model
+        kind and cannot prove every artifact uses the documented PatchTST
+        fwd-60d convention; guessing turned genuinely unknown provenance into
+        a certified ``healthy`` verdict. ``None`` here means "the axis needs
+        compensation but the artifact did not earn it" — the caller must
+        treat that as UNKNOWN, not apply a 0-lag or default-lag guess.
+      * ``diagnostic_lag`` is ALWAYS computed (using the documented default
+        when the stamped horizon is missing/invalid) purely for DISPLAY /
+        troubleshooting — an operator can see "if this artifact had stamped
+        the default 60-BD horizon, the lag would have been Nd" — and is NEVER
+        fed into ``horizon_compensated_age_days`` or the tier when
+        ``compensation_lag`` is ``None``.
+
+    Ports orchestrator's ``_expected_lag_calendar_days`` (not imported)."""
     if binding_field != _LABEL_OBSERVATION_FIELD:
-        return 0.0
+        return 0.0, 0.0
     try:
-        bdays = int(lookahead_bdays) if lookahead_bdays else 0
+        stamped_bdays = int(lookahead_bdays) if lookahead_bdays else 0
     except (TypeError, ValueError):
-        bdays = 0
-    if bdays <= 0:
-        bdays = _DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS
-    expected_frontier = _subtract_business_days(today, bdays)
-    return float((today - expected_frontier).days)
+        stamped_bdays = 0
+    diagnostic_bdays = (
+        stamped_bdays if stamped_bdays > 0
+        else _DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS
+    )
+    diagnostic_frontier = _subtract_business_days(today, diagnostic_bdays)
+    diagnostic_lag = float((today - diagnostic_frontier).days)
+    if stamped_bdays <= 0:
+        return None, diagnostic_lag
+    return diagnostic_lag, diagnostic_lag
 
 
 def _parse_iso_date(value: object) -> datetime.date | None:
@@ -265,17 +288,111 @@ def _parse_iso_date(value: object) -> datetime.date | None:
         return None
 
 
-def _binding_cutoff(artifact_meta: dict) -> tuple[datetime.date | None, Optional[str]]:
-    """First present, parseable field in ``_DATA_CUTOFF_FIELDS`` (most
-    binding first). ``(None, None)`` when no binding DATA cutoff is present
-    — this is UNKNOWN provenance, not automatically "old"; the caller falls
-    back to ``trained_date`` (a strictly weaker signal — see module note
-    above) only in that case."""
+# 2026-07-01 ROUND 5 (Codex CHANGES_REQUESTED on umbrella PR #426): severity
+# ordering used to combine MULTIPLE present cutoff axes into one verdict (see
+# ``_axis_verdict`` / ``_compute_admission`` below) — the WORST axis wins,
+# never just the first/most-binding one. ``unknown`` ranks ABOVE ``breach``:
+# an axis whose provenance cannot be verified at all (missing/unparseable
+# cutoff, or a required horizon that was not stamped) is treated at least as
+# seriously as a KNOWN-stale one, never less.
+_TIER_SEVERITY = {
+    _FRESHNESS_TIER_HEALTHY: 0,
+    _FRESHNESS_TIER_WARN: 1,
+    _FRESHNESS_TIER_ESCALATE: 2,
+    _FRESHNESS_TIER_BREACH: 3,
+    _FRESHNESS_TIER_UNKNOWN: 4,
+}
+
+
+def _all_present_cutoffs(artifact_meta: dict) -> list[tuple[str, datetime.date]]:
+    """Every ``_DATA_CUTOFF_FIELDS`` axis actually present/parseable in
+    ``artifact_meta``, in priority (most-binding-first) order.
+
+    ROUND 5 (Codex): the PREVIOUS single-axis ``_binding_cutoff`` picked the
+    first present field and stopped — a compensated-recent
+    ``label_observation_cutoff`` could therefore hide an older, off-SLA
+    ``effective_selection_cutoff_date``/``effective_train_cutoff_date`` that
+    was ALSO present on the same artifact. Every present axis is now
+    evaluated independently (see ``_axis_verdict``) and the overall verdict
+    binds to the WORST of them (``_compute_admission``), not merely the
+    first one found.
+
+    This module currently ships exactly ONE shadow-model recipe (PatchTST),
+    for which every ``_DATA_CUTOFF_FIELDS`` entry is a legitimate freshness
+    axis when present — so "evaluate every present axis, worst wins" is
+    already the correct, conservative behavior with no per-recipe ambiguity
+    to resolve. If/when a second shadow-model kind ships with genuinely
+    different axis semantics (e.g. a field that is an ALTERNATIVE to another
+    rather than an independent axis for that kind), that is the point to
+    introduce an explicit per-model-kind required-axis mapping (fingerprinted
+    per kind, per the review) — building that registry now, for a
+    still-single-recipe module, would be speculative structure with nothing
+    real to validate it against.
+    """
+    out: list[tuple[str, datetime.date]] = []
     for field_name in _DATA_CUTOFF_FIELDS:
         parsed = _parse_iso_date(artifact_meta.get(field_name))
         if parsed is not None:
-            return parsed, field_name
-    return None, None
+            out.append((field_name, parsed))
+    return out
+
+
+def _axis_verdict(
+    field_name: str,
+    cutoff: datetime.date,
+    artifact_meta: dict,
+    today: datetime.date,
+) -> dict:
+    """Independent freshness verdict for ONE present cutoff axis — age,
+    (if applicable) horizon compensation, and tier. Does not touch coverage
+    or fingerprint; those are whole-artifact gates, not per-axis (see
+    ``_compute_admission``)."""
+    age_days = float((today - cutoff).days)
+    if age_days < 0:
+        # Look-ahead: judged on the RAW age, BEFORE any horizon
+        # compensation — GAP 4 never excuses a genuine future cutoff.
+        return {
+            "field": field_name, "cutoff": cutoff, "age_days": age_days,
+            "horizon_lag_days": 0.0, "horizon_compensated_age_days": None,
+            "tier": _FRESHNESS_TIER_BREACH,
+            "reason": f"look-ahead cutoff {field_name}={cutoff.isoformat()} "
+                      f"is later than as_of_date={today}",
+        }
+    compensation_lag, diagnostic_lag = _expected_lag_calendar_days(
+        field_name, artifact_meta.get("lookahead_days"), today)
+    if field_name == _LABEL_OBSERVATION_FIELD and compensation_lag is None:
+        # ROUND 5 GAP 4b: this axis NEEDS horizon compensation but the
+        # artifact did not stamp a positive lookahead_days — do not guess at
+        # the documented default for admission; UNKNOWN, full stop. The
+        # default is still shown via ``horizon_lag_days`` (diagnostic_lag)
+        # for troubleshooting only — never used below.
+        return {
+            "field": field_name, "cutoff": cutoff, "age_days": age_days,
+            "horizon_lag_days": diagnostic_lag, "horizon_compensated_age_days": None,
+            "tier": _FRESHNESS_TIER_UNKNOWN,
+            "reason": (
+                f"{field_name}={cutoff.isoformat()} requires a stamped positive "
+                f"lookahead_days for horizon compensation but none was "
+                f"present/valid ({artifact_meta.get('lookahead_days')!r}); not "
+                f"guessed at the documented {_DEFAULT_LABEL_OBSERVATION_LOOKAHEAD_BDAYS}"
+                "-BD default (fail-closed, GAP 4b, round 5)"
+            ),
+        }
+    horizon_compensated_age_days = max(0.0, age_days - compensation_lag)
+    tier = _freshness_tier(horizon_compensated_age_days)
+    reason = None
+    if tier == _FRESHNESS_TIER_BREACH:
+        reason = (f"{field_name} artifact {horizon_compensated_age_days:.0f}d stale "
+                  f"(raw {age_days:.0f}d, breach>={_FRESHNESS_BREACH_DAYS}d)")
+    elif tier == _FRESHNESS_TIER_ESCALATE:
+        reason = (f"{field_name} artifact {horizon_compensated_age_days:.0f}d stale "
+                  f"(raw {age_days:.0f}d, escalate>={_FRESHNESS_ESCALATE_DAYS}d)")
+    return {
+        "field": field_name, "cutoff": cutoff, "age_days": age_days,
+        "horizon_lag_days": compensation_lag,
+        "horizon_compensated_age_days": horizon_compensated_age_days,
+        "tier": tier, "reason": reason,
+    }
 
 
 def _ensure_mlflow_setup(tracking_uri: Optional[str] = None,
@@ -453,30 +570,44 @@ def _compute_admission(
     today = (as_of_date if isinstance(as_of_date, datetime.date)
               else datetime.date.today())
     trained_date = artifact_meta.get("trained_date")
-    binding_cutoff, binding_cutoff_field = _binding_cutoff(artifact_meta)
 
-    # GAP 1: age is derived ONLY from a binding DATA cutoff. No
-    # ``trained_date`` fallback — see docstring.
-    age_days: float | None = None
-    horizon_compensated_age_days: float | None = None
-    horizon_lag_days = 0.0
-    if binding_cutoff is not None:
-        age_days = float((today - binding_cutoff).days)
+    # ROUND 5 (Codex): evaluate EVERY present cutoff axis independently, not
+    # just the first/most-binding one — a compensated-recent
+    # label_observation_cutoff must not hide an older, off-SLA
+    # effective_selection_cutoff_date/effective_train_cutoff_date present on
+    # the SAME artifact. The verdict binds to the WORST axis (highest
+    # _TIER_SEVERITY); ties break toward the more-binding field via stable
+    # iteration order (_all_present_cutoffs already returns priority order).
+    axis_results = [
+        _axis_verdict(field_name, cutoff, artifact_meta, today)
+        for field_name, cutoff in _all_present_cutoffs(artifact_meta)
+    ]
+    cutoffs_evaluated = [
+        {
+            "field": r["field"], "cutoff": r["cutoff"].isoformat(),
+            "age_days": r["age_days"], "horizon_lag_days": r["horizon_lag_days"],
+            "horizon_compensated_age_days": r["horizon_compensated_age_days"],
+            "tier": r["tier"],
+        }
+        for r in axis_results
+    ]
 
-    if binding_cutoff is None:
+    if not axis_results:
+        # GAP 1: no binding DATA cutoff present at all. No ``trained_date``
+        # fallback — see docstring.
         tier = _FRESHNESS_TIER_UNKNOWN
-    elif age_days < 0:
-        # Look-ahead: judged on the RAW age, BEFORE any horizon
-        # compensation — GAP 4 never excuses a genuine future cutoff.
-        tier = _FRESHNESS_TIER_BREACH
+        worst = None
     else:
-        # GAP 4: widen the effective age for a fwd-N-session-label axis by
-        # its EXPECTED lag (never mutating ``age_days`` itself — persisted
-        # separately below).
-        horizon_lag_days = _expected_lag_calendar_days(
-            binding_cutoff_field, artifact_meta.get("lookahead_days"), today)
-        horizon_compensated_age_days = max(0.0, age_days - horizon_lag_days)
-        tier = _freshness_tier(horizon_compensated_age_days)
+        worst = max(axis_results, key=lambda r: _TIER_SEVERITY[r["tier"]])
+        tier = worst["tier"]
+
+    binding_cutoff = worst["cutoff"] if worst is not None else None
+    binding_cutoff_field = worst["field"] if worst is not None else None
+    age_days = worst["age_days"] if worst is not None else None
+    horizon_lag_days = worst["horizon_lag_days"] if worst is not None else 0.0
+    horizon_compensated_age_days = (
+        worst["horizon_compensated_age_days"] if worst is not None else None
+    )
 
     # GAP 2: n_expected<=0 (unknown/unresolvable universe size) BLOCKS —
     # coverage cannot be verified, so it must not silently pass.
@@ -504,19 +635,18 @@ def _compute_admission(
         else (f"trained_date={trained_date} is informational only, not a freshness axis"
               if trained_date else "no binding data cutoff or trained_date")
     )
-    if tier == _FRESHNESS_TIER_UNKNOWN:
+    if not axis_results:
         reasons.append(f"freshness=unknown ({cutoff_desc}); binding DATA cutoff "
                         "missing/unparseable (fail-closed, GAP 1)")
-    elif age_days is not None and age_days < 0:
-        reasons.append(f"look-ahead cutoff {cutoff_desc} is later than as_of_date={today}")
-    elif tier == _FRESHNESS_TIER_BREACH:
-        reasons.append(
-            f"artifact {horizon_compensated_age_days:.0f}d stale (raw {age_days:.0f}d, "
-            f"{cutoff_desc}, breach>={_FRESHNESS_BREACH_DAYS}d)")
-    elif tier == _FRESHNESS_TIER_ESCALATE:
-        reasons.append(
-            f"artifact {horizon_compensated_age_days:.0f}d stale (raw {age_days:.0f}d, "
-            f"{cutoff_desc}, escalate>={_FRESHNESS_ESCALATE_DAYS}d)")
+    elif worst["reason"] is not None:
+        reasons.append(worst["reason"])
+    # Every OTHER present axis that is itself not healthy/warn also gets its
+    # own reason surfaced — the worst axis decides the verdict, but a second
+    # off-SLA axis must not go silent just because it did not win the max().
+    for r in axis_results:
+        if r is not worst and r["tier"] not in (_FRESHNESS_TIER_HEALTHY, _FRESHNESS_TIER_WARN) \
+                and r["reason"] is not None:
+            reasons.append(f"[secondary axis] {r['reason']}")
     if not coverage_ok:
         if coverage is None:
             reasons.append(
@@ -569,6 +699,10 @@ def _compute_admission(
         "min_coverage": min_coverage,
         "reasons": reasons,
         "run_id": run_id,
+        # ROUND 5: every present axis's OWN verdict, not just the worst one
+        # this admission bound to — persisted for audit ("which axes did we
+        # actually see, and what did each say").
+        "cutoffs_evaluated": cutoffs_evaluated,
     }
 
 

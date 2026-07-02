@@ -358,3 +358,77 @@ labeled diagnostic-only, never presented as a pick, in the default (and by far m
 Still observability-only. The default now renders every pick NOT ACTIONABLE — a strictly SAFER
 default than rounds 1-3, not a new capability. No order-placement, gate, or primary/shadow-selection
 logic touched; `_compute_admission` remains a pure function.
+
+## Round 5 (Codex CHANGES_REQUESTED — two provenance gaps in the experimental opt-in)
+
+CI/focused tests green (126 passed, one documented pre-existing failure), round 4's four gates
+accepted. Two remaining ways the experimental opt-in could certify unsupported freshness:
+
+1. **Missing label horizon was guessed, not failed closed.** `_expected_lag_calendar_days` silently
+   assumed 60 business days whenever `lookahead_days` was missing/unparseable/non-positive — this
+   module supports more than one shadow-model kind and cannot prove every artifact uses the
+   documented PatchTST fwd-60d convention, so guessing could subtract ~84 calendar days off a
+   genuinely unknown-horizon artifact and turn it `healthy`/`gates_passed` (actionable under the
+   opt-in flag).
+2. **Freshness bound to the first parseable cutoff, not every required axis.** `_binding_cutoff`
+   prioritized `label_observation_cutoff` and stopped — a compensated-recent label cutoff could hide
+   an older `effective_selection_cutoff_date`/`effective_train_cutoff_date` present on the SAME
+   artifact.
+
+### Changes (`shadow_scoring.py::_compute_admission` and helpers)
+
+- **GAP 4b — horizon compensation requires a STAMPED positive horizon.** `_expected_lag_calendar_days`
+  now returns `(compensation_lag, diagnostic_lag)`: `compensation_lag` is `None` whenever
+  `label_observation_cutoff` needs compensation but `lookahead_days` is missing/invalid — the
+  caller (`_axis_verdict`) then forces that axis to `unknown`, never silently applying the
+  documented 60-BD default to certify admission. `diagnostic_lag` is ALWAYS computed (using the
+  default when the stamped value is missing) and still surfaced via `horizon_lag_days` purely for
+  troubleshooting ("what the lag would have been") — never fed into `horizon_compensated_age_days`
+  or the tier when the real value is unknown.
+- **Worst-axis-wins, not first-axis-wins.** `_binding_cutoff` (single-field priority pick) is
+  replaced by `_all_present_cutoffs` (every present `_DATA_CUTOFF_FIELDS` entry, priority order) +
+  `_axis_verdict` (one axis's independent age/tier) + a `_TIER_SEVERITY` ranking
+  (`healthy < warn < escalate < breach < unknown`). `_compute_admission` evaluates EVERY present
+  axis and binds `binding_cutoff`/`binding_cutoff_field`/`age_days`/`horizon_compensated_age_days`/
+  the tier to the WORST one; ties between axes in the same tier still favor the more-binding field
+  by the original priority order (stable `max()` + priority-ordered iteration). A new
+  `cutoffs_evaluated` list in the returned dict persists every present axis's own verdict — not
+  just the one that decided the overall outcome — for audit ("which axes did we actually see, and
+  what did each say"), and any secondary off-SLA axis gets its own `reasons` entry even when it
+  didn't win the `max()`.
+- Deliberately did NOT build a per-model-kind "required axis" registry (the review's fallback
+  suggestion "if fields are alternatives for a specific recipe, that mapping must be explicit and
+  fingerprinted per model kind"): this module currently ships exactly one shadow-model recipe
+  (PatchTST), for which every `_DATA_CUTOFF_FIELDS` entry is a legitimate independent freshness axis
+  when present — "evaluate every present axis, worst wins" is already correct with no per-recipe
+  ambiguity to resolve today. Documented in-code as the point to introduce that registry once a
+  second shadow-model kind with genuinely different axis semantics actually ships — building it now
+  would be speculative structure with nothing real to validate it against (same discipline as
+  [[over-engineering-validation-before-alpha]]).
+
+### Tests
+- `TestHorizonCompensation::test_missing_lookahead_fails_closed_not_guessed` (renamed/flipped from
+  `test_default_lookahead_used_when_not_stamped`, which asserted the now-removed guessed-default
+  behavior): missing `lookahead_days` → `verdict=unknown`, `gates_passed=False`,
+  `horizon_compensated_age_days=None`, `horizon_lag_days` still shows the diagnostic default,
+  `reasons` names GAP 4b explicitly.
+- `TestComputeAdmissionBindingDataCutoff::test_data_cutoff_field_priority_breaks_ties_when_severities_match`
+  (renamed/flipped from `test_data_cutoff_field_priority_matches_orchestrator_order`, whose original
+  scenario — a stale `effective_train_cutoff_date` present alongside a fresh
+  `label_observation_cutoff` — is now CORRECTLY `breach`, not `healthy`; the old assertion described
+  exactly the bug this round fixes): priority now only decided ties between axes in the SAME tier.
+- New `test_worst_axis_wins_even_when_it_is_not_the_most_binding_field`: the literal scenario from
+  the review quote — a horizon-compensated-healthy `label_observation_cutoff` alongside a genuinely
+  ancient `effective_train_cutoff_date` (2020-01-01) — asserts the verdict binds to the stale axis
+  (`breach`, `gates_passed=False`), while `cutoffs_evaluated` still shows the healthy axis was seen
+  and evaluated, not silently dropped.
+- `tests/test_shadow_scoring.py` — 65/65 passed (`/Users/renhao/git/github/RenQuant/.venv/bin/python
+  -m pytest tests/test_shadow_scoring.py -q`). `tests/test_runner_trade_ntfy.py` run alongside — same
+  63/64 with the one pre-existing `test_live_only_wrapper_does_not_duplicate_runner_success_ntfy`
+  failure as rounds 1-4 (reconfirmed via `git stash`, fails identically pre- and post- this round's
+  diff — the wrapper script it checks is untouched by this change). `py_compile` clean.
+
+### Scope
+Unchanged: still observability-only, default NOT ACTIONABLE, `_compute_admission` remains a pure
+function. This round only tightens WHICH artifacts can ever reach `gates_passed=True` under the
+experimental opt-in — it does not add or remove a code path.
