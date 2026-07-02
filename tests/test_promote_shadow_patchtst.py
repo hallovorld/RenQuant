@@ -790,3 +790,75 @@ def test_promote_keeps_pin_on_future_dated_fundamentals_entity(tmp_path, monkeyp
     fund_v = next(v for v in rep.source_verdicts if v.name == "fundamentals")
     assert not fund_v.on_sla and M.FUTURE_DATED in fund_v.detail
     assert fund_v.coverage["n_future_dated"] == 1
+
+
+# --- _apply_snapshot_freshness_backstop (Codex PR #432 round 5) -------------
+#
+# Isolated unit tests: monkeypatch check_snapshot_freshness directly rather
+# than constructing every unrelated run_promote() gate (parity/cutoff/smoke
+# inference/atomic swap) — exactly what the review asked for, as a focused
+# successful-swap test of just this integration point.
+
+def test_snapshot_backstop_appends_fresh_message_and_keeps_rc_ok(monkeypatch):
+    import sys
+    import types
+
+    fake_pp = types.ModuleType("promote_pin")
+    fake_pp.check_snapshot_freshness = lambda python, repo=None: (True, "strategy-104 snapshot is fresh")
+    monkeypatch.setitem(sys.modules, "promote_pin", fake_pp)
+
+    rep = M.PromoteReport(verdict="PROMOTED: a -> b", rc=M.RC_OK)
+    M._apply_snapshot_freshness_backstop(Path("/irrelevant"), rep)
+
+    assert rep.rc == M.RC_OK
+    assert "snapshot: strategy-104 snapshot is fresh" in rep.verdict
+
+
+def test_snapshot_backstop_sets_gate_failed_on_stale_but_does_not_touch_promoted_pin(monkeypatch):
+    """The whole point of this backstop: a stale snapshot must fail the
+    overall report (rc) WITHOUT reverting the already-completed swap
+    (promoted_pin/superseded_backup, set before this function runs by
+    run_promote(), must be left untouched)."""
+    import sys
+    import types
+
+    fake_pp = types.ModuleType("promote_pin")
+    fake_pp.check_snapshot_freshness = (
+        lambda python, repo=None: (False, "ACTION REQUIRED: doc/arch/strategy-104-snapshot.md is STALE"))
+    monkeypatch.setitem(sys.modules, "promote_pin", fake_pp)
+
+    rep = M.PromoteReport(
+        verdict="PROMOTED: served-pin-a -> served-pin-b", rc=M.RC_OK,
+        promoted_pin="served-pin-b", superseded_backup="/tmp/backup.json")
+
+    M._apply_snapshot_freshness_backstop(Path("/irrelevant"), rep)
+
+    assert rep.rc == M.RC_GATE_FAILED
+    assert "snapshot: ACTION REQUIRED" in rep.verdict and "STALE" in rep.verdict
+    # Not reverted:
+    assert rep.promoted_pin == "served-pin-b"
+    assert rep.superseded_backup == "/tmp/backup.json"
+
+
+def test_snapshot_backstop_calls_check_with_the_given_repo_and_real_python(monkeypatch):
+    import sys
+    import types
+
+    calls = []
+
+    def fake_check(python, repo=None):
+        calls.append((python, repo))
+        return True, "fresh"
+
+    fake_pp = types.ModuleType("promote_pin")
+    fake_pp.check_snapshot_freshness = fake_check
+    monkeypatch.setitem(sys.modules, "promote_pin", fake_pp)
+
+    rep = M.PromoteReport(verdict="PROMOTED", rc=M.RC_OK)
+    repo = Path("/some/repo/root")
+    M._apply_snapshot_freshness_backstop(repo, rep)
+
+    assert len(calls) == 1
+    called_python, called_repo = calls[0]
+    assert called_python == sys.executable
+    assert called_repo == repo

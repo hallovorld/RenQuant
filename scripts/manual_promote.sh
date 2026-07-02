@@ -19,8 +19,10 @@
 #     bash scripts/manual_promote.sh
 set -uo pipefail
 
-REPO_DIR="/Users/renhao/git/github/RenQuant"
-PYTHON="$REPO_DIR/.venv/bin/python"
+# Overridable only for the test harness (tests/test_manual_promote_snapshot_
+# backstop.sh) — defaults are byte-identical to the prior hardcoded values.
+REPO_DIR="${RQ_MANUAL_PROMOTE_REPO_DIR:-/Users/renhao/git/github/RenQuant}"
+PYTHON="${RQ_MANUAL_PROMOTE_PYTHON:-$REPO_DIR/.venv/bin/python}"
 
 echo "=== EMERGENCY MANUAL PROMOTE ==="
 echo "This bypasses the weekly walk-forward gate. Use ONLY for emergencies."

@@ -27,11 +27,15 @@
 #   - Promote fail (e.g. acceptance G1-G11 fail) → prior artifact preserved
 set -uo pipefail
 
-REPO_DIR="/Users/renhao/git/github/RenQuant"
+# Overridable only for the test harness (tests/test_weekly_wf_promote_
+# snapshot_backstop.sh) — every default below is byte-identical to the
+# prior hardcoded values, so production behavior is unchanged when these
+# env vars are unset.
+REPO_DIR="${RQ_WEEKLY_PROMOTE_REPO_DIR:-/Users/renhao/git/github/RenQuant}"
 VENV_DIR="$REPO_DIR/.venv"
-PYTHON="$VENV_DIR/bin/python"
+PYTHON="${RQ_WEEKLY_PROMOTE_PYTHON:-$VENV_DIR/bin/python}"
 LOG_DIR="$REPO_DIR/logs/weekly_wf_promote"
-NTFY_TOPIC="renquant"
+NTFY_TOPIC="${RQ_WEEKLY_PROMOTE_NTFY_TOPIC:-renquant}"
 mkdir -p "$LOG_DIR"
 
 DATE=$(date +%Y-%m-%d)
@@ -40,6 +44,13 @@ LOG="$LOG_DIR/$DATE.log"
 
 notify() {
     local title="$1" body="$2"
+    # Test-only observability hook: when set, notify() ALSO appends "TITLE:
+    # body" to this file so a test can assert exactly which notifications
+    # fired without needing network access or touching the real ntfy topic.
+    # No effect on production (unset by default).
+    if [ -n "${RQ_WEEKLY_PROMOTE_NOTIFY_LOG:-}" ]; then
+        printf '%s: %s\n' "$title" "$body" >> "$RQ_WEEKLY_PROMOTE_NOTIFY_LOG"
+    fi
     if command -v terminal-notifier &>/dev/null; then
         terminal-notifier -title "$title" -message "$body" -sound Glass 2>/dev/null || true
     fi
@@ -114,7 +125,7 @@ echo "=== weekly_wf_promote started at $(date) ==="
 
 # Lock — prevent concurrent runs (a 90-min job can stack if the user
 # triggers a manual rerun before the previous finishes).
-LOCK_FILE="/tmp/renquant_104_weekly_wf.lock"
+LOCK_FILE="${RQ_WEEKLY_PROMOTE_LOCK_FILE:-/tmp/renquant_104_weekly_wf.lock}"
 if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
     EXISTING=$(cat "$LOCK_FILE" 2>/dev/null || echo "?")
     if [ "$EXISTING" != "?" ] && ! kill -0 "$EXISTING" 2>/dev/null; then

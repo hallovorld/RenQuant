@@ -166,7 +166,76 @@ snapshot-backstop code path in that script is verified by manual code-reading + 
 check, not by an executed test. Flagging this explicitly rather than claiming coverage
 that doesn't exist.
 
-**M9/A6 closure status:** with this round, every real production path that can change the
-active model/calibrator/pin state now synchronously fails (not just the next daily
-doctor run) when it would leave the committed snapshot stale. The "deployed but dark"
-gap this task exists to close is now genuinely closed for all four identified paths.
+**M9/A6 closure status (round 4 claim, corrected below):** with round 4, every real
+production path that can change the active model/calibrator/pin state synchronously
+FAILS when it would leave the committed snapshot stale — confirmed correct by Codex's
+round-5 code inspection. But "correct by inspection" and "closed" are not the same
+claim; round 5 below closes that gap.
+
+## Round 5 (Codex review: code-reading is not execution proof)
+
+**Finding.** Round 4's wiring was independently confirmed correct by code inspection —
+`weekly_wf_promote.sh`'s Step 7 genuinely runs before the final success notification,
+emits a distinct stale-snapshot alert, and exits non-zero. But NONE of `weekly_wf_
+promote.sh` or `manual_promote.sh` had ever actually been EXECUTED under test — the
+round-4 test file only exercised `restamp_prod_fingerprint.py` with a mocked freshness
+function. `promote_shadow_patchtst.py`'s new path was explicitly admitted unexecuted.
+These are production-mutating shell/Python entry points; a syntax check proves the
+script parses, not that Step 7's actual control flow does what the comments claim.
+
+**Fix.**
+- Added minimal, behavior-preserving environment-override hooks to both shell scripts
+  (`RQ_WEEKLY_PROMOTE_REPO_DIR`/`_PYTHON`/`_NOTIFY_LOG`/`_LOCK_FILE`,
+  `RQ_MANUAL_PROMOTE_REPO_DIR`/`_PYTHON`) — every default is byte-identical to the prior
+  hardcoded value, so production invocation (which never sets these) is unchanged.
+  `notify()` gained an opt-in log-append hook so a test can assert exactly which
+  notifications fired without needing network access or touching the real ntfy topic.
+- `tests/_weekly_promote_fixture.py` (new, shared): builds a self-contained fixture repo
+  (genuine copies of `render_strategy_104_snapshot.py`/`promote_pin.py`, real minimal
+  `kernel.model_acceptance.promote`, trivial stubs for smoke-test/retrain/WF-manifest-
+  stamp/WF-gate/dashboard) — every dependency OTHER than the snapshot backstop itself is
+  mocked; the backstop's own `check_snapshot_freshness` call is never mocked, it runs
+  for real against the fixture's genuinely-rendered committed snapshot.
+- `tests/test_weekly_wf_promote_snapshot_backstop.py` (new, 3 tests): runs the REAL
+  `weekly_wf_promote.sh` via subprocess through a fully mocked Steps-1-6 promotion.
+  Asserts: fresh snapshot → exit 0, exactly one `WEEKLY-PROMOTE ✓` notification, no
+  stale alert, lock released; stale snapshot → exit 1, distinct `SNAPSHOT STALE` alert,
+  the success notification genuinely never fires (not merely absent alongside a partial
+  run); stale snapshot does NOT revert the already-completed promotion (active artifact
+  content is the retrain stub's output, unchanged by the later Step-7 failure).
+- `tests/test_manual_promote_snapshot_backstop.py` (new, 3 tests): same pattern for the
+  interactive `manual_promote.sh` (stdin-fed for its three `read -p` confirmations) —
+  fresh/stale/no-revert, mirroring the weekly-promote suite.
+- `promote_shadow_patchtst.py`: extracted the inline snapshot-backstop block into a
+  named `_apply_snapshot_freshness_backstop(repo, rep)` function — a minimal refactor
+  (no behavior change; `run_promote()` now calls it instead of inlining the same code)
+  that makes it independently unit-testable via monkeypatching `check_snapshot_freshness`,
+  rather than needing to construct every unrelated gate (parity/cutoff/smoke-inference/
+  atomic-swap) this script also checks before reaching a successful swap. 3 new tests in
+  `tests/test_promote_shadow_patchtst.py`: fresh keeps `rc==RC_OK` and appends the
+  message; stale sets `rc==RC_GATE_FAILED` and appends the alert WITHOUT touching
+  `promoted_pin`/`superseded_backup` (the already-completed swap); the check is called
+  with the exact `repo`/`sys.executable` arguments passed in. 75/75 in that file's full
+  suite pass — no regressions from the extraction.
+- CI (`.github/workflows/strategy-104-snapshot-fresh.yml`): the `selftest` job
+  previously ran ONLY `test_render_strategy_104_snapshot.py` — none of round 3/4's
+  claimed "117 tests" or this round's new execution tests were actually invoked by CI.
+  Added `bash -n` syntax checks for both modified shell scripts, and wired ALL of
+  `test_promote_pin.py`, `test_system_doctor.py`,
+  `test_restamp_prod_fingerprint_snapshot_backstop.py`,
+  `test_weekly_wf_promote_snapshot_backstop.py`, `test_manual_promote_snapshot_backstop.py`,
+  and `test_promote_shadow_patchtst.py` into the same job. Verified locally by running the
+  EXACT command CI now runs: 121 passed, matching what a fresh CI run will show.
+
+**Honest gap, closed.** The prior round's flagged gap (`promote_shadow_patchtst.py`'s
+path verified by code-reading only) is now covered by 3 real executed unit tests against
+the extracted function — not a full end-to-end run of the whole script's gate chain
+(building that remains a substantial undertaking distinct from this fix's actual scope),
+but a genuine, monkeypatch-isolated test of the exact integration point under review.
+
+**M9/A6 closure status (corrected):** every real production path that can change the
+active model/calibrator/pin state now (a) synchronously fails when it would leave the
+committed snapshot stale, AND (b) has that behavior proven by an executed test that CI
+actually runs — not merely a correct-by-inspection code review. The "deployed but dark"
+gap this task exists to close is closed, with the closure itself demonstrated rather
+than asserted.
