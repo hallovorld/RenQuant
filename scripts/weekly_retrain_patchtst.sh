@@ -83,7 +83,8 @@ OUT_DIR="$REPO_DIR/backtesting/renquant_104/artifacts/walkforward_patchtst"
 OUT_MANIFEST="$REPO_DIR/backtesting/renquant_104/artifacts/walkforward_patchtst_manifest.json"
 
 # Two modes (mirrors the GBDT side: 1 model + gate weekly; WF manifest built once):
-#   WEEKLY (default): train ONLY the latest cutoff — 1 model, ~15min on MPS.
+#   WEEKLY (default): train ONLY the derived corpus-frontier cutoff — 1 model,
+#     ~15min on MPS.
 #   FULL (RQ_PATCHTST_FULL_MANIFEST=1): one-time SPARSE validation manifest,
 #     ~6 cutoffs at cadence 180 (~90min). NOT the dense 39-cut/12h build.
 cd "$REPO_DIR"
@@ -92,11 +93,30 @@ if [ "${RQ_PATCHTST_FULL_MANIFEST:-0}" = "1" ]; then
     CADENCE="${RQ_PATCHTST_CADENCE:-180}"
     echo "Mode: FULL validation manifest (sparse, cadence=${CADENCE}d)"
 else
-    LATEST_CUT="$("$PYTHON" -c "import json;r=json.load(open('$SRC_MANIFEST')).get('retrains',[]);print(sorted(x['cutoff_date'] for x in r if x.get('cutoff_date'))[-1].split('T')[0])")"
+    # S12 §4-B3: derive the weekly cutoff from the REFRESHED corpus's labeled
+    # frontier (Monday-quantized to the WF grid), NOT from the static source
+    # manifest — its frozen tail (2026-03-09) let the retrain advance exactly
+    # once after a corpus refresh, then re-train the same cutoff forever and
+    # re-freeze the served pin. The static manifest remains a LOWER-BOUND
+    # sanity only, never the cutoff source. The derivation FAILS CLOSED
+    # (set -e aborts before any training) when the corpus is missing or its
+    # implied bar frontier is older than RQ_PATCHTST_CUTOFF_MAX_STALENESS_DAYS
+    # (default 28d); RQ_PATCHTST_CUTOFF_ARGS lets ops relax deliberately.
+    if ! "$PYTHON" -c "import renquant_orchestrator.patchtst_weekly_cutoff" >/dev/null 2>&1; then
+        echo "ERROR: renquant_orchestrator.patchtst_weekly_cutoff unavailable — the orchestrator pin predates the S12 B3 corpus-frontier cutoff derivation; advance the renquant-orchestrator pin."
+        exit 1
+    fi
+    CORPUS_PATH="${RQ_PATCHTST_CORPUS:-$REPO_DIR/data/transformer_v4_wl200_clean.parquet}"
+    # shellcheck disable=SC2086
+    LATEST_CUT="$("$PYTHON" -m renquant_orchestrator.patchtst_weekly_cutoff \
+        --corpus "$CORPUS_PATH" \
+        --lower-bound-manifest "$SRC_MANIFEST" \
+        --max-staleness-days "${RQ_PATCHTST_CUTOFF_MAX_STALENESS_DAYS:-28}" \
+        ${RQ_PATCHTST_CUTOFF_ARGS:-})"
     EFFECTIVE_SRC="$(mktemp "${TMPDIR:-/tmp}/patchtst_src.XXXXXX")"
     "$PYTHON" -c "import json;json.dump({'retrains':[{'cutoff_date':'$LATEST_CUT'}]},open('$EFFECTIVE_SRC','w'))"
     CADENCE=0
-    echo "Mode: WEEKLY — train latest cutoff only ($LATEST_CUT)"
+    echo "Mode: WEEKLY — train derived corpus-frontier cutoff ($LATEST_CUT)"
     trap 'rm -f "$LOCK_FILE" "$EFFECTIVE_SRC"' EXIT
 fi
 "$PYTHON" -m renquant_orchestrator.build_patchtst_wf_manifest \
