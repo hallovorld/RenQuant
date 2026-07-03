@@ -42,6 +42,8 @@ def context_price_tickers(
         benchmark_sleeve_ticker,
     )
 
+    from adapters.sleeve_prices import parking_sleeve_price_tickers  # noqa: PLC0415
+
     tickers: list[str] = []
     tickers.extend(str(t).upper() for t in config.get("watchlist", []) if t)
     tickers.extend(str(t).upper() for t in models)
@@ -53,4 +55,6 @@ def context_price_tickers(
     sleeve_ticker = benchmark_sleeve_ticker(config)
     if sleeve_ticker:
         tickers.append(sleeve_ticker)
+    # Parking-sleeve legs (st104 #39 follow-up) — [] unless sleeve.enabled.
+    tickers.extend(parking_sleeve_price_tickers(config))
     return list(dict.fromkeys(tickers))
