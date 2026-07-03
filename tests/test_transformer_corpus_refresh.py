@@ -790,3 +790,111 @@ def test_pipeline_order_is_refresh_guard_rebuild() -> None:
         "TransformerUniverseFreshnessGuardTask",
         "RebuildTransformerCorpusTask",
     ]
+
+
+# ─────────────────────────── TRUE-recipe default builder (S12 B1) ───────────
+# The served corpus is the PROD fund panel subset to the live strategy
+# watchlist with labels dropna'd (diagnosis §1) — the default builder_fn must
+# resolve the committed base-data recipe, source the watchlist from the PINNED
+# strategy config, ignore the OHLCV inventory universe for row selection, and
+# FAIL CLOSED (never fall back to the divergent legacy recipe) when the recipe
+# is unresolvable. All base-data imports are faked — no real base-data pin,
+# panel read, or production write happens here.
+
+
+class _FakeRecipe:
+    """Recording stand-in for renquant_base_data.transformer_corpus."""
+
+    def __init__(self) -> None:
+        self.watchlist_calls: list = []
+        self.build_calls: list = []
+
+    def load_watchlist(self, strategy_config_path):
+        self.watchlist_calls.append(Path(strategy_config_path))
+        return ["AAPL", "MSFT"]
+
+    def build_transformer_corpus(self, fund_panel_path, watchlist, output_path, **kw):
+        self.build_calls.append((Path(fund_panel_path), list(watchlist), Path(output_path)))
+        _corpus_parquet(Path(output_path), max_date=dt.date(2026, 6, 30), n_rows=140)
+        return {"n_rows": 140, "n_tickers": 2, "max_date": "2026-06-30"}
+
+
+def _install_fake_recipe(monkeypatch) -> _FakeRecipe:
+    import types
+
+    fake = _FakeRecipe()
+    module = types.ModuleType("renquant_base_data.transformer_corpus")
+    module.load_watchlist = fake.load_watchlist
+    module.build_transformer_corpus = fake.build_transformer_corpus
+    pkg = types.ModuleType("renquant_base_data")
+    pkg.transformer_corpus = module
+    monkeypatch.setitem(sys.modules, "renquant_base_data", pkg)
+    monkeypatch.setitem(sys.modules, "renquant_base_data.transformer_corpus", module)
+    return fake
+
+
+def test_default_builder_uses_the_true_base_data_recipe(tmp_path, monkeypatch) -> None:
+    fake = _install_fake_recipe(monkeypatch)
+    cfg = tmp_path / "strategy_config.json"
+    cfg.write_text(json.dumps({"watchlist": ["AAPL", "MSFT"]}))
+    panel = tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet"
+    staging = tmp_path / "data" / "corpus.staging"
+    ctx = _ctx(tmp_path, fund_panel_path=panel, strategy_config_path=cfg)
+
+    mod._default_build_corpus(ctx, staging, ["R0", "R1", "R2"])  # inventory universe
+
+    assert fake.watchlist_calls == [cfg]  # watchlist from the PINNED config...
+    assert fake.build_calls == [(panel, ["AAPL", "MSFT"], staging)]
+    # ...NOT from the OHLCV inventory universe passed through the seam.
+    assert staging.exists()
+
+
+def test_default_builder_fails_closed_when_recipe_unresolvable(tmp_path, monkeypatch) -> None:
+    # Simulate a base-data pin that predates the committed recipe: the import
+    # raises, and the builder must fail CLOSED (no legacy-recipe fallback).
+    monkeypatch.setitem(sys.modules, "renquant_base_data", None)
+    monkeypatch.setitem(sys.modules, "renquant_base_data.transformer_corpus", None)
+    ctx = _ctx(tmp_path)
+
+    with pytest.raises(mod.CorpusRefreshError, match="TRUE-recipe builder unresolvable"):
+        mod._default_build_corpus(ctx, tmp_path / "corpus.staging", ["AAA"])
+    assert not (tmp_path / "corpus.staging").exists()
+
+
+def test_default_strategy_config_resolution_mirrors_subrepo_env(tmp_path, monkeypatch) -> None:
+    ctx = _ctx(tmp_path / "RenQuant")
+    # RENQUANT_SUBREPO_ROOT (exported by weekly_retrain_patchtst.sh) wins...
+    monkeypatch.setenv("RENQUANT_SUBREPO_ROOT", str(tmp_path / "assembly" / "repos"))
+    assert ctx.resolved_strategy_config_path == (
+        tmp_path / "assembly" / "repos" / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    )
+    # ...else the sibling-checkout default next to the umbrella repo.
+    monkeypatch.delenv("RENQUANT_SUBREPO_ROOT")
+    assert ctx.resolved_strategy_config_path == (
+        tmp_path / "renquant-strategy-104" / "configs" / "strategy_config.json"
+    )
+    # An explicit override beats both.
+    explicit = tmp_path / "elsewhere" / "strategy_config.shadow.json"
+    ctx2 = _ctx(tmp_path / "RenQuant", strategy_config_path=explicit)
+    assert ctx2.resolved_strategy_config_path == explicit
+
+
+def test_default_fund_panel_and_recipe_string_point_at_the_prod_panel(tmp_path) -> None:
+    ctx = _ctx(tmp_path)
+    assert ctx.resolved_fund_panel_path == (
+        tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet"
+    )
+    # The audit string records the TRUE recipe, not the legacy raw-OHLCV one.
+    assert "renquant_base_data.transformer_corpus" in mod.DEFAULT_BUILDER_RECIPE
+    assert "transformer_dataset_builder" not in mod.DEFAULT_BUILDER_RECIPE
+
+
+def test_cli_wires_fund_panel_and_strategy_config_paths() -> None:
+    args = mod.parse_args(
+        [
+            "--fund-panel-path", "/x/panel.parquet",
+            "--strategy-config-path", "/x/strategy_config.json",
+        ]
+    )
+    assert args.fund_panel_path == Path("/x/panel.parquet")
+    assert args.strategy_config_path == Path("/x/strategy_config.json")

@@ -67,12 +67,16 @@ RUNTIME WIRING
 the subrepo PYTHONPATH that ``weekly_retrain_patchtst.sh`` already sets up. It is
 dependency-injected via ``CorpusRefreshContext.fetch_fn``; when None it resolves
 lazily through ``_default_fetch_fn()`` at call time. The corpus builder is
-likewise injected via ``CorpusRefreshContext.builder_fn``; when None it invokes
-``scripts/transformer_dataset_builder.py`` to the staging path against the same
-inventory / labels / integrity-report the builder reads. The staged corpus is
-then validated against the served corpus's schema / label / coverage CONTRACT, so
-a divergent recipe fails closed rather than silently swapping in. Tests inject
-fakes so nothing touches the network or a production data file.
+likewise injected via ``CorpusRefreshContext.builder_fn``; when None it resolves
+the committed TRUE recipe ``renquant_base_data.transformer_corpus`` (S12 B1 —
+the served corpus is the PROD fund panel ``alpha158_291_fundamental_dataset``
+subset to the live strategy watchlist with forward labels dropna'd; the legacy
+``scripts/transformer_dataset_builder.py`` raw-OHLCV recipe this default invoked
+pre-S12 could never satisfy the swap gate, freezing the corpus at 2026-02-10)
+and builds to the staging path. The staged corpus is then validated against the
+served corpus's schema / label / coverage CONTRACT, so a divergent recipe fails
+closed rather than silently swapping in. Tests inject fakes so nothing touches
+the network or a production data file.
 
 Usage::
 
@@ -90,8 +94,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -109,6 +111,12 @@ DEFAULT_INTEGRITY_FILENAME = "transformer_data_integrity_report.json"
 DEFAULT_LABELS_FILENAME = "transformer_panel_labels.parquet"
 DEFAULT_OHLCV_DIRNAME = "ohlcv"
 DEFAULT_CORPUS_RELPATH = "transformer_v4_wl200_clean.parquet"
+# TRUE-RECIPE inputs (S12 B1, doc/research/2026-07-02-s12-panel-refresh-diagnosis
+# §1/§5.1): the served corpus is the daily-refreshed PROD fund panel subset to
+# the live strategy watchlist with forward labels dropna'd — NOT the raw-OHLCV
+# transformer_dataset_builder output the pre-S12 default invoked.
+DEFAULT_FUND_PANEL_FILENAME = "alpha158_291_fundamental_dataset.parquet"
+DEFAULT_STRATEGY_CONFIG_SUBPATH = Path("renquant-strategy-104") / "configs" / "strategy_config.json"
 DEFAULT_OHLCV_TIMEOUT_SEC = 30.0
 DEFAULT_FRESHNESS_STALE_AFTER_DAYS = 10
 DEFAULT_FRESHNESS_MAX_STALE_FRACTION = 0.10
@@ -121,7 +129,10 @@ DEFAULT_MIN_ROW_RATIO = 0.95
 DEFAULT_MIN_TICKER_COVERAGE_RATIO = 0.90
 # Recorded for audit; the OUTPUT-CONTRACT gate (schema/label/coverage) is what
 # actually binds the recipe — a divergent builder output fails the swap closed.
-DEFAULT_BUILDER_RECIPE = "transformer_dataset_builder:tier_A+tier_B/raw-OHLCV/fwd_{5,20,60}d/wl200_clean"
+DEFAULT_BUILDER_RECIPE = (
+    "renquant_base_data.transformer_corpus:prod-fund-panel/watchlist-subset/"
+    "label-dropna/fwd_{5,20,60}d"
+)
 DEFAULT_NTFY_TOPIC = "renquant"
 
 # Label columns look like ``fwd_60d_excess`` / ``label_20d`` / ``y_5d``.
@@ -195,10 +206,16 @@ class CorpusRefreshContext:
     staging_path: Optional[Path] = None
     labels_path: Optional[Path] = None
     integrity_report_path: Optional[Path] = None
+    # TRUE-RECIPE inputs (S12 B1): the prod fund panel the corpus is derived
+    # from, and the pinned strategy config whose ``watchlist`` is the corpus
+    # universe. None → data/alpha158_291_fundamental_dataset.parquet and the
+    # RENQUANT_SUBREPO_ROOT (or sibling) renquant-strategy-104 config.
+    fund_panel_path: Optional[Path] = None
+    strategy_config_path: Optional[Path] = None
     rebuild_corpus: bool = True
     builder_recipe: str = DEFAULT_BUILDER_RECIPE
-    # Injected panel builder (staging_path, universe) -> None. None → invoke
-    # scripts/transformer_dataset_builder.py to the staging path.
+    # Injected panel builder (staging_path, universe) -> None. None → the
+    # committed base-data TRUE recipe (renquant_base_data.transformer_corpus).
     builder_fn: "Callable[[Path, list], None] | None" = None
     # Injected (path) -> (n_rows, max_date|None) reader; None → read the parquet.
     corpus_stats_fn: "Callable[[Path], tuple] | None" = None
@@ -266,6 +283,23 @@ class CorpusRefreshContext:
             return self.staging_path
         c = self.resolved_corpus_path
         return c.with_name(c.name + ".staging")
+
+    @property
+    def resolved_fund_panel_path(self) -> Path:
+        if self.fund_panel_path is not None:
+            return self.fund_panel_path
+        return self.data_dir / DEFAULT_FUND_PANEL_FILENAME
+
+    @property
+    def resolved_strategy_config_path(self) -> Path:
+        """The PINNED strategy config carrying the live ``watchlist``. Mirrors
+        ``scripts/subrepo_env.sh``: ``RENQUANT_SUBREPO_ROOT`` (exported by
+        ``weekly_retrain_patchtst.sh`` after resolving the lock-pinned assembly)
+        wins; else the sibling-checkout default next to the umbrella repo."""
+        if self.strategy_config_path is not None:
+            return self.strategy_config_path
+        root = os.environ.get("RENQUANT_SUBREPO_ROOT") or str(self.repo_dir.parent)
+        return Path(root) / DEFAULT_STRATEGY_CONFIG_SUBPATH
 
 
 # ─────────────────────────── fail-closed helper ────────────────────────────
@@ -561,36 +595,52 @@ def _resolve_corpus_schema(ctx: CorpusRefreshContext, path: Path) -> dict:
 
 
 def _default_build_corpus(ctx: CorpusRefreshContext, staging_path: Path, universe: list) -> None:
-    """Rebuild the transformer panel to ``staging_path`` by invoking the existing
-    builder against the SAME inventory / labels / integrity-report the corpus is
-    built from.
+    """Rebuild the transformer corpus to ``staging_path`` with the committed
+    TRUE recipe (S12 B1, ``doc/research/2026-07-02-s12-panel-refresh-diagnosis``
+    §1/§5.1): the served ``transformer_v4_wl200_clean.parquet`` is measurably an
+    alpha158+fund-family panel (178 columns) subset to the live strategy
+    watchlist with forward labels dropna'd — NOT the raw-OHLCV 292-ticker
+    ``transformer_dataset_builder.py`` output this default invoked pre-S12
+    (whose staged build could never satisfy the swap gate, freezing the corpus).
 
-    RUNTIME WIRING NOTE: the served corpus ``transformer_v4_wl200_clean.parquet``
-    is the wl200-clean transformer_v4 corpus. This default wires the canonical
-    ``scripts/transformer_dataset_builder.py`` to the staging path. If the
-    operator's exact wl200-clean recipe diverges, its OUTPUT still has to satisfy
-    the served corpus's schema / label / coverage contract (the swap gate) or the
-    swap fails closed — a silent feature/universe/schema change can never reach
-    the served corpus. Point ``builder_fn`` at the exact recipe to also match the
-    build side; that is a one-line injection change with no code churn here.
+    The recipe is owned by base-data (``renquant_base_data.transformer_corpus``,
+    the committed lift of the ad-hoc 2026-05-18 build) and derives the corpus
+    from the already-daily-refreshed PROD fund panel — zero new fetch cost and
+    swap-gate schema/coverage parity by construction. It resolves lazily via the
+    subrepo PYTHONPATH the retrain wrapper sets up (same seam as
+    ``_default_fetch_fn``) and FAILS CLOSED when unresolvable — never a silent
+    fallback to the divergent legacy recipe.
+
+    NOTE: ``universe`` (inventory tier_A+tier_B, ~292 names) intentionally does
+    NOT drive row selection here — it drives the upstream OHLCV refresh +
+    freshness guard for the research universe. The corpus rows are the pinned
+    strategy watchlist ∩ the fund panel (S12 §1: all 142 served tickers are
+    exactly the live watchlist).
     """
-    builder = ctx.repo_dir / "scripts" / "transformer_dataset_builder.py"
-    cmd = [
-        sys.executable,
-        str(builder),
-        "--inventory",
-        str(ctx.resolved_inventory_path),
-        "--integrity-report",
-        str(ctx.resolved_integrity_report_path),
-        "--labels",
-        str(ctx.resolved_labels_path),
-        "--ohlcv-dir",
-        str(ctx.ohlcv_dir),
-        "--output",
-        str(staging_path),
-    ]
-    log.info("rebuilding transformer corpus to staging [%s]: %s", ctx.builder_recipe, " ".join(cmd))
-    subprocess.run(cmd, check=True)  # noqa: S603
+    del universe  # corpus rows come from the watchlist, not the OHLCV universe
+    try:
+        from renquant_base_data.transformer_corpus import (  # noqa: PLC0415
+            build_transformer_corpus,
+            load_watchlist,
+        )
+    except ImportError as exc:
+        raise CorpusRefreshError(
+            "TRUE-recipe builder unresolvable (renquant_base_data.transformer_corpus): "
+            f"{exc}; the base-data pin predates the committed recipe or the subrepo "
+            "PYTHONPATH is not set — refusing to fall back to the divergent legacy "
+            "transformer_dataset_builder recipe."
+        ) from exc
+    watchlist = load_watchlist(ctx.resolved_strategy_config_path)
+    log.info(
+        "rebuilding transformer corpus to staging [%s]: fund_panel=%s watchlist=%d "
+        "(strategy config %s)",
+        ctx.builder_recipe,
+        ctx.resolved_fund_panel_path,
+        len(watchlist),
+        ctx.resolved_strategy_config_path,
+    )
+    report = build_transformer_corpus(ctx.resolved_fund_panel_path, watchlist, staging_path)
+    log.info("staged corpus build report: %s", report)
 
 
 # ─────────────────────────── atomic swap helpers ───────────────────────────
@@ -1031,6 +1081,25 @@ def parse_args(argv: "list | None" = None) -> argparse.Namespace:
     p.add_argument("--corpus-path", type=Path, default=None)
     p.add_argument("--staging-path", type=Path, default=None)
     p.add_argument(
+        "--fund-panel-path",
+        type=Path,
+        default=None,
+        help=(
+            "Prod fund panel the TRUE recipe derives the corpus from. Default: "
+            f"<repo>/data/{DEFAULT_FUND_PANEL_FILENAME}."
+        ),
+    )
+    p.add_argument(
+        "--strategy-config-path",
+        type=Path,
+        default=None,
+        help=(
+            "Pinned strategy config whose 'watchlist' is the corpus universe. "
+            "Default: $RENQUANT_SUBREPO_ROOT (or the umbrella's sibling dir) / "
+            f"{DEFAULT_STRATEGY_CONFIG_SUBPATH}."
+        ),
+    )
+    p.add_argument(
         "--transformer-universe-file",
         type=Path,
         default=None,
@@ -1130,6 +1199,8 @@ def main(argv: "list | None" = None) -> int:
         expected_inventory_digest=args.expected_inventory_digest,
         corpus_path=args.corpus_path,
         staging_path=args.staging_path,
+        fund_panel_path=args.fund_panel_path,
+        strategy_config_path=args.strategy_config_path,
         refresh_ohlcv=args.refresh_ohlcv,
         ohlcv_timeout_sec=args.ohlcv_timeout_sec,
         rebuild_corpus=args.rebuild_corpus,
