@@ -36,3 +36,13 @@ head at authoring time.
 Merged ≠ deployed: the machine picks this up at the next pin-align (Monday 13:55 PT daily
 run, or a manual align in a safe window). The S12 shadow refresh becomes runnable
 immediately after alignment (its TRUE-recipe resolver needs the new base-data pin).
+
+## Round 2 (CI fix)
+
+`verify-pinned-declaration` failed: the committed `doc/arch/strategy-104-snapshot.md` was
+still generated from the prior strategy-104 pin (c019b256), not the dd337d45 this PR bumps
+to — the snapshot generation step was skipped as part of the pin bump itself. Regenerated
+via the same command CI's verify step runs (checkout renquant-strategy-104 at the exact
+lock pin, render from its `configs/`); `--verify-pinned-declaration` now passes locally.
+204/205 relevant tests pass; the one failure is pre-existing and reproduces identically on
+the unmodified checkout (unrelated cwd-sensitivity quirk in an unrelated test).
