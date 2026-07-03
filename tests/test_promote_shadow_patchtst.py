@@ -862,3 +862,199 @@ def test_snapshot_backstop_calls_check_with_the_given_repo_and_real_python(monke
     called_python, called_repo = calls[0]
     assert called_python == sys.executable
     assert called_repo == repo
+
+
+# ===========================================================================
+# S12 B2 — the transformer panel's fwd-label-clipped axis must be judged from
+# its ACHIEVABLE FRONTIER (max(date) + lookahead trading days), never the raw
+# 28d calendar SLA (structurally unsatisfiable: the clip keeps max(date) ~86
+# calendar days behind the bar frontier even for a same-day rebuild, so the
+# old criterion returned RC_NOT_FRESH forever — renquant-orchestrator
+# doc/research/2026-07-02-s12-panel-refresh-diagnosis.md §4-B2, mirroring the
+# merged orchestrator #213 monitor's label_observation_cutoff semantics).
+# ===========================================================================
+
+class TestAddBusinessDays:
+    def test_zero_is_identity(self):
+        assert M._add_business_days(dt.date(2026, 4, 6), 0) == dt.date(2026, 4, 6)
+
+    def test_friday_plus_one_is_monday(self):
+        assert M._add_business_days(dt.date(2026, 6, 26), 1) == dt.date(2026, 6, 29)
+
+    def test_sixty_bdays_is_twelve_weeks(self):
+        # 60 Mon-Fri days from a Monday = 12 calendar weeks (84 days).
+        assert M._add_business_days(dt.date(2026, 4, 6), 60) == dt.date(2026, 6, 29)
+
+
+class TestValidatedLookaheadBdays:
+    def test_genuine_positive_int_accepted(self):
+        assert M._validated_lookahead_bdays(60) == 60
+        assert M._validated_lookahead_bdays(5) == 5
+
+    def test_bool_rejected(self):
+        # int(True) == 1 must never be read as a 1-day horizon.
+        assert M._validated_lookahead_bdays(True) is None
+
+    def test_non_int_rejected(self):
+        assert M._validated_lookahead_bdays("60") is None
+        assert M._validated_lookahead_bdays(60.0) is None
+        assert M._validated_lookahead_bdays(None) is None
+
+    def test_non_positive_and_absurd_rejected(self):
+        assert M._validated_lookahead_bdays(0) is None
+        assert M._validated_lookahead_bdays(-5) is None
+        # A self-declared horizon above ~1 trading year must not grant an
+        # unbounded freshness allowance (#225 round-3 concern).
+        assert M._validated_lookahead_bdays(M.LABEL_CLIP_LOOKAHEAD_BDAYS_MAX + 1) is None
+
+
+class TestLabelClippedSourceSLA:
+    """Pure source_sla_verdict behavior for a ``label_clipped`` source."""
+
+    _NOW = dt.date(2026, 7, 1)
+    _SRC = {"name": "transformer_panel", "axis": "fast", "sla_days": 28,
+            "label_clipped": True}
+
+    def test_panel_at_achievable_frontier_passes(self):
+        # S12 §2 ground truth: 2026-07-01 - 60 trading days = 2026-04-06. A panel
+        # a maximally fresh rebuild would produce (raw age 86 calendar days) MUST
+        # pass: age-beyond-frontier ~= 0.
+        v = M.source_sla_verdict(self._SRC, self._NOW, dt.date(2026, 4, 6),
+                                 lookahead_bdays=60)
+        assert v.on_sla
+        assert v.age_days == 86                      # raw age reported UNADJUSTED
+        assert v.age_beyond_frontier_days == 2       # Mon-Fri frontier 2026-06-29
+        assert "achievable frontier=2026-06-29" in v.detail
+
+    def test_raw_28d_calendar_sla_removed_regression(self):
+        # REGRESSION PIN (S12 B2): the pre-fix criterion (age = now - max(date)
+        # vs a raw 28d calendar SLA) is REMOVED for the label-clipped axis. Under
+        # the old code this exact input (raw age 86 >> 28) was OFF-SLA forever —
+        # the structural RC_NOT_FRESH. It must now be ON-SLA.
+        v = M.source_sla_verdict(self._SRC, self._NOW, dt.date(2026, 4, 6),
+                                 lookahead_bdays=60)
+        assert v.age_days > 28          # raw criterion would refuse...
+        assert v.on_sla                 # ...the horizon-adjusted criterion passes
+
+    def test_current_real_state_fails_with_age_beyond_frontier_stated(self):
+        # The REAL frozen panel (S12 §2): max(date)=2026-02-10 vs now 2026-07-01
+        # (141d raw; ~55d beyond the NYSE frontier, 57d beyond the conservative
+        # Mon-Fri frontier 2026-05-05). Must FAIL, stating the frontier excess —
+        # this is genuine staleness (builder never re-ran), not the structural lag.
+        v = M.source_sla_verdict(self._SRC, self._NOW, dt.date(2026, 2, 10),
+                                 lookahead_bdays=60)
+        assert not v.on_sla
+        assert v.age_days == 141
+        assert v.age_beyond_frontier_days == 57
+        assert "age-beyond-frontier=57d" in v.detail
+        assert "achievable frontier=2026-05-05" in v.detail
+
+    def test_boundary_exactly_at_widened_ceiling_passes(self):
+        # cutoff 2026-02-10 -> Mon-Fri frontier 2026-05-05; 28d beyond = boundary.
+        v = M.source_sla_verdict(self._SRC, dt.date(2026, 6, 2),
+                                 dt.date(2026, 2, 10), lookahead_bdays=60)
+        assert v.on_sla and v.age_beyond_frontier_days == 28
+
+    def test_boundary_one_day_past_widened_ceiling_fails(self):
+        v = M.source_sla_verdict(self._SRC, dt.date(2026, 6, 3),
+                                 dt.date(2026, 2, 10), lookahead_bdays=60)
+        assert not v.on_sla and v.age_beyond_frontier_days == 29
+
+    def test_fallback_60_when_lookahead_unstamped(self):
+        # No stamped lookahead -> honest documented fallback (60 trading days, S12).
+        v = M.source_sla_verdict(self._SRC, self._NOW, dt.date(2026, 4, 6))
+        assert v.on_sla
+        assert "fallback 60" in v.detail
+
+    def test_invalid_stamp_falls_back_not_trusted(self):
+        # bool/str/absurd stamps must never set the widening; fallback applies.
+        for bad in (True, "60", 0, -3, M.LABEL_CLIP_LOOKAHEAD_BDAYS_MAX + 1):
+            v = M.source_sla_verdict(self._SRC, self._NOW, dt.date(2026, 4, 6),
+                                     lookahead_bdays=bad)
+            assert v.on_sla and "fallback 60" in v.detail, bad
+
+    def test_impossible_implied_frontier_fails_closed(self):
+        # A "labeled" row only 8 calendar days old implies its fwd-60d window
+        # closed in the future — a look-ahead leak in the label build, never
+        # "maximally fresh". Must FAIL CLOSED with the future-dated reason.
+        v = M.source_sla_verdict(self._SRC, self._NOW, dt.date(2026, 6, 23),
+                                 lookahead_bdays=60)
+        assert not v.on_sla
+        assert M.FUTURE_DATED in v.detail
+
+    def test_raw_future_dated_cutoff_still_fails_closed(self):
+        # The pre-existing guard (cutoff after now) is untouched by the widening.
+        v = M.source_sla_verdict(self._SRC, self._NOW, dt.date(2026, 7, 5),
+                                 lookahead_bdays=60)
+        assert not v.on_sla and M.FUTURE_DATED in v.detail
+
+    def test_non_label_clipped_source_keeps_raw_sla(self):
+        # SCOPE PIN (S12 B2): every other source keeps the raw criterion — a
+        # 40d-old non-clipped fast source stays OFF-SLA even if a lookahead is
+        # passed (the widening only applies to a declared label_clipped axis).
+        src = {"name": "rawlabel", "axis": "fast", "sla_days": 28}
+        v = M.source_sla_verdict(src, self._NOW, dt.date(2026, 5, 22),
+                                 lookahead_bdays=60)
+        assert not v.on_sla and v.age_days == 40
+        assert v.age_beyond_frontier_days is None
+
+
+def test_default_sources_only_transformer_panel_is_label_clipped():
+    # Pin the DEFAULT_SOURCES scope: transformer_panel is the ONLY label-clipped
+    # source (its build dropna's the fwd_60d label); rawlabel keeps unlabeled
+    # rows (max(date) IS the bar frontier) and fundamentals has its own two-axis
+    # contract — both keep their existing SLAs untouched.
+    flags = {s["name"]: bool(s.get("label_clipped")) for s in M.DEFAULT_SOURCES}
+    assert flags == {"transformer_panel": True, "rawlabel": False,
+                     "fundamentals": False}
+
+
+# --- run_promote end-to-end: the structural RC_NOT_FRESH is gone -------------
+
+def test_promote_dryrun_ok_with_panel_at_achievable_frontier(tmp_path, monkeypatch):
+    # A perfectly refreshed label-clipped panel (max(date) = now - 60 trading
+    # days = raw age 86 calendar days) + an advancing candidate must promote
+    # (dry-run OK) — under the pre-S12-B2 raw 28d SLA this was RC_NOT_FRESH
+    # forever, even after a perfect refresh.
+    pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    _write_parquet(tmp_path / "panel.parquet",
+                   {"date": pd.to_datetime(["2026-04-03", "2026-04-06"])})
+    sources = [{"name": "transformer_panel", "path": "panel.parquet",
+                "axis": "fast", "sla_days": 28, "date_col": "date",
+                "label_clipped": True}]
+    args, cfg = _promote_setup(tmp_path, sources)
+    args.now = dt.date(2026, 7, 1)
+    monkeypatch.setattr(M, "load_and_smoke_infer", lambda *a, **k: {
+        "ok": True, "reason": "mock", "scores": [0.1, -0.2, 0.3],
+        "elapsed_s": 1.0, "peak_rss_mb": 100.0})
+    monkeypatch.setattr(M, "_parity_gate", lambda *a, **k: (True, "mock parity OK"))
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_OK, rep.verdict
+    assert rep.fresh and "DRY-RUN OK" in rep.verdict
+    panel_v = next(v for v in rep.source_verdicts if v.name == "transformer_panel")
+    assert panel_v.on_sla and panel_v.age_days == 86
+    assert panel_v.age_beyond_frontier_days == 2
+    # The receipt tier keys on the frontier-adjusted fast age (a raw ~86d age
+    # would stamp every receipt "breach" even on a perfect refresh).
+    assert rep.tier == "healthy"
+
+
+def test_promote_refuses_panel_beyond_frontier_and_states_it(tmp_path, monkeypatch):
+    # The CURRENT real state (S12 §2): panel frozen at 2026-02-10, ~57d beyond
+    # its Mon-Fri achievable frontier as of 2026-07-01 -> refuse with the
+    # frontier excess stated (genuine staleness, not the structural lag).
+    pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    _write_parquet(tmp_path / "panel.parquet",
+                   {"date": pd.to_datetime(["2026-02-09", "2026-02-10"])})
+    sources = [{"name": "transformer_panel", "path": "panel.parquet",
+                "axis": "fast", "sla_days": 28, "date_col": "date",
+                "label_clipped": True}]
+    args, cfg = _promote_setup(tmp_path, sources)
+    args.now = dt.date(2026, 7, 1)
+    before = cfg.read_text()
+    rep = M.run_promote(args)
+    assert rep.rc == M.RC_NOT_FRESH and not rep.fresh and rep.promoted_pin is None
+    assert cfg.read_text() == before  # pin unchanged
+    assert "age-beyond-frontier=57d" in rep.verdict
