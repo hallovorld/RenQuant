@@ -62,6 +62,35 @@ REPO = Path(os.environ["RENQUANT_REPO_ROOT"]).resolve() \
 # --- #210 §2/§3 SLA defaults -------------------------------------------------
 FAST_CEILING_DAYS = 28          # #210 fast-axis (price/retrain-data) ceiling
 
+# --- fwd-label-clipped fast axis (S12 diagnosis B2) ---------------------------
+# The transformer panel's ``date`` axis is LABEL-CLIPPED: its build drops every
+# row whose fwd_60d label is not yet observable, so ``max(date)`` is
+# STRUCTURALLY ~60 TRADING days (~86 calendar days) behind the bar frontier —
+# even for a maximally fresh same-day rebuild. Judging that axis against the
+# raw 28d calendar SLA (``age = now - max(date)``) is therefore unsatisfiable
+# BY CONSTRUCTION: the gate returned RC_NOT_FRESH forever, even after a perfect
+# refresh (renquant-orchestrator ``doc/research/2026-07-02-s12-panel-refresh-
+# diagnosis.md`` §4-B2 — the #26 fund-freshness failure PATTERN recurring
+# inside this gate).
+#
+# Fix: a source declaring ``label_clipped: true`` is judged from its ACHIEVABLE
+# FRONTIER — ``max(date) + lookahead_days`` TRADING days, the bar frontier the
+# label clip implies — mirroring the merged orchestrator #213 monitor's
+# ``label_observation_cutoff`` semantics (its expected-lag threshold WIDENING;
+# ``age_days`` itself is reported raw, never adjusted). The lookahead is read
+# from the CANDIDATE artifact's own stamped ``lookahead_days`` (#223 amendment
+# A1: each model family declares its label horizon; never assume one constant
+# for every recipe); when the stamp is missing/invalid the HONEST fallback is
+# the constant below — the documented fwd_60d convention of the one recipe this
+# gate serves today (S12 §2: 2026-02-10 + 60 trading days = the measured
+# 2026-05-07 bar frontier). Once artifact-side verified recipe ids exist
+# (umbrella #426 pattern), replace the fallback with a per-recipe map.
+LABEL_CLIP_LOOKAHEAD_BDAYS_FALLBACK = 60
+# A stamped horizon above ~1 trading year cannot correspond to any recipe this
+# gate serves and would grant a self-declared, unbounded freshness allowance
+# (the #225 round-3 concern) -> treated as invalid (falls back to 60).
+LABEL_CLIP_LOOKAHEAD_BDAYS_MAX = 250
+
 # --- fundamentals TWO-AXIS SLA (P-FUND-FRESHNESS contract) --------------------
 # The quarterly fundamentals source is NOT a generic max-date slow feed: a daily
 # forward-filled feed can show yesterday's ``date`` while still MISSING the latest
@@ -102,10 +131,16 @@ DEFAULT_FISCAL_PERIOD_COLS = ["fiscal_period_end", "period_end", "report_date",
 # Recipe-required sources the served shadow model's data cutoff is capped by (RFC §3.1).
 # ``date_col`` present -> read the max of that column as the data cutoff (a declared
 # data-cutoff source: fail CLOSED on any read failure, NEVER fall back to file mtime);
-# ``kind=fundamentals`` -> the two-axis P-FUND-FRESHNESS check (above).
+# ``label_clipped`` -> the axis carries the fwd-label structural lag and is judged from
+# its achievable frontier (S12 B2, see the comment block above); ``kind=fundamentals``
+# -> the two-axis P-FUND-FRESHNESS check (above).
 DEFAULT_SOURCES: list[dict] = [
+    # transformer_panel is the ONLY label-clipped source: its rows are dropna'd on the
+    # fwd_60d label. rawlabel keeps unlabeled rows (its max(date) IS the bar frontier)
+    # and stays on the raw 28d SLA — as does every other source (S12 B2 scope).
     {"name": "transformer_panel", "path": "data/transformer_v4_wl200_clean.parquet",
-     "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date"},
+     "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date",
+     "label_clipped": True},
     {"name": "rawlabel", "path": "data/alpha158_291_fundamental_dataset_rawlabel.parquet",
      "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date"},
     {"name": "fundamentals", "path": "data/sec_fundamentals_daily.parquet",
@@ -208,15 +243,64 @@ class SourceVerdict:
     on_sla: bool
     detail: str
     coverage: dict | None = None  # per-entity fundamentals coverage distribution (if any)
+    # S12 B2: for a ``label_clipped`` source, the age MEASURED FROM THE ACHIEVABLE
+    # FRONTIER (max(date) + lookahead trading days) — the number the SLA actually
+    # judges. ``age_days`` above stays the RAW ``now - max(date)`` age (#213
+    # discipline: the reported age is never adjusted, only the criterion is).
+    # None for sources without an inherent label-horizon lag.
+    age_beyond_frontier_days: int | None = None
+
+
+def _add_business_days(base: dt.date, n: int) -> dt.date:
+    """Add ``n`` Mon-Fri business days to ``base``. Weekday semantics mirror the
+    orchestrator #213 monitor's ``_subtract_business_days`` (no holiday calendar).
+    Holidays only push the TRUE trading-day frontier LATER than this Mon-Fri
+    frontier, so the computed achievable frontier is a conservative LOWER bound:
+    a genuinely fresh label-clipped panel always reads age-beyond-frontier >= 0,
+    and the widening errs by at most the few holiday days (never certifies a
+    stale panel it shouldn't)."""
+    current = base
+    remaining = n
+    while remaining > 0:
+        current += dt.timedelta(days=1)
+        if current.weekday() < 5:
+            remaining -= 1
+    return current
+
+
+def _validated_lookahead_bdays(value) -> int | None:
+    """A usable stamped ``lookahead_days``: a genuine positive int (never a bool
+    — ``int(True) == 1`` would silently pass — a float, or a numeric string) and
+    within ``LABEL_CLIP_LOOKAHEAD_BDAYS_MAX`` (an absurdly large stamp must not
+    grant a self-declared unbounded freshness allowance, #225 round-3 concern).
+    ``None`` -> the caller uses the documented S12 fallback constant."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 0 < value <= LABEL_CLIP_LOOKAHEAD_BDAYS_MAX:
+        return None
+    return value
 
 
 def source_sla_verdict(source: dict, now: dt.date, cutoff: dt.date | None,
-                       *, missing_ok: bool = False) -> SourceVerdict:
+                       *, missing_ok: bool = False,
+                       lookahead_bdays: int | None = None) -> SourceVerdict:
     """Judge one recipe source against its source-specific SLA (#210 §2/§3).
 
     ``cutoff`` is the source's data cutoff (max date column, or file mtime),
     resolved by the caller (I/O is kept out of this pure function so it is
     testable). A missing cutoff is OFF-SLA (fail-closed) unless ``missing_ok``.
+
+    S12 B2: a source declaring ``label_clipped`` has a fwd-label-clipped date
+    axis whose ``max(date)`` structurally trails the bar frontier by the label
+    horizon. Its SLA is judged from the ACHIEVABLE FRONTIER — ``cutoff +
+    lookahead trading days`` — i.e. the ceiling is WIDENED by the expected lag
+    (mirroring the orchestrator #213 monitor's ``label_observation_cutoff``
+    semantics); the raw 28d-calendar criterion is REMOVED for that axis (it was
+    unsatisfiable by construction: structural lag ~86 calendar days > 28).
+    ``lookahead_bdays`` is the candidate artifact's stamped ``lookahead_days``
+    (#223 A1); missing/invalid falls back to the documented
+    ``LABEL_CLIP_LOOKAHEAD_BDAYS_FALLBACK`` (S12). Non-label-clipped sources are
+    judged on the raw age exactly as before.
     """
     sla_days = int(source["sla_days"])
     if cutoff is None:
@@ -233,6 +317,35 @@ def source_sla_verdict(source: dict, now: dt.date, cutoff: dt.date | None,
                              detail=f"cutoff={cutoff.isoformat()} is FUTURE-DATED "
                                     f"({-age}d after now={now.isoformat()}) — impossible / "
                                     f"look-ahead value, fail-closed ({FUTURE_DATED})")
+    if source.get("label_clipped"):
+        stamped = _validated_lookahead_bdays(lookahead_bdays)
+        horizon = stamped if stamped is not None else LABEL_CLIP_LOOKAHEAD_BDAYS_FALLBACK
+        provenance = "stamped lookahead_days" if stamped is not None \
+            else f"fallback {LABEL_CLIP_LOOKAHEAD_BDAYS_FALLBACK} (S12; no valid stamp)"
+        frontier = _add_business_days(cutoff, horizon)
+        beyond = (now - frontier).days
+        if beyond < -FUTURE_DATE_TOLERANCE_DAYS:
+            # Impossible: a label observed BEFORE its forward window closed. The
+            # max labeled row can never postdate ``now - horizon`` (the label
+            # needs the bar at cutoff+horizon to exist), so an in-the-future
+            # implied frontier is a look-ahead-leak signal in the label build —
+            # FAIL CLOSED, never read it as maximally fresh.
+            return SourceVerdict(
+                source["name"], source["axis"], sla_days, cutoff, age, False,
+                detail=f"cutoff={cutoff.isoformat()} implies bar frontier "
+                       f"{frontier.isoformat()} ({horizon} trading days ahead, "
+                       f"{provenance}) which is {-beyond}d AFTER now={now.isoformat()} "
+                       f"— impossible for a fwd-label-clipped axis / look-ahead "
+                       f"value, fail-closed ({FUTURE_DATED})",
+                age_beyond_frontier_days=beyond)
+        on_sla = beyond <= sla_days
+        return SourceVerdict(
+            source["name"], source["axis"], sla_days, cutoff, age, on_sla,
+            detail=f"cutoff={cutoff.isoformat()} raw-age={age}d is fwd-label-clipped: "
+                   f"achievable frontier={frontier.isoformat()} (cutoff + {horizon} "
+                   f"trading days, {provenance}); age-beyond-frontier={beyond}d "
+                   f"sla={sla_days}d {'OK' if on_sla else 'OFF-SLA'}",
+            age_beyond_frontier_days=beyond)
     on_sla = age <= sla_days
     return SourceVerdict(source["name"], source["axis"], sla_days, cutoff, age, on_sla,
                          detail=f"cutoff={cutoff.isoformat()} age={age}d sla={sla_days}d "
@@ -1003,12 +1116,24 @@ def run_promote(args) -> PromoteReport:
             rep.source_verdicts.append(resolve_fundamentals_verdict(repo, src, now))
         else:
             cutoff = resolve_data_cutoff(repo, src)
-            rep.source_verdicts.append(source_sla_verdict(src, now, cutoff))
+            # S12 B2: a label-clipped source is judged from its achievable
+            # frontier, widened by the CANDIDATE's own stamped label horizon
+            # (#223 A1) — the candidate is the model the panel's clip feeds.
+            rep.source_verdicts.append(source_sla_verdict(
+                src, now, cutoff,
+                lookahead_bdays=(cand.get("lookahead_days")
+                                 if src.get("label_clipped") else None)))
     all_on_sla = all(v.on_sla for v in rep.source_verdicts)
     rep.advance = cutoffs_advance(served_axes, cand)
 
-    fast_ages = [v.age_days for v in rep.source_verdicts
-                 if v.axis == "fast" and v.age_days is not None]
+    # Fast-axis age for the reported tier: a label-clipped source contributes its
+    # age-beyond-frontier (S12 B2) — its raw age is structurally >= ~86d and would
+    # stamp every receipt "breach" even after a perfect refresh.
+    fast_ages = [(v.age_beyond_frontier_days
+                  if v.age_beyond_frontier_days is not None else v.age_days)
+                 for v in rep.source_verdicts
+                 if v.axis == "fast"
+                 and (v.age_beyond_frontier_days is not None or v.age_days is not None)]
     fast_age = max(fast_ages) if fast_ages else None
 
     rep.fresh = all_on_sla and rep.advance.advanced
@@ -1220,7 +1345,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--stamp-script", default=DEFAULT_STAMP_SCRIPT)
     ap.add_argument("--sources-json", default=None,
                     help="Override recipe-required sources (JSON list of "
-                         "{name,path,axis,sla_days,date_col}).")
+                         "{name,path,axis,sla_days,date_col[,label_clipped]}; "
+                         "label_clipped=true judges the axis from its achievable "
+                         "frontier = max(date)+lookahead trading days, S12 B2).")
     ap.add_argument("--fast-ceiling-days", type=int, default=FAST_CEILING_DAYS)
     ap.add_argument("--sanity-floor", type=float, default=0.0,
                     help="Minimum WF/holdout quality floor (§3.4.5). Default: %(default)s")
