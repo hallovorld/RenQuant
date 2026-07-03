@@ -243,6 +243,9 @@ class LeanAdapter:
         sleeve_ticker = benchmark_sleeve_ticker(config)
         if is_benchmark_sleeve_enabled(config) and sleeve_ticker:
             all_tickers.append(sleeve_ticker)
+        # Parking-sleeve legs (st104 #39 follow-up) — [] unless sleeve.enabled.
+        from adapters.sleeve_prices import parking_sleeve_price_tickers  # noqa: PLC0415
+        all_tickers.extend(parking_sleeve_price_tickers(config))
         # Remove duplicates, preserve order
         seen: set[str] = set()
         unique_tickers: list[str] = []

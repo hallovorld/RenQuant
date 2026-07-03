@@ -33,6 +33,7 @@ from kernel.walk_forward import (
 from kernel.execution.slippage import SlippageConfig, slip_fill_price
 from kernel.preflight    import run_preflight
 from adapters.lean       import LeanAdapter
+from adapters.sleeve_prices import parking_sleeve_price_tickers
 
 CONFIG = load_config()
 
@@ -167,6 +168,22 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 sleeve_ticker,
                 Resolution.Daily,
             ).Symbol
+
+        # Parking-sleeve legs (st104 #39 follow-up): subscribe
+        # sleeve.spy_symbol / sleeve.sgov_symbol only when sleeve.enabled —
+        # same conditional-subscription pattern as the benchmark sleeve
+        # above. Returns [] when the flag is off/absent (the shipped
+        # default), so this block is byte-inert in production.
+        for parking_ticker in parking_sleeve_price_tickers(CONFIG):
+            if (
+                parking_ticker != self._benchmark
+                and parking_ticker not in self.symbols
+                and parking_ticker not in self._sector_etf_symbols
+            ):
+                self._sector_etf_symbols[parking_ticker] = self.AddEquity(
+                    parking_ticker,
+                    Resolution.Daily,
+                ).Symbol
 
         # ── Per-run state ────────────────────────────────────────────────────
         from kernel.exits import HoldingState  # local import keeps global scope clean

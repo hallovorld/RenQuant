@@ -557,6 +557,11 @@ class RunnerAdapter:
         extra_symbols = []
         if is_benchmark_sleeve_enabled(config) and sleeve_ticker:
             extra_symbols.append(sleeve_ticker)
+        # Parking-sleeve legs (st104 #39 follow-up): fetch daily OHLCV for
+        # sleeve.spy_symbol / sleeve.sgov_symbol only when sleeve.enabled —
+        # same conditional-coverage pattern as the benchmark sleeve above.
+        from adapters.sleeve_prices import parking_sleeve_price_tickers  # noqa: PLC0415
+        extra_symbols.extend(parking_sleeve_price_tickers(config))
         all_symbols = list(dict.fromkeys(
             watchlist
             + [benchmark]
