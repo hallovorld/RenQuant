@@ -10,11 +10,11 @@
   "subrepos": [
     {
       "name": "renquant-common",
-      "role": "shared primitives + contracts + shared TRAINING/EVAL utilities (Task/Job/Pipeline, purged_cv, walk_forward_splits, hmm_regime_labels, config_consistency) \u2014 imported by the model factory & pipeline",
+      "role": "shared primitives + contracts + shared TRAINING/EVAL utilities (Task/Job/Pipeline, purged_cv, walk_forward_splits, hmm_regime_labels, config_consistency) — imported by the model factory & pipeline",
       "local_path": "/Users/renhao/git/github/renquant-common",
       "remote": "https://github.com/hallovorld/renquant-common",
       "branch": "main",
-      "commit": "1d10aaf7ece8630bd45c034114dbd8328bd388d5",
+      "commit": "19cba70faec8a3479c87556351ff6d429613f0b0",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -24,17 +24,17 @@
       "local_path": "/Users/renhao/git/github/renquant-strategy-104",
       "remote": "https://github.com/hallovorld/renquant-strategy-104",
       "branch": "main",
-      "commit": "1fe312b4ab063d1157b00770883b10348e158e6c",
+      "commit": "dd337d45f3f77da9385a5fa3564794e253c17ceb",
       "test_command": "make test",
       "status": "bootstrapped"
     },
     {
       "name": "renquant-model",
-      "role": "MODEL FACTORY \u2014 ingests base-data + common code, runs research/training (GBDT + PatchTST families), and produces models published to renquant-artifacts",
+      "role": "MODEL FACTORY — ingests base-data + common code, runs research/training (GBDT + PatchTST families), and produces models published to renquant-artifacts",
       "local_path": "/Users/renhao/git/github/renquant-model",
       "remote": "https://github.com/hallovorld/renquant-model",
       "branch": "main",
-      "commit": "19919ec9350fdcb6931dfb2de4a10c3c90d1393a",
+      "commit": "775804dbb0bc92397ba9a37c442f099a5d22d6b0",
       "test_command": "make test",
       "status": "active"
     },
@@ -44,7 +44,7 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "fa2c47de55284c5ab3406d1b37d79bb9b25e1002",
+      "commit": "df7bc073ba9cd54291e0b85be5c6280e620c69b1",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -54,7 +54,7 @@
       "local_path": "/Users/renhao/git/github/renquant-execution",
       "remote": "https://github.com/hallovorld/renquant-execution",
       "branch": "main",
-      "commit": "f7c5cde8112ed6ddabd5adbd80212ed778e83775",
+      "commit": "bad041558355ffb4eac438ce37008dced02ab8ac",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -64,7 +64,7 @@
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
-      "commit": "50149e6329b832d9080166a081422bd23cd787d2",
+      "commit": "34fd4edd4fcec6a8f41dae45c8aee43e877ed573",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -74,17 +74,17 @@
       "local_path": "/Users/renhao/git/github/renquant-base-data",
       "remote": "https://github.com/hallovorld/renquant-base-data",
       "branch": "main",
-      "commit": "0bbb53498a44788b6d5848483a6397934952779c",
+      "commit": "bb69f5e2de49c1b02b364b54896e8bac191a0025",
       "test_command": "make test",
       "status": "active"
     },
     {
       "name": "renquant-artifacts",
-      "role": "artifact registry \u2014 RECEIVES trained models from the factory; consumed by sim/backtest/strategy-104",
+      "role": "artifact registry — RECEIVES trained models from the factory; consumed by sim/backtest/strategy-104",
       "local_path": "/Users/renhao/git/github/renquant-artifacts",
       "remote": "https://github.com/hallovorld/renquant-artifacts",
       "branch": "main",
-      "commit": "538b5c70f893910727279127c1b86a97c4838279",
+      "commit": "c09d66f8dd09249b7bc6eb46296cfb94b8d1d51f",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -94,7 +94,7 @@
       "local_path": "/Users/renhao/git/github/renquant-orchestrator",
       "remote": "https://github.com/hallovorld/renquant-orchestrator",
       "branch": "main",
-      "commit": "65402735cfb6f27bf492d16336a00ce8c1f271c9",
+      "commit": "4b8af94eb1cf734a7814be3a7cb58714988f53f9",
       "test_command": "make test",
       "status": "active"
     }
