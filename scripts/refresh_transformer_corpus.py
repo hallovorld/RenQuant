@@ -44,10 +44,17 @@ a silent skip is never allowed to hand the builder / retrain a degraded corpus:
     ``os.replace`` (atomic rename on one filesystem) + fsync. The served corpus is
     never moved out of the way, so an interrupted swap can never leave it missing.
 
-The three tasks (refresh → freshness guard → rebuild + atomic swap) are ordered so
-the guard runs on freshly-fetched bars and the rebuild only runs behind a green
-guard. After this runs, the existing ``weekly_retrain_patchtst.sh`` WF build + the
-shadow promote (PR #419) train on the fresh corpus.
+The four tasks (refresh → freshness guard → corpus rebuild + atomic swap →
+RAWLABEL-sidecar rebuild + atomic swap) are ordered so the guard runs on
+freshly-fetched bars and the rebuilds only run behind a green guard. The
+rawlabel sidecar (``alpha158_291_fundamental_dataset_rawlabel.parquet``, the
+un-z-scored forward-label file the calibrator fits read — S12 rawlabel gap:
+a one-off research build frozen at 2026-02-11, promote-refused at 142d vs the
+raw 28d fast-axis SLA) is rebuilt from the SAME prod fund panel + fresh OHLCV
+with the committed ``renquant_base_data.rawlabel_sidecar`` recipe, so ONE
+weekly run refreshes both fund-panel-derived training products. After this
+runs, the existing ``weekly_retrain_patchtst.sh`` WF build + the shadow
+promote (PR #419) train on the fresh corpus.
 
 Non-destructive: uses ONLY the incremental append-merge OHLCV primitive; never
 overwrites/deletes ``data/ohlcv/``. The model architecture and the fwd_60d label
@@ -132,6 +139,17 @@ DEFAULT_MIN_TICKER_COVERAGE_RATIO = 0.90
 DEFAULT_BUILDER_RECIPE = (
     "renquant_base_data.transformer_corpus:prod-fund-panel/watchlist-subset/"
     "label-dropna/fwd_{5,20,60}d"
+)
+# RAWLABEL sidecar (S12 rawlabel gap; B1 pattern): the UN-standardized
+# forward-label file the calibrator fits read. One-off research build with no
+# refresh mechanism -> froze at 2026-02-11 -> the promote gate's raw 28d
+# fast-axis SLA refused ("rawlabel: cutoff=2026-02-11 age=142d OFF-SLA"). It is
+# refreshed here, in the SAME weekly run as the corpus, with the same
+# staged -> gated -> atomic-swap (keep-prior-on-reject) discipline.
+DEFAULT_RAWLABEL_RELPATH = "alpha158_291_fundamental_dataset_rawlabel.parquet"
+DEFAULT_RAWLABEL_BUILDER_RECIPE = (
+    "renquant_base_data.rawlabel_sidecar:prod-fund-panel/full-universe/"
+    "no-label-dropna/raw-fwd60d-excess-vs-SPY/bar-frontier-axis"
 )
 DEFAULT_NTFY_TOPIC = "renquant"
 
@@ -233,6 +251,20 @@ class CorpusRefreshContext:
     # False → warn (ntfy) + keep the prior corpus + proceed.
     swap_fail_on_regression: bool = True
 
+    # ── RAWLABEL sidecar rebuild (S12 rawlabel gap; same swap discipline) ────
+    # The served raw forward-label sidecar the calibrator fits read. Rebuilt
+    # from the SAME prod fund panel + the freshly-refreshed OHLCV bars, staged
+    # and swap-gated exactly like the corpus (shared knobs above:
+    # require_date_advance / min_row_ratio / min_ticker_coverage_ratio /
+    # validate_schema / swap_fail_on_regression).
+    rawlabel_path: Optional[Path] = None
+    rawlabel_staging_path: Optional[Path] = None
+    rebuild_rawlabel: bool = True
+    rawlabel_builder_recipe: str = DEFAULT_RAWLABEL_BUILDER_RECIPE
+    # Injected sidecar builder (staging_path) -> None. None → the committed
+    # base-data recipe (renquant_base_data.rawlabel_sidecar), fail-closed.
+    rawlabel_builder_fn: "Callable[[Path], None] | None" = None
+
     ntfy_topic: str = DEFAULT_NTFY_TOPIC
     dry_run: bool = False
     quiet: bool = False
@@ -242,6 +274,7 @@ class CorpusRefreshContext:
     ohlcv_refresh_summary: dict = field(default_factory=dict)
     freshness_report: dict = field(default_factory=dict)
     swap_report: dict = field(default_factory=dict)
+    rawlabel_swap_report: dict = field(default_factory=dict)
     universe_provenance: dict = field(default_factory=dict)
     _universe_cache: Optional[list] = field(default=None, repr=False)
 
@@ -289,6 +322,19 @@ class CorpusRefreshContext:
         if self.fund_panel_path is not None:
             return self.fund_panel_path
         return self.data_dir / DEFAULT_FUND_PANEL_FILENAME
+
+    @property
+    def resolved_rawlabel_path(self) -> Path:
+        if self.rawlabel_path is not None:
+            return self.rawlabel_path
+        return self.data_dir / DEFAULT_RAWLABEL_RELPATH
+
+    @property
+    def resolved_rawlabel_staging_path(self) -> Path:
+        if self.rawlabel_staging_path is not None:
+            return self.rawlabel_staging_path
+        r = self.resolved_rawlabel_path
+        return r.with_name(r.name + ".staging")
 
     @property
     def resolved_strategy_config_path(self) -> Path:
@@ -641,6 +687,48 @@ def _default_build_corpus(ctx: CorpusRefreshContext, staging_path: Path, univers
     )
     report = build_transformer_corpus(ctx.resolved_fund_panel_path, watchlist, staging_path)
     log.info("staged corpus build report: %s", report)
+
+
+def _default_build_rawlabel(ctx: CorpusRefreshContext, staging_path: Path) -> None:
+    """Rebuild the RAWLABEL sidecar to ``staging_path`` with the committed
+    base-data recipe (S12 rawlabel gap, B1 pattern).
+
+    The served ``alpha158_291_fundamental_dataset_rawlabel.parquet`` — the raw
+    UN-standardized forward-label file both calibrator fits read — was a
+    one-off research build (``scripts/build_raw_fwd60d_label.py``) with no
+    refresh mechanism, so its ``max(date)`` froze at 2026-02-11 and the shadow
+    promote's raw 28d fast-axis SLA refused. The committed recipe
+    (``renquant_base_data.rawlabel_sidecar``) derives the sidecar from the
+    SAME daily-refreshed prod fund panel plus the OHLCV bars this pipeline
+    just refreshed: full universe, NO label dropna, exact served 176-column
+    schema, ``fwd_60d_excess_raw`` recomputed point-in-time vs the benchmark,
+    and the (ticker, date) axis extended to the bar frontier (the promote
+    gate's documented rawlabel semantics).
+
+    Resolves lazily via the subrepo PYTHONPATH the retrain wrapper sets up
+    (same seam as ``_default_fetch_fn`` / ``_default_build_corpus``) and FAILS
+    CLOSED when unresolvable — never a silent fallback to the dead one-off
+    build.
+    """
+    try:
+        from renquant_base_data.rawlabel_sidecar import (  # noqa: PLC0415
+            build_rawlabel_sidecar,
+        )
+    except ImportError as exc:
+        raise CorpusRefreshError(
+            "rawlabel-sidecar recipe unresolvable (renquant_base_data.rawlabel_sidecar): "
+            f"{exc}; the base-data pin predates the committed recipe or the subrepo "
+            "PYTHONPATH is not set — refusing to leave the served rawlabel frozen "
+            "silently."
+        ) from exc
+    log.info(
+        "rebuilding rawlabel sidecar to staging [%s]: fund_panel=%s ohlcv_dir=%s",
+        ctx.rawlabel_builder_recipe,
+        ctx.resolved_fund_panel_path,
+        ctx.ohlcv_dir,
+    )
+    report = build_rawlabel_sidecar(ctx.resolved_fund_panel_path, ctx.ohlcv_dir, staging_path)
+    log.info("staged rawlabel sidecar build report: %s", report)
 
 
 # ─────────────────────────── atomic swap helpers ───────────────────────────
@@ -1051,16 +1139,125 @@ class RebuildTransformerCorpusTask:
             raise CorpusRefreshError(body)
 
 
+class RebuildRawLabelSidecarTask:
+    """Rebuild the RAWLABEL sidecar to a STAGING path, then swap it in only if it
+    strictly advances + passes the SAME schema/row/date/coverage sanity gate as
+    the corpus (shared knobs; shared ``_sanity_reasons``), with the SAME atomic,
+    non-destructive ``.bak``-copy + ``os.replace`` swap — a regressed/divergent
+    staged sidecar NEVER clobbers the served file (keep-prior-on-reject).
+
+    Runs AFTER the corpus rebuild in the same weekly run: both products derive
+    from the same prod fund panel + the freshly-refreshed OHLCV, so one weekly
+    run refreshes both and the promote gate's ``rawlabel`` fast-axis source
+    tracks the bar frontier instead of freezing (S12 rawlabel gap).
+    """
+
+    def run(self, ctx: CorpusRefreshContext) -> bool:
+        sidecar = ctx.resolved_rawlabel_path
+        staging = ctx.resolved_rawlabel_staging_path
+        report = {
+            "rawlabel_path": str(sidecar),
+            "staging_path": str(staging),
+            "builder_recipe": ctx.rawlabel_builder_recipe,
+            "swapped": False,
+        }
+        ctx.rawlabel_swap_report = report
+        if not ctx.rebuild_rawlabel:
+            log.info("rawlabel rebuild disabled (rebuild_rawlabel=False); skipping")
+            return True
+        if ctx.dry_run:
+            log.info("[dry-run] would rebuild rawlabel sidecar to %s and sanity-gate swap", staging)
+            return True
+
+        prior_rows, prior_date = _resolve_corpus_stats(ctx, sidecar)
+        prior_schema = _resolve_corpus_schema(ctx, sidecar)
+        report["prior_rows"] = prior_rows
+        report["prior_max_date"] = prior_date.isoformat() if prior_date else None
+        report["prior_n_tickers"] = prior_schema.get("n_tickers")
+
+        # Build to staging (never touches the served sidecar).
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        if staging.exists():
+            staging.unlink()
+        builder = ctx.rawlabel_builder_fn or (lambda sp: _default_build_rawlabel(ctx, sp))
+        builder(staging)
+
+        staged_rows, staged_date = _resolve_corpus_stats(ctx, staging)
+        staged_schema = _resolve_corpus_schema(ctx, staging)
+        report["staged_rows"] = staged_rows
+        report["staged_max_date"] = staged_date.isoformat() if staged_date else None
+        report["staged_n_tickers"] = staged_schema.get("n_tickers")
+
+        reasons = RebuildTransformerCorpusTask._sanity_reasons(
+            ctx, prior_rows, prior_date, prior_schema, staged_rows, staged_date, staged_schema
+        )
+        report["sanity_reasons"] = reasons
+        if reasons:
+            self._reject(ctx, staging, report, reasons)
+            return True
+
+        # Passed the gate → atomic, non-destructive swap.
+        try:
+            bak = _atomic_replace_corpus(staging, sidecar)
+        except Exception as exc:  # served sidecar preserved (never moved away)
+            report["swap_error"] = str(exc)
+            bak_path = sidecar.with_name(sidecar.name + ".bak")
+            if not sidecar.exists() and bak_path.exists():
+                shutil.copy2(str(bak_path), str(sidecar))
+            _fail_closed(
+                ctx,
+                "RenQuant RAWLABEL-SWAP FAILED",
+                (
+                    f"atomic rawlabel swap failed ({exc}); served sidecar left intact "
+                    f"({sidecar}) — retrain aborted. Staged build kept at {staging} for triage."
+                ),
+            )
+        report["backup_path"] = bak
+        report["swapped"] = True
+        log.info(
+            "rawlabel sidecar swapped (atomic): %s rows=%d max_date=%s tickers=%s "
+            "(prior rows=%d max_date=%s tickers=%s, backup=%s)",
+            sidecar,
+            staged_rows,
+            report["staged_max_date"],
+            report["staged_n_tickers"],
+            prior_rows,
+            report["prior_max_date"],
+            report["prior_n_tickers"],
+            bak,
+        )
+        return True
+
+    def _reject(self, ctx, staging, report, reasons) -> None:
+        # Leave the served sidecar untouched; drop the staged build.
+        if staging.exists():
+            staging.unlink()
+        title = "RenQuant RAWLABEL-REBUILD REJECTED"
+        body = (
+            "rebuilt rawlabel sidecar rejected (kept prior sidecar): "
+            + "; ".join(reasons)
+            + f". {'FAILING retrain' if ctx.swap_fail_on_regression else 'proceeding with prior sidecar'}."
+        )
+        if not ctx.quiet:
+            post_ntfy(title, body, ctx.ntfy_topic)
+        log.error("rawlabel rebuild REJECTED: %s", body)
+        if ctx.swap_fail_on_regression:
+            raise CorpusRefreshError(body)
+
+
 # ─────────────────────────── pipeline ──────────────────────────────────────
 
 
 def build_pipeline() -> list:
     """Ordered tasks: refresh full-universe OHLCV, guard against a partial/global
-    freeze, then rebuild + sanity-gated atomic non-destructive swap."""
+    freeze, then rebuild + sanity-gated atomic non-destructive swap of BOTH
+    fund-panel-derived training products (the corpus, then the rawlabel sidecar)
+    — one weekly run refreshes both."""
     return [
         RefreshTransformerUniverseOhlcvTask(),
         TransformerUniverseFreshnessGuardTask(),
         RebuildTransformerCorpusTask(),
+        RebuildRawLabelSidecarTask(),
     ]
 
 
@@ -1123,6 +1320,22 @@ def parse_args(argv: "list | None" = None) -> argparse.Namespace:
     p.add_argument("--refresh-ohlcv", default=True, action=argparse.BooleanOptionalAction)
     p.add_argument("--ohlcv-timeout-sec", type=float, default=DEFAULT_OHLCV_TIMEOUT_SEC)
     p.add_argument("--rebuild-corpus", default=True, action=argparse.BooleanOptionalAction)
+    p.add_argument(
+        "--rawlabel-path",
+        type=Path,
+        default=None,
+        help=(
+            "Served rawlabel sidecar the calibrator fits read. Default: "
+            f"<repo>/data/{DEFAULT_RAWLABEL_RELPATH}."
+        ),
+    )
+    p.add_argument("--rawlabel-staging-path", type=Path, default=None)
+    p.add_argument(
+        "--rebuild-rawlabel",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Rebuild + swap-gate the rawlabel sidecar in the same run (default).",
+    )
     p.add_argument(
         "--freshness-stale-after-days",
         type=int,
@@ -1204,6 +1417,9 @@ def main(argv: "list | None" = None) -> int:
         refresh_ohlcv=args.refresh_ohlcv,
         ohlcv_timeout_sec=args.ohlcv_timeout_sec,
         rebuild_corpus=args.rebuild_corpus,
+        rawlabel_path=args.rawlabel_path,
+        rawlabel_staging_path=args.rawlabel_staging_path,
+        rebuild_rawlabel=args.rebuild_rawlabel,
         freshness_stale_after_days=args.freshness_stale_after_days,
         freshness_max_stale_fraction=args.freshness_max_stale_fraction,
         freshness_as_of=args.freshness_as_of,

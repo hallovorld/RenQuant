@@ -63,8 +63,11 @@ fi
 # (tier_A+tier_B of the transformer inventory) froze the corpus at 2026-02-10.
 # refresh_transformer_corpus.py refreshes the FULL transformer universe's OHLCV
 # (incremental append-merge, non-destructive), fires a loud ntfy + fail-closes on
-# a partial freeze, then rebuilds the corpus to staging and swaps it in only if it
-# advances + passes a row/date sanity vs the prior (keeping a .bak). set -e below
+# a partial freeze, then rebuilds BOTH fund-panel-derived training products — the
+# corpus AND the rawlabel calibration sidecar
+# (alpha158_291_fundamental_dataset_rawlabel.parquet; S12 rawlabel gap) — each to
+# staging, swapping in only if it advances + passes a schema/row/date/coverage
+# sanity vs the prior (keeping a .bak). set -e below
 # then aborts the retrain if it fail-closes; RQ_PATCHTST_REFRESH_CORPUS=0 skips,
 # RQ_PATCHTST_REFRESH_ARGS lets ops relax to warn-and-proceed
 # (--no-freshness-fail-on-stale --no-swap-fail-on-regression).
