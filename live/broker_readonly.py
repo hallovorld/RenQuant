@@ -89,8 +89,26 @@ class ReadOnlyBrokerWrapper(BaseBroker):
     def get_open_orders(self) -> set[str]:
         return self._u.get_open_orders()
 
-    def supports_broker_side_stops(self) -> bool:
-        return self._u.supports_broker_side_stops()
+    def supports_broker_side_stops(
+        self, symbol: str | None = None, qty: float | None = None,
+    ) -> bool:
+        # S-FRAC stage 0 (§2.2.2): pass the qty-aware probe through so a
+        # readonly/shadow run answers exactly like the underlying broker
+        # (fail-closed parity for fractional quantities).
+        if symbol is None and qty is None:
+            return self._u.supports_broker_side_stops()
+        try:
+            return self._u.supports_broker_side_stops(symbol, qty)
+        except TypeError:
+            # Underlying broker predates the qty-aware signature: a
+            # fractional qty is unprotectable there — fail closed.
+            try:
+                q = float(qty)
+            except (TypeError, ValueError):
+                return False
+            if abs(q - round(q)) > 1e-9:
+                return False
+            return self._u.supports_broker_side_stops()
 
     # ── Write-side: swallow + synthesise filled response ───────────────────
     def _fake_order_id(self) -> str:

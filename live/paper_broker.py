@@ -183,8 +183,23 @@ class PaperBroker(BaseBroker):
 
     # ── Broker-side stop simulation (Z9) ─────────────────────────────────
 
-    def supports_broker_side_stops(self) -> bool:
-        return True
+    def supports_broker_side_stops(
+        self, symbol: str | None = None, qty: float | None = None,
+    ) -> bool:
+        # S-FRAC stage 0 (§2.2.2): mirror AlpacaBroker's qty-aware answer
+        # so paper smokes exercise the same stop routing as live —
+        # broker-side stops cover whole-share quantities only.
+        if qty is None:
+            return True
+        import math  # noqa: PLC0415
+
+        try:
+            q = float(qty)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(q) or q <= 0:
+            return False
+        return abs(q - round(q)) <= 1e-9
 
     def place_stop_order(
         self, symbol: str, quantity: float, stop_price: float,

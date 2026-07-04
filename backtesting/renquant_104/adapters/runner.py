@@ -143,6 +143,14 @@ class RunnerAdapter:
         self._universe_rejections = dict(
             config.get("_universe_rejections") or {}
         )
+        # S-FRAC stage 0 (design 2026-07-02 §2.2.2): stage-3 seam. The
+        # software-stop registry (loop-resident protection for fractional
+        # quantities that cannot ride a broker GTC stop) attaches HERE
+        # when stage 3 lands. Until then it is None ⇒ commit_contract.
+        # software_stops_armed() is False ⇒ any fractional BUY intent is
+        # fail-closed at entry and Z9 routing reports fractional holdings
+        # as unprotectable (loud, never a truncated whole-share stop).
+        self._software_stops = None
 
         # 2026-04-27: broker-isolated state. paper / alpaca-paper / alpaca
         # each get their own live_state.{broker}.json + runs.{broker}.db so
@@ -865,12 +873,18 @@ class RunnerAdapter:
     ) -> None:
         """Delegate — moved to adapters/z9_stops.py (S2 slice 3, 2026-06-13).
         ``_last_ctx_stop_pct`` is the per-bar stop distance the caller set
-        from _z9_stop_pct; passed through as ctx_pct."""
+        from _z9_stop_pct; passed through as ctx_pct.
+
+        S-FRAC stage 0 (§2.2.2): the stage-3 software-stop seam is passed
+        through so z9_stops routes protection per held quantity — the
+        capability is re-evaluated at every placement against the CURRENT
+        qty (restart-safe: nothing is cached across sessions)."""
         from adapters.z9_stops import place_or_replace_stop  # noqa: PLC0415
 
         place_or_replace_stop(
             self._broker, self._stop_orders, ticker, qty, reference_price,
             today_str, ctx_pct=getattr(self, "_last_ctx_stop_pct", 0.06),
+            software_stops=getattr(self, "_software_stops", None),
         )
 
     def _z9_cancel_stop(self, ticker: str, reason: str = "") -> None:
@@ -947,6 +961,41 @@ class RunnerAdapter:
         broker        = self._broker
         today_str     = ctx.today.isoformat()
         pos_cache     = self._positions_cache
+
+        # ── S-FRAC stage 0 commit quantity contract ─────────────────────────
+        # Design: renquant-orchestrator doc/design/2026-07-02-s-frac-
+        # fractional-v2.md §2.2. Single authority: adapters/commit_contract.
+        #   * commit_path_fingerprint → stamped on ctx here, recorded in the
+        #     run bundle (kernel/artifact_contract.build_run_bundle) — the
+        #     §2.3 active-path liveness proof ("the live runner exercised
+        #     the fractional-capable commit path" is a per-run recorded
+        #     fact, not an assumption).
+        #   * fractional_capability_gate → machine-verifiable preflight for
+        #     execution.fractional_shares (the strategy#36 prose-gate
+        #     blocker, closed). Default-OFF flag ⇒ gate trivially ok and
+        #     the whole contract is inert (whole-share behavior is
+        #     regression-pinned byte-identical).
+        from adapters.commit_contract import (  # noqa: PLC0415
+            commit_path_fingerprint,
+            fmt_qty,
+            fractional_capability_gate,
+            fractional_entry_fail_closed_reason,
+            normalize_fill_qty,
+        )
+
+        ctx.commit_path_fingerprint = commit_path_fingerprint()
+        frac_gate = fractional_capability_gate(
+            self._config, broker, getattr(self, "_software_stops", None),
+        )
+        if frac_gate["enabled"] and not frac_gate["ok"]:
+            log.error(
+                "S-FRAC capability gate FAILED — execution.fractional_shares "
+                "is enabled but required capabilities are missing: %s. ALL "
+                "BUY emission fail-closes this bar (exits are never blocked). "
+                "The flag landed ahead of its dependencies; disable it or "
+                "land the missing stage(s).",
+                ",".join(frac_gate["missing"]),
+            )
 
         # ── Apply exits ──────────────────────────────────────────────────────
         # Honours optional sig.quantity for partial sells (Kelly trim path).
@@ -1109,10 +1158,14 @@ class RunnerAdapter:
                     "status":     execution["status"],
                 }
                 ctx.exits_pending.append(pending)
+                # fmt_qty (S-FRAC stage 0): byte-identical to the old %.0f
+                # for whole shares; a fractional qty renders verbatim
+                # instead of being display-rounded.
                 log.warning(
-                    "SELL pending at broker for %s: %.0f shares status=%s "
+                    "SELL pending at broker for %s: %s shares status=%s "
                     "order_id=%s; live_state/DB not mutated until fill.",
-                    ticker, sell_qty, execution["status"], execution.get("order_id"),
+                    ticker, fmt_qty(sell_qty), execution["status"],
+                    execution.get("order_id"),
                 )
                 continue
 
@@ -1172,9 +1225,9 @@ class RunnerAdapter:
             if getattr(sig, "realized_pnl_dollar", None) is not None:
                 pl_str = (f"  P/L=${sig.realized_pnl_dollar:+.2f} "
                           f"({sig.realized_pnl_pct:+.2f}%)")
-            log.info("%s  %s  [%s]  %.0f shares @ %.2f%s  %s",
-                     tag, ticker, sig.exit_type, sell_qty, price, pl_str,
-                     sig.reason)
+            log.info("%s  %s  [%s]  %s shares @ %.2f%s  %s",
+                     tag, ticker, sig.exit_type, fmt_qty(sell_qty), price,
+                     pl_str, sig.reason)
 
             # Wash-sale clock: stamp ONLY on full liquidation. Partial
             # trims (Kelly rebalance) intentionally don't block subsequent
@@ -1315,6 +1368,33 @@ class RunnerAdapter:
                 ticker = order["ticker"]
                 shares = order["shares"]
                 price  = order["price"]
+                # S-FRAC stage 0 fail-closed entry (§2.2.2 + §2.2.3). Two
+                # invariants, checked BEFORE any broker interaction:
+                #   1. gate enabled-but-unsatisfied ⇒ NO buy is emitted at
+                #      all (the config landed ahead of its dependencies);
+                #   2. a fractional BUY intent never reaches the broker
+                #      unless the flag is on AND the quantity is
+                #      protectable (broker-side stop or an armed software-
+                #      stop layer). With stage 3 absent this makes the
+                #      stage-0 outage-window loss budget $0 by construction
+                #      — no fractional position can come into existence.
+                # Whole-share intents with the flag off (all of today's
+                # production) take the `None` fast path — behavior
+                # unchanged.
+                frac_reason = fractional_entry_fail_closed_reason(
+                    shares, frac_gate, broker=broker, symbol=ticker,
+                    software_stops=getattr(self, "_software_stops", None),
+                )
+                if frac_reason is not None:
+                    log.error(
+                        "BUY fail-closed for %s (qty=%s): %s "
+                        "[S-FRAC stage 0, design §2.2]",
+                        ticker, fmt_qty(shares), frac_reason,
+                    )
+                    ctx.orders_skipped.append({
+                        **order, "skip_reason": frac_reason,
+                    })
+                    continue
                 # Duplicate-order guard
                 try:
                     pending = broker.get_open_orders()
@@ -1368,13 +1448,24 @@ class RunnerAdapter:
                     })
                     buy_cash_remaining = max(buy_cash_remaining - submitted_notional, 0.0)
                     log.warning(
-                        "BUY pending at broker for %s: %d shares status=%s "
+                        "BUY pending at broker for %s: %s shares status=%s "
                         "order_id=%s; entry state/DB not mutated until fill.",
-                        ticker, shares, execution["status"], execution.get("order_id"),
+                        ticker, fmt_qty(shares), execution["status"],
+                        execution.get("order_id"),
                     )
                     continue
 
-                shares = int(execution["filled_qty"] or shares)
+                # S-FRAC stage 0 (§2.2.1): broker filled_qty is authoritative
+                # and preserved at float precision. This replaces the legacy
+                # `int(execution["filled_qty"] or shares)` truncation — the
+                # exact line Codex cited to block renquant-pipeline#153: a
+                # broker fill of 0.435578 became 0 shares in orders_placed,
+                # live_state, the trade journal, cash accounting, and the Z9
+                # stop quantity. normalize_fill_qty snaps eps-integral fills
+                # to int (the ONE sanctioned whole-share branch), so every
+                # whole-share fill produces byte-identical order dicts /
+                # journal rows / state JSON to the killed cast.
+                shares = normalize_fill_qty(execution["filled_qty"], shares)
                 price = float(execution["filled_avg_price"] or price)
                 order = {**order, "shares": shares, "price": price}
                 if execution.get("order_id") is not None:
@@ -1393,8 +1484,11 @@ class RunnerAdapter:
                 # HWM ratchets with current price (whichever is higher).
                 is_topup = ticker in self._entry_dates
                 action_tag = "TOPUP" if is_topup else "BUY"
-                log.info("%s  %s  %d shares @ %.2f  invest=$%.0f",
-                         action_tag, ticker, shares, price, invest)
+                # fmt_qty: '5' for whole shares (byte-identical to the old
+                # %d), full-precision float for a fractional fill (the old
+                # %d silently truncated it in the log).
+                log.info("%s  %s  %s shares @ %.2f  invest=$%.0f",
+                         action_tag, ticker, fmt_qty(shares), price, invest)
 
                 if not is_topup:
                     self._entry_dates[ticker]       = today_str
