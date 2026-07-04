@@ -95,33 +95,42 @@ def _series(df, name: str):
 
 
 def _previous_nyse_close(now_utc):
+    """Close of the most recent NYSE cash session strictly before ``now_utc``.
+
+    Campaign B5 (orchestrator audit #296 §4.1): composed over the canonical
+    ``renquant_common.market_calendar`` instead of a hand-rolled
+    ``pandas_market_calendars`` schedule — equivalence-proven on a 10-year
+    fixture (half-day early closes included). Fail-closed error contract
+    unchanged."""
     import pandas as pd
-    import pandas_market_calendars as mcal
+    from renquant_common.market_calendar import session_bounds, sessions_between
 
     now_utc = _to_utc_timestamp(now_utc)
-    cal = mcal.get_calendar("NYSE")
-    start = (now_utc - pd.Timedelta(days=14)).date()
-    end = now_utc.date()
-    sched = cal.schedule(start, end)
-    if sched.empty:
+    days = sessions_between(
+        (now_utc - pd.Timedelta(days=14)).date(), now_utc.date()
+    )
+    if len(days) == 0:
         raise ValueError("NYSE calendar returned no recent sessions")
-    closes = sched["market_close"].map(_to_utc_timestamp)
-    prior = closes[closes < now_utc]
-    if prior.empty:
+    closes = [
+        _to_utc_timestamp(pd.Timestamp(bounds.close))
+        for day in days
+        if (bounds := session_bounds(day.date())) is not None
+    ]
+    prior = [c for c in closes if c < now_utc]
+    if not prior:
         raise ValueError("no prior NYSE cash close before current time")
-    return prior.iloc[-1]
+    return prior[-1]
 
 
 def _is_nyse_session_date(day=None) -> bool:
     import pandas as pd
-    import pandas_market_calendars as mcal
+    from renquant_common.market_calendar import is_session
 
     if day is None:
         target = pd.Timestamp.now(tz="America/New_York").date()
     else:
         target = day
-    cal = mcal.get_calendar("NYSE")
-    return not cal.schedule(target, target).empty
+    return is_session(target)
 
 
 def _cash_overnight_sigma(
