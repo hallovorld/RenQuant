@@ -78,6 +78,11 @@ class TrainingContext:
     # (see `_model_is_fresh` in this module). Surfaced by FeatureJob for
     # logging + notification bodies.
     ttl_skipped: list[str] = field(default_factory=list)
+    # Campaign A2 (F-17): tickers whose candidate was REJECTED by the
+    # tournament acceptance gate (kernel.tournament_acceptance) — the
+    # incumbent model was kept. {ticker: reason}. Surfaced by FeatureJob and
+    # forwarded to train_104.py for the aggregated ntfy WARN.
+    rejected: dict[str, str] = field(default_factory=dict)
 
     # populated by CorrelationJob
     corr_matrix: pd.DataFrame = field(default=None)
@@ -116,6 +121,14 @@ class TickerTrainingContext:
     exported: bool = False
     calibration: dict | None = None
     ttl_skipped: bool = False   # True when model-TTL gate skipped this ticker
+
+    # Campaign A2 (F-17) — tournament acceptance gate state.
+    # models_root: write-target override used by the staging flow; when set,
+    # TickerExportJob / TickerCalibrationJob write to models_root/<TICKER>
+    # instead of strategy_dir/models/<TICKER>. None → production path.
+    models_root: Path | None = None
+    rejected: bool = False      # True when the acceptance gate kept the incumbent
+    reject_reason: str | None = None
 
 
 def _model_params_for_tournament(config: dict[str, Any]) -> dict[str, Any]:
@@ -254,15 +267,112 @@ def _run_ticker_chain(tc: TickerTrainingContext) -> None:
     best   = tc.result.get("best_approach", "?")
     log.info("%s TournamentJob OK  best=%s sharpe=%.3f passes=%s", tag, best, sharpe, passes)
 
-    log.info("%s ExportJob START", tag)
-    TickerExportJob().run(tc)
-    log.info("%s ExportJob OK  exported=%s", tag, tc.exported)
+    # Campaign A2 (F-17): per-ticker acceptance gate + staging-then-swap.
+    # The direct branch below is the pre-A2 write path, byte-for-byte
+    # unchanged — reached when the gate is explicitly disabled
+    # (acceptance.tournament.enabled=false / --skip-acceptance), when there is
+    # no strategy_dir to write to, or when there is no model (export no-ops).
+    from kernel.tournament_acceptance import tournament_acceptance_config  # noqa: PLC0415
+    acc_cfg = tournament_acceptance_config(tc.config)
+    if acc_cfg is None or tc.strategy_dir is None or tc.result.get("model") is None:
+        log.info("%s ExportJob START", tag)
+        TickerExportJob().run(tc)
+        log.info("%s ExportJob OK  exported=%s", tag, tc.exported)
 
-    log.info("%s CalibrationJob START", tag)
-    TickerCalibrationJob().run(tc)
-    log.info("%s CalibrationJob OK  cal=%s", tag, tc.calibration)
+        log.info("%s CalibrationJob START", tag)
+        TickerCalibrationJob().run(tc)
+        log.info("%s CalibrationJob OK  cal=%s", tag, tc.calibration)
+    else:
+        _run_gated_export(tc, acc_cfg, tag)
 
     log.info("%s chain DONE  total=%.1fs", tag, time.monotonic() - t0)
+
+
+def _run_gated_export(tc: TickerTrainingContext, acc_cfg: dict, tag: str) -> None:
+    """Acceptance-gated, staged Export + Calibration for one ticker (A2/F-17).
+
+    Order of operations (fail-closed at every step; the incumbent
+    ``models/<TICKER>/`` is byte-untouched unless the FULL bundle is staged):
+
+      1. Verdict FIRST — evaluated from what the tournament already computed
+         (result dict + feature frame + incumbent metadata). REJECT → log +
+         archive verdict + ``tc.rejected``; nothing on disk moves.
+      2. PASS → the unchanged Export/Calibration jobs run against a
+         per-ticker staging dir under ``models/.staging/`` (same filesystem).
+      3. Only a fully-written staged bundle is promoted into
+         ``models/<TICKER>/`` via per-file atomic replaces, metadata last
+         (see kernel.tournament_acceptance.promote_staged_ticker_dir).
+
+    Any exception mid-stage marks the ticker rejected and leaves the
+    incumbent as-is — one bad ticker never blocks or corrupts the others
+    (per-ticker isolation is preserved by run_ticker_parallel).
+    """
+    import shutil   # noqa: PLC0415
+    import uuid     # noqa: PLC0415
+    from kernel.tournament_acceptance import (  # noqa: PLC0415
+        archive_rejection,
+        evaluate_tournament_candidate,
+        load_incumbent_metadata,
+        promote_staged_ticker_dir,
+    )
+
+    models_dir = tc.strategy_dir / "models"
+    incumbent_meta = load_incumbent_metadata(models_dir, tc.ticker)
+    try:
+        verdict = evaluate_tournament_candidate(
+            tc.ticker, tc.result, tc.feature_frame, incumbent_meta, acc_cfg,
+        )
+    except Exception as exc:  # fail closed: a gate crash must never ship a model
+        tc.rejected = True
+        tc.reject_reason = (
+            f"acceptance evaluation raised {type(exc).__name__}: {exc}"
+        )
+        log.error("%s TournamentAcceptance ERROR — %s (incumbent kept)",
+                  tag, tc.reject_reason)
+        return
+    if not verdict.all_hard_passed:
+        tc.rejected = True
+        tc.reject_reason = "; ".join(
+            f"{r.name}: {r.detail}" for r in verdict.hard_failures()
+        )
+        log.warning("%s TournamentAcceptance REJECT — %s (incumbent kept)",
+                    tag, tc.reject_reason)
+        try:
+            archive_rejection(tc.strategy_dir, tc.ticker, verdict)
+        except Exception as exc:
+            log.warning("%s could not archive rejection verdict: %s", tag, exc)
+        return
+    log.info("%s TournamentAcceptance PASS", tag)
+
+    staging_base = models_dir / ".staging" / f"{tc.ticker}-{uuid.uuid4().hex[:8]}"
+    staged_dir = staging_base / tc.ticker
+    try:
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        tc.models_root = staging_base
+
+        log.info("%s ExportJob START (staged)", tag)
+        TickerExportJob().run(tc)
+        log.info("%s ExportJob OK  exported=%s", tag, tc.exported)
+
+        log.info("%s CalibrationJob START (staged)", tag)
+        TickerCalibrationJob().run(tc)
+        log.info("%s CalibrationJob OK  cal=%s", tag, tc.calibration)
+
+        if tc.exported:
+            promoted = promote_staged_ticker_dir(
+                staged_dir, models_dir / tc.ticker, tc.ticker,
+            )
+            log.info("%s promoted %d staged file(s) → %s",
+                     tag, len(promoted), models_dir / tc.ticker)
+    except Exception as exc:
+        tc.exported = False
+        tc.rejected = True
+        tc.reject_reason = f"staged write/promote failed: {type(exc).__name__}: {exc}"
+        log.error("%s staged export FAILED — %s (incumbent kept)",
+                  tag, tc.reject_reason)
+    finally:
+        tc.models_root = None
+        shutil.rmtree(staging_base, ignore_errors=True)
 
 
 def run_ticker_parallel(
@@ -587,6 +697,23 @@ class FeatureJob(TrainingJob):
                      len(ctx.ttl_skipped),
                      ", ".join(ctx.ttl_skipped[:10])
                      + (" ..." if len(ctx.ttl_skipped) > 10 else ""))
+        # Campaign A2 (F-17): surface acceptance-gate rejections. Incumbent
+        # models were kept — this is the loud-failure path, never silent.
+        ctx.rejected = {
+            tc.ticker: (tc.reject_reason or "rejected")
+            for tc in ticker_ctxs if tc.rejected
+        }
+        if ctx.rejected:
+            log.warning(
+                "FeatureJob: %d ticker(s) REJECTED by tournament acceptance "
+                "(incumbent models kept): %s",
+                len(ctx.rejected),
+                ", ".join(sorted(ctx.rejected)[:10])
+                + (" ..." if len(ctx.rejected) > 10 else ""),
+            )
+            print(f"FeatureJob: {len(ctx.rejected)} ticker(s) REJECTED by "
+                  f"tournament acceptance (incumbents kept): "
+                  f"{', '.join(sorted(ctx.rejected)[:10])}")
         ctx.exported = [tc.ticker for tc in ticker_ctxs if tc.exported]
         ctx.calibration_summary = {
             tc.ticker: tc.calibration
@@ -783,6 +910,7 @@ class TickerExportJob(TrainingTickerJob):
                 tc.ticker, tc.result, tc.strategy_dir, today,
                 lookahead=mp["lookahead"],
                 strategy_name=tc.config.get("_strategy_name", "renquant_103"),
+                models_root=tc.models_root,
             )
             if exported:
                 tc.exported = True
@@ -790,6 +918,7 @@ class TickerExportJob(TrainingTickerJob):
                     tc.ticker, tc.result, tc.feature_frame,
                     tc.strategy_dir, mp, tc.config, today,
                     ohlcv=tc.ohlcv,
+                    models_root=tc.models_root,
                 )
         except Exception as exc:
             print(f"  {tc.ticker}: TickerExportJob failed — {exc}")
@@ -831,8 +960,11 @@ class TickerCalibrationJob(TrainingTickerJob):
             cal = fit_probability_calibration(
                 oos_scores, future_rets, lookahead=mp["lookahead"]
             )
-            if tc.strategy_dir:
-                meta_path = (tc.strategy_dir / "models" / tc.ticker
+            models_root = tc.models_root or (
+                tc.strategy_dir / "models" if tc.strategy_dir else None
+            )
+            if models_root is not None:
+                meta_path = (models_root / tc.ticker
                              / f"{tc.ticker}-policy-metadata.json")
                 if meta_path.exists():
                     meta = _json.loads(meta_path.read_text())

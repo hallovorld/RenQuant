@@ -111,6 +111,34 @@ def _stage_training_artifact_paths(config: dict, strategy_dir: Path) -> tuple[di
     return staged, active_panel, candidate_panel, candidate_calibrator
 
 
+def _notify_tournament_rejections(rejected: dict[str, str]) -> None:
+    """Best-effort aggregated ntfy WARN for tournament acceptance rejections.
+
+    Campaign A2 (F-17): per-ticker reasons, one message (not 100 pings).
+    Honors RENQUANT_NO_NOTIFY=1 (test / CI convention, see pytest.ini).
+    Never raises — notification failure must not fail the run.
+    """
+    if _os.environ.get("RENQUANT_NO_NOTIFY") == "1":
+        return
+    try:
+        import subprocess  # noqa: PLC0415
+        shown = sorted(rejected.items())[:10]
+        detail = "; ".join(f"{t}: {r}" for t, r in shown)
+        more = f" (+{len(rejected) - 10} more)" if len(rejected) > 10 else ""
+        msg = (
+            f"TOURNAMENT ACCEPTANCE: rejected {len(rejected)} per-ticker "
+            f"candidate(s); previous models kept. {detail}{more}"
+        )
+        subprocess.run(
+            ["curl", "-sf",
+             "-H", "Title: RenQuant 104 TOURNAMENT ACCEPTANCE WARN",
+             "-d", msg[:3800], "https://ntfy.sh/renquant"],
+            timeout=10, check=False,
+        )
+    except Exception:
+        pass
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--strategy",          default="renquant_104")
@@ -241,10 +269,25 @@ def main() -> None:
     # for one run.
     acceptance_cfg = config.get("acceptance", {})
     acceptance_enabled = bool(acceptance_cfg.get("enabled", True)) and not args.skip_acceptance
+    if args.skip_acceptance:
+        # Campaign A2 (F-17): the operator override covers BOTH gates — the
+        # panel ModelAcceptanceGate (via acceptance_enabled above) and the
+        # per-ticker tournament gate read inside the training pipeline.
+        config.setdefault("acceptance", {}).setdefault("tournament", {})["enabled"] = False
+        log.warning(
+            "--skip-acceptance: per-ticker tournament acceptance gate "
+            "DISABLED for this run (operator override)."
+        )
     if acceptance_enabled and args.skip_panel:
+        # NOTE (campaign A2, F-17): this disables only the PANEL
+        # ModelAcceptanceGate (it evaluates a candidate panel-ltr artifact,
+        # which --skip-panel never produces). The per-ticker TOURNAMENT
+        # acceptance gate (kernel.tournament_acceptance, default ON) still
+        # protects every models/<TICKER>/ write inside the training pipeline.
         log.info(
             "Acceptance disabled for --skip-panel: no candidate panel artifact "
-            "is produced for ModelAcceptanceGate."
+            "is produced for ModelAcceptanceGate. Per-ticker tournament "
+            "acceptance (kernel.tournament_acceptance) remains ACTIVE."
         )
         acceptance_enabled = False
     if acceptance_enabled and not args.skip_baseline:
@@ -325,6 +368,18 @@ def main() -> None:
         force_retrain=args.force,
     )
     FullTrainingPipeline().run(ctx)
+
+    # Campaign A2 (F-17): loud per-ticker tournament rejections. The gate
+    # already kept the incumbent models; here we make the failure visible —
+    # per-ticker WARN lines + one aggregated ntfy. The completion marker
+    # (scripts/tournament_retrain_marker.py) independently refuses to certify
+    # a partially-refreshed corpus, so the weekly wrapper alerts too.
+    baseline_rejected = dict(getattr(ctx, "baseline_rejected", {}) or {})
+    if baseline_rejected:
+        for _ticker, _reason in sorted(baseline_rejected.items()):
+            log.warning("TOURNAMENT ACCEPTANCE REJECT: %s — %s "
+                        "(previous model kept)", _ticker, _reason)
+        _notify_tournament_rejections(baseline_rejected)
 
     if acceptance_enabled:
         from kernel.model_acceptance import (  # noqa: PLC0415

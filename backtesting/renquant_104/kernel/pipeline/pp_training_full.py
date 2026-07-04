@@ -48,6 +48,10 @@ class FullTrainingContext:
     # populated by BaselineTournamentJob
     baseline_exported: list[str] = field(default_factory=list)
     baseline_ttl_skipped: list[str] = field(default_factory=list)
+    # Campaign A2 (F-17): per-ticker tournament acceptance rejections —
+    # {ticker: reason}. Incumbent models were kept; train_104.py turns this
+    # into an aggregated log + ntfy WARN.
+    baseline_rejected: dict[str, str] = field(default_factory=dict)
 
     # populated by PanelTrainingJob
     ohlcv_all:        dict[str, pd.DataFrame] = field(default_factory=dict)
@@ -119,8 +123,10 @@ class RunBaselineTask(FullTrainingTask):
         TrainingPipeline().run(tctx)
         ctx.baseline_exported = list(tctx.exported)
         ctx.baseline_ttl_skipped = list(tctx.ttl_skipped)
-        log.info("RunBaselineTask: exported=%d  ttl_skipped=%d",
-                 len(ctx.baseline_exported), len(ctx.baseline_ttl_skipped))
+        ctx.baseline_rejected = dict(getattr(tctx, "rejected", {}) or {})
+        log.info("RunBaselineTask: exported=%d  ttl_skipped=%d  rejected=%d",
+                 len(ctx.baseline_exported), len(ctx.baseline_ttl_skipped),
+                 len(ctx.baseline_rejected))
 
 
 class BaselineTournamentJob(FullTrainingJob):
