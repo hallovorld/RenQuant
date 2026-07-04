@@ -32,7 +32,25 @@ if str(STRATEGY_DIR) not in sys.path:
 
 from scripts import train_production_model as train_prod  # noqa: E402
 from scripts.run_wf_gate import _manifest_recipe_usage  # noqa: E402
-from kernel.panel_pipeline.panel_scorer import model_content_sha256  # noqa: E402
+
+# Campaign B2 (RQ#444 F-10): the content-hash recompute is IMPORTS ONLY from
+# renquant-common — never the umbrella kernel's local ``panel_scorer`` copy
+# (stale by construction; the 05-27/06-22/07-01 triple-impl incident class).
+# The EXPLICIT legacy engine pins the recompute to the semantics the live
+# artifact population is stamped under, independent of the venv's
+# renquant-common version (the pipeline#160 hazard: on >=0.9.1 the bare
+# ``model_content_sha256`` name is the schema-v1 hasher). ``_scorer_identity``
+# prefers the artifact's OWN stamp (M6 stage-2 §2a stamped-value precedence),
+# so this recompute only fires for an unstamped fold — a step-0 regression
+# the fingerprint census flags RED.
+try:  # renquant-common >= 0.9.1: explicit legacy engine behind the shims
+    from renquant_common.model_fingerprint import (  # noqa: E402
+        _legacy_model_content_sha256 as _content_sha256_legacy,
+    )
+except ImportError:  # 0.8.x: the bare name IS the (only) legacy engine
+    from renquant_common.model_fingerprint import (  # noqa: E402
+        model_content_sha256 as _content_sha256_legacy,
+    )
 
 
 def _resolve_strategy_path(path: str | Path) -> Path:
@@ -109,11 +127,22 @@ def validate_recipe(manifest_path: Path, reference_artifact: Path | None) -> dic
     return usage
 
 
-def _scorer_identity(path: Path) -> tuple[str, str]:
+def _scorer_identity(path: Path) -> "tuple[str, str, object]":
+    """Return (content identity, whole-file identity, schema version).
+
+    Stamped-value precedence (M6 stage-2 §2a): a stamped artifact's
+    declared ``model_content_fingerprint`` IS its content identity — the
+    stamper must propagate it, never re-derive it under whatever hash
+    semantics the current venv happens to carry. The explicit legacy
+    recompute only fires for an unstamped fold (a step-0 regression the
+    fingerprint census flags RED). The third element is the artifact's
+    ``fingerprint_schema_version`` (``None`` for the legacy population).
+    """
     payload = json.loads(path.read_text())
-    content_fp = model_content_sha256(payload)
+    stamped = payload.get("model_content_fingerprint")
+    content_fp = str(stamped) if stamped else _content_sha256_legacy(payload)
     file_fp = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-    return content_fp, file_fp
+    return content_fp, file_fp, payload.get("fingerprint_schema_version")
 
 
 def _stamp_calibrator_binding(
@@ -122,7 +151,7 @@ def _stamp_calibrator_binding(
     calibrator_path: Path,
     dry_run: bool,
 ) -> bool:
-    content_fp, file_fp = _scorer_identity(scorer_path)
+    content_fp, file_fp, schema_version = _scorer_identity(scorer_path)
     payload = json.loads(calibrator_path.read_text())
     metadata = payload.setdefault("metadata", {})
     updates = {
@@ -131,6 +160,15 @@ def _stamp_calibrator_binding(
         "scorer_artifact_fingerprint": content_fp,
         "scorer_artifact_sha256": file_fp,
     }
+    # M6 stage-2 forward-consistency (campaign B2): a v1-stamped fold must
+    # yield a v1-DECLARED calibrator binding — a v1 value under a
+    # versionless declaration is a cross-schema poison pair the dispatch
+    # never matches (fail-closed at the next promote). Dead path today:
+    # the fold corpus is legacy-stamped (no schema version). This also
+    # keeps a post-step-2 re-run of this stamper (design §3 step 2's
+    # manifest refresh) from downgrading the step-2 tool's declarations.
+    if schema_version is not None:
+        updates["scorer_fingerprint_schema_version"] = schema_version
     changed = any(metadata.get(k) != v for k, v in updates.items())
     if changed and not dry_run:
         metadata.update(updates)
