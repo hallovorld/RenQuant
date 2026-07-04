@@ -55,10 +55,10 @@ OK, STALE, CORRUPT = 0, 1, 2
 def market_session_open(now: datetime.datetime) -> bool:
     """True when the NYSE regular session is plausibly open.
 
-    Uses pandas_market_calendars when available (the live entry points
-    already depend on it); otherwise falls back to weekday 09:30-16:00
-    America/New_York (fail-open toward CHECKING: a holiday false-positive
-    produces a spurious page, never a missed one).
+    Uses the canonical renquant_common.market_calendar when available (the
+    live entry points already depend on it — campaign B5); otherwise falls
+    back to weekday 09:30-16:00 America/New_York (fail-open toward CHECKING:
+    a holiday false-positive produces a spurious page, never a missed one).
     """
     try:
         from zoneinfo import ZoneInfo  # noqa: PLC0415
@@ -66,17 +66,15 @@ def market_session_open(now: datetime.datetime) -> bool:
     except Exception:
         now_et = now
     try:
-        import pandas as pd  # noqa: PLC0415
-        import pandas_market_calendars as mcal  # noqa: PLC0415
-        sched = mcal.get_calendar("NYSE").schedule(
-            now_et.strftime("%Y-%m-%d"), now_et.strftime("%Y-%m-%d"),
-        )
-        if len(sched) == 0:
+        # Campaign B5 (orchestrator audit #296 §4.1): session bounds come from
+        # the canonical renquant_common.market_calendar (equivalence-proven);
+        # the lenient weekday fallback below is unchanged.
+        from renquant_common.market_calendar import session_bounds  # noqa: PLC0415
+        bounds = session_bounds(now_et.date())
+        if bounds is None:
             return False
-        open_ts = pd.Timestamp(sched.iloc[0]["market_open"])
-        close_ts = pd.Timestamp(sched.iloc[0]["market_close"])
-        now_ts = pd.Timestamp(now.astimezone(datetime.timezone.utc))
-        return bool(open_ts <= now_ts <= close_ts)
+        now_ts = now.astimezone(datetime.timezone.utc)
+        return bool(bounds.open <= now_ts <= bounds.close)
     except Exception:
         if now_et.weekday() >= 5:
             return False
