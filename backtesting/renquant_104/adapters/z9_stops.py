@@ -97,7 +97,7 @@ def place_or_replace_stop(
         # S-FRAC stage 3 (sprint D2): the armed software-stop registry
         # owns this qty — REGISTER the stop there, same stop-distance
         # math as the broker path. The registry enforces its own
-        # never-loosen invariant (ratchet-only; adapters/software_stops).
+        # never-loosen invariant (ratchet-only; renquant_pipeline.software_stops).
         log.info(
             "Z9: stop for %s qty=%s routed to the software-stop layer "
             "(broker-side stop does not cover this quantity).",
@@ -118,7 +118,7 @@ def place_or_replace_stop(
                 "Z9: software-stop layer is ARMED but exposes no "
                 "register(); stop for %s qty=%s NOT recorded — position "
                 "is NOT stop-protected. Stage-3 registry contract "
-                "violation (adapters/software_stops).",
+                "violation (renquant_pipeline.software_stops).",
                 ticker, fmt_qty(qty),
             )
             return

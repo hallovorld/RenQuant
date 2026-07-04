@@ -5,10 +5,15 @@ doc/design/2026-07-02-s-frac-fractional-v2.md §3.2.3 — "the sell-only
 loop evaluates registry entries each pass exactly like its existing
 stop-loss rule and emits a fractional market SELL on breach".
 
-The registry (adapters/software_stops.SoftwareStopRegistry) is attached
-to ctx by RunnerAdapter.make_context as ``ctx.software_stops``; it is
-None unless ``execution.software_stops.enabled`` — in which case this
-task is a no-op (flag-off byte-inert).
+The registry (renquant_pipeline.software_stops.SoftwareStopRegistry,
+relocated here from adapters/software_stops.py 2026-07-04 per
+renquant-pipeline#167 -- new capability logic belongs in an owning repo,
+not the umbrella) is attached to ctx by RunnerAdapter.make_context as
+``ctx.software_stops``; it is None unless
+``execution.software_stops.enabled`` — in which case this task is a
+no-op (flag-off byte-inert). This task itself never imports the
+registry class directly, only reads ``ctx.software_stops`` via
+``getattr`` — its own contract is registry-implementation-agnostic.
 
 Placement in SellOnlyPipeline: AFTER MetaLabelVetoTask and
 LimitSellsPerBarTask, by design not by accident. The software stop is

@@ -37,12 +37,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-_STRATEGY = REPO_ROOT / "backtesting" / "renquant_104"
-for _p in (str(REPO_ROOT), str(_STRATEGY)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
-from adapters.software_stops import (  # noqa: E402
+# 2026-07-04: the registry relocated to renquant_pipeline.software_stops
+# (renquant-pipeline#167) -- new capability logic belongs in an owning
+# repo, not the umbrella (RenQuant#440 review). This script stays here
+# as thin umbrella-side ops tooling, importing the relocated module.
+from renquant_pipeline.software_stops import (  # noqa: E402
     DEFAULT_REGISTRY_PATH,
     _validate_snapshot,
     compute_staleness,

@@ -243,3 +243,65 @@ in the owning repo" applied retroactively to already-established, pre-existing
 umbrella architecture), that is a pre-existing architectural question spanning
 dozens of files well beyond this PR's diff, not something this PR introduced
 or should be blocked on unilaterally resolving.
+
+## Round 5 (codex review, unchanged) — actually relocated this time
+
+Codex's round-4 response: the evidence "strengthens the narrative" but does not
+change the conclusion — "not on lack of documentation." The ask was explicit:
+relocate the substantive stop-layer logic out of the umbrella, or narrow this
+PR to a thin integration/pin surface. Rounds 3-4 answered "does a duplicate
+already exist elsewhere" (no) rather than "should this be authored in an
+owning repo regardless" (codex's actual question) — the wrong test. This round
+actually moves the code, following the exact precedent that worked on the
+first try for `renquant-orchestrator#291`'s `AlpacaBrokerPort` extraction.
+
+**Moved:** `SoftwareStopRegistry` + `compute_staleness` + `registry_path_for`
++ `SoftwareStopRegistryCorrupt` + `DEFAULT_MAX_STALENESS_MINUTES` — the
+entire `adapters/software_stops.py` module — to
+`renquant_pipeline.software_stops` (renquant-pipeline#167). Chosen over
+renquant-execution because:
+
+- The registry's only external dependency (`kernel.state_paths._safe_broker`)
+  already exists byte-identically in renquant-pipeline as the Phase 1 mirror.
+- `renquant_pipeline` is already an established, working cross-repo import
+  source for this umbrella's live-runner tree (`adapters/runner.py` already
+  imported `renquant_pipeline.kernel.gate_registry` before this change, via
+  the exact same lazy-import pattern the old local `adapters.software_stops`
+  import used). `renquant_execution` has no existing import wiring from this
+  tree at all — that would have been first-of-its-kind, not established.
+
+**Umbrella side, reduced to thin wiring:**
+
+- `backtesting/renquant_104/adapters/software_stops.py` — deleted entirely
+  (no shim kept; both real import sites updated directly).
+- `adapters/runner.py:175` — `from adapters.software_stops import
+  SoftwareStopRegistry` -> `from renquant_pipeline.software_stops import
+  SoftwareStopRegistry`. Everything else in this file (the flag-gated
+  construction, the try/except fail-closed-on-construction-failure logic) is
+  unchanged — it was already thin wiring around the constructor, not registry
+  logic itself.
+- `scripts/check_software_stops_liveness.py` — same import change, plus
+  removed the now-unnecessary `sys.path` manipulation (the module is consumed
+  as an installed package now, not a local umbrella module).
+- `z9_stops.py`/`kernel/pipeline/task_software_stops.py` — docstring/comment
+  references to the old `adapters/software_stops` path updated; no functional
+  change (both already consumed the registry via duck-typing/dependency
+  injection, never a direct import).
+
+**Test split:** the registry's own unit-test coverage (round-trip,
+ratchet-only, trigger correctness, gap pricing, corruption schema-validation,
+staleness arithmetic) moved to renquant-pipeline#167's own
+`tests/test_software_stops.py`, alongside its already-existing
+`SoftwareStopExitTask` wiring tests from renquant-pipeline#165 (kept as-is —
+that task never imported the registry class directly, so relocating the
+registry doesn't affect those tests). This umbrella's own
+`tests/test_software_stops.py` keeps only what's genuinely umbrella-only:
+flag-off byte-inertness, the stage-0 capability-gate integration test (a
+corrupt registry blocking a REAL `RunnerAdapter.commit`), the ops watchdog
+CLI script's own exit-code test, and the full commit-path E2E.
+
+**Verified:** 15/15 in this repo's trimmed `test_software_stops.py`, 111/111
+across the broader `software_stop`/`s_frac`/`z9` test surface (1 unrelated
+pre-existing collection error in `test_per_regime_sigma_wire.py`, confirmed
+reproducing identically on unmodified `origin/main`). 29/29 +
+1249/1249 in renquant-pipeline#167.

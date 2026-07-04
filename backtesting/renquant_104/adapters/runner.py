@@ -172,7 +172,10 @@ class RunnerAdapter:
         # fail-closed, fractional entries stay blocked by the stage-0
         # capability gate.
         try:
-            from adapters.software_stops import SoftwareStopRegistry  # noqa: PLC0415
+            # 2026-07-04: relocated to renquant_pipeline.software_stops
+            # (renquant-pipeline#167) -- new capability logic belongs in
+            # an owning repo, not the umbrella (RenQuant#440 review).
+            from renquant_pipeline.software_stops import SoftwareStopRegistry  # noqa: PLC0415
             self._software_stops = SoftwareStopRegistry.from_config(
                 config, broker_name=self._broker_name,
             )
