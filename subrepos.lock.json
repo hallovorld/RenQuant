@@ -74,7 +74,7 @@
       "local_path": "/Users/renhao/git/github/renquant-base-data",
       "remote": "https://github.com/hallovorld/renquant-base-data",
       "branch": "main",
-      "commit": "bb69f5e2de49c1b02b364b54896e8bac191a0025",
+      "commit": "f3f17a12cd5ac24bd7ba5b6c8df94939af886820",
       "test_command": "make test",
       "status": "active"
     },
