@@ -54,6 +54,10 @@ PATH_RULE_SYNONYMS: frozenset[str] = frozenset({
     "sdl",                  # alias for single_day_loss
     "gap_down",             # variant single-day fall
     "max_hold_days",        # alias for max_hold
+    "software_stop",        # S-FRAC stage 3: loop-resident stop breach —
+                            # the software mirror of a broker-resident Z9
+                            # GTC stop (kernel/pipeline/task_software_stops).
+                            # A broker stop can't be vetoed/capped; nor this.
 })
 
 PORTFOLIO_RISK: frozenset[str] = frozenset({
@@ -92,6 +96,8 @@ POST_STOP_COOLDOWN_TRIGGERS: frozenset[str] = frozenset({
     "stop_loss",
     "single_day_loss", "sdl",
     "gap_down",
+    "software_stop",    # a software-stop breach IS a price stop firing —
+                        # post-stop re-entry blackout applies like stop_loss
 })
 
 
