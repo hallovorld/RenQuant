@@ -106,3 +106,8 @@ artifacts/patchtst_doe_hf/pt_*/
 artifacts/patchtst_doe_hf_smoke/
 artifacts/hf_smoke/
 artifacts/hf_swa_smoke/
+
+# Campaign A2 (F-17): per-ticker tournament acceptance staging — transient
+# staging-then-swap dirs; always rmtree'd, ignored so crash leftovers can
+# never dirty the tree (pin-align aborts on dirty).
+backtesting/*/models/.staging/

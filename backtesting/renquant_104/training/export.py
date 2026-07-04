@@ -34,6 +34,7 @@ def export_models(
     today: str,
     lookahead: int,
     strategy_name: str,
+    models_root: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     """Save trained models to models/{ticker}/; patch metadata; return (exported, skipped).
 
@@ -42,7 +43,12 @@ def export_models(
     which reads ranking.universe_floor.{type, threshold} and applies the
     configured floor (none / sharpe / ic / ...). This separation keeps
     all admission decisions in one place (one Job, one config key).
+
+    models_root (campaign A2, F-17): write-target override used by the
+    tournament-acceptance staging flow. None (default) → the production
+    ``strategy_dir / "models"`` path, byte-for-byte the pre-A2 behavior.
     """
+    base_models_dir = models_root if models_root is not None else strategy_dir / "models"
     exported: list[str] = []
     skipped:  list[str] = []
 
@@ -50,7 +56,7 @@ def export_models(
         if r.get("model") is None:
             skipped.append(ticker)
             continue
-        sym_dir = strategy_dir / "models" / ticker
+        sym_dir = base_models_dir / ticker
         sym_dir.mkdir(parents=True, exist_ok=True)
         r["model"].save(sym_dir, model_name=ticker)
 
@@ -142,6 +148,7 @@ def retrain_live_models(
     today: str,
     live_train_years: int = 4,
     ohlcv: dict[str, pd.DataFrame] | None = None,
+    models_root: Path | None = None,
 ) -> None:
     """Retrain each exported model on the last N years of data; overwrite artifacts.
 
@@ -151,7 +158,11 @@ def retrain_live_models(
 
     ohlcv: optional. When provided, holdout Sharpe uses absolute close prices from
     ohlcv[ticker]["close"]; without it, holdout is skipped.
+
+    models_root (campaign A2, F-17): write-target override for the
+    tournament-acceptance staging flow. None (default) → production path.
     """
+    base_models_dir = models_root if models_root is not None else strategy_dir / "models"
     feature_cols = model_params["feature_columns"]
     lookahead    = model_params["lookahead"]
     strategy     = config.get("strategy", "renquant_103")
@@ -165,7 +176,7 @@ def retrain_live_models(
         if len(df_full) < 60:
             df_full = feature_frames[ticker]
         best_approach = results[ticker]["best_approach"]
-        sym_dir = strategy_dir / "models" / ticker
+        sym_dir = base_models_dir / ticker
         _seed   = abs(hash(ticker)) % (2 ** 32)
 
         try:
@@ -227,15 +238,20 @@ def export_one_model(
     today: str,
     lookahead: int,
     strategy_name: str,
+    models_root: Path | None = None,
 ) -> bool:
     """Export one ticker's model artifact; return True if exported.
 
     Admission decisions live in LoadUniverseJob (kernel.pipeline.job_universe).
     Export only skips when there is no trained model to save.
+
+    models_root (campaign A2, F-17): write-target override for the
+    tournament-acceptance staging flow. None (default) → production path.
     """
     if result.get("model") is None:
         return False
-    sym_dir = strategy_dir / "models" / ticker
+    base_models_dir = models_root if models_root is not None else strategy_dir / "models"
+    sym_dir = base_models_dir / ticker
     sym_dir.mkdir(parents=True, exist_ok=True)
     result["model"].save(sym_dir, model_name=ticker)
 
@@ -266,6 +282,7 @@ def retrain_one_live_model(
     today: str,
     live_train_years: int = 4,
     ohlcv: dict[str, pd.DataFrame] | None = None,
+    models_root: Path | None = None,
 ) -> None:
     """Retrain one ticker's live model on the last N years; overwrite artifact."""
     retrain_live_models(
@@ -278,4 +295,5 @@ def retrain_one_live_model(
         today,
         live_train_years=live_train_years,
         ohlcv=ohlcv,
+        models_root=models_root,
     )
