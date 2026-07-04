@@ -130,3 +130,59 @@ expect from a subrepo-consumption change." Investigated rather than assumed:
   exist, so the umbrella's `task_software_stops.py`/`exit_types.py`/
   `pp_inference.py` changes stay as-is; `renquant-pipeline#165` is the
   missing companion, not a replacement.
+
+## Round 3 (kernel-alias analysis — which copy actually RUNS on the live loop)
+
+Round 2's framing ("production execution flows through the umbrella's
+`kernel.*` imports") is only true for the LEGACY runner mode. Verified against
+the actual live sell-only entry chain, read end-to-end:
+
+- `scripts/intraday_sell_104.sh` (the 12-minute launchd loop) defaults to
+  `RQ_DAILY_RUNNER=multirepo` → `renquant_orchestrator live-bridge` →
+  `renquant_orchestrator/live_bridge.run_bridge` →
+  `bootstrap_multirepo(repo_root)`, which walks the PINNED renquant-pipeline
+  checkout's `kernel/` and force-installs
+  `sys.modules["kernel.<mod>"] = renquant_pipeline.kernel.<mod>` for every
+  kernel module — including `kernel.pipeline` (the whole package, so all its
+  submodules resolve from the pinned tree) and `kernel.exit_types` — BEFORE
+  `live.runner` is imported.
+- `live/runner.py` then does `from kernel.pipeline import ... SellOnlyPipeline`
+  (≈ line 419), which resolves to the pinned renquant-pipeline copy, NOT
+  `backtesting/renquant_104/kernel/`.
+
+Consequence: this PR's umbrella `kernel/` additions are SHADOWED on the live
+sell-only loop. Had the pipeline companion not landed, `SoftwareStopExitTask`
+would have been deployed-but-dark on the exact loop it was built for (the
+same aliasing precedent documented on #436). The live authority for the
+task + wiring + exit-type additions is **renquant-pipeline#165 (MERGED
+2026-07-04T01:45Z)**; the umbrella copies in this PR are parity mirrors and
+now carry header comments saying so.
+
+Ownership story (tightened per round-2 review):
+
+- **renquant-pipeline** — `kernel/pipeline/task_software_stops.py`,
+  `pp_inference.py` SellOnlyPipeline wiring, `kernel/exit_types.py`
+  additions: the LIVE authority on the multirepo path. Its tests exercise
+  the task against a duck-typed fake registry — the task's only coupling to
+  the umbrella is the `ctx.software_stops` CONTEXT CONTRACT (`getattr`,
+  absent/None ⇒ no-op); no umbrella import crosses the repo boundary.
+- **umbrella `backtesting/renquant_104/kernel/`** — Phase-1 parity mirror:
+  executed by sim/backtest and the legacy `RQ_DAILY_RUNNER=umbrella`
+  fallback, pinned by this repo's test suite.
+- **umbrella `adapters/` + `live/` + `scripts/`** — the bridge/state layer
+  (registry, Z9 router, RunnerAdapter wiring, liveness watchdog):
+  umbrella-owned; `adapters/` has no subrepo mirror anywhere.
+
+Merge order + deploy path:
+
+1. `renquant-pipeline#165` — merged first (done).
+2. This PR (umbrella mirrors + adapters layer).
+3. Deployment when the flag is ever enabled: bump the renquant-pipeline pin
+   in `subrepos.lock.json` past #165 (current pin `df7bc07` predates it) +
+   local runtime sync. Until then the pinned SellOnlyPipeline simply has no
+   software-stop pass — and if the flag were enabled before the pin bump,
+   registered stops would go unevaluated but NOT silently: the heartbeat
+   never stamps, so `check_software_stops_liveness.py` pages STALE (exit 1).
+   Flag-off inertness holds in BOTH repos regardless of pin state (pinned
+   1180/1180 pipeline suite green at merged main; umbrella suites re-run
+   after the mirror-marker edits).

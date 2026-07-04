@@ -58,6 +58,9 @@ PATH_RULE_SYNONYMS: frozenset[str] = frozenset({
                             # the software mirror of a broker-resident Z9
                             # GTC stop (kernel/pipeline/task_software_stops).
                             # A broker stop can't be vetoed/capped; nor this.
+                            # Mirrored in renquant-pipeline kernel/exit_types
+                            # (renquant-pipeline#165 — the live-path authority
+                            # via the bootstrap_multirepo kernel alias).
 })
 
 PORTFOLIO_RISK: frozenset[str] = frozenset({

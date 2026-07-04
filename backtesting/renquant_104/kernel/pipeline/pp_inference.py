@@ -573,6 +573,11 @@ class SellOnlyPipeline:
         # PER_BAR_CAP_EXEMPT in kernel/exit_types.py as defense in
         # depth). Default OFF via execution.software_stops.enabled ⇒
         # ctx.software_stops is None ⇒ no-op.
+        # PARITY MIRROR: on the live multirepo path bootstrap_multirepo
+        # aliases kernel.pipeline to the PINNED renquant-pipeline, so the
+        # copy of this wiring that runs live is renquant_pipeline.kernel
+        # .pipeline.pp_inference (renquant-pipeline#165 — the authority);
+        # this copy covers sim + the RQ_DAILY_RUNNER=umbrella fallback.
         from .task_software_stops import SoftwareStopExitTask  # noqa: PLC0415
         SoftwareStopExitTask().run(ctx)
 

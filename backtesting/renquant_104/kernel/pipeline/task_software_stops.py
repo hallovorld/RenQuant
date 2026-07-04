@@ -18,6 +18,19 @@ per-bar sell limit — so its mirror is not either. Defense in depth: the
 ``software_stop`` exit type is also in the exit-type taxonomy's
 PANEL_VETO_BYPASS / PER_BAR_CAP_EXEMPT sets (kernel/exit_types.py), so
 even a re-ordering could not silently subject it to those gates.
+
+PARITY MIRROR — the live authority for this task is renquant-pipeline
+(``src/renquant_pipeline/kernel/pipeline/task_software_stops.py``,
+landed via renquant-pipeline#165). The production multirepo entry points
+(scripts/intraday_sell_104.sh / daily_104.sh → ``renquant_orchestrator
+live-bridge`` → live_bridge.bootstrap_multirepo) force-alias every
+``kernel.*`` module in sys.modules to the PINNED renquant-pipeline
+checkout BEFORE live.runner imports SellOnlyPipeline, so on the live
+12-minute sell-only loop the pipeline repo's copy runs — this umbrella
+copy is SHADOWED there. This copy executes on the sim/backtest surface
+and the legacy ``RQ_DAILY_RUNNER=umbrella`` fallback, and is what the
+umbrella test suite pins. Per CLAUDE.md §3.5 (Phase-1 paired landing),
+behavior changes must land in BOTH copies — pipeline repo first.
 """
 from __future__ import annotations
 
