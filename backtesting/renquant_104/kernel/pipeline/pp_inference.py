@@ -562,6 +562,25 @@ class SellOnlyPipeline:
         from .task_limit_sells import LimitSellsPerBarTask  # noqa: PLC0415
         LimitSellsPerBarTask().run(ctx)
 
+        # S-FRAC stage 3 (sprint D2): software-stop registry pass — the
+        # loop-resident mirror of a broker-resident Z9 GTC stop for
+        # quantities the broker cannot protect (fractional = TIF DAY
+        # only). Breach ⇒ market exit for the FULL registered qty.
+        # Deliberately AFTER MetaLabelVetoTask and LimitSellsPerBarTask:
+        # a broker stop can neither be vetoed by the meta-label model nor
+        # capped by the per-bar sell limit, so its software mirror is not
+        # either ("software_stop" also rides PANEL_VETO_BYPASS /
+        # PER_BAR_CAP_EXEMPT in kernel/exit_types.py as defense in
+        # depth). Default OFF via execution.software_stops.enabled ⇒
+        # ctx.software_stops is None ⇒ no-op.
+        # PARITY MIRROR: on the live multirepo path bootstrap_multirepo
+        # aliases kernel.pipeline to the PINNED renquant-pipeline, so the
+        # copy of this wiring that runs live is renquant_pipeline.kernel
+        # .pipeline.pp_inference (renquant-pipeline#165 — the authority);
+        # this copy covers sim + the RQ_DAILY_RUNNER=umbrella fallback.
+        from .task_software_stops import SoftwareStopExitTask  # noqa: PLC0415
+        SoftwareStopExitTask().run(ctx)
+
         # Audit #6: also advance the no-trade monitor on sell-only bars.
         # An intraday-trip-only window is still an "active" decision —
         # the streak counter should reflect that we DID trade (or

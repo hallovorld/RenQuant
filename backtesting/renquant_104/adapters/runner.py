@@ -143,13 +143,16 @@ class RunnerAdapter:
         self._universe_rejections = dict(
             config.get("_universe_rejections") or {}
         )
-        # S-FRAC stage 0 (design 2026-07-02 §2.2.2): stage-3 seam. The
-        # software-stop registry (loop-resident protection for fractional
-        # quantities that cannot ride a broker GTC stop) attaches HERE
-        # when stage 3 lands. Until then it is None ⇒ commit_contract.
-        # software_stops_armed() is False ⇒ any fractional BUY intent is
-        # fail-closed at entry and Z9 routing reports fractional holdings
-        # as unprotectable (loud, never a truncated whole-share stop).
+        # S-FRAC stage 0 (design 2026-07-02 §2.2.2) stage-3 seam, filled
+        # by sprint D2: the software-stop registry (loop-resident
+        # protection for fractional quantities that cannot ride a broker
+        # GTC stop) is constructed flag-gated BELOW, once _broker_name is
+        # known (the registry state file is broker-isolated like every
+        # other live state file). Default OFF ⇒ stays None ⇒
+        # commit_contract.software_stops_armed() is False ⇒ any
+        # fractional BUY intent is fail-closed at entry and Z9 routing
+        # reports fractional holdings as unprotectable (loud, never a
+        # truncated whole-share stop).
         self._software_stops = None
 
         # 2026-04-27: broker-isolated state. paper / alpaca-paper / alpaca
@@ -161,6 +164,28 @@ class RunnerAdapter:
         # allowlist check inside state_paths._safe_broker.
         _bn = getattr(broker, "broker_name", None)
         self._broker_name: str | None = _bn if isinstance(_bn, str) else None
+
+        # S-FRAC stage 3 (sprint D2): flag-gated software-stop registry.
+        # execution.software_stops.enabled=false/absent ⇒ from_config
+        # returns None and NOTHING changes (byte-inert; no file is ever
+        # created). A registry that fails to construct is NOT armed —
+        # fail-closed, fractional entries stay blocked by the stage-0
+        # capability gate.
+        try:
+            # 2026-07-04: relocated to renquant_pipeline.software_stops
+            # (renquant-pipeline#167) -- new capability logic belongs in
+            # an owning repo, not the umbrella (RenQuant#440 review).
+            from renquant_pipeline.software_stops import SoftwareStopRegistry  # noqa: PLC0415
+            self._software_stops = SoftwareStopRegistry.from_config(
+                config, broker_name=self._broker_name,
+            )
+        except Exception as exc:
+            log.error(
+                "software-stop registry construction FAILED: %s — layer "
+                "NOT armed; fractional entries remain fail-closed by the "
+                "stage-0 capability gate.", exc,
+            )
+            self._software_stops = None
 
         # Mutate config.persistence.db_path to broker-specific BEFORE
         # constructing the DB connection (kernel.persistence reads it).
@@ -837,6 +862,12 @@ class RunnerAdapter:
         ctx.snapshot_logger = self._meta_label_logger
         ctx._meta_label_predictor = self._meta_label_predictor  # noqa: SLF001
 
+        # S-FRAC stage 3 (sprint D2): expose the software-stop registry to
+        # the pipeline — SellOnlyPipeline's SoftwareStopExitTask evaluates
+        # it each intraday pass. None when execution.software_stops is
+        # disabled (default) ⇒ the task no-ops (flag-off byte-inert).
+        ctx.software_stops = self._software_stops
+
         return ctx
 
     # ── Z9: broker-side stop helpers ────────────────────────────────────────
@@ -888,10 +919,14 @@ class RunnerAdapter:
         )
 
     def _z9_cancel_stop(self, ticker: str, reason: str = "") -> None:
-        """Delegate — moved to adapters/z9_stops.py (S2 slice 3, 2026-06-13)."""
+        """Delegate — moved to adapters/z9_stops.py (S2 slice 3, 2026-06-13).
+
+        S-FRAC stage 3: the software-stop registry is passed through so a
+        full liquidation / GC also disarms the ticker's software stop."""
         from adapters.z9_stops import cancel_stop  # noqa: PLC0415
 
-        cancel_stop(self._broker, self._stop_orders, ticker, reason)
+        cancel_stop(self._broker, self._stop_orders, ticker, reason,
+                    software_stops=getattr(self, "_software_stops", None))
 
     # ── STATE-EXT-SELL fill attribution (issue #71 / audit #5) ────────────────
 
@@ -1792,6 +1827,22 @@ class RunnerAdapter:
         if z9_stale:
             log.info("STATE-GC: dropped %d stale stop_orders entries: %s",
                      len(z9_stale), ", ".join(sorted(z9_stale)))
+        # S-FRAC stage 3: software-stop registry GC — entries whose
+        # position is gone (external disposition / manual sell / a full
+        # exit that bypassed the Z9 cancel path) are disarmed with an
+        # audit reason. Flag-off (registry None) this is byte-inert; a
+        # corrupt registry refuses the write and logs (never silently
+        # mutated).
+        if getattr(self, "_software_stops", None) is not None:
+            try:
+                sw_stale = self._software_stops.gc(currently_held)
+            except Exception as exc:
+                log.error("STATE-GC: software-stop registry GC failed: %s", exc)
+                sw_stale = []
+            if sw_stale:
+                log.info(
+                    "STATE-GC: disarmed %d stale software-stop entries: %s",
+                    len(sw_stale), ", ".join(sorted(sw_stale)))
         # last_sell_dates: keep if within wash-sale window OR ticker still held.
         wash_stale = []
         for t, d_str in list(self._last_sell_dates_str.items()):

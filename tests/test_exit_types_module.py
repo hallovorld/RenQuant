@@ -83,11 +83,13 @@ class TestDerivedSets:
     def test_post_stop_cooldown_triggers(self):
         """task_post_stop_cooldown.DEFAULT_STOP_EXIT_TYPES: path-rule kernel
         but only the price-rule subset (no max_hold; max_hold is a time exit
-        not a price stop)."""
+        not a price stop). S-FRAC stage 3 adds software_stop — a
+        loop-resident stop breach IS a price stop firing."""
         from kernel.exit_types import POST_STOP_COOLDOWN_TRIGGERS
         assert POST_STOP_COOLDOWN_TRIGGERS == frozenset({
             "trailing_stop", "trailing_stop_loss",
             "stop_loss", "single_day_loss", "sdl", "gap_down",
+            "software_stop",
         })
 
 

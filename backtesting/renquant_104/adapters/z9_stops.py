@@ -94,13 +94,48 @@ def place_or_replace_stop(
 
     route = route_stop_protection(broker, ticker, qty, software_stops)
     if route == "software":
-        # Stage-3 seam: the armed software-stop registry owns this qty.
-        # Registry write lands with stage 3; stage 0 only guarantees no
-        # truncated broker stop is placed for it.
+        # S-FRAC stage 3 (sprint D2): the armed software-stop registry
+        # owns this qty — REGISTER the stop there, same stop-distance
+        # math as the broker path. The registry enforces its own
+        # never-loosen invariant (ratchet-only; renquant_pipeline.software_stops).
         log.info(
             "Z9: stop for %s qty=%s routed to the software-stop layer "
             "(broker-side stop does not cover this quantity).",
             ticker, fmt_qty(qty),
+        )
+        if not math.isfinite(ctx_pct) or ctx_pct <= 0 or ctx_pct >= 1:
+            ctx_pct = 0.06
+        sw_target = reference_price * (1.0 - ctx_pct)
+        if not math.isfinite(sw_target) or sw_target <= 0:
+            log.warning("Z9: derived software-stop target=%s non-finite — skipping",
+                        sw_target)
+            return
+        register = getattr(software_stops, "register", None)
+        if not callable(register):
+            # Armed (is_armed() is True) but no write surface — a stage-3
+            # contract violation. Loud: the position is NOT protected.
+            log.error(
+                "Z9: software-stop layer is ARMED but exposes no "
+                "register(); stop for %s qty=%s NOT recorded — position "
+                "is NOT stop-protected. Stage-3 registry contract "
+                "violation (renquant_pipeline.software_stops).",
+                ticker, fmt_qty(qty),
+            )
+            return
+        try:
+            entry = register(ticker, float(qty), float(sw_target),
+                             source="z9", today_str=today_str)
+        except Exception as exc:
+            log.error(
+                "Z9: software-stop register(%s, qty=%s, stop=%.2f) FAILED: "
+                "%s — position is NOT stop-protected.",
+                ticker, fmt_qty(qty), sw_target, exc,
+            )
+            return
+        log.info(
+            "Z9: %s software stop registered @ $%.2f × %s shares "
+            "(never-loosen: registry ratchets up only)",
+            ticker, float(entry.get("stop_price", sw_target)), fmt_qty(qty),
         )
         return
     if route != "broker":
@@ -150,9 +185,24 @@ def place_or_replace_stop(
 
 
 def cancel_stop(broker: Any, stop_orders: dict, ticker: str,
-                reason: str = "") -> None:
+                reason: str = "", software_stops: Any = None) -> None:
     """Cancel and forget the stop for a ticker. No-op if none exists.
-    Mutates ``stop_orders`` in place."""
+    Mutates ``stop_orders`` in place.
+
+    S-FRAC stage 3: also disarms any software-stop registry entry for
+    the ticker (full liquidation / stop_orders GC). A corrupt registry
+    refuses the write and logs — never silently mutated."""
+    if software_stops is not None:
+        dereg = getattr(software_stops, "deregister", None)
+        if callable(dereg):
+            try:
+                dereg(ticker, reason=reason or "Z9 cancel")
+            except Exception as exc:
+                log.error(
+                    "Z9: software-stop deregister for %s failed: %s "
+                    "(registry entry may be stale — STATE-GC will retry)",
+                    ticker, exc,
+                )
     existing = stop_orders.pop(ticker, None)
     if existing is None:
         return
