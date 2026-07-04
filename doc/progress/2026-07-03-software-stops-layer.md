@@ -98,3 +98,35 @@ the only failures (1 in `test_meta_label_veto` pipeline guard, 3 in
 Flag stays OFF (nothing to roll back live). If enabled later and reverted:
 disable the flag — existing registry entries remain readable, exits are never
 blocked, and the watchdog goes quiet once entries are disarmed.
+
+## Round 2 (codex review — subrepo boundary)
+
+Codex flagged this PR for editing `backtesting/renquant_104/...` source
+directly without "the corresponding lock/declaration update surface you'd
+expect from a subrepo-consumption change." Investigated rather than assumed:
+
+- `CLAUDE.md` §3.5 documents a **Phase-1 invariant**: production execution
+  flows through the umbrella's `kernel.*` imports, text-mirrored
+  byte-for-byte with `renquant-pipeline`'s `kernel/pipeline/` — confirmed by
+  diffing both directories' file listings, which match file-for-file except
+  this PR's new `task_software_stops.py` (present here, missing there).
+  That's the actual gap codex's review was pointing at: not "code in the
+  wrong repo" in general (dozens of pre-existing `task_X.py`/`job_X.py`
+  files already live in both places by design), but an **incomplete paired
+  landing** — this PR shipped only the umbrella half of the mirror.
+- Filed the missing half: **`renquant-pipeline#165`** —
+  `kernel/pipeline/task_software_stops.py` (byte-identical, adjusted for this
+  repo's import convention), the same two `kernel/exit_types.py` frozenset
+  additions, and the equivalent `SellOnlyPipeline` wiring in
+  `pp_inference.py`. 1180/1180 pipeline tests pass.
+- `adapters/software_stops.py` (the registry class) is confirmed umbrella-only
+  by design — no `adapters/` directory exists in `renquant-pipeline` or
+  `renquant-execution` at all, and `task_software_stops.py` never imports the
+  registry directly (duck-types via `getattr`), so no mirror is needed there.
+- Checked `#439` (referenced as a prior similar-shaped landing) for the same
+  pattern: it touches only `adapters/` and `live/`, neither of which has a
+  subrepo mirror — not an instance of this gap.
+- No code removed from this PR: Phase-1's invariant requires BOTH copies to
+  exist, so the umbrella's `task_software_stops.py`/`exit_types.py`/
+  `pp_inference.py` changes stay as-is; `renquant-pipeline#165` is the
+  missing companion, not a replacement.
