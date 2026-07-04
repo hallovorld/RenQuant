@@ -29,7 +29,24 @@ for _p in (REPO, REPO / "backtesting" / "renquant_104"):
     if _s not in sys.path:
         sys.path.insert(0, _s)
 from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: E402
-from kernel.panel_pipeline.panel_scorer import model_content_sha256  # noqa: E402
+
+# Campaign B2 (RQ#444 F-10): the content-hash recompute is IMPORTS ONLY from
+# renquant-common — never the umbrella kernel's local ``panel_scorer`` copy
+# (stale by construction; the 05-27/06-22/07-01 triple-impl incident class).
+# The EXPLICIT legacy engine pins the recompute to the semantics the live
+# artifact population is stamped under, independent of the venv's
+# renquant-common version (the pipeline#160 hazard: on >=0.9.1 the bare
+# ``model_content_sha256`` name is the schema-v1 hasher). Stamped-value
+# precedence in ``_artifact_fingerprint`` keeps this recompute a fallback
+# only (M6 stage-2 design §2a); the M6 step-2 v1 re-stamp retires it.
+try:  # renquant-common >= 0.9.1: explicit legacy engine behind the shims
+    from renquant_common.model_fingerprint import (  # noqa: E402
+        _legacy_model_content_sha256 as _content_sha256_legacy,
+    )
+except ImportError:  # 0.8.x: the bare name IS the (only) legacy engine
+    from renquant_common.model_fingerprint import (  # noqa: E402
+        model_content_sha256 as _content_sha256_legacy,
+    )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("fit-calib-direct")
@@ -45,7 +62,7 @@ def _resolve_repo_path(raw_path: str | None, default: Path) -> Path:
 def _artifact_fingerprint(path: Path, payload: dict) -> str:
     """Return stable scorer identity, never shared strategy config identity."""
     try:
-        content_fingerprint = model_content_sha256(payload)
+        content_fingerprint = _content_sha256_legacy(payload)
     except ValueError:
         content_fingerprint = None
     return (
@@ -512,6 +529,16 @@ def main():
     metadata["scorer_artifact"] = str(art_path)
     metadata["scorer_artifact_fingerprint"] = fingerprint
     metadata["scorer_model_content_fingerprint"] = fingerprint
+    # M6 stage-2 forward-consistency (campaign B2): a v1-stamped scorer
+    # (post step-2 re-stamp) must yield a v1-DECLARED calibrator binding.
+    # A v1 value under a versionless declaration is a cross-schema poison
+    # pair — never matched by the dispatch, fail-closed at the next load.
+    # Dead path today: the production inventory is 47/47 legacy-stamped
+    # (no schema version), so nothing extra is stamped.
+    if art.get("fingerprint_schema_version") is not None:
+        metadata["scorer_fingerprint_schema_version"] = (
+            art["fingerprint_schema_version"]
+        )
     metadata.update(_calibrator_score_metric_metadata(
         label_ics=ics,
         er_ics=er_ics,

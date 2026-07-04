@@ -144,71 +144,80 @@ def _parse_entry(r: dict) -> RetrainEntry:
     )
 
 
-def _normalize_fingerprint(value: str | None) -> str:
-    return str(value or "").strip().lower().removeprefix("sha256:")
+def _fingerprint_dispatch():
+    """The pipeline-owned M6 verification surface (campaign B2).
 
+    RQ#444 F-2/F-10: this module used to carry its own 12-char-prefix
+    fingerprint matcher plus a recompute imported from the umbrella
+    panel_scorer's STALE local ``model_content_sha256`` copy — one of the
+    three divergent verifiers of the one WF-stamp contract (the
+    2026-05-27 / 06-22 / 07-01 incident generator). Verification is now
+    IMPORTS ONLY from
+    ``renquant_pipeline.kernel.panel_pipeline.fingerprint_dispatch``
+    (schema-version dispatch; fail-closed ``verify()`` on v1 stamps; the
+    legacy route byte-for-byte during the migration window, retired by
+    the ``accept_legacy_stamps`` flag at M6 stage-2 step 4).
 
-def _fingerprints_match(expected: str | None, actual: str | None) -> bool:
-    """Accept exact matches and historical short-sha prefixes."""
-    exp = _normalize_fingerprint(expected)
-    act = _normalize_fingerprint(actual)
-    if not exp or not act:
-        return False
-    if exp == act:
-        return True
-    min_prefix = 12
-    return (
-        len(exp) >= min_prefix
-        and len(act) >= min_prefix
-        and (exp.startswith(act) or act.startswith(exp))
-    )
-
-
-def _scorer_fingerprints_from_payload(payload: dict) -> list[str]:
-    """Return stable scorer identities stamped in a local artifact JSON."""
-    from kernel.panel_pipeline.panel_scorer import model_content_sha256  # noqa: PLC0415
-
-    out: list[str] = []
+    Lazy so bare umbrella imports (no pinned PYTHONPATH) can still parse
+    manifests and select entries. When verification is needed and
+    ``renquant_pipeline`` is not already importable, resolution follows
+    the SAME order as ``scripts/subrepo_env.sh`` (RENQUANT_SUBREPO_ROOT →
+    ``.subrepo_runtime/repos`` → the sibling-checkout default) so bare
+    contexts import the very code the wrapped/live paths run. If the
+    pinned pipeline is truly absent — fail LOUD, never fall back to a
+    local matcher (a silent fallback IS the fork this fix removes).
+    """
     try:
-        out.append(model_content_sha256(payload))
-    except Exception:
+        from renquant_pipeline.kernel.panel_pipeline import (  # noqa: PLC0415
+            fingerprint_dispatch,
+        )
+        return fingerprint_dispatch
+    except ImportError:
         pass
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    for source in (payload, metadata):
-        for key in (
-            "model_content_fingerprint",
-            "artifact_fingerprint",
-            "artifact_sha256",
-            "model_fingerprint",
-            "fingerprint",
-        ):
-            value = source.get(key)
-            if value:
-                out.append(str(value))
-    return list(dict.fromkeys(out))
-
-
-def _calibrator_scorer_fingerprints(calibrator: object) -> list[str]:
-    """Return the scorer identity a calibrator declares it was fitted against."""
-    metadata = getattr(calibrator, "metadata", {}) or {}
-    out: list[str] = []
-    for key in (
-        "scorer_model_content_fingerprint",
-        "scorer_artifact_fingerprint",
-        "scorer_artifact_sha256",
-    ):
-        value = metadata.get(key)
-        if value:
-            out.append(str(value))
-    return out
-
-
-def _any_fingerprints_match(expected: list[str], actual: list[str]) -> bool:
-    return any(
-        _fingerprints_match(exp, act)
-        for exp in expected
-        for act in actual
+    import os  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    repo_root = Path(__file__).resolve().parents[4]
+    roots: list[Path] = []
+    env_root = os.environ.get("RENQUANT_SUBREPO_ROOT", "")
+    if env_root:
+        p = Path(env_root)
+        roots.append(p if p.is_absolute() else repo_root / p)
+    roots.append(repo_root / ".subrepo_runtime" / "repos")
+    roots.append(repo_root.parent)
+    for root in roots:
+        src = root / "renquant-pipeline" / "src"
+        if (src / "renquant_pipeline").is_dir():
+            if str(src) not in sys.path:
+                sys.path.append(str(src))
+            try:
+                from renquant_pipeline.kernel.panel_pipeline import (  # noqa: PLC0415
+                    fingerprint_dispatch,
+                )
+                return fingerprint_dispatch
+            except ImportError:
+                break
+    raise RuntimeError(
+        "kernel.walk_forward.loader: scorer/calibrator fingerprint "
+        "verification requires the pinned renquant-pipeline "
+        "(renquant_pipeline.kernel.panel_pipeline.fingerprint_dispatch) "
+        "on sys.path. Run via the scripts/subrepo_env.sh PYTHONPATH "
+        "wrappers (weekly_wf_promote.sh does) or the live bootstrap. "
+        "The umbrella no longer carries a local fingerprint matcher "
+        "(M6 stage-2 step 1; campaign B2)."
     )
+
+
+def _calibrator_claim(calibrator: object):
+    """The calibrator's declared scorer identity as a single-schema claim.
+
+    Imported wiring — the classification rule (versionless declaration IS
+    the legacy declaration; ``scorer_fingerprint_schema_version: 1``
+    selects the v1 route) lives once, in the pipeline loader.
+    """
+    from renquant_pipeline.kernel.walk_forward.loader import (  # noqa: PLC0415
+        _calibrator_claim as _pipeline_calibrator_claim,
+    )
+    return _pipeline_calibrator_claim(calibrator)
 
 
 class WalkForwardModelLoader:
@@ -218,11 +227,26 @@ class WalkForwardModelLoader:
     invariant is enforced once here, not duplicated downstream.
     """
 
-    def __init__(self, manifest_path: "str | Path") -> None:
+    def __init__(
+        self,
+        manifest_path: "str | Path",
+        *,
+        accept_legacy_stamps: "bool | None" = None,
+    ) -> None:
+        """``accept_legacy_stamps`` is the M6 stage-2 migration-window flag
+        (``ranking.panel_scoring.fingerprint.accept_legacy_stamps``, policy
+        owned by strategy config — consumers with a config dict should pass
+        the resolved value). ``None``/omitted resolves to the window
+        default (``True``) at first verification. ``False`` = post-flip
+        strictness: only v1-stamped identity pairs verify; a versionless
+        stamp fails closed with the "re-stamp under v1" remedy. Mirrors the
+        pipeline loader's constructor so the step-4 flip reaches every leg.
+        """
         self._manifest_path = _resolve_manifest_path(manifest_path)
         self._entries: list[RetrainEntry] = []
         self._cache: dict[str, "PanelScorer"] = {}
         self._calibrator_cache: dict[str, object] = {}
+        self._accept_legacy_stamps = accept_legacy_stamps
         if self._manifest_path.exists():
             self._entries = self._parse_manifest(self._manifest_path)
 
@@ -427,18 +451,44 @@ class WalkForwardModelLoader:
             require_digest=require,
         )
 
-    def _scorer_fingerprints_for_entry(self, entry: RetrainEntry) -> list[str]:
-        """Read the selected fold's local scorer identities without loading it."""
+    def _scorer_claim_for_entry(self, entry: RetrainEntry):
+        """Read the selected fold's local scorer identity without loading it.
+
+        Dispatch on the fold artifact's OWN stamp (M6 design §3 step 1) via
+        the shared pipeline surface: a v1-stamped fold is ``verify()``'d
+        fail-closed; a versionless fold keeps the pre-existing legacy
+        acceptance set (stamped identity keys + the explicit legacy shim
+        recompute + the whole-file hash). URI resolution keeps THIS
+        module's digest-bound bounded resolver (``_resolve_model_uri``,
+        PR #421) — the umbrella-specific layer the pipeline loader does
+        not carry.
+        """
+        dispatch = _fingerprint_dispatch()
         resolved = self._resolve_model_uri(entry)
         if not isinstance(resolved, Path) or not resolved.exists():
-            return []
-        out: list[str] = []
+            return dispatch.IdentityClaim(
+                schema=dispatch.SCHEMA_LEGACY, values=(),
+                source=f"scorer:{resolved}",
+            )
+        file_hash = (
+            "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
+        )
         if resolved.suffix == ".json":
             payload = json.loads(resolved.read_text())
             if isinstance(payload, dict):
-                out.extend(_scorer_fingerprints_from_payload(payload))
-        out.append("sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest())
-        return list(dict.fromkeys(out))
+                return dispatch.scorer_claim_from_payload(
+                    payload, resolved, file_hash=file_hash,
+                )
+        # Non-JSON artifact families (e.g. .pt checkpoints) stay on the
+        # whole-file-hash identity (design §2a site 10 family split).
+        return dispatch.IdentityClaim(
+            schema=dispatch.SCHEMA_LEGACY, values=(file_hash,),
+            source=f"scorer:{resolved}",
+        )
+
+    def _scorer_fingerprints_for_entry(self, entry: RetrainEntry) -> list[str]:
+        """Back-compat view of :meth:`_scorer_claim_for_entry` values."""
+        return list(self._scorer_claim_for_entry(entry).values)
 
     def _assert_calibrator_matches_entry(
         self,
@@ -446,9 +496,21 @@ class WalkForwardModelLoader:
         calibrator: object,
         calibrator_path: "str | Path",
     ) -> None:
-        """Enforce the WF per-fold scorer/calibrator fingerprint contract."""
-        scorer_fps = self._scorer_fingerprints_for_entry(entry)
-        cal_fps = _calibrator_scorer_fingerprints(calibrator)
+        """Enforce the WF per-fold scorer/calibrator fingerprint contract.
+
+        M6 stage-2 step-1 semantics, identical to the pipeline loader: the
+        identity pair is compared within ONE schema only (v1/v1 exact via
+        the shared dispatch; versionless/versionless via the pre-existing
+        legacy equality path incl. the historical 12-char prefixes;
+        cross-schema never a match). With ``accept_legacy_stamps=False``
+        only the v1 route exists and a versionless stamp fails closed with
+        the "re-stamp under v1" remedy.
+        """
+        dispatch = _fingerprint_dispatch()
+        scorer_claim = self._scorer_claim_for_entry(entry)
+        cal_claim = _calibrator_claim(calibrator)
+        scorer_fps = list(scorer_claim.values)
+        cal_fps = list(cal_claim.values)
         if not scorer_fps or not cal_fps:
             raise ValueError(
                 "WalkForwardModelLoader: missing scorer/calibrator fingerprint "
@@ -456,12 +518,25 @@ class WalkForwardModelLoader:
                 f"calibrator={calibrator_path}. scorer={scorer_fps!r} "
                 f"calibrator={cal_fps!r}."
             )
-        if not _any_fingerprints_match(cal_fps, scorer_fps):
+        accept_legacy = (
+            dispatch.accept_legacy_stamps(None)
+            if self._accept_legacy_stamps is None
+            else bool(self._accept_legacy_stamps)
+        )
+        verdict = dispatch.match_claims(
+            scorer_claim, cal_claim, accept_legacy=accept_legacy,
+        )
+        dispatch.log_verify_telemetry(
+            "WalkForwardModelLoader[umbrella-kernel]", entry.artifact_uri,
+            scorer_claim, cal_claim, verdict, accept_legacy=accept_legacy,
+        )
+        if not verdict.matched:
             raise ValueError(
                 "WalkForwardModelLoader: calibrator/scorer fingerprint mismatch "
                 f"for cutoff={entry.cutoff_date.date()} scorer={entry.artifact_uri} "
                 f"calibrator={calibrator_path}. calibrator={cal_fps} "
-                f"scorer={scorer_fps}."
+                f"scorer={scorer_fps}. "
+                f"[fingerprint-dispatch route={verdict.route}: {verdict.reason}]"
             )
 
     @property
