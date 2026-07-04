@@ -269,8 +269,26 @@ class AlpacaBroker(BaseBroker):
     # cadence let −12% drop happen between polled stop checks. Broker-side
     # stops trigger in ms.
 
-    def supports_broker_side_stops(self) -> bool:
-        return True
+    def supports_broker_side_stops(
+        self, symbol: str | None = None, qty: float | None = None,
+    ) -> bool:
+        # S-FRAC stage 0 (§2.2.2): qty-aware capability. This adapter's
+        # stop path submits WHOLE-SHARE GTC stops (place_stop_order casts
+        # qty to int; Alpaca fractional orders are TIF=DAY only — no GTC),
+        # so a fractional quantity is NOT protectable here. Fail closed:
+        # the Z9 router will route it to the software-stop layer (stage 3)
+        # or refuse the entry. No-arg / integral-qty answers are unchanged.
+        if qty is None:
+            return True
+        import math  # noqa: PLC0415
+
+        try:
+            q = float(qty)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(q) or q <= 0:
+            return False
+        return abs(q - round(q)) <= 1e-9
 
     def place_stop_order(
         self, symbol: str, quantity: float, stop_price: float,

@@ -62,6 +62,7 @@ def z9_stop_pct(ctx: Any) -> float:
 def place_or_replace_stop(
     broker: Any, stop_orders: dict, ticker: str, qty: float,
     reference_price: float, today_str: str, ctx_pct: float = 0.06,
+    software_stops: Any = None,
 ) -> None:
     """Place a stop at reference × (1 - pct). If a stop already exists for
     this ticker, cancel it first; the new stop_price is the MIN of
@@ -76,6 +77,40 @@ def place_or_replace_stop(
         log.warning(
             "Z9: skipping stop for %s — non-finite or non-positive "
             "qty=%s reference_price=%s", ticker, qty, reference_price,
+        )
+        return
+    # S-FRAC stage 0 (design 2026-07-02 §2.2.2): qty-aware stop routing.
+    # This is the consumer of the per-quantity capability signature that
+    # v1 (renquant-execution#19 round 2) built but never wired — the
+    # capability is re-evaluated HERE, at placement time, against the
+    # CURRENT held quantity (never a cached pre-restart value). A
+    # fractional qty cannot ride a broker-resident GTC stop at this
+    # broker (fractional = TIF DAY only, §4); it routes to the stage-3
+    # software-stop registry, and with stage 3 absent it is loudly
+    # UNPROTECTABLE — never place a silently-truncated whole-share stop.
+    # Entries can't reach this state (fail-closed upstream in commit);
+    # this guards externally-acquired fractional positions.
+    from adapters.commit_contract import fmt_qty, route_stop_protection  # noqa: PLC0415
+
+    route = route_stop_protection(broker, ticker, qty, software_stops)
+    if route == "software":
+        # Stage-3 seam: the armed software-stop registry owns this qty.
+        # Registry write lands with stage 3; stage 0 only guarantees no
+        # truncated broker stop is placed for it.
+        log.info(
+            "Z9: stop for %s qty=%s routed to the software-stop layer "
+            "(broker-side stop does not cover this quantity).",
+            ticker, fmt_qty(qty),
+        )
+        return
+    if route != "broker":
+        log.error(
+            "Z9: broker-side stop UNAVAILABLE for %s qty=%s (route=%s) — "
+            "a fractional quantity cannot be protected by a broker-resident "
+            "GTC stop; the software-stop registry is S-FRAC stage 3. NOT "
+            "placing a truncated stop. Position is not broker-stop-"
+            "protected; fractional entries are fail-closed upstream.",
+            ticker, fmt_qty(qty), route,
         )
         return
     if not math.isfinite(ctx_pct) or ctx_pct <= 0 or ctx_pct >= 1:
@@ -108,8 +143,10 @@ def place_or_replace_stop(
         "qty":        float(qty),
         "stamped_at": today_str,
     }
+    # S-FRAC stage 0: the old int(qty) display cast truncated a fractional
+    # quantity in the log; fmt_qty is byte-identical for whole shares.
     log.info("Z9: %s stop placed @ $%.2f × %s shares (order=%s)",
-             ticker, target, int(qty), result.get("order_id"))
+             ticker, target, fmt_qty(qty), result.get("order_id"))
 
 
 def cancel_stop(broker: Any, stop_orders: dict, ticker: str,

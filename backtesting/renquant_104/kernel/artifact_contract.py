@@ -387,6 +387,17 @@ def build_run_bundle(
             getattr(ctx, "_regime_evidence", None)
             or _regime_evidence_from_ctx(ctx)
         )
+        # S-FRAC stage 0 (design 2026-07-02 §2.3 active-path liveness
+        # proof): RunnerAdapter.commit stamps ctx.commit_path_fingerprint
+        # (contract tag + source sha of the executed commit module) at the
+        # top of every commit. Recording it here makes "the live runner
+        # exercised the fractional-capable commit path" a per-run fact in
+        # the persisted run bundle — the direct anti-regression for
+        # merged-is-not-deployed / deployed-but-dark. Absent for ctxs that
+        # never passed through the live commit path (sim/train).
+        fingerprint = getattr(ctx, "commit_path_fingerprint", None)
+        if fingerprint:
+            bundle["commit_path_fingerprint"] = _json_safe(fingerprint)
 
     return bundle
 

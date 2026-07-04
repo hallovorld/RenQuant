@@ -77,12 +77,22 @@ class BaseBroker(ABC):
     # cadence. Default impls raise NotImplementedError so brokers that
     # don't support stops fail loudly rather than silently no-op.
 
-    def supports_broker_side_stops(self) -> bool:
+    def supports_broker_side_stops(
+        self, symbol: str | None = None, qty: float | None = None,
+    ) -> bool:
         """Whether this broker supports broker-side stop orders.
 
         Brokers that do (Alpaca, IBKR, Paper-with-simulator) override and
         return True. Brokers that don't return False so the runner falls
         back to polled stop_loss without needing per-broker code paths.
+
+        S-FRAC stage 0 (design 2026-07-02 §2.2.2): the signature is
+        quantity-aware. Called with no arguments it answers the broker-
+        level capability (legacy Z9 enable check). Called with
+        ``(symbol, qty)`` it must answer for THAT quantity — brokers
+        whose stop path is whole-share-only (GTC stops reject/truncate
+        fractional qty) must return False for a non-integral qty so the
+        Z9 router fails closed instead of placing a truncated stop.
         """
         return False
 
