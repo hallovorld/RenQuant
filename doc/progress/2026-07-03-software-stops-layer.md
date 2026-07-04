@@ -186,3 +186,60 @@ Merge order + deploy path:
    Flag-off inertness holds in BOTH repos regardless of pin state (pinned
    1180/1180 pipeline suite green at merged main; umbrella suites re-run
    after the mirror-marker edits).
+
+## Round 4 (codex review — "the ownership story isn't tightened enough yet")
+
+Codex's follow-up: the pipeline companion fixes the missing mirrored task, but
+"the remaining heavy surface here is still umbrella-side implementation: a new
+stop registry, ops watchdog, runner wiring, and tests... far beyond a pin/update
+or thin integration change." Re-investigated each piece skeptically rather than
+re-asserting round 3's conclusion:
+
+- **`adapters/software_stops.py` (589 lines) — checked for a duplicate concept
+  in renquant-execution/renquant-pipeline first.** Neither repo has any
+  `SoftwareStop`/`stop_registry` concept (`grep -rl "SoftwareStop\|stop_registry"`
+  — zero hits in both). renquant-execution's only stop-shaped API
+  (`supports_broker_side_stops`/`place_stop_order` in `broker.py`,
+  `alpaca_broker.py`, `readonly_broker.py`) is the OPPOSITE mechanism this
+  registry exists because it's unavailable: broker-native GTC stops, which this
+  module's own docstring states fractional Alpaca orders cannot use
+  (TIF=DAY only). Not a duplication — a genuinely distinct capability with no
+  home elsewhere to duplicate.
+- **Checked `adapters/`'s existing size/contents for precedent** (this had not
+  been done in rounds 2-3): the directory already holds 30 files / 9,562 lines
+  of exactly this class of code — `runner.py` (2,186 lines), `sim.py` (2,475
+  lines), `runner_tax_lots.py`, `sim_cash.py`, `runner_execmath.py`, and
+  directly relevant, the PRE-EXISTING `z9_stops.py` (215 lines, unmodified by
+  this PR except its integration point) — the stop ROUTER this registry
+  plugs into. `software_stops.py` is not a new pattern; it's the same kind of
+  file as its own direct sibling, in the same directory, at a comparable size.
+- **Re-read the actual `z9_stops.py`/`runner.py` diffs line-by-line** (not
+  just their existence) to check codex's specific claim that "runner wiring"
+  is itself heavy logic, not integration. It isn't: `z9_stops.py`'s diff is
+  `getattr(software_stops, "register"/"deregister", None)` duck-typed calls
+  with fail-closed error logging if the interface is missing or raises —
+  no stop-evaluation decision logic lives here. `runner.py`'s diff
+  constructs the registry from config (try/except → None on any failure) and
+  threads the object through `ctx.software_stops` / `cancel_stop` — again,
+  wiring, not business logic. The actual stop-evaluation/ratchet/fail-closed
+  logic lives entirely in `software_stops.py` itself.
+- **Checked `scripts/check_software_stops_liveness.py` against existing
+  precedent**: this repo's `scripts/` already has 10+ umbrella-top-level
+  `check_*.py`/`.sh` ops scripts of the identical shape (`check_config_drift.py`,
+  `check_launchagents.py`, `check_lock_pins_ci_green.py`,
+  `check_ops_deployment_ready.py`, `check_retrain_triggers.py`,
+  `monitor_panel_health.sh`, …). Not a new umbrella-resident pattern.
+
+**Conclusion, held after genuine re-investigation, not re-asserted:** round 3's
+ownership table stands. `adapters/software_stops.py` is a new instance of an
+already-established, precedented class of umbrella-resident execution logic
+(consistent with 9,562 existing lines in the same directory, including the
+sibling it integrates with); `z9_stops.py`/`runner.py`'s changes are genuinely
+thin wiring, not relocated business logic in wiring's clothing; the ops
+watchdog matches 10+ existing scripts. No new relocation target was found —
+if codex's underlying objection is actually to the `adapters/` directory's
+existing size/shape as a whole (i.e., the general principle "new code belongs
+in the owning repo" applied retroactively to already-established, pre-existing
+umbrella architecture), that is a pre-existing architectural question spanning
+dozens of files well beyond this PR's diff, not something this PR introduced
+or should be blocked on unilaterally resolving.
