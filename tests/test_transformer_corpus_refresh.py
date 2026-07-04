@@ -789,6 +789,7 @@ def test_pipeline_order_is_refresh_guard_rebuild() -> None:
         "RefreshTransformerUniverseOhlcvTask",
         "TransformerUniverseFreshnessGuardTask",
         "RebuildTransformerCorpusTask",
+        "RebuildRawLabelSidecarTask",
     ]
 
 
