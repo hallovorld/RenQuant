@@ -97,3 +97,61 @@ def test_stale_snapshot_does_not_revert_the_completed_promotion(tmp_path):
     # "unchanged" here specifically confirms no rollback/revert path fired —
     # the promoted artifact is the retrain stub's output, present and intact.
     assert after == before, "a stale-snapshot finding must not revert the completed promotion"
+
+
+def test_umbrella_resolves_gbdt_config_regardless_of_lineup_slot(tmp_path):
+    """Codex round 1 on PR #452: resolution only checked
+    backtesting/renquant_104/<name> (the umbrella WORKING-COPY config, which
+    render_strategy_104_snapshot.py's own header documents as stale relative
+    to the pin-aligned runtime) — so under RQ_WF_GATE_RUNNER=umbrella the job
+    errored with "no strategy config declares kind=xgb" even though a valid
+    kind=xgb config existed at the pin-aligned location the fixture (and the
+    real daily run) actually populate. This drives the SWAPPED lineup
+    orientation (kind=xgb in the SHADOW config, the pre-06-23 layout,
+    opposite of build_fixture_repo's default) with no config at all under
+    backtesting/renquant_104/ to prove resolution finds the pin-aligned
+    kind=xgb config regardless of which slot declares it or whether the
+    umbrella working-copy path exists."""
+    import json
+
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+
+    configs_dir = root / mod.PINNED_CONFIGS_REL
+    active_path = configs_dir / mod.ACTIVE_CONFIG_NAME
+    shadow_path = configs_dir / mod.SHADOW_CONFIG_NAME
+    active_cfg = json.loads(active_path.read_text(encoding="utf-8"))
+    shadow_cfg = json.loads(shadow_path.read_text(encoding="utf-8"))
+
+    # Swap kinds: active becomes hf_patchtst (was xgb), shadow becomes xgb
+    # (was hf_patchtst) — the pre-06-23 lineup orientation.
+    active_cfg["ranking"]["panel_scoring"]["kind"] = "hf_patchtst"
+    shadow_cfg["ranking"]["panel_scoring"]["kind"] = "xgb"
+    active_path.write_text(json.dumps(active_cfg), encoding="utf-8")
+    shadow_path.write_text(json.dumps(shadow_cfg), encoding="utf-8")
+
+    # Confirm the umbrella working-copy path genuinely does not exist —
+    # resolution must not depend on it.
+    workingcopy_active = root / mod.STRATEGY_DIR_REL / mod.ACTIVE_CONFIG_NAME
+    workingcopy_shadow = root / mod.STRATEGY_DIR_REL / mod.SHADOW_CONFIG_NAME
+    assert not workingcopy_active.exists()
+    assert not workingcopy_shadow.exists()
+
+    # Re-render the committed snapshot so it reflects the swapped config
+    # content (the "fresh" scenario requires the committed doc to match a
+    # regenerate-now render).
+    committed = root / "doc" / "arch" / "strategy-104-snapshot.md"
+    rc = mod.main(["--repo-root", str(root), "--output", str(committed)])
+    assert rc == 0, "fixture re-render after kind swap failed"
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file)
+    log_tail = (root / "logs" / "weekly_wf_promote").glob("*.log")
+    tail_text = "\n".join(p.read_text(encoding="utf-8") for p in log_tail)
+    assert result.returncode == 0, (
+        f"expected success with kind=xgb in the shadow slot; "
+        f"stderr/log tail:\n{tail_text[-3000:]}")
+
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+    assert "WEEKLY-PROMOTE ✓" in notifications, notifications

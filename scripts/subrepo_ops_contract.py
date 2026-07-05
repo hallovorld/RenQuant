@@ -215,7 +215,7 @@ CHECKS: tuple[Check, ...] = (
             'RQ_WF_GATE_RUNNER:-multirepo',
             "scripts/run_wf_gate.py",
             "renquant_backtesting.forensics.model_acceptance",
-            'GBDT_PROD_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow.json)"',
+            'renquant_strategy_config "$SUBREPO_ROOT" "$cfg_name"',
             '--fingerprint-config "$GBDT_PROD_CONFIG"',
             "--strict",
             "set RQ_WF_GATE_RUNNER=umbrella for explicit rollback",

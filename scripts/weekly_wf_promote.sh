@@ -90,26 +90,44 @@ export RENQUANT_STRATEGY_CONFIG="$PROD_STRATEGY_CONFIG"
 # candidate this job retrains. After the 06-23 lineup reversal XGB moved to
 # strategy_config.json (primary) — the filename no longer implies the kind.
 # Scan both configs and pick the one that declares kind=xgb.
+#
+# Codex review (PR #452 round 1): in umbrella/rollback mode, resolution only
+# checked backtesting/renquant_104/<name> — the umbrella WORKING-COPY config.
+# render_strategy_104_snapshot.py's own header documents that this exact path
+# is NOT what production actually consumes and has gone stale across a prior
+# lineup swap (the 2026-06-23 XGB re-promotion): the authoritative source is
+# the PIN-ALIGNED runtime checkout at
+# .subrepo_runtime/repos/renquant-strategy-104/configs/ (kept in sync with
+# subrepos.lock.json). Check the pin-aligned location FIRST — it is what the
+# real daily run and the umbrella snapshot-backstop harness populate — falling
+# back to the umbrella working copy only if the pin-aligned runtime tree is
+# not present at all (e.g. pre-bootstrap).
 _find_gbdt_config() {
     for cfg_name in strategy_config.json strategy_config.shadow.json; do
-        local cfg_path
+        local candidate pinned_path workingcopy_path
+        pinned_path="$REPO_DIR/.subrepo_runtime/repos/renquant-strategy-104/configs/$cfg_name"
+        workingcopy_path="$REPO_DIR/backtesting/renquant_104/$cfg_name"
         if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
-            cfg_path="$REPO_DIR/backtesting/renquant_104/$cfg_name"
+            candidates=("$pinned_path" "$workingcopy_path")
         else
-            cfg_path="$(renquant_strategy_config "$SUBREPO_ROOT" "$cfg_name" 2>/dev/null)" \
-                || cfg_path="$REPO_DIR/backtesting/renquant_104/$cfg_name"
+            local multirepo_path
+            multirepo_path="$(renquant_strategy_config "$SUBREPO_ROOT" "$cfg_name" 2>/dev/null)" || multirepo_path=""
+            candidates=("$multirepo_path" "$pinned_path" "$workingcopy_path")
         fi
-        [ -f "$cfg_path" ] || continue
-        local kind
-        kind=$("$PYTHON" -c "
+        for candidate in "${candidates[@]}"; do
+            [ -n "$candidate" ] || continue
+            [ -f "$candidate" ] || continue
+            local kind
+            kind=$("$PYTHON" -c "
 import json, sys
 c = json.load(open(sys.argv[1]))
 print(c.get('ranking',{}).get('panel_scoring',{}).get('kind',''))
-" "$cfg_path" 2>/dev/null)
-        if [ "$kind" = "xgb" ] || [ "$kind" = "panel_ltr_xgboost" ]; then
-            echo "$cfg_path"
-            return 0
-        fi
+" "$candidate" 2>/dev/null)
+            if [ "$kind" = "xgb" ] || [ "$kind" = "panel_ltr_xgboost" ]; then
+                echo "$candidate"
+                return 0
+            fi
+        done
     done
     return 1
 }
