@@ -2148,6 +2148,31 @@ class RunnerAdapter:
                         log.info("gate_verdicts: wrote %d row(s)", n_gv)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("gate_verdicts write failed: %s", exc)
+                # S5: cross-run decision ledger (renquant-orchestrator #133).
+                # The gate_verdicts table above is per-run; this writes the
+                # same verdicts to the append-only decision_ledger.db so
+                # "why sell-only on date X?" is one SQL query across runs.
+                try:
+                    _dl_registry = getattr(ctx, "gate_registry", None)
+                    if _dl_registry is not None:
+                        from renquant_orchestrator.decision_ledger import (  # noqa: PLC0415
+                            connect as _dl_connect,
+                            write_verdicts as _dl_write,
+                        )
+                        _dl_rows = _dl_registry.ledger_rows(run_id=run_id)
+                        if _dl_rows:
+                            _dl_conn = _dl_connect()
+                            try:
+                                _dl_n = _dl_write(
+                                    _dl_conn, run_id,
+                                    ctx.today.isoformat(), _dl_rows,
+                                )
+                                if _dl_n:
+                                    log.info("decision_ledger: persisted %d verdict(s)", _dl_n)
+                            finally:
+                                _dl_conn.close()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("decision_ledger write failed (non-fatal): %s", exc)
             except Exception as exc:
                 # Diagnostic table — never block the bar on a write error.
                 log.warning("ticker_daily_state write failed: %s", exc)
