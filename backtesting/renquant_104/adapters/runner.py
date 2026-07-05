@@ -109,6 +109,51 @@ def _preopen_cancel_symbols(strategy_dir: Path, broker_name: str | None, today_s
     return out
 
 
+def _build_tournament_shadow_ticker_scores(
+    cand_pool: list[Any],
+    blocked_map: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Build the ``ticker_scores`` dict for tournament shadow admission.
+
+    Sources:
+      * ``cand_pool`` — CandidateResult objects from the pipeline (these
+        tickers survived far enough to have scores recorded).
+      * ``blocked_map`` — per-ticker block reasons; tickers blocked at the
+        tournament gate carry ``model_signal:<signal>``.
+
+    Tickers in ``cand_pool`` that were NOT blocked by the tournament gate
+    implicitly had signal = "buy".
+    """
+    scores: dict[str, dict[str, Any]] = {}
+    for cand in cand_pool:
+        ticker = getattr(cand, "ticker", None)
+        if not ticker:
+            continue
+        scores[ticker] = {
+            "signal": "buy",  # survived ScoreBuyTask
+            "raw_score": getattr(cand, "raw_score", None),
+            "rank_score": getattr(cand, "rank_score", None),
+        }
+    # Overlay block reasons — tickers blocked at the tournament gate have
+    # the signal embedded in the block reason (``model_signal:<signal>``).
+    for ticker, reason in blocked_map.items():
+        if ticker in scores:
+            # Already in cand_pool with scores; check if the block was
+            # downstream of the tournament gate (signal was still "buy").
+            continue
+        if reason.startswith("model_signal:"):
+            signal = reason.split(":", 1)[1]
+            scores[ticker] = {
+                "signal": signal,
+                "raw_score": None,
+                "rank_score": None,
+            }
+        # Other block reasons (wash_sale, sector_cap, etc.) — the ticker
+        # may not have been scored at all; leave absent from ticker_scores
+        # so the shadow logger marks it as "no_model_data".
+    return scores
+
+
 def model_type_from_artifact(model: Any) -> str | None:
     """Extract the human model type from dict/object artifacts for DB audit rows."""
     return _shared_model_type_from_artifact(model)
@@ -2173,6 +2218,58 @@ class RunnerAdapter:
                                 _dl_conn.close()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("decision_ledger write failed (non-fatal): %s", exc)
+                # M5: tournament shadow admission logger (orch PR #395).
+                # Logs both tournament and panel admission verdicts in
+                # parallel so the two paths can be compared before retiring
+                # the tournament gate.  Default OFF; fail-open.
+                try:
+                    _ts_cfg = self._config.get("tournament_shadow", {}) or {}
+                    if _ts_cfg.get("enabled", False):
+                        from renquant_orchestrator.tournament_shadow_admission import (  # noqa: PLC0415
+                            log_shadow_admission,
+                        )
+
+                        _ts_scores = _build_tournament_shadow_ticker_scores(
+                            cand_pool, blocked_map,
+                        )
+                        _ts_panel_cands = [
+                            c.ticker for c in (ctx.candidates or [])
+                        ]
+                        _ts_panel_blocked = {
+                            t: r for t, r in blocked_map.items()
+                            if t not in set(_ts_panel_cands)
+                        }
+                        _ts_regime_params = getattr(ctx, "regime_params", None) or {}
+                        _ts_min_score = float(
+                            _ts_regime_params.get("min_model_score", 0.10),
+                        )
+                        _ts_bypass = bool(
+                            self._config.get("ranking", {})
+                                        .get("panel_scoring", {})
+                                        .get("bypass_ticker_gate", False),
+                        )
+                        _ts_record = log_shadow_admission(
+                            run_date=ctx.today,
+                            watchlist=list(self._config.get("watchlist", [])),
+                            ticker_scores=_ts_scores,
+                            panel_candidates=_ts_panel_cands,
+                            panel_blocked=_ts_panel_blocked,
+                            min_model_score=_ts_min_score,
+                            bypass_ticker_gate=_ts_bypass,
+                            regime=getattr(ctx, "regime", None),
+                            shadow_dir=_ts_cfg.get("shadow_dir"),
+                            enabled=True,
+                        )
+                        if _ts_record is not None:
+                            log.info(
+                                "tournament_shadow: agreement=%.1f%% "
+                                "(tourn_only=%d, panel_only=%d)",
+                                _ts_record.agreement_rate * 100,
+                                len(_ts_record.tournament_only),
+                                len(_ts_record.panel_only),
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("tournament_shadow write failed (non-fatal): %s", exc)
             except Exception as exc:
                 # Diagnostic table — never block the bar on a write error.
                 log.warning("ticker_daily_state write failed: %s", exc)

@@ -1187,6 +1187,10 @@
   "db_path": "data/runs.db",
   "strict_decision_trace_integrity": true
  },
+ "tournament_shadow": {
+  "enabled": false,
+  "_note": "M5 tournament retirement shadow: logs both per-ticker tournament and panel admission verdicts in parallel for comparison before retiring the tournament gate. Output: data/shadow/tournament_vs_panel_admission.jsonl. Requires renquant-orchestrator tournament_shadow_admission module."
+ },
  "monitoring": {
   "max_no_trade_days": 15,
   "max_no_candidate_days": 15
