@@ -86,17 +86,54 @@ else
 fi
 export RENQUANT_STRATEGY_CONFIG="$PROD_STRATEGY_CONFIG"
 
-# 2026-06-08: production now runs TWO scorers — PatchTST (primary, in
-# strategy_config.json) and the GBDT alpha158_fund (moved to
-# strategy_config.shadow.json after the 2026-06-05 PatchTST promotion). This
-# weekly job retrains the GBDT, so its WF gate must validate against GBDT
-# decision semantics, NOT the PatchTST primary config — otherwise the config
-# parity guard rejects ("PatchTST kind should not point at a non-PatchTST JSON").
-if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
-    GBDT_PROD_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.shadow.json"
-else
-    GBDT_PROD_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow.json)" \
-        || GBDT_PROD_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.shadow.json"
+# Resolve the config whose declared panel_scoring.kind matches the GBDT
+# candidate this job retrains. After the 06-23 lineup reversal XGB moved to
+# strategy_config.json (primary) — the filename no longer implies the kind.
+# Scan both configs and pick the one that declares kind=xgb.
+#
+# Codex review (PR #452 round 1): in umbrella/rollback mode, resolution only
+# checked backtesting/renquant_104/<name> — the umbrella WORKING-COPY config.
+# render_strategy_104_snapshot.py's own header documents that this exact path
+# is NOT what production actually consumes and has gone stale across a prior
+# lineup swap (the 2026-06-23 XGB re-promotion): the authoritative source is
+# the PIN-ALIGNED runtime checkout at
+# .subrepo_runtime/repos/renquant-strategy-104/configs/ (kept in sync with
+# subrepos.lock.json). Check the pin-aligned location FIRST — it is what the
+# real daily run and the umbrella snapshot-backstop harness populate — falling
+# back to the umbrella working copy only if the pin-aligned runtime tree is
+# not present at all (e.g. pre-bootstrap).
+_find_gbdt_config() {
+    for cfg_name in strategy_config.json strategy_config.shadow.json; do
+        local candidate pinned_path workingcopy_path
+        pinned_path="$REPO_DIR/.subrepo_runtime/repos/renquant-strategy-104/configs/$cfg_name"
+        workingcopy_path="$REPO_DIR/backtesting/renquant_104/$cfg_name"
+        if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
+            candidates=("$pinned_path" "$workingcopy_path")
+        else
+            local multirepo_path
+            multirepo_path="$(renquant_strategy_config "$SUBREPO_ROOT" "$cfg_name" 2>/dev/null)" || multirepo_path=""
+            candidates=("$multirepo_path" "$pinned_path" "$workingcopy_path")
+        fi
+        for candidate in "${candidates[@]}"; do
+            [ -n "$candidate" ] || continue
+            [ -f "$candidate" ] || continue
+            local kind
+            kind=$("$PYTHON" -c "
+import json, sys
+c = json.load(open(sys.argv[1]))
+print(c.get('ranking',{}).get('panel_scoring',{}).get('kind',''))
+" "$candidate" 2>/dev/null)
+            if [ "$kind" = "xgb" ] || [ "$kind" = "panel_ltr_xgboost" ]; then
+                echo "$candidate"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+if ! GBDT_PROD_CONFIG="$(_find_gbdt_config)"; then
+    echo "ERROR: no strategy config declares kind=xgb; cannot resolve GBDT reference"
+    exit 2
 fi
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
 
