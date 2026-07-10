@@ -8,7 +8,15 @@ post-execution. No broker calls of their own (broker_order_execution
 takes the already-returned result dict). Moved verbatim; re-exported
 from runner for back-compat.
 
-Cash-cap sizing math is NOT implemented here: it is owned by
+TIME-BOUNDED MIGRATION EXCEPTION (Codex review, renquant-orchestrator PR
+#444): this module is umbrella-resident legacy, not the target architecture.
+The owning repo for execution math is ``renquant-execution``; the removal
+plan is the adapter-migration program (moving RunnerAdapter order math,
+including this module, into that repo). Until that migration lands, changes
+here must carry this same label and must not add umbrella-owned capability
+beyond closing a specific, named contract gap.
+
+Accordingly, cash-cap sizing math is NOT implemented here: it is owned by
 renquant-execution ``order_math.cap_affordable_qty`` (execution#25) and
 ``cap_buy_order_to_cash`` is a time-bounded compatibility call-site
 (see its docstring for the fail-closed fallback contract).

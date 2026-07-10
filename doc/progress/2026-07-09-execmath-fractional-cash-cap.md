@@ -123,6 +123,23 @@ both exercised); 79 passed / 10 skipped without it (fallback wirings only —
 the pre-pin-bump CI state); adjacent runner subset (state-fixes + lean-order
 + z9) 110 passed; auditor exit 0.
 
+## Repo-ownership note (time-bounded migration exception)
+
+This fix lands in the umbrella tree because the bug it closes lives in
+`adapters/runner_execmath.py`, and the entire `RunnerAdapter` order-math
+layer is umbrella-resident legacy. Per Codex review on renquant-orchestrator
+PR #444 (the D7 gap-inventory audit this fix closes item #1 of): **this is a
+TIME-BOUNDED MIGRATION EXCEPTION, not a proposed architecture.** The target
+owner for execution math is `renquant-execution`; the removal plan is the
+adapter-migration program (moving `RunnerAdapter` order math, including this
+module, into that repo). Until that migration lands, any further change to
+umbrella-resident order math must carry this same exception label and must
+not add new umbrella-owned capability beyond what's needed to close a
+specific S-FRAC v2 contract gap — after the rework this PR adds NONE:
+`cap_buy_order_to_cash` gains a flag parameter and delegates both modes to
+the renquant-execution owner (execution#25); the umbrella holds zero
+fractional sizing math (see the Ownership section above).
+
 ## Follow-ups
 
 * Merge execution#25 first, then bump the renquant-execution pin so the
