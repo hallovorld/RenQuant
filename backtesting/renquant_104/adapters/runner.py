@@ -1424,9 +1424,19 @@ class RunnerAdapter:
                         **order_intent,
                         "skip_reason": "duplicate_buy_intent",
                     })
+            # S-FRAC v2 stage 2 (D7 gap inventory #1): the cash cap resizes
+            # on the 6dp fractional grid ONLY when the capability gate is
+            # fully satisfied (flag on AND capabilities present) — the same
+            # source of truth the fail-closed entry check below consumes.
+            # Flag off (all of today's production) ⇒ fractional=False ⇒
+            # byte-identical legacy int truncation. Gate enabled-but-unsat
+            # ⇒ every BUY fail-closes below regardless, so the value is
+            # outcome-neutral there; False keeps it conservative.
+            frac_cash_cap = bool(frac_gate["enabled"] and frac_gate["ok"])
             for order_intent in deduped_orders:
                 order, budget_reason = cap_buy_order_to_cash(
                     order_intent, buy_cash_remaining,
+                    fractional=frac_cash_cap,
                 )
                 if order is None:
                     log.info(

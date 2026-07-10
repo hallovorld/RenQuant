@@ -20,6 +20,17 @@ reintroduction under a different spelling (``int(fill["qty"])``,
 forensic. Same check-script pattern as the orchestrator's
 ``scripts/check_model_bundle_consistency.py``.
 
+Extension (S-FRAC v2 audit, D7 gap inventory #1, 2026-07-09): the audit
+also flags ``int()`` casts on ORDER-SIZING quantities in the execution-
+math module (``runner_execmath.py``) — the residual class the fill-only
+scope missed: ``affordable = int(cash // price)`` in
+``cap_buy_order_to_cash`` silently truncated a cash-capped fractional
+resize to whole shares. The ONE sanctioned appearance is the flag-off
+(``fractional=False``) branch, recognized STRUCTURALLY as the ``else``
+arm of an ``if fractional:`` split — not by function allowlist — so a
+planted ``int()`` on the flag-ON branch (or anywhere else in the module)
+fails the audit.
+
 Exit codes: 0 = clean, 1 = violation(s) found, 2 = audit could not run.
 """
 from __future__ import annotations
@@ -66,6 +77,24 @@ FILL_QTY_TOKENS = frozenset({
 # Nothing else may int() a fill quantity.
 ALLOWED_FUNCTIONS = frozenset({"normalize_fill_qty", "fmt_qty"})
 
+# Order-sizing quantity audit (D7 gap inventory #1) — applies to the
+# execution-math module only, where buy-order sizing arithmetic lives.
+# An int() cast whose argument subtree mentions any of these tokens is a
+# truncation of an order-sizing quantity, UNLESS it sits in the flag-off
+# structural allowlist: the `else` arm of an `if fractional:` split (the
+# sanctioned byte-identical legacy whole-share branch of
+# cap_buy_order_to_cash). Casts on the flag-ON branch always fail.
+ORDER_SIZING_MODULES = frozenset({"runner_execmath.py"})
+ORDER_SIZING_TOKENS = frozenset({
+    "shares",
+    "affordable",
+    "cash",
+    "remaining_cash",
+    "price",
+    "invest",
+    "notional",
+})
+
 
 def _subtree_tokens(node: ast.AST) -> set[str]:
     """Collect identifiers, attribute names, and string keys in a subtree."""
@@ -83,11 +112,16 @@ def _subtree_tokens(node: ast.AST) -> set[str]:
 
 
 class _IntCastAuditor(ast.NodeVisitor):
-    def __init__(self, path: Path, source: str) -> None:
+    def __init__(self, path: Path, source: str, *, sizing: bool = False) -> None:
         self.path = path
         self.source = source
+        self.sizing = sizing
         self.func_stack: list[str] = []
-        self.violations: list[tuple[int, str, str]] = []
+        # Depth counter: > 0 while inside the `else` arm of an
+        # `if fractional:` split — the structurally sanctioned flag-off
+        # legacy whole-share branch (order-sizing audit only).
+        self.flag_off_depth = 0
+        self.violations: list[tuple[int, str, str, str]] = []
 
     def _visit_func(self, node: ast.AST) -> None:
         self.func_stack.append(getattr(node, "name", "<lambda>"))
@@ -97,32 +131,56 @@ class _IntCastAuditor(ast.NodeVisitor):
     visit_FunctionDef = _visit_func
     visit_AsyncFunctionDef = _visit_func
 
+    def visit_If(self, node: ast.If) -> None:
+        if isinstance(node.test, ast.Name) and node.test.id == "fractional":
+            for child in node.body:
+                self.visit(child)
+            self.flag_off_depth += 1
+            for child in node.orelse:
+                self.visit(child)
+            self.flag_off_depth -= 1
+            return
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Name) and node.func.id == "int":
-            hits = set()
+            tokens: set[str] = set()
             for arg in list(node.args) + [kw.value for kw in node.keywords]:
-                hits |= _subtree_tokens(arg) & FILL_QTY_TOKENS
-            if hits and not (set(self.func_stack) & ALLOWED_FUNCTIONS):
+                tokens |= _subtree_tokens(arg)
+            fill_hits = tokens & FILL_QTY_TOKENS
+            if fill_hits and not (set(self.func_stack) & ALLOWED_FUNCTIONS):
                 snippet = ast.get_source_segment(self.source, node) or "int(...)"
                 self.violations.append(
-                    (node.lineno, ",".join(sorted(hits)), snippet.strip()),
+                    (node.lineno, "fill",
+                     ",".join(sorted(fill_hits)), snippet.strip()),
                 )
+            elif self.sizing:
+                sizing_hits = tokens & ORDER_SIZING_TOKENS
+                if sizing_hits and self.flag_off_depth == 0:
+                    snippet = (ast.get_source_segment(self.source, node)
+                               or "int(...)")
+                    self.violations.append(
+                        (node.lineno, "order-sizing",
+                         ",".join(sorted(sizing_hits)), snippet.strip()),
+                    )
         self.generic_visit(node)
 
 
 def audit_module(path: Path) -> list[str]:
     source = path.read_text()
     tree = ast.parse(source, filename=str(path))
-    auditor = _IntCastAuditor(path, source)
+    auditor = _IntCastAuditor(
+        path, source, sizing=path.name in ORDER_SIZING_MODULES,
+    )
     auditor.visit(tree)
     try:
         rel = path.relative_to(REPO_ROOT)
     except ValueError:  # audited path outside the repo (test fixtures)
         rel = path
     return [
-        f"{rel}:{lineno}: int() cast on fill "
+        f"{rel}:{lineno}: int() cast on {kind} "
         f"quantity ({tokens}): {snippet}"
-        for lineno, tokens, snippet in auditor.violations
+        for lineno, kind, tokens, snippet in auditor.violations
     ]
 
 
@@ -144,22 +202,24 @@ def main() -> int:
         return 2
     if violations:
         print(
-            "TRUNCATION-AUDIT FAIL — int() casts on fill quantities on the "
-            "commit path (S-FRAC stage 0, design §2.3):",
+            "TRUNCATION-AUDIT FAIL — int() casts on fill / order-sizing "
+            "quantities on the commit path (S-FRAC stage 0 §2.3 + D7 #1):",
             file=sys.stderr,
         )
         for v in violations:
             print(f"  {v}", file=sys.stderr)
         print(
-            "Fill quantities are broker-authoritative floats; the only "
-            "sanctioned whole-share branch is "
-            "adapters/commit_contract.py::normalize_fill_qty.",
+            "Fill quantities are broker-authoritative floats (sanctioned "
+            "whole-share branch: adapters/commit_contract.py::"
+            "normalize_fill_qty); order-sizing quantities in "
+            "runner_execmath.py may int-truncate only on the flag-off "
+            "`else` arm of an `if fractional:` split.",
             file=sys.stderr,
         )
         return 1
     print(
         f"TRUNCATION-AUDIT OK — {len(AUDITED_MODULES)} commit-path modules, "
-        "no int() cast on fill quantities.",
+        "no int() cast on fill or order-sizing quantities.",
     )
     return 0
 

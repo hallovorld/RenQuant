@@ -15,9 +15,40 @@ from typing import Any
 
 log = logging.getLogger("adapters.runner")  # same logger — log contract unchanged
 
+# Broker minimum notional for a fractional order — VALUE parity with
+# renquant-pipeline kernel/sizing.py::MIN_FRACTIONAL_NOTIONAL_USD and
+# renquant-execution stage 1 (execution#22): Alpaca rejects fractional
+# orders below ≈ $1 notional. This repo cannot import either subrepo
+# (repo boundary), so keep the value in sync by convention.
+MIN_FRACTIONAL_NOTIONAL_USD = 1.0
 
-def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | None, str | None]:
-    """Resize or reject one buy intent against the runner's live cash ledger."""
+
+def cap_buy_order_to_cash(
+    order: dict,
+    remaining_cash: float,
+    *,
+    fractional: bool = False,
+) -> tuple[dict | None, str | None]:
+    """Resize or reject one buy intent against the runner's live cash ledger.
+
+    ``fractional=False`` (the live default) is the unchanged legacy
+    whole-share behavior: a cash-capped resize truncates to
+    ``int(cash // price)`` shares and rejects when < 1 share is affordable.
+
+    ``fractional=True`` (S-FRAC v2 stage 2, ``execution.fractional_shares``)
+    floors the affordable quantity to 6 decimal places —
+    ``floor(cash / price · 1e6) / 1e6``, the same quantization convention as
+    renquant-pipeline ``kernel/sizing.py::compute_position_size`` — closing
+    the last buy-path int-truncation residual (S-FRAC v2 audit, D7 gap
+    inventory #1): a cash-capped fractional resize must not silently snap to
+    whole shares. Flooring (never round-to-nearest) keeps the realized
+    notional ≤ cash. A capped quantity whose notional lands below the ~$1
+    broker fractional minimum rejects as ``cash_budget_exhausted`` — the
+    fractional analog of the whole-share ``affordable < 1`` reject. The $25
+    anti-churn dust floor (pipeline ``fractional_dust_floor_usd``) is a
+    sizing-time ENTRY convention and deliberately does NOT re-apply to a
+    budget resize of an already-admitted intent.
+    """
     import math
     try:
         cash = float(remaining_cash)
@@ -33,9 +64,14 @@ def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | No
         capped = dict(order)
         capped["invest"] = invest
         return capped, None
-    affordable = int(cash // price)
-    if affordable < 1:
-        return None, "cash_budget_exhausted"
+    if fractional:
+        affordable = math.floor(cash / price * 1_000_000) / 1_000_000
+        if affordable <= 0 or affordable * price < MIN_FRACTIONAL_NOTIONAL_USD:
+            return None, "cash_budget_exhausted"
+    else:
+        affordable = int(cash // price)
+        if affordable < 1:
+            return None, "cash_budget_exhausted"
     capped = dict(order)
     capped["shares"] = affordable
     capped["invest"] = affordable * price
