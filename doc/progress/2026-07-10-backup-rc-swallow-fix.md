@@ -1,11 +1,19 @@
-# backup_to_github.sh: stop swallowing the multirepo backup rc
+# backup_to_github.sh: stop swallowing the multirepo backup rc   (PR #457)
 
-- **Date**: 2026-07-10
-- **Kind**: ops fix (no new capability)
-- **Status**: PR open
-- **Incident**: ntfy "Multirepo backup pipeline failed rc=0" at
-  2026-07-10T14:00:05Z while the backup was actually failing rc=1
-  (oversized `data/runs.alpaca.db` > GitHub 100MB limit).
+STATUS:    delivered
+WHAT:      Fix an if-construct rc-capture bug in `backup_to_github.sh` that
+           silently converted real backup failures (rc=1) into a reported
+           rc=0, hiding them from launchd.
+WHY/DIR:   Incident response — ntfy "Multirepo backup pipeline failed rc=0"
+           at 2026-07-10T14:00:05Z while the backup was actually failing
+           rc=1 (oversized `data/runs.alpaca.db` > GitHub 100MB limit).
+           Companion fix in renquant-orchestrator (`#452`, oversized-SQLite
+           gzip policy) addresses the rc=1 root cause itself; this PR fixes
+           the reporting bug that hid it.
+EVIDENCE:  n/a (ops/infra fix, not a model/data claim)
+NEXT:      Merged ≠ deployed — unblocks only after this machine syncs the
+           umbrella pin, and after renquant-orchestrator#452 lands (the
+           actual rc=1 root cause).
 
 ## Problem [VERIFIED]
 
