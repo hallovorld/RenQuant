@@ -46,9 +46,31 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _STRATEGY = REPO_ROOT / "backtesting" / "renquant_104"
-for _p in (str(REPO_ROOT), str(_STRATEGY)):
+for _p in (str(REPO_ROOT), str(_STRATEGY), str(REPO_ROOT / "tests")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from _order_math_owner import owner_cap_affordable_qty  # noqa: E402
+from adapters import runner_execmath as _execmath  # noqa: E402
+
+
+@pytest.fixture
+def with_cash_cap_delegate(monkeypatch):
+    """Force the owner cash-cap delegate (renquant-execution order_math,
+    execution#25) into the compatibility call-site; skip when the pinned
+    checkout predates the ownership move."""
+    owner = owner_cap_affordable_qty()
+    if owner is None:
+        pytest.skip("renquant_execution.order_math unavailable "
+                    "(pinned checkout predates execution#25)")
+    monkeypatch.setattr(_execmath, "_cap_affordable_qty", owner)
+
+
+@pytest.fixture
+def without_cash_cap_delegate(monkeypatch):
+    """Simulate an older pinned renquant-execution missing order_math."""
+    monkeypatch.setattr(_execmath, "_cap_affordable_qty", None)
+
 
 TODAY = datetime.date(2026, 7, 3)
 
@@ -343,12 +365,14 @@ class TestE2ECommitPath:
             ("OXY", "cash_budget_exhausted"),
         ]
 
-    def test_fractional_cash_cap_resizes_on_6dp_grid(self, tmp_path):
+    def test_fractional_cash_cap_resizes_on_6dp_grid(
+            self, tmp_path, with_cash_cap_delegate):
         """D7 gap inventory #1 (the last buy-path int truncation): a buy
         whose cost exceeds available cash, with the capability gate fully
         satisfied, is resized to a 6dp-floored FRACTIONAL quantity — the
         legacy cap would have int-truncated 0.5 affordable shares to 0 and
-        rejected the order outright."""
+        rejected the order outright. The sizing math is delegated to the
+        owner renquant-execution order_math (execution#25)."""
         config = _config(fractional=True, z9=False)
         broker = FakeBroker(
             fills={
@@ -373,6 +397,34 @@ class TestE2ECommitPath:
         assert placed["budget_adjustment"] == "cash_budget_resized"
         assert placed["original_shares"] == 1
         assert placed["invest"] == 0.5 * 100.0  # never exceeds the $50 cash
+
+    def test_fractional_cash_cap_fails_closed_without_owner_module(
+            self, tmp_path, without_cash_cap_delegate, caplog):
+        """Compatibility fallback (ownership move, execution#25): when the
+        pinned renquant-execution predates order_math, the SAME
+        gate-satisfied resize case degrades FAIL-CLOSED to the legacy
+        whole-share cap — the 0.5-share slice is rejected exactly as
+        pre-D7 legacy (never a crash, never umbrella-local fractional
+        math) and the degradation is logged."""
+        config = _config(fractional=True, z9=False)
+        broker = FakeBroker(fills={}, fractional_contract=True)
+        ra = _make_adapter(tmp_path, config=config, broker=broker,
+                           software_stops=ArmedSoftwareStops())
+        ctx = _make_ctx(
+            config,
+            orders=[{"ticker": "BLK", "shares": 1, "price": 100.0}],
+            prices={"BLK": 100.0},
+            cash=50.0,
+        )
+        with caplog.at_level("WARNING", logger="adapters.runner"):
+            ra.commit(ctx)
+        assert broker.place_order_calls == []
+        assert ctx.orders_placed == []
+        assert [(o["ticker"], o["skip_reason"]) for o in ctx.orders_skipped] == [
+            ("BLK", "cash_budget_exhausted"),
+        ]
+        assert any("EXECMATH-CASHCAP-FALLBACK" in r.message
+                   for r in caplog.records)
 
     def test_flag_off_cash_cap_still_int_truncates(self, tmp_path):
         """Wiring counterpart: with the flag OFF (all of production), the
@@ -514,16 +566,17 @@ class TestTruncationAudit:
     def test_auditor_flags_order_sizing_int_regression_in_execmath(
             self, tmp_path):
         """Planted regression: re-derive the CURRENT runner_execmath.py
-        with its fractional 6dp floor swapped back to the killed
+        with its flag-ON delegate call (owner: renquant-execution
+        order_math, execution#25) swapped back to the killed
         ``int(cash // price)`` (i.e. an int truncation on the flag-ON
         branch). The audit must fail — this class of gap can't silently
         return."""
         mod = _load_truncation_audit()
         src = (_STRATEGY / "adapters" / "runner_execmath.py").read_text()
-        floor_expr = "math.floor(cash / price * 1_000_000) / 1_000_000"
-        assert floor_expr in src, "fixture drifted from runner_execmath.py"
+        delegate_expr = "_cap_affordable_qty(price, cash, fractional=True)"
+        assert delegate_expr in src, "fixture drifted from runner_execmath.py"
         bad = tmp_path / "runner_execmath.py"
-        bad.write_text(src.replace(floor_expr, "int(cash // price)"))
+        bad.write_text(src.replace(delegate_expr, "int(cash // price)"))
         violations = mod.run_audit((bad,))
         assert len(violations) == 1
         assert "order-sizing" in violations[0]

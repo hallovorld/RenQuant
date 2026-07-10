@@ -7,6 +7,11 @@ a broker execution attempt, project holdings after orders, and snapshot
 post-execution. No broker calls of their own (broker_order_execution
 takes the already-returned result dict). Moved verbatim; re-exported
 from runner for back-compat.
+
+Cash-cap sizing math is NOT implemented here: it is owned by
+renquant-execution ``order_math.cap_affordable_qty`` (execution#25) and
+``cap_buy_order_to_cash`` is a time-bounded compatibility call-site
+(see its docstring for the fail-closed fallback contract).
 """
 from __future__ import annotations
 
@@ -15,12 +20,22 @@ from typing import Any
 
 log = logging.getLogger("adapters.runner")  # same logger — log contract unchanged
 
-# Broker minimum notional for a fractional order — VALUE parity with
-# renquant-pipeline kernel/sizing.py::MIN_FRACTIONAL_NOTIONAL_USD and
-# renquant-execution stage 1 (execution#22): Alpaca rejects fractional
-# orders below ≈ $1 notional. This repo cannot import either subrepo
-# (repo boundary), so keep the value in sync by convention.
-MIN_FRACTIONAL_NOTIONAL_USD = 1.0
+# Delegate OWNER of the cash-cap sizing math: renquant-execution
+# ``order_math.cap_affordable_qty`` (execution#25 — ownership moved there
+# per the RenQuant#454 review; the deprecated umbrella must not own new
+# order math). The live daily run puts the pinned renquant-execution
+# checkout on PYTHONPATH; an OLDER pin that predates ``order_math`` must
+# degrade FAIL-CLOSED to the legacy whole-share truncation below — never
+# crash the commit path, never re-implement fractional math here. This
+# whole call-site is time-bounded compatibility surface: it is deleted
+# when RunnerAdapter order math migrates into renquant-execution
+# (adapter-migration program; renquant-execution owns the cutover).
+try:
+    from renquant_execution.order_math import (
+        cap_affordable_qty as _cap_affordable_qty,
+    )
+except ImportError:  # older pinned checkout / renquant_execution not on path
+    _cap_affordable_qty = None
 
 
 def cap_buy_order_to_cash(
@@ -31,20 +46,26 @@ def cap_buy_order_to_cash(
 ) -> tuple[dict | None, str | None]:
     """Resize or reject one buy intent against the runner's live cash ledger.
 
+    COMPATIBILITY CALL-SITE ONLY (time-bounded): the sizing math is owned
+    by renquant-execution ``order_math.cap_affordable_qty`` and BOTH modes
+    delegate there — this wrapper keeps only the runner's order-intent
+    envelope (the afford-check epsilon, reason strings, and the resized
+    dict shape) plus one fail-closed fallback for an older pinned
+    renquant-execution that predates ``order_math``.
+
     ``fractional=False`` (the live default) is the unchanged legacy
     whole-share behavior: a cash-capped resize truncates to
-    ``int(cash // price)`` shares and rejects when < 1 share is affordable.
+    ``int(cash // price)`` shares and rejects when < 1 share is affordable
+    — byte-identical whether delegated or on the inline fallback, pinned
+    by the 4000-case grid in tests/test_runner_execmath_invariants.py.
 
     ``fractional=True`` (S-FRAC v2 stage 2, ``execution.fractional_shares``)
-    floors the affordable quantity to 6 decimal places —
-    ``floor(cash / price · 1e6) / 1e6``, the same quantization convention as
-    renquant-pipeline ``kernel/sizing.py::compute_position_size`` — closing
-    the last buy-path int-truncation residual (S-FRAC v2 audit, D7 gap
-    inventory #1): a cash-capped fractional resize must not silently snap to
-    whole shares. Flooring (never round-to-nearest) keeps the realized
-    notional ≤ cash. A capped quantity whose notional lands below the ~$1
-    broker fractional minimum rejects as ``cash_budget_exhausted`` — the
-    fractional analog of the whole-share ``affordable < 1`` reject. The $25
+    floors the affordable quantity to the 6dp sizing grid and rejects below
+    the ~$1 broker fractional min-notional (D7 gap inventory #1 semantics —
+    see the owner module for the full contract). If the delegate is missing,
+    a fractional request degrades to the legacy whole-share cap with a
+    logged warning: a too-small whole-share resize (or a reject) is
+    conservative; umbrella-local fractional math is not an option. The $25
     anti-churn dust floor (pipeline ``fractional_dust_floor_usd``) is a
     sizing-time ENTRY convention and deliberately does NOT re-apply to a
     budget resize of an already-admitted intent.
@@ -64,12 +85,30 @@ def cap_buy_order_to_cash(
         capped = dict(order)
         capped["invest"] = invest
         return capped, None
+    if fractional and _cap_affordable_qty is None:
+        # FAIL CLOSED: the delegate owner is unavailable (pinned
+        # renquant-execution predates the order-cash-cap ownership move).
+        # Degrade to the legacy whole-share cap instead of crashing the
+        # commit path; the warning makes the degradation observable.
+        log.warning(
+            "EXECMATH-CASHCAP-FALLBACK: renquant_execution.order_math "
+            "unavailable (pinned checkout predates execution#25); "
+            "fractional cash cap for %s fails closed to whole-share "
+            "truncation",
+            order.get("ticker"),
+        )
+        fractional = False
     if fractional:
-        affordable = math.floor(cash / price * 1_000_000) / 1_000_000
-        if affordable <= 0 or affordable * price < MIN_FRACTIONAL_NOTIONAL_USD:
+        affordable = _cap_affordable_qty(price, cash, fractional=True)
+        if affordable <= 0.0:
             return None, "cash_budget_exhausted"
     else:
-        affordable = int(cash // price)
+        if _cap_affordable_qty is not None:
+            affordable = _cap_affordable_qty(price, cash)
+        else:
+            # Inline legacy fallback — the ONE sanctioned int() truncation
+            # (flag-off arm; see scripts/check_commit_path_no_int_truncation).
+            affordable = int(cash // price)
         if affordable < 1:
             return None, "cash_budget_exhausted"
     capped = dict(order)
