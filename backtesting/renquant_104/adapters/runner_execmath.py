@@ -7,6 +7,19 @@ a broker execution attempt, project holdings after orders, and snapshot
 post-execution. No broker calls of their own (broker_order_execution
 takes the already-returned result dict). Moved verbatim; re-exported
 from runner for back-compat.
+
+TIME-BOUNDED MIGRATION EXCEPTION (Codex review, renquant-orchestrator PR
+#444): this module is umbrella-resident legacy, not the target architecture.
+The owning repo for execution math is ``renquant-execution``; the removal
+plan is the adapter-migration program (moving RunnerAdapter order math,
+including this module, into that repo). Until that migration lands, changes
+here must carry this same label and must not add umbrella-owned capability
+beyond closing a specific, named contract gap.
+
+Accordingly, cash-cap sizing math is NOT implemented here: it is owned by
+renquant-execution ``order_math.cap_affordable_qty`` (execution#25) and
+``cap_buy_order_to_cash`` is a time-bounded compatibility call-site
+(see its docstring for the fail-closed fallback contract).
 """
 from __future__ import annotations
 
@@ -15,9 +28,56 @@ from typing import Any
 
 log = logging.getLogger("adapters.runner")  # same logger — log contract unchanged
 
+# Delegate OWNER of the cash-cap sizing math: renquant-execution
+# ``order_math.cap_affordable_qty`` (execution#25 — ownership moved there
+# per the RenQuant#454 review; the deprecated umbrella must not own new
+# order math). The live daily run puts the pinned renquant-execution
+# checkout on PYTHONPATH; an OLDER pin that predates ``order_math`` must
+# degrade FAIL-CLOSED to the legacy whole-share truncation below — never
+# crash the commit path, never re-implement fractional math here. This
+# whole call-site is time-bounded compatibility surface: it is deleted
+# when RunnerAdapter order math migrates into renquant-execution
+# (adapter-migration program; renquant-execution owns the cutover).
+try:
+    from renquant_execution.order_math import (
+        cap_affordable_qty as _cap_affordable_qty,
+    )
+except ImportError:  # older pinned checkout / renquant_execution not on path
+    _cap_affordable_qty = None
 
-def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | None, str | None]:
-    """Resize or reject one buy intent against the runner's live cash ledger."""
+
+def cap_buy_order_to_cash(
+    order: dict,
+    remaining_cash: float,
+    *,
+    fractional: bool = False,
+) -> tuple[dict | None, str | None]:
+    """Resize or reject one buy intent against the runner's live cash ledger.
+
+    COMPATIBILITY CALL-SITE ONLY (time-bounded): the sizing math is owned
+    by renquant-execution ``order_math.cap_affordable_qty`` and BOTH modes
+    delegate there — this wrapper keeps only the runner's order-intent
+    envelope (the afford-check epsilon, reason strings, and the resized
+    dict shape) plus one fail-closed fallback for an older pinned
+    renquant-execution that predates ``order_math``.
+
+    ``fractional=False`` (the live default) is the unchanged legacy
+    whole-share behavior: a cash-capped resize truncates to
+    ``int(cash // price)`` shares and rejects when < 1 share is affordable
+    — byte-identical whether delegated or on the inline fallback, pinned
+    by the 4000-case grid in tests/test_runner_execmath_invariants.py.
+
+    ``fractional=True`` (S-FRAC v2 stage 2, ``execution.fractional_shares``)
+    floors the affordable quantity to the 6dp sizing grid and rejects below
+    the ~$1 broker fractional min-notional (D7 gap inventory #1 semantics —
+    see the owner module for the full contract). If the delegate is missing,
+    a fractional request degrades to the legacy whole-share cap with a
+    logged warning: a too-small whole-share resize (or a reject) is
+    conservative; umbrella-local fractional math is not an option. The $25
+    anti-churn dust floor (pipeline ``fractional_dust_floor_usd``) is a
+    sizing-time ENTRY convention and deliberately does NOT re-apply to a
+    budget resize of an already-admitted intent.
+    """
     import math
     try:
         cash = float(remaining_cash)
@@ -33,9 +93,32 @@ def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | No
         capped = dict(order)
         capped["invest"] = invest
         return capped, None
-    affordable = int(cash // price)
-    if affordable < 1:
-        return None, "cash_budget_exhausted"
+    if fractional and _cap_affordable_qty is None:
+        # FAIL CLOSED: the delegate owner is unavailable (pinned
+        # renquant-execution predates the order-cash-cap ownership move).
+        # Degrade to the legacy whole-share cap instead of crashing the
+        # commit path; the warning makes the degradation observable.
+        log.warning(
+            "EXECMATH-CASHCAP-FALLBACK: renquant_execution.order_math "
+            "unavailable (pinned checkout predates execution#25); "
+            "fractional cash cap for %s fails closed to whole-share "
+            "truncation",
+            order.get("ticker"),
+        )
+        fractional = False
+    if fractional:
+        affordable = _cap_affordable_qty(price, cash, fractional=True)
+        if affordable <= 0.0:
+            return None, "cash_budget_exhausted"
+    else:
+        if _cap_affordable_qty is not None:
+            affordable = _cap_affordable_qty(price, cash)
+        else:
+            # Inline legacy fallback — the ONE sanctioned int() truncation
+            # (flag-off arm; see scripts/check_commit_path_no_int_truncation).
+            affordable = int(cash // price)
+        if affordable < 1:
+            return None, "cash_budget_exhausted"
     capped = dict(order)
     capped["shares"] = affordable
     capped["invest"] = affordable * price

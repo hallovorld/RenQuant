@@ -29,17 +29,50 @@ import random
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
 if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
+if str(REPO_ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "tests"))
 
+from _order_math_owner import owner_cap_affordable_qty  # noqa: E402
 from adapters import runner as _runner  # noqa: E402
+from adapters import runner_execmath as _execmath  # noqa: E402
 from adapters.runner_execmath import (  # noqa: E402
     broker_order_execution,
     cap_buy_order_to_cash,
     normalize_order_status,
 )
+
+
+@pytest.fixture
+def with_delegate(monkeypatch):
+    """Force the delegate-present wiring (owner: renquant-execution
+    order_math, execution#25), independent of test import order."""
+    owner = owner_cap_affordable_qty()
+    if owner is None:
+        pytest.skip("renquant_execution.order_math unavailable "
+                    "(pinned checkout predates execution#25)")
+    monkeypatch.setattr(_execmath, "_cap_affordable_qty", owner)
+
+
+@pytest.fixture(params=["delegate", "fallback"])
+def either_wiring(request, monkeypatch):
+    """Both call-site wirings: owner delegate present, and the fail-closed
+    inline fallback (older pinned renquant-execution). Flag-off behavior
+    must be byte-identical under BOTH."""
+    if request.param == "delegate":
+        owner = owner_cap_affordable_qty()
+        if owner is None:
+            pytest.skip("renquant_execution.order_math unavailable "
+                        "(pinned checkout predates execution#25)")
+        monkeypatch.setattr(_execmath, "_cap_affordable_qty", owner)
+    else:
+        monkeypatch.setattr(_execmath, "_cap_affordable_qty", None)
+    return request.param
 
 SEED = 0x5EED
 N = 4000  # cases per property — large enough to exercise the grid corners
@@ -159,6 +192,146 @@ class TestCapBuyOrderToCash:
                 assert capped is None and reason == "bad_order", (order, reason)
             capped, reason = cap_buy_order_to_cash({"shares": 5.0, "price": 10.0}, bad)
             assert capped is None and reason == "bad_order", (bad, reason)
+
+
+def _legacy_cap_buy_order_to_cash(order, remaining_cash):
+    """FROZEN copy of the pre-D7 whole-share implementation (verbatim).
+
+    The flag-off byte-identity pin below sweeps the input grid and demands
+    the shipped function with ``fractional`` unset/False return EXACTLY
+    what this frozen legacy body returns — same reason strings, same dict
+    contents, same value types (``int`` shares on a resize). Any flag-off
+    drift in a future edit fails here, not in a live forensic.
+    """
+    import math
+    try:
+        cash = float(remaining_cash)
+        shares = float(order.get("shares", 0.0))
+        price = float(order.get("price", 0.0))
+    except (TypeError, ValueError, AttributeError):
+        return None, "bad_order"
+    if not (math.isfinite(cash) and math.isfinite(shares)
+            and math.isfinite(price) and price > 0 and shares > 0):
+        return None, "bad_order"
+    invest = shares * price
+    if invest <= cash + 1e-6:
+        capped = dict(order)
+        capped["invest"] = invest
+        return capped, None
+    affordable = int(cash // price)
+    if affordable < 1:
+        return None, "cash_budget_exhausted"
+    capped = dict(order)
+    capped["shares"] = affordable
+    capped["invest"] = affordable * price
+    capped["budget_adjustment"] = "cash_budget_resized"
+    capped["original_shares"] = order.get("shares")
+    return capped, "cash_budget_resized"
+
+
+class TestCapBuyOrderToCashFractional:
+    """S-FRAC v2 stage 2 — fractional-aware cash cap (D7 gap inventory #1),
+    delegated to the owner renquant-execution order_math (execution#25):
+    flag-off must be byte-identical legacy under BOTH wirings (delegate
+    present / fail-closed fallback); flag-on floors to the 6dp grid and
+    still NEVER overspends."""
+
+    def test_flag_off_is_byte_identical_to_frozen_legacy(self, either_wiring):
+        """THE flag-off regression pin, swept under BOTH call-site wirings
+        (owner delegate present, and the missing-owner inline fallback):
+        default call and explicit ``fractional=False`` both reproduce the
+        frozen legacy result exactly — values, reason strings, dict keys,
+        and the ``int`` type of a resized share count."""
+        for cash, shares, price in _cases(11):
+            order = {"shares": shares, "price": price, "ticker": "T"}
+            want = _legacy_cap_buy_order_to_cash(dict(order), cash)
+            for kwargs in ({}, {"fractional": False}):
+                got = cap_buy_order_to_cash(dict(order), cash, **kwargs)
+                assert got == want, (
+                    either_wiring, cash, shares, price, kwargs, got, want)
+                if got[0] is not None and got[1] == "cash_budget_resized":
+                    assert type(got[0]["shares"]) is int, (
+                        either_wiring, cash, shares, price)
+
+    def test_fractional_fallback_never_crashes_and_stays_whole_share(self):
+        """Missing-owner degradation over the full grid: with the delegate
+        absent, ``fractional=True`` NEVER raises and every admitted resize
+        is the legacy whole-share result (fail-closed, conservative)."""
+        try:
+            _orig = _execmath._cap_affordable_qty
+            _execmath._cap_affordable_qty = None
+            for cash, shares, price in _cases(16):
+                order = {"shares": shares, "price": price, "ticker": "T"}
+                want = _legacy_cap_buy_order_to_cash(dict(order), cash)
+                got = cap_buy_order_to_cash(dict(order), cash, fractional=True)
+                assert got == want, (cash, shares, price, got, want)
+        finally:
+            _execmath._cap_affordable_qty = _orig
+
+    def test_never_overspends_fractional(self, with_delegate):
+        """The core money-safety invariant holds in fractional mode: the
+        floored 6dp quantity never spends past remaining cash."""
+        for cash, shares, price in _cases(12):
+            order = {"shares": shares, "price": price, "ticker": "T"}
+            capped, reason = cap_buy_order_to_cash(order, cash, fractional=True)
+            if capped is None:
+                assert reason in ("cash_budget_exhausted", "bad_order"), (
+                    cash, shares, price, reason)
+                continue
+            spend = float(capped["shares"]) * price
+            assert spend <= cash + 1e-6, (
+                f"OVERSPEND(frac) cash={cash} shares={capped['shares']} "
+                f"price={price} spend={spend} reason={reason}")
+
+    def test_fractional_resize_lands_on_6dp_grid_and_shrinks(
+            self, with_delegate):
+        """A fractional resize lands on the 1e-6 quantity grid (floored,
+        within float noise), shrinks the order, and its notional clears
+        the ~$1 broker fractional minimum."""
+        for cash, shares, price in _cases(13):
+            order = {"shares": shares, "price": price, "ticker": "T"}
+            capped, reason = cap_buy_order_to_cash(order, cash, fractional=True)
+            if reason != "cash_budget_resized":
+                continue
+            new = float(capped["shares"])
+            assert abs(new * 1e6 - round(new * 1e6)) < 1e-3, (
+                f"off the 6dp grid: {new} (cash={cash}, price={price})")
+            assert 0 < new < shares, (cash, shares, price, new)
+            assert new * price >= 1.0 - 1e-9, (
+                f"dust resize admitted: {new} × {price}")
+            assert capped["original_shares"] == shares
+
+    def test_fractional_reject_implies_below_min_notional(
+            self, with_delegate):
+        """'cash_budget_exhausted' in fractional mode is justified: the
+        floored affordable notional is below the $1 broker minimum."""
+        import math as _m
+        for cash, shares, price in _cases(14):
+            order = {"shares": shares, "price": price, "ticker": "T"}
+            capped, reason = cap_buy_order_to_cash(order, cash, fractional=True)
+            if capped is not None or reason != "cash_budget_exhausted":
+                continue
+            affordable = _m.floor(cash / price * 1_000_000) / 1_000_000
+            assert affordable * price < 1.0, (cash, shares, price, affordable)
+
+    def test_fractional_monotone_nondecreasing_in_cash(self, with_delegate):
+        rng = random.Random(SEED + 15)
+        for _ in range(N):
+            price = rng.uniform(0.5, 800)
+            shares = float(rng.randint(1, 1500))
+            c1 = rng.uniform(0, 200_000)
+            c2 = c1 + rng.uniform(0, 50_000)  # c2 >= c1
+            order = {"shares": shares, "price": price, "ticker": "T"}
+
+            def _got(cash):
+                capped, _ = cap_buy_order_to_cash(
+                    dict(order), cash, fractional=True)
+                return float(capped["shares"]) if capped else 0.0
+
+            s1, s2 = _got(c1), _got(c2)
+            assert s2 >= s1, (
+                f"non-monotone(frac): cash {c1}->{c2} gave shares {s1}->{s2} "
+                f"(price={price}, want={shares})")
 
 
 class TestBrokerOrderExecution:
