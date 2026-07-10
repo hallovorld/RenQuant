@@ -7,6 +7,14 @@ a broker execution attempt, project holdings after orders, and snapshot
 post-execution. No broker calls of their own (broker_order_execution
 takes the already-returned result dict). Moved verbatim; re-exported
 from runner for back-compat.
+
+TIME-BOUNDED MIGRATION EXCEPTION (Codex review, renquant-orchestrator PR
+#444): this module is umbrella-resident legacy, not the target architecture.
+The owning repo for execution math is ``renquant-execution``; the removal
+plan is the adapter-migration program (moving RunnerAdapter order math,
+including this module, into that repo). Until that migration lands, changes
+here must carry this same label and must not add umbrella-owned capability
+beyond closing a specific, named contract gap.
 """
 from __future__ import annotations
 

@@ -78,8 +78,23 @@ execution*/e2e) 497 passed, 5 failed — all 5 reproduce on pristine `main`
 in this environment (runner_artifacts earnings/corr fixtures +
 trade_ntfy source-level test; unrelated); auditor exit 0.
 
+## Repo-ownership note (time-bounded migration exception)
+
+This fix lands in the umbrella tree because the bug it closes lives in
+`adapters/runner_execmath.py`, and the entire `RunnerAdapter` order-math
+layer is umbrella-resident legacy. Per Codex review on renquant-orchestrator
+PR #444 (the D7 gap-inventory audit this fix closes item #1 of): **this is a
+TIME-BOUNDED MIGRATION EXCEPTION, not a proposed architecture.** The target
+owner for execution math is `renquant-execution`; the removal plan is the
+adapter-migration program (moving `RunnerAdapter` order math, including this
+module, into that repo). Until that migration lands, any further change to
+umbrella-resident order math must carry this same exception label and must
+not add new umbrella-owned capability beyond what's needed to close a
+specific S-FRAC v2 contract gap — this PR adds none: `cap_buy_order_to_cash`
+gains a flag parameter to close the one remaining truncation, nothing else.
+
 ## Follow-ups
 
-None for this slice. Stage-2 activation (turning the flag on in
-strategy-104) remains a separate operator decision gated on stage 3
-(software stops) per the S-FRAC v2 design.
+None for this slice beyond the migration-exception note above. Stage-2
+activation (turning the flag on in strategy-104) remains a separate operator
+decision gated on stage 3 (software stops) per the S-FRAC v2 design.
