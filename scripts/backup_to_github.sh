@@ -66,23 +66,36 @@ run_multirepo_backup() {
 import renquant_orchestrator.state_backup  # noqa: F401
 PY
     then
+        # tee keeps the module's JSON summary in the launchd log AND in a temp
+        # file so a failure notification can carry the last JSON line.
         PYTHONPATH="$orchestrator_src:${PYTHONPATH:-}" "$PYTHON" -m renquant_orchestrator.state_backup \
             --repo-root "$REPO_ROOT" \
-            --backup-repo "$BACKUP_REPO"
-        return $?
+            --backup-repo "$BACKUP_REPO" 2>&1 | tee "$MULTIREPO_LOG"
+        return "${PIPESTATUS[0]}"
     fi
     return 127
 }
 
 if [ "${RQ_STATE_BACKUP_RUNNER:-multirepo}" != "legacy" ]; then
-    if run_multirepo_backup; then
+    # rc-capture bug (ntfy incident 2026-07-10T14:00:05Z): wrapping the
+    # function call in an if-construct and reading `$?` afterwards captured
+    # the construct's status (0 when no branch ran), so real failures notified
+    # "failed rc=0" and the script exited 0 — launchd never saw the failure.
+    # The `&& ... || ...` form captures the function's rc directly and keeps
+    # the call in a checked context so the ERR trap does not double-notify.
+    MULTIREPO_LOG="$(mktemp)"
+    run_multirepo_backup && BACKUP_RC=0 || BACKUP_RC=$?
+    if [ "$BACKUP_RC" -eq 0 ]; then
+        rm -f "$MULTIREPO_LOG"
         exit 0
     fi
-    BACKUP_RC=$?
     if [ "$BACKUP_RC" -ne 127 ]; then
-        notify_failure "Multirepo backup pipeline failed rc=$BACKUP_RC at $TS_ISO"
+        BACKUP_SUMMARY="$(tail -n 1 "$MULTIREPO_LOG" 2>/dev/null | cut -c1-1000 || true)"
+        rm -f "$MULTIREPO_LOG"
+        notify_failure "Multirepo backup pipeline failed rc=$BACKUP_RC at $TS_ISO${BACKUP_SUMMARY:+ :: $BACKUP_SUMMARY}"
         exit "$BACKUP_RC"
     fi
+    rm -f "$MULTIREPO_LOG"
     if renquant_strict_enabled RQ_STATE_BACKUP_STRICT; then
         notify_failure "renquant_orchestrator.state_backup unavailable and strict multirepo mode is enabled"
         echo "ERROR: renquant_orchestrator.state_backup unavailable and strict multirepo mode is enabled"
