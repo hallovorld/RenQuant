@@ -4,26 +4,31 @@
     "n_names": 292,
     "n_rows": 147066
   },
-  "note": "wall-clock generation timestamp intentionally omitted for determinism/reproducibility framing; generator_sha256 + the input hashes are the provenance record, not a run timestamp.",
-  "object_uri": "NOT PERSISTED - no DVC/LFS/object-storage backend is configured for this repo yet. This manifest is a REPRODUCIBILITY RECIPE, not the durable artifact itself: the parquet payload (the actual data) is regeneratable on demand via `python3 scripts/regen_oos_pick_table.py` against the SAME pinned manifest_input/reference_artifact (hash-verified against the fields above, generator hash-verified against generator_sha256, and \u2014 new in round 3 \u2014 the regenerated table's own content is now hash-verifiable against output_content_sha256 above, so a fresh run can prove it reproduced the SAME evidence, not merely the same recipe), and is deliberately NOT committed to git (matches PROD_PATH_RULES in renquant-orchestrator's agent_workflows.py: `data/.*\\.parquet$` is a protected production-data path).",
+  "note": "wall-clock generation timestamp intentionally omitted for determinism/reproducibility framing (same as RenQuant#430); the generator/contract/input content hashes are the provenance record, not a run timestamp.",
   "output": {
     "output_content_sha256": "ba964b407ec1e0a5a25b5f733c91588822e24c3e56b8f53c71096c2cc57b0125",
-    "output_content_sha256_note": "the PROVENANCE ANCHOR \u2014 sha256 of the table's actual content (canonically re-sorted by (date, name), floats formatted to a fixed 10-decimal-place string), NOT its shape. A fresh regeneration's output_content_sha256 must match this stamped value to actually PROVE it reproduced this evidence table's content \u2014 matching n_rows/n_dates/n_names alone does not (Codex review round 3: counts/schema can match while scores, labels, regimes, or row ordering differ). See canonical_table_content_hash() for the exact algorithm.",
+    "output_content_sha256_note": "the PROVENANCE ANCHOR \u2014 sha256 of the table's actual content (canonically re-sorted by (date, name), floats formatted to a fixed 10-decimal-place string), NOT its shape. A regeneration must match this value to prove it reproduced this evidence table's content; matching counts alone does not. Same algorithm as RenQuant#430 canonical_table_content_hash \u2014 see renquant_backtesting.analysis.pick_table.",
     "output_parquet_sha256": "0cdadd9e34e164fe02a7a693183a60a848f1ed7beda3259f7c8d1b105d55f20c",
-    "output_parquet_sha256_note": "a SECONDARY, weaker transport hash of the literal on-disk .parquet file bytes \u2014 detects local file corruption, but is NOT portable across parquet library/compression-setting versions even for identical logical content. Use output_content_sha256 above to verify reproducibility, not this field."
+    "output_parquet_sha256_note": "a SECONDARY, weaker transport hash of the literal on-disk .parquet bytes \u2014 detects local file corruption, but is NOT portable across parquet library/compression versions even for identical logical content. Verify reproducibility against output_content_sha256, not this field."
   },
   "recipe": {
-    "generator": "scripts/regen_oos_pick_table.py",
-    "generator_commit": "3561dcd2464dc56634860b36a82342c328d2ae94",
-    "generator_commit_note": "best-effort `git rev-parse HEAD` at generation time \u2014 informational only, NOT the provenance anchor (a later commit to this script would leave this field stale in an already-committed manifest with no way to detect it; generator_sha256 above is a content hash of the generator's own bytes and is always self-consistent regardless of git history/commit timing)",
-    "generator_sha256": "5f86bcf184156415c0eff2dd00401aeadbbb2c914148619c04bc032d4355e0e5",
+    "contract_module": "renquant_backtesting/analysis/pick_table.py",
+    "contract_module_sha256": "4a4ce1dc44ed35ea50344ad5c96bc7de7583f9c50b3e9563073e478cc352a5f3",
+    "generator": "renquant_backtesting/analysis/analyze_manifest_sanity_placebo.py",
+    "generator_commit": "68b222e9f1d8a41bc869cb09312ae4d2197b6ef8",
+    "generator_commit_note": "best-effort `git rev-parse HEAD` at generation time \u2014 informational only, NOT the provenance anchor; generator_sha256 above is a content hash of the generator's own bytes and is self-consistent regardless of git history",
+    "generator_sha256": "9e0c2ac699892a02ffadb35c6c01f9b8715cdf70b099d6544b216ffcb6df2fb0",
     "label": "fwd_60d_excess",
     "manifest_input": "backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.json",
     "manifest_input_sha256": "ee7684a6240825dc5c50f84cfc43ef007e45b6963b0f25ba4d2f18682f2b5e8b",
     "reference_artifact": "backtesting/renquant_104/artifacts/walkforward_gbdt_prod_recipe_v2/2026-03-02/panel-ltr.json",
     "reference_artifact_sha256": "8fd7d51e517d38728845ebb7a085394f2e1806c138c118bfcfb4702795512351",
-    "val_cut": "2024-02-01"
+    "val_cut": "2024-02-01",
+    "val_end": "2026-02-11",
+    "val_start": "2024-02-02"
   },
+  "research_only": true,
+  "research_only_note": "this artifact contains REALIZED forward labels, not only predictions \u2014 it must never be consumed as a live inference input. temporal_semantics below states when each field was actually knowable.",
   "schema": {
     "columns": [
       "date",
@@ -33,6 +38,18 @@
       "fwd_60d_excess",
       "regime"
     ],
-    "description": "one row per (date, name); score = point-in-time model raw score (mu); decile_rank = cross-sectional decile within date, 0(worst)-9(best/top); fwd_60d_excess = RAW unclipped realized forward-60-trading-day excess return; regime = live regime label at pick date"
+    "description": "one row per (date, name); score = point-in-time model raw score (mu) from the same manifest contract the WF gate uses; decile_rank = cross-sectional decile within date, 0(worst)-9(best/top); fwd_60d_excess = realized forward label as loaded by the sanity panel; regime = live regime label at the pick date"
+  },
+  "temporal_semantics": {
+    "fields": {
+      "decile_rank": "cross-sectional transform of `score` within `date`, knowable AS OF `date`",
+      "fwd_60d_excess": "REALIZED forward-looking outcome, NOT knowable as of `date` \u2014 only knowable once the forward window has elapsed",
+      "regime": "live regime label as of `date`",
+      "score": "point-in-time model output, knowable AS OF `date`"
+    },
+    "label_lookahead_days": 60,
+    "label_realized": "the `fwd_60d_excess` column is a REALIZED forward excess return: for a row dated D it is only observable ~60 trading days AFTER D. Rows therefore embed future information relative to their own date.",
+    "not_a_live_input": "this artifact exists for offline research (Track A conditional pick-quality evaluation); it must NEVER be read as a live inference/scoring input. Canonical production output paths (data/ outside data/exp/, artifacts/) are mechanically refused at write time \u2014 see refuse_production_output_path().",
+    "research_only": true
   }
 }
