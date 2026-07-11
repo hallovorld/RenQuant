@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: de3c0b4a056731aacdef1b6253af8bbdbc21ebfad878a34ddb11f086d9e7070f (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
+Source fingerprint: 4512f05d0a22ea7ed47e049172607b4dfbf22058b9fce314d27abecb280c8cd8 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
 
 ## Provenance
 
@@ -150,7 +150,7 @@ Source fingerprint: de3c0b4a056731aacdef1b6253af8bbdbc21ebfad878a34ddb11f086d9e7
 | renquant-common | main | `f5cb6ab2cf4e` | bootstrapped |
 | renquant-execution | main | `42e5d7d72251` | bootstrapped |
 | renquant-model | main | `84a3c1864f19` | active |
-| renquant-orchestrator | main | `690c82fc6859` | active |
+| renquant-orchestrator | main | `d4d278631d30` | active |
 | renquant-pipeline | main | `289b919908fc` | bootstrapped |
 | renquant-strategy-104 | main | `0e5d989137b6` | bootstrapped |
 
@@ -162,7 +162,7 @@ Source fingerprint: de3c0b4a056731aacdef1b6253af8bbdbc21ebfad878a34ddb11f086d9e7
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:5211f6bebd90ca08
 - `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — sha256:6337e750021e2b23
 - `backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — sha256:bc3b8a8f803e4685
-- `subrepos.lock.json` — sha256:63931af45e4706b9
+- `subrepos.lock.json` — sha256:5d6ce75696607b4f
 
 <!-- snapshot-machine-block
 {
@@ -181,7 +181,7 @@ Source fingerprint: de3c0b4a056731aacdef1b6253af8bbdbc21ebfad878a34ddb11f086d9e7
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:5211f6bebd90ca08",
   "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": "sha256:6337e750021e2b23",
   "backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": "sha256:bc3b8a8f803e4685",
-  "subrepos.lock.json": "sha256:63931af45e4706b9"
+  "subrepos.lock.json": "sha256:5d6ce75696607b4f"
  },
  "strategy_104_pin": "0e5d989137b62e0d57a470a51088d64c8b1ee4ce"
 }
