@@ -399,6 +399,19 @@ def build_run_bundle(
         if fingerprint:
             bundle["commit_path_fingerprint"] = _json_safe(fingerprint)
 
+        # Universe-collapse observability (2026-07-11, incident 2026-07-08/09:
+        # two full sessions ran the buy scan with 0 tickers while ntfy showed
+        # a normal no-trade). live/runner.py stamps ctx.universe_health from
+        # the admission loader: loaded count vs watchlist + per-cause
+        # rejection counts (e.g. "stale:live_train_end": 133). Persisting it
+        # makes "did the buy scan have a universe?" a per-run fact;
+        # `universe_collapse` is the top-level boolean monitors grep for.
+        # Absent for ctxs that never passed through the live loader.
+        universe_health = getattr(ctx, "universe_health", None)
+        if isinstance(universe_health, dict) and universe_health:
+            bundle["universe_health"] = _json_safe(universe_health)
+            bundle["universe_collapse"] = bool(universe_health.get("collapsed"))
+
     return bundle
 
 

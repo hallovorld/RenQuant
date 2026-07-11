@@ -402,6 +402,33 @@ def _load_strategy_multi(
     config["_strategy_config_name"] = config_name
     config["_strategy_config_path"] = str(config_file)
     config.setdefault("_universe_rejections", {})
+
+    # ── Universe-collapse detection (2026-07-11, observability only) ────────
+    # Incident 2026-07-08/09: a live-tree `git checkout HEAD -- models/`
+    # regressed per-ticker `live_train_end` to a 2026-04 vintage; the 60d
+    # freshness gate correctly fail-closed on 133/145 admission models and
+    # the buy scan ran with 0 tickers for TWO full sessions — while ntfy
+    # reported a normal "no trade (no_candidates)". An admission universe far
+    # below the watchlist is an availability OUTAGE, not a market decision.
+    # Compute the verdict here (the one place that has both the loaded count
+    # and the per-ticker rejection reasons); _notify_decision marks the ntfy
+    # title and build_run_bundle persists it in the run bundle. Never alters
+    # any trading decision.
+    config["_universe_health"] = _universe_health(
+        n_loaded=len(models),
+        watchlist_size=len(config.get("watchlist") or []),
+        rejections=config["_universe_rejections"],
+        floor_frac=_universe_floor_frac(config),
+    )
+    if config["_universe_health"]["collapsed"]:
+        log.error(
+            "UNIVERSE-COLLAPSE: %d/%d watchlist models admission-eligible "
+            "(floor=%.0f%%) — causes: %s",
+            config["_universe_health"]["loaded"],
+            config["_universe_health"]["watchlist"],
+            config["_universe_health"]["floor_frac"] * 100.0,
+            config["_universe_health"]["causes"],
+        )
     return config, models, strategy_dir
 
 
@@ -531,6 +558,11 @@ def _run_once_multi_pipeline(
     pipeline = SellOnlyPipeline() if sell_only else InferencePipeline()
 
     ctx = adapter.make_context()
+    # Universe-collapse verdict (stamped by _load_strategy_multi) rides on
+    # ctx so adapter.commit → build_run_bundle persists it in the run bundle
+    # and _notify_decision can mark the ntfy title. Observability only —
+    # nothing downstream branches trading behaviour on it.
+    ctx.universe_health = config.get("_universe_health")
     pipeline.run(ctx)
     adapter.commit(ctx)
 
@@ -684,6 +716,97 @@ def _no_trade_reason(ctx) -> str:
     if len(ranked) == 0:
         return "no_candidates"
     return "tier_threshold"
+
+
+# ── Universe-collapse detection (2026-07-11) ──────────────────────────────────
+# Incident 2026-07-08/09: per-ticker admission metadata regressed to a 2026-04
+# vintage, the 60d freshness gate correctly fail-closed on 133/145 models, and
+# TWO full sessions ran with zero buy capability while ntfy reported a normal
+# "no trade (no_candidates)" — a silent outage rendered as a market decision.
+# See doc/progress/2026-07-11-universe-collapse-outage-alert.md.
+
+_UNIVERSE_COLLAPSE_FLOOR_KEY = "universe_collapse_floor_frac"
+_UNIVERSE_COLLAPSE_FLOOR_DEFAULT = 0.5
+
+
+def _universe_floor_frac(config: dict | None) -> float:
+    """Collapse floor as a fraction of the watchlist, config-keyed.
+
+    ``universe_collapse_floor_frac`` in strategy config; safe default 0.5.
+    Calibration: the 07-08/09 outage ran at 4/145 ≈ 2.8%; the degraded
+    (pre-outage, partially corrupted) sessions ran at 58/145 = 40% — both
+    below the floor and both incident-worthy; post-recovery steady state is
+    125/145 ≈ 86%. Out-of-range / non-numeric values fall back to the
+    default so a config typo can never silently disable the outage page.
+    """
+    raw = (config or {}).get(
+        _UNIVERSE_COLLAPSE_FLOOR_KEY, _UNIVERSE_COLLAPSE_FLOOR_DEFAULT,
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _UNIVERSE_COLLAPSE_FLOOR_DEFAULT
+    if not (0.0 <= value <= 1.0):  # also rejects NaN
+        return _UNIVERSE_COLLAPSE_FLOOR_DEFAULT
+    return value
+
+
+def _universe_rejection_cause(reason: str) -> str:
+    """Bucket one per-ticker admission rejection reason into a stable cause key.
+
+    Reason formats come from ``kernel/pipeline/job_universe.py`` (both the
+    legacy trained_date gate and the pinned axis-based freshness gate):
+    ``no_artifact`` | ``load_error_<Exc>`` | ``stale_<N>d_limit_<M>[:<field>]``
+    | ``trained_date_missing`` / ``trained_date_invalid`` |
+    ``data_cutoff_{missing,unparseable:<f>,future:<f>}`` |
+    ``<floor>_<value>_below_<threshold>`` | ``<floor>_missing`` |
+    ``auto_drop_<n>d_filter_streak``. Variable numbers (age, value) are
+    stripped so counts aggregate; the offending FIELD is kept because the
+    per-cause staleness counts are the actionable diagnostic (07-08/09 was
+    ``stale:live_train_end`` × 133).
+    """
+    r = str(reason or "unknown")
+    if r.startswith("stale_"):
+        return f"stale:{r.split(':', 1)[1]}" if ":" in r else "stale"
+    if r.startswith("data_cutoff_"):
+        return r  # already compact and field-named
+    if r.startswith("load_error"):
+        return "load_error"
+    if "_below_" in r:
+        return f"below_floor:{r.split('_', 1)[0]}"
+    if r.startswith("auto_drop"):
+        return "auto_drop"
+    return r[:40]
+
+
+def _universe_health(
+    n_loaded: int,
+    watchlist_size: int,
+    rejections: dict | None,
+    floor_frac: float,
+) -> dict:
+    """Admission-universe availability verdict for one cycle. Pure.
+
+    ``collapsed`` is True when the watchlist is non-empty AND (zero models
+    loaded OR loaded/watchlist < ``floor_frac``) — buy capability is gone or
+    nearly gone, an availability OUTAGE regardless of what the market said.
+    Sell paths are unaffected (held names are admission-exempt upstream).
+    ``causes`` maps bucketed rejection reasons → count, largest first.
+    """
+    causes: dict[str, int] = {}
+    for reason in (rejections or {}).values():
+        cause = _universe_rejection_cause(reason)
+        causes[cause] = causes.get(cause, 0) + 1
+    wl = max(int(watchlist_size), 0)
+    n = max(int(n_loaded), 0)
+    collapsed = wl > 0 and (n == 0 or (n / wl) < float(floor_frac))
+    return {
+        "loaded": n,
+        "watchlist": wl,
+        "floor_frac": float(floor_frac),
+        "collapsed": bool(collapsed),
+        "causes": dict(sorted(causes.items(), key=lambda kv: (-kv[1], kv[0]))),
+    }
 
 
 def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = False) -> None:
@@ -844,6 +967,25 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
             parts.append("SKIPPED " + "; ".join(skip_parts))
         else:
             parts.append(f"no trade ({_why_no_trade()})")
+
+    # ── Universe-outage surfacing (2026-07-11, observability only) ──────────
+    # A collapsed admission universe means this cycle had (near-)zero BUY
+    # capability — an availability incident, not a normal market no-trade.
+    # 07-08/09 both outage sessions rendered as "DECISION | no trade
+    # (no_candidates)". Body line first so truncation can never hide it;
+    # title marker + priority bump applied below. Sell-only cycles run no
+    # buy scan, so the marker is not meaningful there.
+    uh = getattr(ctx, "universe_health", None) or {}
+    universe_outage = bool(uh.get("collapsed")) and "sell-only" not in run_mode
+    if universe_outage:
+        cause_bits = ", ".join(
+            f"{cause}={n}" for cause, n in list((uh.get("causes") or {}).items())[:4]
+        ) or "cause_unknown"
+        parts.insert(0, (
+            f"UNIVERSE-OUTAGE: {uh.get('loaded', '?')}/{uh.get('watchlist', '?')} "
+            f"watchlist models admission-eligible "
+            f"(floor {float(uh.get('floor_frac', 0.0)) * 100:.0f}%) — {cause_bits}"
+        ))
 
     # Always append system state snapshot for audit visibility.
     # 2026-05-15: expanded regime info — operator needs to see WHY
@@ -1023,6 +1165,15 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         priority = "urgent" if exits_failed else (
             "high" if (has_trade or has_pending) else "default"
         )
+    if universe_outage:
+        # OUTAGE marker in the TITLE — the operator-facing contract is that
+        # a buy-scan universe collapse pages as an availability incident,
+        # visibly distinct from a normal no-trade DECISION. Applied to
+        # shadow titles too (same loader, same outage), but the priority
+        # bump is live-only.
+        tag = f"UNIVERSE-OUTAGE {tag}"
+        if not is_shadow and priority == "default":
+            priority = "high"
     title    = f"{label} [{run_mode}] {tag}"
     body     = _truncate_ntfy_body(" | ".join(parts))
     url      = f"https://ntfy.sh/{topic}"
@@ -1042,6 +1193,9 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
             bool(getattr(ctx, "bear_only", False)),
             bool(getattr(ctx, "skip_buys", False)),
             bool(getattr(ctx, "buy_blocked", False)),
+            # Outage days must never dedupe against a prior healthy
+            # no-trade with an otherwise identical key (2026-07-11).
+            universe_outage,
         )
         cooldown = int(os.environ.get("RENQUANT_DECISION_NTFY_COOLDOWN_SECONDS", "1800"))
         force = False
