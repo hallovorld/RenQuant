@@ -52,6 +52,10 @@ class AlpacaBroker(BaseBroker):
         self._trading_client = None
         self._data_client = None
         self._order_counter = 0
+        # S-FRAC stage 0 fractionable-lookup cache (is_fractionable below) —
+        # only confirmed lookups are cached; a transient API failure is never
+        # cached as an authoritative verdict, so a later call retries.
+        self._fractionable_cache: dict[str, bool] = {}
 
     @property
     def broker_name(self) -> str:  # state-file isolation tag (see kernel.state_paths)
@@ -263,6 +267,40 @@ class AlpacaBroker(BaseBroker):
             "submitted_at": str(getattr(order, "submitted_at", "") or ""),
             "filled_at": str(getattr(order, "filled_at", "") or ""),
         }
+
+    # ── Fractional-shares capability contract (S-FRAC stage 0) ──────────────
+    # adapters/commit_contract.py::fractional_capability_gate probes for a
+    # callable is_fractionable before allowing execution.fractional_shares
+    # .enabled=True to admit a BUY; is_no_submit_status is inherited from
+    # BaseBroker. This method is currently UNCALLED by any active code path
+    # (the flag stays default-off pending separate operator authorization —
+    # renquant-orchestrator#471) — it exists so the gate's capability check
+    # passes and the mechanism is exercisable once that authorization lands,
+    # rather than fail-closing ALL buy emission (not just fractional) the
+    # moment the flag is set. Mirrors renquant-execution's identical
+    # AlpacaBroker.is_fractionable (renquant_execution.alpaca_broker)
+    # line-for-line: same caching/fail-closed contract, same Alpaca asset
+    # lookup, so a future migration onto that adapter is behaviorally a
+    # no-op for this check.
+
+    def is_fractionable(self, symbol: str) -> bool:
+        """Whether ``symbol`` supports fractional Alpaca orders (cached).
+
+        Returns ``False`` on lookup failure (safe default) but does NOT
+        cache that failure — a later call retries rather than treating a
+        transient error as a permanent verdict.
+        """
+        key = str(symbol).upper()
+        cached = self._fractionable_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            asset = self._trading_client.get_asset(symbol)
+        except Exception:  # noqa: BLE001 — any lookup failure is fail-closed False
+            return False
+        fractionable = bool(getattr(asset, "fractionable", False))
+        self._fractionable_cache[key] = fractionable
+        return fractionable
 
     # ── Broker-side stop orders (Z9, 2026-04-28) ────────────────────────────
     # Invariant: stops live broker-side. NVTS post-mortem: 30-min cron

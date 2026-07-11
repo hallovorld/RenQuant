@@ -1,6 +1,44 @@
 """Broker abstraction for live trading."""
 
 from abc import ABC, abstractmethod
+from typing import Any
+
+# Statuses that denote a result that never reached the broker (S-FRAC stage 0,
+# adapters/commit_contract.py::fractional_capability_gate's no-submit-
+# classifier probe). Mirrors renquant-execution's NO_SUBMIT_STATUSES
+# vocabulary exactly (renquant_execution.broker) so a future migration of the
+# live order path onto that adapter is a behavioral no-op for this check.
+# Statuses this broker's own place_order/place_notional_order do not
+# currently produce (the fractional/crypto-specific ones) are included as a
+# forward-compatible superset, matching renquant-execution's own convention
+# of keeping the vocabulary broker-generic rather than broker-specific.
+NON_FRACTIONABLE_STATUS = "rejected_non_fractionable"
+FRACTIONABLE_LOOKUP_FAILED_STATUS = "rejected_fractionable_lookup_failed"
+PRECISION_EXCEEDS_9DP_STATUS = "rejected_precision_exceeds_9dp"
+BELOW_MIN_NOTIONAL_STATUS = "rejected_below_min_notional"
+INVALID_FRACTIONAL_ORDER_STATUS = "rejected_invalid_fractional_order"
+INVALID_CRYPTO_ORDER_STATUS = "rejected_invalid_crypto_order"
+CRYPTO_NO_SHORT_STATUS = "rejected_crypto_no_short"
+BELOW_MIN_ORDER_SIZE_STATUS = "rejected_below_min_order_size"
+CRYPTO_SPEC_LOOKUP_FAILED_STATUS = "rejected_crypto_spec_lookup_failed"
+NO_SUBMIT_STATUSES = frozenset({
+    NON_FRACTIONABLE_STATUS,
+    FRACTIONABLE_LOOKUP_FAILED_STATUS,
+    PRECISION_EXCEEDS_9DP_STATUS,
+    BELOW_MIN_NOTIONAL_STATUS,
+    INVALID_FRACTIONAL_ORDER_STATUS,
+    INVALID_CRYPTO_ORDER_STATUS,
+    CRYPTO_NO_SHORT_STATUS,
+    BELOW_MIN_ORDER_SIZE_STATUS,
+    CRYPTO_SPEC_LOOKUP_FAILED_STATUS,
+    # Legacy floor-to-zero status, kept recognized for back-compat audit replay.
+    "skipped_non_fractionable_dust",
+})
+
+
+def is_no_submit_status(status: Any) -> bool:
+    """Whether ``status`` denotes a result that never reached the broker."""
+    return str(status or "").strip().lower() in NO_SUBMIT_STATUSES
 
 
 class BaseBroker(ABC):
@@ -124,3 +162,25 @@ class BaseBroker(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement cancel_order."
         )
+
+    # ── Fractional-shares capability contract (S-FRAC stage 0) ──────────────
+    # adapters/commit_contract.py::fractional_capability_gate probes every
+    # broker for a callable is_fractionable AND a callable no-submit
+    # classifier (classify_broker_result or is_no_submit_status) before
+    # allowing execution.fractional_shares.enabled=True to admit a BUY.
+    # is_no_submit_status is shared here (not per-subclass) so every backend
+    # answers with the same vocabulary; is_fractionable has no safe generic
+    # default (whether a symbol trades fractionally is broker-specific) and
+    # is deliberately NOT declared here — a subclass that does not override
+    # it correctly fails the gate's callable-attribute check, which is the
+    # intended fail-closed behavior for a broker with no fractional support.
+
+    @staticmethod
+    def is_no_submit_status(status: Any) -> bool:
+        """Instance-callable no-submit classifier (S-FRAC stage-0 gate probe).
+
+        Delegates to the module-level vocabulary so every subclass answers
+        the same way; mirrors renquant-execution's identical BaseBroker
+        method (renquant_execution.broker.BaseBroker.is_no_submit_status).
+        """
+        return is_no_submit_status(status)

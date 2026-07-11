@@ -1245,6 +1245,25 @@ class TestCapabilityGate:
         assert gate["ok"] is True
         assert gate["missing"] == []
 
+    def test_real_alpaca_broker_satisfies_broker_fractional_contract(self):
+        """Structural, no-network proof that the LIVE runner's actual
+        AlpacaBroker — not the FakeBroker stand-in above — satisfies the
+        gate's broker_fractional_contract requirement (renquant-
+        orchestrator#471: this broker previously had neither
+        is_fractionable nor a no-submit classifier, so enabling
+        execution.fractional_shares would trip the gate and fail-close
+        ALL buy emission, not just fractional). Construction only — no
+        connect(), no alpaca-py import required, no network call."""
+        from adapters.commit_contract import fractional_capability_gate  # noqa: PLC0415
+        from live.alpaca_broker import AlpacaBroker  # noqa: PLC0415
+
+        broker = AlpacaBroker()
+        cfg = {"execution": {"fractional_shares": {"enabled": True}}}
+        gate = fractional_capability_gate(cfg, broker, ArmedSoftwareStops())
+        assert "broker_fractional_contract" not in gate["missing"]
+        assert gate["ok"] is True
+        assert gate["missing"] == []
+
     def test_gate_carries_the_contract_tag(self):
         from adapters.commit_contract import (  # noqa: PLC0415
             COMMIT_QTY_CONTRACT,
@@ -1264,3 +1283,133 @@ class TestCapabilityGate:
             symbol="BLK", software_stops=None,
         )
         assert reason == "fractional_entry_unprotectable_no_stop_layer"
+
+
+class TestLiveAlpacaBrokerFractionalContract:
+    """Unit coverage for the two methods this PR adds (renquant-
+    orchestrator#471 finding): AlpacaBroker.is_fractionable and the
+    inherited BaseBroker.is_no_submit_status. No network calls — the
+    trading client is a hand-rolled stand-in, matching this file's
+    FakeBroker/ArmedSoftwareStops convention rather than a mock library."""
+
+    def test_is_fractionable_true_result_is_cached(self):
+        from live.alpaca_broker import AlpacaBroker  # noqa: PLC0415
+
+        class _Asset:
+            fractionable = True
+
+        class _FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_asset(self, symbol):
+                self.calls += 1
+                return _Asset()
+
+        broker = AlpacaBroker()
+        broker._trading_client = _FakeClient()
+        assert broker.is_fractionable("AAPL") is True
+        assert broker.is_fractionable("AAPL") is True
+        assert broker._trading_client.calls == 1, "confirmed lookup must be cached"
+
+    def test_is_fractionable_false_result_is_also_cached(self):
+        from live.alpaca_broker import AlpacaBroker  # noqa: PLC0415
+
+        class _Asset:
+            fractionable = False
+
+        class _FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_asset(self, symbol):
+                self.calls += 1
+                return _Asset()
+
+        broker = AlpacaBroker()
+        broker._trading_client = _FakeClient()
+        assert broker.is_fractionable("SPY") is False
+        assert broker.is_fractionable("SPY") is False
+        assert broker._trading_client.calls == 1, "confirmed False is also cached"
+
+    def test_is_fractionable_fails_closed_and_does_not_cache_the_failure(self):
+        """A transient lookup failure must answer False (safe default) but
+        must NOT be cached — a later call retries rather than treating a
+        transient error as a permanent verdict (mirrors renquant-execution's
+        identical contract)."""
+        from live.alpaca_broker import AlpacaBroker  # noqa: PLC0415
+
+        class _RaisingClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_asset(self, symbol):
+                self.calls += 1
+                raise RuntimeError("network down")
+
+        broker = AlpacaBroker()
+        broker._trading_client = _RaisingClient()
+        assert broker.is_fractionable("AAPL") is False
+        assert broker.is_fractionable("AAPL") is False
+        assert broker._trading_client.calls == 2, "lookup failure must NOT be cached"
+
+    def test_is_fractionable_case_insensitive_cache_key(self):
+        from live.alpaca_broker import AlpacaBroker  # noqa: PLC0415
+
+        class _Asset:
+            fractionable = True
+
+        class _FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_asset(self, symbol):
+                self.calls += 1
+                return _Asset()
+
+        broker = AlpacaBroker()
+        broker._trading_client = _FakeClient()
+        assert broker.is_fractionable("aapl") is True
+        assert broker.is_fractionable("AAPL") is True
+        assert broker._trading_client.calls == 1
+
+    def test_base_broker_is_no_submit_status_classifies_known_statuses(self):
+        from live.broker import BaseBroker  # noqa: PLC0415
+
+        class _MinimalBroker(BaseBroker):
+            def connect(self):
+                pass
+
+            def disconnect(self):
+                pass
+
+            def get_position(self, symbol):
+                return 0.0
+
+            def get_account_value(self):
+                return 0.0
+
+            def place_order(self, symbol, action, quantity):
+                return {}
+
+        b = _MinimalBroker()
+        assert b.is_no_submit_status("rejected_non_fractionable") is True
+        assert b.is_no_submit_status("rejected_below_min_notional") is True
+        assert b.is_no_submit_status("REJECTED_NON_FRACTIONABLE") is True, (
+            "classifier must be case-insensitive, matching the module-level "
+            "function's own str(...).strip().lower() normalization"
+        )
+        assert b.is_no_submit_status("filled") is False
+        assert b.is_no_submit_status("") is False
+        assert b.is_no_submit_status(None) is False
+
+    def test_alpaca_broker_inherits_is_no_submit_status(self):
+        """AlpacaBroker doesn't override is_no_submit_status — proves the
+        inherited BaseBroker implementation is what the gate actually sees
+        on the real broker class, not just on a minimal test subclass."""
+        from live.alpaca_broker import AlpacaBroker  # noqa: PLC0415
+
+        broker = AlpacaBroker()
+        assert callable(broker.is_no_submit_status)
+        assert broker.is_no_submit_status("rejected_non_fractionable") is True
+        assert broker.is_no_submit_status("filled") is False
