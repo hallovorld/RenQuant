@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: b7c283ee7af65c79878061eec40e6d786cf105aa5050904fc306ad4848a7dfdf (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
+Source fingerprint: de3c0b4a056731aacdef1b6253af8bbdbc21ebfad878a34ddb11f086d9e7070f (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
 
 ## Provenance
 
@@ -144,14 +144,14 @@ Source fingerprint: b7c283ee7af65c79878061eec40e6d786cf105aa5050904fc306ad4848a7
 
 | Subrepo | Branch | Commit | Status |
 |---|---|---|---|
-| renquant-artifacts | main | `c09d66f8dd09` | bootstrapped |
+| renquant-artifacts | main | `c71edf7fa6e7` | bootstrapped |
 | renquant-backtesting | main | `8f6700ab3558` | bootstrapped |
-| renquant-base-data | main | `0678958ec2f5` | active |
-| renquant-common | main | `df620a6ecc35` | bootstrapped |
-| renquant-execution | main | `c41639840b2c` | bootstrapped |
-| renquant-model | main | `775804dbb0bc` | active |
-| renquant-orchestrator | main | `e8fe46206025` | active |
-| renquant-pipeline | main | `2b0eb0257b88` | bootstrapped |
+| renquant-base-data | main | `fef604bff2f2` | active |
+| renquant-common | main | `f5cb6ab2cf4e` | bootstrapped |
+| renquant-execution | main | `42e5d7d72251` | bootstrapped |
+| renquant-model | main | `84a3c1864f19` | active |
+| renquant-orchestrator | main | `690c82fc6859` | active |
+| renquant-pipeline | main | `289b919908fc` | bootstrapped |
 | renquant-strategy-104 | main | `0e5d989137b6` | bootstrapped |
 
 ## Source fingerprints
@@ -162,7 +162,7 @@ Source fingerprint: b7c283ee7af65c79878061eec40e6d786cf105aa5050904fc306ad4848a7
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:5211f6bebd90ca08
 - `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — sha256:6337e750021e2b23
 - `backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — sha256:bc3b8a8f803e4685
-- `subrepos.lock.json` — sha256:13932efbb90b8384
+- `subrepos.lock.json` — sha256:63931af45e4706b9
 
 <!-- snapshot-machine-block
 {
@@ -181,7 +181,7 @@ Source fingerprint: b7c283ee7af65c79878061eec40e6d786cf105aa5050904fc306ad4848a7
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:5211f6bebd90ca08",
   "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": "sha256:6337e750021e2b23",
   "backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": "sha256:bc3b8a8f803e4685",
-  "subrepos.lock.json": "sha256:13932efbb90b8384"
+  "subrepos.lock.json": "sha256:63931af45e4706b9"
  },
  "strategy_104_pin": "0e5d989137b62e0d57a470a51088d64c8b1ee4ce"
 }
