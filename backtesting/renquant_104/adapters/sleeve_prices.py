@@ -59,9 +59,28 @@ def parking_sleeve_price_tickers(obj: Any) -> list[str]:
     result to their price universe — every call site already dedupes, so
     overlap with watchlist/benchmark coverage is harmless.
     """
-    sleeve = parking_sleeve_config(obj)
-    if not sleeve.get("enabled", False):
+    if not is_parking_sleeve_enabled(obj):
         return []
+    return parking_sleeve_leg_tickers(obj)
+
+
+def parking_sleeve_leg_tickers(obj: Any) -> list[str]:
+    """Normalized sleeve legs ``[spy_symbol, sgov_symbol]``, IGNORING ``enabled``.
+
+    Upcased, blank-fallback-to-default, deduped — the exact normalization
+    ``parking_sleeve_price_tickers`` applies, factored out so warm-up
+    tooling resolves the SAME symbols the daily path will fetch later.
+
+    For pre-enable warm-up tooling ONLY (``scripts/backfill_sleeve_prices.py``):
+    renquant-pipeline#185 (``mode="live"``, SGOV floor variant) fail-closes
+    on a missing SGOV price, and the conditional daily coverage only starts
+    fetching AFTER the ``sleeve.enabled`` flip — without a prior backfill
+    the flip-day live run would depend on a cold-start remote fetch
+    mid-run. Daily/LEAN/sim call sites MUST keep using
+    ``parking_sleeve_price_tickers``: the ``enabled`` gate is
+    renquant-strategy-104#39's pinned coverage decision, not an accident.
+    """
+    sleeve = parking_sleeve_config(obj)
     spy_symbol = str(sleeve.get("spy_symbol", "SPY")).strip().upper() or "SPY"
     sgov_symbol = str(sleeve.get("sgov_symbol", "SGOV")).strip().upper() or "SGOV"
     return list(dict.fromkeys([spy_symbol, sgov_symbol]))

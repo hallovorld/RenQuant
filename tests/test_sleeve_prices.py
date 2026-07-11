@@ -27,6 +27,7 @@ from adapters.sim_price import context_price_tickers  # noqa: E402
 from adapters.sleeve_prices import (  # noqa: E402
     is_parking_sleeve_enabled,
     parking_sleeve_config,
+    parking_sleeve_leg_tickers,
     parking_sleeve_price_tickers,
 )
 
@@ -78,6 +79,71 @@ class TestParkingSleevePriceTickers:
         assert is_parking_sleeve_enabled(_ENABLED) is True
         assert parking_sleeve_config(_ENABLED) == {"enabled": True}
         assert parking_sleeve_config({"sleeve": 3}) == {}
+
+
+class TestParkingSleeveLegTickers:
+    """Warm-up leg resolver (scripts/backfill_sleeve_prices.py contract).
+
+    Returns the SAME normalized legs the daily path will fetch after the
+    enable flip, but IGNORES ``enabled`` — the whole point of the
+    pre-enable backfill (renquant-pipeline#185 fail-closes live mode on a
+    missing SGOV price; the conditional coverage above only starts
+    fetching after the flip).
+    """
+
+    def test_defaults_regardless_of_enabled(self):
+        assert parking_sleeve_leg_tickers({}) == ["SPY", "SGOV"]
+        assert parking_sleeve_leg_tickers(
+            {"sleeve": {"enabled": False}}) == ["SPY", "SGOV"]
+        assert parking_sleeve_leg_tickers(_ENABLED) == ["SPY", "SGOV"]
+
+    def test_same_normalization_as_price_tickers(self):
+        cfg = {"sleeve": {"enabled": True, "spy_symbol": " ivv ",
+                          "sgov_symbol": "bil"}}
+        assert (parking_sleeve_leg_tickers(cfg)
+                == parking_sleeve_price_tickers(cfg) == ["IVV", "BIL"])
+
+    def test_dedupes_identical_legs(self):
+        cfg = {"sleeve": {"sgov_symbol": "SPY"}}
+        assert parking_sleeve_leg_tickers(cfg) == ["SPY"]
+
+    def test_daily_gate_unchanged_by_refactor(self):
+        # The refactor must NOT weaken the st104#39 pinned enabled-gate:
+        # daily/LEAN/sim coverage stays [] while the sleeve is off.
+        cfg = {"sleeve": {"enabled": False, "sgov_symbol": "SGOV"}}
+        assert parking_sleeve_price_tickers(cfg) == []
+        assert parking_sleeve_price_tickers({}) == []
+
+
+class TestPanelFingerprintNonCoupling:
+    """Sleeve coverage must never move the panel config fingerprint.
+
+    The 2026-06 shadow config-FP incident was caused by watchlist growth;
+    this pins — against the REAL fingerprint impl — that neither adding
+    the ``sleeve`` section nor flipping ``sleeve.enabled`` changes
+    ``fingerprint_config`` (SGOV enters price coverage only, never the
+    hashed watchlist/sector fields).
+    """
+
+    def test_sleeve_section_and_enable_flip_do_not_move_fingerprint(self):
+        import pytest
+        cc = pytest.importorskip(
+            "renquant_common.config_consistency",
+            reason="renquant-common not on path (multirepo env only)")
+        base = {
+            "watchlist": ["AAPL", "MSFT"],
+            "benchmark": "SPY",
+            "sector_map": {"AAPL": "TECH", "MSFT": "TECH"},
+            "sector_etf_map": {"TECH": "XLK"},
+            "panel_ltr": {"lookahead_days": 60},
+        }
+        with_sleeve_off = {**base, "sleeve": {"enabled": False,
+                                              "sgov_symbol": "SGOV"}}
+        with_sleeve_on = {**base, "sleeve": {"enabled": True,
+                                             "sgov_symbol": "SGOV"}}
+        fp = cc.fingerprint_config
+        assert fp(base) == fp(with_sleeve_off) == fp(with_sleeve_on)
+        assert "sleeve" not in cc._model_relevant_fields(with_sleeve_on)
 
 
 class TestSimContextCoverage:
