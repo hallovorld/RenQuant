@@ -10,6 +10,12 @@ Prior scope: one-shot audit (DONE — orch #492 merged 2026-07-12).
 New scope: incremental refactoring, simplest-first, zero regressions.
 Source: violation registry `doc/design/2026-07-10-architecture-compliance-registry.md`.
 
+**Program override:**
+[`2026-07-13-four-goal-program-reset.md`](2026-07-13-four-goal-program-reset.md)
+identifies V-001/V-002/V-008/V-014 as the active-path gate-zero work. The
+tripwires below remain useful, but must not delay a route inventory, canonical
+path decision, parity proof, and fail-closed fault harness for those risks.
+
 ---
 
 ## 1. Goal statement
@@ -29,7 +35,7 @@ Start from the simplest, lowest-risk fixes. Every change must:
 | AC | Criterion | Metric | Source | Threshold |
 |----|-----------|--------|--------|-----------|
 | AC-1 | Zero regressions from any G3 PR | `make test` pass count ≥ pre-PR count in EVERY touched repo | CI + local | 0 new failures |
-| AC-2 | Violation count decreases monotonically | Count of open violations in the registry | registry doc updates | Net decrease per phase, never increase |
+| AC-2 | Active production paths have one declared authority | Canonical route inventory plus pinned-bundle parity/fault evidence for V-001/V-002/V-008/V-014 | route inventory and reproducible run bundles | No ambiguous, working-tree, or fallback route can reach a decision or intent |
 | AC-3 | No behavior change without pre-registration | Every behavioral PR has a shadow comparison or golden-vector test | PR evidence block | 100% coverage |
 | AC-4 | Each phase exit reviewed by operator | Progress doc with evidence block | doc/progress/ | Operator ACK before next phase |
 
@@ -39,8 +45,9 @@ Start from the simplest, lowest-risk fixes. Every change must:
 
 ### Phase A — Tripwires + parity tests (S, ~1 week)
 
-**What:** Add mechanical drift detection BEFORE moving any code. Makes every
-subsequent migration alarm-protected instead of review-protected.
+**What:** Add mechanical drift detection before low-risk contract migrations.
+For active P0 paths, first follow the program override above: trace and prove
+the canonical path before treating tripwires as sufficient progress.
 
 **Registry items:** R0 (tripwires first).
 

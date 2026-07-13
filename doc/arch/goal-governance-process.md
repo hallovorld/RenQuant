@@ -251,9 +251,10 @@ The retrospective must identify:
 ### G3 (Architecture refactoring) — REDEFINED 2026-07-13
 - Prior scope: one-shot audit → DONE (orch #492 merged)
 - New scope: incremental safe refactoring per violation registry
-- Acceptance criteria: defined in `doc/arch/2026-07-13-g3-refactoring-plan.md` §2
-  (AC-1: zero regressions, AC-2: violation count decreases, AC-3: no unregistered
-  behavior change, AC-4: operator phase-exit review)
+- Acceptance criteria: the active-runtime gate and its evidence contract are
+  defined in `doc/arch/2026-07-13-four-goal-program-reset.md` §4; the
+  incremental migration sequence remains in
+  `doc/arch/2026-07-13-g3-refactoring-plan.md`.
 - Phased: A (tripwires) → B (single-source consolidation) → C (dead code) → D+ (migrations)
 
 ### G4 (Ensemble)
