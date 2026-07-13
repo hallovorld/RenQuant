@@ -11,6 +11,12 @@ Status: DRAFT — requires operator review before becoming binding.
 Date: 2026-07-13
 Trigger: G2 premature-deployment incident + operator directive on process gaps.
 
+**Current program proposal:**
+[`2026-07-13-four-goal-program-reset.md`](2026-07-13-four-goal-program-reset.md)
+defines the active G1-G4 dependency order, evidence contract, and stop rules.
+It supersedes this document's incomplete G1/G2/G4 execution assumptions while
+this governance process remains the lifecycle and reporting baseline.
+
 ---
 
 ## 1. Purpose
