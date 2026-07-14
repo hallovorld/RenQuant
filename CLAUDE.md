@@ -125,7 +125,12 @@ WF corpora) — experiments in isolated worktrees only; **every PR carries `doc/
 **never self-merge**; Codex review approval is the *intended* merge gate for agent PRs (an
 `APPROVED` review by the *other* agent — consistent with §3.1 #5; today rulesets require only
 1 approval from any actor, so "Codex specifically" is convention until a required-reviewer rule
-lands). Enforcement = Codex review + mechanical hooks, **not** this doc.
+lands). Reviewers submit findings only; the PR owner applies fixes. A reviewer
+must never commit or push to a peer-owned PR branch. A PR branch has exactly
+one GitHub commit identity, the PR creator; any extra attribution, including a
+`Co-Authored-By` trailer, blocks merge until the owner rebuilds the branch from
+the target base as clean single-identity history. Enforcement = Codex review +
+mechanical hooks, **not** this doc.
 
 ### 3.1 · PR-based workflow — STRICT
 
@@ -314,7 +319,10 @@ Bottom-line rules every agent-opened branch / commit / PR must obey:
 
 1. **Authorship label** — exactly ONE of `agent:claude` / `agent:codex` set at PR open ([§2.1](doc/ops/agent-automation.md#21--canonical-labels)).
 2. **PR body footer** — ends with `Agent-Origin: <Name>` + the standard `🤖 Generated with [<Agent Name> Code]` line.
-3. **Commit trailer** — every commit carries `Co-Authored-By: <Agent> <bot-email>` (Claude: `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`; Codex: `Co-Authored-By: Codex <noreply@openai.com>`).
+3. **Commit identity** — every PR branch has commit attribution only from the
+   GitHub account that created the PR. Do not add `Co-Authored-By` trailers for
+   agent provenance; use the PR body footer and visible review/fix/merge
+   comments instead.
 4. **Cross-agent invites** use `agent:fix:<name>` (executor-permission label) — NEVER add a second authorship label to invite another agent's G3.
 5. **Stop knobs**: `agent:manual-hold` halts ALL agent automation on a PR; `agent:fix:<name>:attempt-3` halts that one agent's G3 retries.
 
