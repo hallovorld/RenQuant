@@ -12,9 +12,12 @@ Outputs APY, Sharpe, MaxDD, n_trades, and compares to the golden config.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,6 +30,138 @@ log = logging.getLogger("run-sim-104")
 STRATEGY   = "renquant_104"
 SIM_START  = "2024-01-02"
 SIM_END    = "2026-03-28"   # ~27 months
+
+# G3 F-7 (2026-07-04 architecture compliance audit): sim must evaluate the
+# SAME config the live bridge does (renquant_orchestrator.live_bridge
+# ._with_pinned_strategy_config), not a drifted umbrella-local copy. These
+# are the config names actually published under
+# renquant-strategy-104/configs/ — the only names for which "the pin" is a
+# meaningful, intended source. Any other --strategy-config-name is an
+# umbrella-local research/experiment variant (e.g. strategy_config.sim_*.json
+# sweep configs) that was never mirrored to the pin, so it is not subject to
+# the fail-closed pin requirement below — it has exactly one intended
+# source, the umbrella copy, and reading it from there is not a "fallback".
+LIVE_MIRRORED_CONFIG_NAMES = frozenset({
+    "strategy_config.json",
+    "strategy_config.golden.json",
+    "strategy_config.shadow.json",
+    "strategy_config.shadow_a.json",
+    "strategy_config.shadow_b.json",
+})
+
+# Explicit, two-factor local-dev escape hatch (mirrors the
+# --allow-legacy-direct-execution / RENQUANT_ALLOW_LEGACY_DIRECT_EXECUTION
+# pattern in scripts/production_runner.py): BOTH the CLI flag and this env
+# var must be set, so the warn-and-fallback path can never be reached by
+# accident on a standard/audited simulation run.
+ALLOW_UNPINNED_LOCAL_DEV_ENV = "RENQUANT_ALLOW_UNPINNED_LOCAL_DEV"
+
+
+class StrategyConfigResolutionError(RuntimeError):
+    """Raised when the standard (pinned-first, fail-closed) path can't resolve a config."""
+
+
+@dataclass(frozen=True)
+class ResolvedStrategyConfig:
+    path: Path
+    source: str          # "pinned" | "experiment_local" | "unpinned_local_dev_fallback"
+    fingerprint: str      # "sha256:<hexdigest>" of the resolved file's bytes
+
+
+def _fingerprint_config_file(path: Path) -> str:
+    """Content fingerprint for a resolved config file.
+
+    Matches the ``"sha256:" + hexdigest`` convention used elsewhere in this
+    multi-repo system (renquant_common.model_fingerprint.artifact_sha256,
+    renquant_common.cost_model.cost_model_content_sha256) so run-bundle
+    fingerprints are comparable/greppable across repos.
+    """
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def resolve_strategy_config(
+    *,
+    strategy_dir: Path,
+    repo_root: Path,
+    config_name: str,
+    allow_unpinned_local_dev: bool = False,
+) -> ResolvedStrategyConfig:
+    """Resolve the strategy config for a sim run (G3 F-7).
+
+    Standard simulation path (default, ``allow_unpinned_local_dev=False``):
+    for the config names actually published in the pinned
+    ``renquant-strategy-104`` checkout (:data:`LIVE_MIRRORED_CONFIG_NAMES`),
+    resolve EXACTLY that pinned file and fingerprint it — no silent/warned
+    fallback to an unpinned umbrella copy. If the pin can't be resolved,
+    this FAILS CLOSED (raises :class:`StrategyConfigResolutionError`) rather
+    than substituting a different, unidentifiable config.
+
+    Config names outside that set are umbrella-local research/experiment
+    variants with no pinned counterpart; they resolve from the umbrella copy
+    directly (source="experiment_local") — this is their one intended
+    source, not a degraded fallback.
+
+    Explicit local-development escape hatch: when the caller opts in via
+    BOTH ``allow_unpinned_local_dev=True`` AND the
+    ``RENQUANT_ALLOW_UNPINNED_LOCAL_DEV=1`` environment variable, a missing
+    pin for a live-mirrored name falls back to the umbrella copy WITH A
+    LOGGED WARNING instead of failing closed. This path must never be
+    reachable by accident and must never be used for a standard/audited
+    simulation run.
+    """
+    pinned_cfg = repo_root.parent / "renquant-strategy-104" / "configs" / config_name
+    local_cfg = strategy_dir / config_name
+
+    if pinned_cfg.exists():
+        fingerprint = _fingerprint_config_file(pinned_cfg)
+        log.info("Using pinned strategy config: %s (%s)", pinned_cfg, fingerprint)
+        return ResolvedStrategyConfig(path=pinned_cfg, source="pinned", fingerprint=fingerprint)
+
+    if config_name not in LIVE_MIRRORED_CONFIG_NAMES:
+        if not local_cfg.exists():
+            raise StrategyConfigResolutionError(
+                f"Config not found: {local_cfg} (umbrella-local experiment "
+                "config; not a pinned name, so there is no pinned source to "
+                "fall back to)."
+            )
+        fingerprint = _fingerprint_config_file(local_cfg)
+        log.info("Using umbrella-local experiment config: %s (%s)", local_cfg, fingerprint)
+        return ResolvedStrategyConfig(
+            path=local_cfg, source="experiment_local", fingerprint=fingerprint,
+        )
+
+    escape_hatch_engaged = (
+        allow_unpinned_local_dev and os.environ.get(ALLOW_UNPINNED_LOCAL_DEV_ENV) == "1"
+    )
+    if not escape_hatch_engaged:
+        raise StrategyConfigResolutionError(
+            f"Pinned strategy config not found at {pinned_cfg}. Standard sim "
+            "runs require the pinned renquant-strategy-104 checkout so sim "
+            "evaluates the identical config as the live bridge (G3 F-7) — "
+            f"refusing to silently substitute the umbrella copy ({local_cfg}). "
+            "To explicitly opt into an unpinned local-dev fallback (NOT for "
+            "standard/audited sim runs), pass --allow-unpinned-local-dev AND "
+            f"set {ALLOW_UNPINNED_LOCAL_DEV_ENV}=1."
+        )
+
+    if not local_cfg.exists():
+        raise StrategyConfigResolutionError(
+            f"Config not found at pinned ({pinned_cfg}) or local-dev "
+            f"fallback ({local_cfg})."
+        )
+
+    fingerprint = _fingerprint_config_file(local_cfg)
+    log.warning(
+        "LOCAL-DEV MODE: pinned strategy config not found at %s; falling "
+        "back to unpinned umbrella copy %s (%s) because "
+        "--allow-unpinned-local-dev + %s=1 were explicitly set. This run is "
+        "NOT auditable against the live bridge and must never be treated as "
+        "a standard/promoted sim result.",
+        pinned_cfg, local_cfg, fingerprint, ALLOW_UNPINNED_LOCAL_DEV_ENV,
+    )
+    return ResolvedStrategyConfig(
+        path=local_cfg, source="unpinned_local_dev_fallback", fingerprint=fingerprint,
+    )
 
 
 def main() -> None:
@@ -66,28 +201,27 @@ def main() -> None:
     p.add_argument("--allow-raw-qp-mu", action="store_true",
                    help="Emergency/debug override: allow QP configs that do "
                         "not have a strict expected-return μ contract.")
+    # G3 F-7 local-dev escape hatch — SUPPRESSed from --help and gated by a
+    # second, independent env var (ALLOW_UNPINNED_LOCAL_DEV_ENV) so it can
+    # never be reached by accident; see resolve_strategy_config() docstring.
+    p.add_argument("--allow-unpinned-local-dev", action="store_true",
+                   help=argparse.SUPPRESS)
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / STRATEGY
     sys.path.insert(0, str(strategy_dir))
 
-    pinned_cfg = (
-        REPO_ROOT.parent / "renquant-strategy-104" / "configs" / args.strategy_config_name
-    )
-    local_cfg = strategy_dir / args.strategy_config_name
-    if pinned_cfg.exists():
-        cfg_path = pinned_cfg
-        log.info("Using pinned strategy config: %s", cfg_path)
-    elif local_cfg.exists():
-        cfg_path = local_cfg
-        log.warning(
-            "Pinned strategy config not found at %s; falling back to "
-            "umbrella copy %s — sim may evaluate a different config than live",
-            pinned_cfg, local_cfg,
+    try:
+        resolved_cfg = resolve_strategy_config(
+            strategy_dir=strategy_dir,
+            repo_root=REPO_ROOT,
+            config_name=args.strategy_config_name,
+            allow_unpinned_local_dev=args.allow_unpinned_local_dev,
         )
-    else:
-        log.error("Config not found at pinned (%s) or local (%s)", pinned_cfg, local_cfg)
+    except StrategyConfigResolutionError as exc:
+        log.error(str(exc))
         sys.exit(1)
+    cfg_path = resolved_cfg.path
     config = json.loads(cfg_path.read_text())
     from qp_contracts import validate_qp_contract_config  # noqa: PLC0415
     qp_contract = validate_qp_contract_config(config)
@@ -139,6 +273,9 @@ def main() -> None:
 
     config["_strategy_dir"]         = str(strategy_dir)
     config["_strategy_config_name"] = args.strategy_config_name
+    config["_strategy_config_path"] = str(resolved_cfg.path)
+    config["_strategy_config_source"] = resolved_cfg.source
+    config["_strategy_config_fingerprint"] = resolved_cfg.fingerprint
     config["initial_cash"]          = args.initial_cash
     config["backtest_start"]        = args.start
     config["backtest_end"]          = args.end
@@ -186,6 +323,9 @@ def main() -> None:
         eq.index = eq.index.astype(str)
         payload = {
             "config":        args.strategy_config_name,
+            "strategy_config_path": str(resolved_cfg.path),
+            "strategy_config_source": resolved_cfg.source,
+            "strategy_config_fingerprint": resolved_cfg.fingerprint,
             "start":         args.start,
             "end":           args.end,
             "initial_cash":  args.initial_cash,
