@@ -14,6 +14,10 @@ Exit codes:
   0 — no new drift detected
   1 — new drift detected (a previously-identical file has diverged)
   2 — setup error (missing paths, bad lock file, etc.)
+  3 — skipped: pipeline kernel not found. Distinct from 0 so callers (see
+      tests/test_kernel_parity.py) can tell "ran and passed" apart from
+      "never actually compared anything" instead of a skip silently
+      reading as a pass.
 """
 from __future__ import annotations
 
@@ -149,17 +153,38 @@ def _list_py_files(root: Path) -> set[str]:
 
 
 def _resolve_pipeline_kernel() -> Path | None:
-    """Resolve the pipeline kernel path from subrepos.lock.json."""
-    if not LOCK_FILE.exists():
-        return None
-    with open(LOCK_FILE) as fh:
-        lock = json.load(fh)
-    for sub in lock.get("subrepos", []):
-        if sub.get("name") == "renquant-pipeline":
-            local = Path(sub["local_path"])
-            kernel = local / "src" / "renquant_pipeline" / "kernel"
-            return kernel if kernel.is_dir() else None
-    return None
+    """Resolve the pipeline kernel path.
+
+    Resolution order:
+    1. ``RENQUANT_PIPELINE_KERNEL_PATH`` env var — explicit override. CI
+       (``.github/workflows/kernel-parity-ci.yml``) sets this to wherever it
+       checked out the ``renquant-pipeline`` sibling, since the CI runner's
+       layout has nothing to do with any developer machine's
+       ``subrepos.lock.json`` ``local_path``.
+    2. ``subrepos.lock.json``'s ``local_path`` — the developer-machine pin.
+    3. A ``renquant-pipeline`` checkout that is a filesystem sibling of this
+       umbrella checkout (``../renquant-pipeline``) — the layout produced by
+       a from-scratch multirepo clone.
+    """
+    override = os.environ.get("RENQUANT_PIPELINE_KERNEL_PATH")
+    if override:
+        kernel = Path(override)
+        return kernel if kernel.is_dir() else None
+
+    if LOCK_FILE.exists():
+        with open(LOCK_FILE) as fh:
+            lock = json.load(fh)
+        for sub in lock.get("subrepos", []):
+            if sub.get("name") == "renquant-pipeline":
+                local = Path(sub["local_path"])
+                kernel = local / "src" / "renquant_pipeline" / "kernel"
+                if kernel.is_dir():
+                    return kernel
+
+    sibling = (
+        UMBRELLA_ROOT.parent / "renquant-pipeline" / "src" / "renquant_pipeline" / "kernel"
+    )
+    return sibling if sibling.is_dir() else None
 
 
 def check_parity(*, verbose: bool = False) -> tuple[list[str], dict[str, object]]:
@@ -228,7 +253,7 @@ def main() -> int:
 
     if summary.get("skipped"):
         print(f"SKIP: {summary['reason']}")
-        return 0
+        return 3
 
     if not verbose:
         print(f"Kernel parity: {summary['identical']} identical, "
