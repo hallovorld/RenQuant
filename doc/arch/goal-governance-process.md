@@ -11,6 +11,12 @@ Status: DRAFT — requires operator review before becoming binding.
 Date: 2026-07-13
 Trigger: G2 premature-deployment incident + operator directive on process gaps.
 
+**Current program proposal:**
+[`2026-07-13-four-goal-program-reset.md`](2026-07-13-four-goal-program-reset.md)
+defines the active G1-G4 dependency order, evidence contract, and stop rules.
+It supersedes this document's incomplete G1/G2/G4 execution assumptions while
+this governance process remains the lifecycle and reporting baseline.
+
 ---
 
 ## 1. Purpose
@@ -245,9 +251,10 @@ The retrospective must identify:
 ### G3 (Architecture refactoring) — REDEFINED 2026-07-13
 - Prior scope: one-shot audit → DONE (orch #492 merged)
 - New scope: incremental safe refactoring per violation registry
-- Acceptance criteria: defined in `doc/arch/2026-07-13-g3-refactoring-plan.md` §2
-  (AC-1: zero regressions, AC-2: violation count decreases, AC-3: no unregistered
-  behavior change, AC-4: operator phase-exit review)
+- Acceptance criteria: the active-runtime gate and its evidence contract are
+  defined in `doc/arch/2026-07-13-four-goal-program-reset.md` §4; the
+  incremental migration sequence remains in
+  `doc/arch/2026-07-13-g3-refactoring-plan.md`.
 - Phased: A (tripwires) → B (single-source consolidation) → C (dead code) → D+ (migrations)
 
 ### G4 (Ensemble)

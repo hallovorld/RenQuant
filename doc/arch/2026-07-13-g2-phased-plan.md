@@ -10,7 +10,8 @@ earlier XGB-model-based Phase 1. orchestrator#505's data/strategy/pipeline
 ownership and design are still under active architectural review as of
 this date (Codex CHANGES_REQUESTED on #505/#194/#506) — nothing below
 should be read as an approved, settled design; treat the phase/deliverable
-structure as historical context pending a reconciled update.
+structure as historical context. The replacement program is
+[`2026-07-13-four-goal-program-reset.md`](2026-07-13-four-goal-program-reset.md).
 
 Post-incident re-plan. Replaces the implicit "build whatever is tractable" approach
 with a dependency-driven, phase-gated plan. Each phase has a VERIFIABLE exit
