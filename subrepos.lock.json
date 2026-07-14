@@ -14,7 +14,7 @@
       "local_path": "/Users/renhao/git/github/renquant-common",
       "remote": "https://github.com/hallovorld/renquant-common",
       "branch": "main",
-      "commit": "df620a6ecc353906d34a2899011843b1d4d194a5",
+      "commit": "6f09cb99ae47915310cb02b21dab39059a38073e",
       "test_command": "make test",
       "status": "bootstrapped"
     },
