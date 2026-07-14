@@ -71,9 +71,22 @@ def main() -> None:
     strategy_dir = REPO_ROOT / "backtesting" / STRATEGY
     sys.path.insert(0, str(strategy_dir))
 
-    cfg_path = strategy_dir / args.strategy_config_name
-    if not cfg_path.exists():
-        log.error("Config not found: %s", cfg_path)
+    pinned_cfg = (
+        REPO_ROOT.parent / "renquant-strategy-104" / "configs" / args.strategy_config_name
+    )
+    local_cfg = strategy_dir / args.strategy_config_name
+    if pinned_cfg.exists():
+        cfg_path = pinned_cfg
+        log.info("Using pinned strategy config: %s", cfg_path)
+    elif local_cfg.exists():
+        cfg_path = local_cfg
+        log.warning(
+            "Pinned strategy config not found at %s; falling back to "
+            "umbrella copy %s — sim may evaluate a different config than live",
+            pinned_cfg, local_cfg,
+        )
+    else:
+        log.error("Config not found at pinned (%s) or local (%s)", pinned_cfg, local_cfg)
         sys.exit(1)
     config = json.loads(cfg_path.read_text())
     from qp_contracts import validate_qp_contract_config  # noqa: PLC0415
