@@ -1,0 +1,75 @@
+name: kernel-parity-ci
+
+# Guards F-6 (2026-07-04 architecture compliance audit): the umbrella's
+# backtesting/renquant_104/kernel/ must stay in parity with the pinned
+# renquant_pipeline/kernel/ (mod import-path normalisation). This is the ONE
+# job that checks out renquant-pipeline at its subrepos.lock.json pin as a
+# sibling, so scripts/check_kernel_parity.py + tests/test_kernel_parity.py
+# have something real to compare against.
+#
+# RENQUANT_KERNEL_PARITY_STRICT=1 tells the test to FAIL (not skip) if the
+# pipeline checkout is somehow still missing here specifically. Without that
+# flag the test skips cleanly when the sibling isn't present (local dev,
+# or any other job) — a skip in THIS job would mean the guard went green
+# without ever comparing the two kernel trees.
+
+on:
+  pull_request:
+    paths:
+      - backtesting/renquant_104/kernel/**
+      - subrepos.lock.json
+      - scripts/check_kernel_parity.py
+      - tests/test_kernel_parity.py
+      - .github/workflows/kernel-parity-ci.yml
+  push:
+    branches:
+      - main
+    paths:
+      - backtesting/renquant_104/kernel/**
+      - subrepos.lock.json
+      - scripts/check_kernel_parity.py
+      - .github/workflows/kernel-parity-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out umbrella
+        uses: actions/checkout@v4
+        with:
+          path: umbrella
+
+      - name: Read renquant-pipeline pin from subrepos.lock.json
+        id: pin
+        working-directory: umbrella
+        run: |
+          set -euo pipefail
+          PIN="$(python3 -c "import json; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == 'renquant-pipeline'))")"
+          test -n "${PIN}"
+          echo "commit=${PIN}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out renquant-pipeline at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-pipeline
+          ref: ${{ steps.pin.outputs.commit }}
+          path: renquant-pipeline
+          # Private subrepo: needs a PAT/App token with read access (same
+          # fallback chain as subrepo-pin-ci-green.yml /
+          # strategy-104-snapshot-fresh.yml).
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Install test tools
+        run: python3 -m pip install pytest
+
+      - name: Kernel parity check (must compare, not skip)
+        working-directory: umbrella
+        env:
+          RENQUANT_PIPELINE_KERNEL_PATH: ${{ github.workspace }}/renquant-pipeline/src/renquant_pipeline/kernel
+          RENQUANT_KERNEL_PARITY_STRICT: "1"
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_kernel_parity.py -v
