@@ -4,18 +4,46 @@
 Usage::
 
     python scripts/run_sim_104.py
-    python scripts/run_sim_104.py --strategy-config-name strategy_config.h60_103.json
+    python scripts/run_sim_104.py --strategy-config-name strategy_config.shadow.json
     python scripts/run_sim_104.py --start 2024-01-01 --end 2026-03-28
 
+    # Experiment mode — requires a REGISTERED experiment manifest (must live
+    # under experiments/manifests/ AND have a matching digest entry in
+    # experiments/manifests/INDEX.json — see that file for how to register
+    # a new experiment):
+    python scripts/run_sim_104.py \\
+        --experiment-manifest experiments/manifests/sweep-2026-07-14.json
+
 Outputs APY, Sharpe, MaxDD, n_trades, and compares to the golden config.
+
+Experiment-mode governance (F-7, RenQuant#471) is implemented against the
+canonical, shared contract in ``renquant_artifacts.experiment_registry`` --
+this script is a CALLER of that contract, not a second implementation of it.
+Any other producer of non-production sim/backtest/score-backfill output
+(e.g. renquant-model's score-backfill tooling) should reuse the same
+``renquant_artifacts`` functions rather than hand-rolling an equivalent.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import subprocess
 import sys
 from pathlib import Path
+
+from renquant_artifacts import (
+    EXPERIMENT_MANIFEST_REQUIRED_KEYS,
+    EXPERIMENT_MANIFEST_VALID_STATUSES,
+    EXPERIMENT_PINS_REQUIRED_KEYS,
+    build_experiment_provenance_reference,
+    reject_exploratory_promotion,
+    verify_experiment_pins,
+    verify_manifest_registered,
+    write_experiment_classification,
+)
+from renquant_common.model_fingerprint import artifact_sha256
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -27,6 +55,464 @@ log = logging.getLogger("run-sim-104")
 STRATEGY   = "renquant_104"
 SIM_START  = "2024-01-02"
 SIM_END    = "2026-03-28"   # ~27 months
+
+# ``reject_exploratory_promotion`` is re-exported (not redefined) from
+# renquant_artifacts.experiment_registry so ``from run_sim_104 import
+# reject_exploratory_promotion`` keeps working for existing callers/tests,
+# even though THIS script never calls it directly -- the real caller is
+# renquant_artifacts.validation.ValidateArtifactManifestTask, the actual
+# promotion boundary (see doc/progress/2026-07-14-f7-r7-promotion-gate.md).
+# There is exactly one implementation; this name only re-exports it.
+reject_exploratory_promotion = reject_exploratory_promotion  # noqa: PLW0127 (re-export)
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.check_output(
+        ("git", "-C", str(repo), *args), text=True, stderr=subprocess.DEVNULL,
+    ).strip()
+
+
+def _normalize_remote(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    return url.lower()
+
+
+def _verify_pin(
+    repo_path: Path, expected_commit: str, expected_remote: str,
+) -> list[str]:
+    """Check HEAD, dirty state, and remote URL against a lock-file pin.
+
+    Returns a list of error strings (empty = clean).
+    """
+    errors: list[str] = []
+
+    if not expected_commit:
+        errors.append("lock entry has no commit hash")
+    if not expected_remote:
+        errors.append("lock entry has no remote URL")
+    if errors:
+        return errors
+
+    try:
+        head = _git(repo_path, "log", "-1", "--format=%H")
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        errors.append(f"git metadata failed: {exc}")
+        return errors
+
+    if not head.startswith(expected_commit):
+        errors.append(
+            f"HEAD {head[:12]} does not match lock commit "
+            f"{expected_commit[:12]}"
+        )
+
+    try:
+        dirty = bool(_git(repo_path, "status", "--porcelain"))
+    except subprocess.CalledProcessError as exc:
+        errors.append(f"git dirty check failed: {exc}")
+        return errors
+
+    if dirty:
+        errors.append("working tree is dirty")
+
+    try:
+        actual_remote = _git(repo_path, "remote", "get-url", "origin")
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        errors.append(f"could not read remote URL: {exc}")
+        return errors
+
+    if _normalize_remote(actual_remote) != _normalize_remote(expected_remote):
+        errors.append(
+            f"remote URL mismatch: lock={expected_remote} "
+            f"vs local={actual_remote}"
+        )
+
+    return errors
+
+
+EXPERIMENT_MANIFESTS_DIR = "experiments/manifests"
+#: Immutable registry index: a small git-tracked JSON file mapping
+#: experiment_id -> {"digest": <sha256 of the manifest file>, "path": ...}.
+#: Registering a manifest is a deliberate, auditable act (append an entry
+#: here in the SAME commit/PR that adds the manifest file) -- living under
+#: EXPERIMENT_MANIFESTS_DIR is necessary but not sufficient; the manifest's
+#: content must also match a registered digest (Codex review 2026-07-14,
+#: finding 3). See experiments/manifests/INDEX.json and its README.
+EXPERIMENT_MANIFEST_INDEX_PATH = "experiments/manifests/INDEX.json"
+
+
+def load_experiment_manifest(
+    manifest_path: Path, *, repo_root: Path,
+) -> dict:
+    """Load and validate an experiment manifest JSON file.
+
+    Required fields: experiment_id, config_path, config_digest, status,
+    pins, data_manifest_path, model_artifact_path (see
+    ``renquant_artifacts.EXPERIMENT_MANIFEST_REQUIRED_KEYS``).
+
+    Beyond schema validation, this function requires the manifest to be a
+    REGISTERED record: its own file digest must match an entry in
+    ``experiments/manifests/INDEX.json`` keyed by ``experiment_id`` (see
+    ``renquant_artifacts.verify_manifest_registered``). This is what makes
+    "registered experiment" mean more than "someone pointed --experiment-
+    manifest at a JSON file under the right directory."
+
+    The returned dict carries four additional internal keys used by the
+    caller (``main()``) so paths/digests are resolved exactly once:
+    ``_manifest_digest``, ``_data_manifest_path``, ``_model_artifact_path``,
+    ``_registry_index_path``.
+    """
+    if not manifest_path.exists():
+        log.error("Experiment manifest not found: %s", manifest_path)
+        sys.exit(1)
+
+    raw = json.loads(manifest_path.read_text())
+    missing = EXPERIMENT_MANIFEST_REQUIRED_KEYS - raw.keys()
+    if missing:
+        log.error("Experiment manifest %s missing required keys: %s",
+                  manifest_path, sorted(missing))
+        sys.exit(1)
+
+    if raw["status"] not in EXPERIMENT_MANIFEST_VALID_STATUSES:
+        log.error("Experiment manifest %s has invalid status %r "
+                  "(expected one of %s)",
+                  manifest_path, raw["status"],
+                  sorted(EXPERIMENT_MANIFEST_VALID_STATUSES))
+        sys.exit(1)
+
+    if raw["status"] == "RETIRED":
+        log.error("Experiment manifest %s has status RETIRED — "
+                  "cannot run a retired experiment", manifest_path)
+        sys.exit(1)
+
+    pins = raw.get("pins")
+    if not isinstance(pins, dict):
+        log.error("Experiment manifest %s: 'pins' must be a dict, got %s",
+                  manifest_path, type(pins).__name__)
+        sys.exit(1)
+    missing_pins = EXPERIMENT_PINS_REQUIRED_KEYS - pins.keys()
+    if missing_pins:
+        log.error("Experiment manifest %s pins missing required keys: %s",
+                  manifest_path, sorted(missing_pins))
+        sys.exit(1)
+
+    cfg_path = Path(raw["config_path"])
+    if not cfg_path.is_absolute():
+        cfg_path = (repo_root / cfg_path).resolve()
+    if not cfg_path.exists():
+        log.error("Experiment config %s (from manifest %s) not found",
+                  cfg_path, manifest_path)
+        sys.exit(1)
+
+    actual_digest = "sha256:" + hashlib.sha256(cfg_path.read_bytes()).hexdigest()
+    if actual_digest != raw["config_digest"]:
+        log.error(
+            "Experiment config digest mismatch: manifest says %s "
+            "but file is %s — config has been modified since manifest "
+            "was registered", raw["config_digest"], actual_digest,
+        )
+        sys.exit(1)
+
+    # The 5 pin categories require concrete evidence to verify against
+    # (data_snapshot -> a data manifest, model_artifact -> an artifact
+    # file). A registered experiment must point at real files, not merely
+    # declare pin values with nothing behind them (Codex review 2026-07-14,
+    # finding 2).
+    data_manifest_path = Path(raw["data_manifest_path"])
+    if not data_manifest_path.is_absolute():
+        data_manifest_path = (repo_root / data_manifest_path).resolve()
+    if not data_manifest_path.exists():
+        log.error("Experiment data_manifest_path %s (from manifest %s) not found",
+                  data_manifest_path, manifest_path)
+        sys.exit(1)
+
+    model_artifact_path = Path(raw["model_artifact_path"])
+    if not model_artifact_path.is_absolute():
+        model_artifact_path = (repo_root / model_artifact_path).resolve()
+    if not model_artifact_path.exists():
+        log.error("Experiment model_artifact_path %s (from manifest %s) not found",
+                  model_artifact_path, manifest_path)
+        sys.exit(1)
+
+    manifest_digest = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    index_path = repo_root / EXPERIMENT_MANIFEST_INDEX_PATH
+    registry_errors = verify_manifest_registered(
+        manifest_digest, raw["experiment_id"], index_path,
+    )
+    if registry_errors:
+        for err in registry_errors:
+            log.error("MANIFEST NOT REGISTERED: %s", err)
+        log.error(
+            "Experiment manifest %s is not a registered record. Register it "
+            "by adding a matching {\"digest\": ..., \"path\": ...} entry to "
+            "%s in the same commit/PR that adds the manifest file — an "
+            "unregistered manifest file is not accepted no matter where it "
+            "lives.", manifest_path, index_path,
+        )
+        sys.exit(1)
+
+    raw["_manifest_digest"] = manifest_digest
+    raw["_data_manifest_path"] = str(data_manifest_path)
+    raw["_model_artifact_path"] = str(model_artifact_path)
+    raw["_registry_index_path"] = str(index_path)
+    return raw
+
+
+def verify_and_classify_experiment(
+    manifest_data: dict,
+    config: dict,
+    *,
+    repo_root: Path,
+    strategy_dir: Path,
+    experiment_manifest_arg: str,
+    config_digest: str,
+) -> Path:
+    """Verify all 5 experiment pins, then atomically write the EXPLORATORY_ONLY
+    classification marker. Exits(1) if any pin fails to verify.
+
+    Split out of ``main()`` so the F-7 r7 pin-verification + classification
+    contract is directly unit-testable without needing the full sim runtime
+    (kernel/sim imports) that ``main()`` pulls in.
+
+    Returns the output directory the classification marker was written to
+    -- the directory embedded in the canonical ``provenance`` reference (see
+    :func:`renquant_artifacts.build_experiment_provenance_reference`) any
+    later artifact manifest must carry for
+    ``renquant_artifacts.validate_artifact_manifest`` to enforce the
+    promotion-boundary rejection. As of the renquant-artifacts#24 follow-up
+    fix (Codex 2026-07-14: "the promotion guard is bypassable because
+    provenance is optional and self-declared"), a bare directory string is
+    no longer sufficient on its own -- the manifest must set the full
+    ``provenance`` record this function logs below, built by the SAME
+    shared helper the artifacts-side validator trusts, from values this
+    function already resolved (the run's own output dir + the registered
+    manifest's own index path) rather than accepting them as arbitrary
+    caller input.
+    """
+    from renquant_base_data import validate_data_manifest  # noqa: PLC0415
+    data_manifest_raw = json.loads(
+        Path(manifest_data["_data_manifest_path"]).read_text(),
+    )
+    data_manifest_report = validate_data_manifest(data_manifest_raw)
+
+    pin_errors = verify_experiment_pins(
+        manifest_data["pins"],
+        repo_root=repo_root,
+        data_manifest=data_manifest_report,
+        model_artifact_path=manifest_data["_model_artifact_path"],
+        universe=config.get("watchlist", []),
+    )
+    if pin_errors:
+        for err in pin_errors:
+            log.error("PIN VERIFICATION FAILED: %s", err)
+        log.error(
+            "Experiment manifest %s pins do not verify against the actual "
+            "environment — refusing to run. Fix the checkout/data/model/"
+            "universe drift, or re-register a manifest whose pins match "
+            "reality.", experiment_manifest_arg,
+        )
+        sys.exit(1)
+    log.info("All 5 experiment pins verified against the actual "
+             "environment (strategy_config, pipeline_version, "
+             "data_snapshot, model_artifact, calendar_universe).")
+
+    # Classification is written BEFORE run_backtest() so a crash mid-run
+    # never leaves real output with no EXPLORATORY_ONLY marker next to it
+    # (Codex review 2026-07-14, finding 3). Atomic tmp+rename is
+    # implemented once in renquant_artifacts.experiment_registry.
+    output_dir = strategy_dir / "artifacts" / "experiments" / manifest_data["experiment_id"]
+    cls_file = write_experiment_classification(
+        output_dir,
+        experiment_id=manifest_data["experiment_id"],
+        manifest_path=experiment_manifest_arg,
+        manifest_digest=manifest_data["_manifest_digest"],
+        config_digest=config_digest,
+    )
+    log.info("Wrote EXPLORATORY_ONLY classification: %s", cls_file)
+    provenance_reference = build_experiment_provenance_reference(
+        output_dir, manifest_data["_registry_index_path"],
+    )
+    log.info(
+        "Any artifact manifest built from this run's output MUST set "
+        "provenance=%s (this exact reference -- see "
+        "renquant_artifacts.build_experiment_provenance_reference; do not "
+        "hand-build an equivalent) so "
+        "renquant_artifacts.validate_artifact_manifest refuses to promote "
+        "it (see renquant_artifacts.validation.ValidateArtifactManifestTask). "
+        "provenance is now a REQUIRED manifest field -- omitting it, or any "
+        "other lineage claim that does not resolve to this SAME registered "
+        "record, is rejected, not silently accepted.",
+        provenance_reference,
+    )
+    return output_dir
+
+
+def write_candidate_artifact_manifest(
+    output_dir: Path,
+    *,
+    manifest_data: dict,
+    sim_metrics: dict,
+) -> Path:
+    """Emit the candidate-artifact manifest for this experiment run's
+    output, with ``provenance`` baked in by THIS producer -- not left for a
+    separate, disconnected caller to assert later.
+
+    This closes the gap Codex's round-3 follow-up review found in the log
+    line above: "run_sim_104.py only logs the reference returned by
+    build_experiment_provenance_reference(); it does not emit an artifact
+    manifest or bind that reference into the registry publication path."
+    Before this function existed, nothing in this script actually wrote a
+    manifest at all -- the ``provenance`` reference above was informational
+    only, and any real manifest for this run's output had to be hand-built
+    by a later, separate caller (exactly the disconnect that let a
+    dishonest caller declare ``provenance={"kind": "none"}`` instead of
+    reusing this reference).
+
+    Any candidate artifact built from this run's output should read this
+    exact file (or reconstruct it byte-for-byte via the same call) rather
+    than hand-roll an equivalent manifest -- mirroring the
+    ``model_content_sha256`` triple-impl-avoidance idiom
+    ``renquant_artifacts.experiment_registry`` already documents.
+
+    Because every registered experiment's classification is
+    EXPLORATORY_ONLY by construction, ``renquant_artifacts.
+    validate_artifact_manifest`` (and therefore every real promotion/
+    admission caller across the multirepo --
+    ``renquant_pipeline.inference.ValidateRuntimeInputsTask`` and
+    ``renquant_artifacts.registry.{load,resolve}_artifact_manifest``)
+    unconditionally rejects THIS manifest for promotion, which is the
+    correct outcome for exploratory output -- see
+    ``reject_exploratory_promotion``. Writing that rejection-bound manifest
+    here, with provenance baked in at the source, is what makes a later
+    dishonest ``kind="none"`` substitution a detectable divergence from the
+    real record instead of an unfalsifiable, separately hand-built claim.
+    """
+    provenance = build_experiment_provenance_reference(
+        output_dir, manifest_data["_registry_index_path"],
+    )
+    model_artifact_path = Path(manifest_data["_model_artifact_path"])
+    manifest = {
+        "artifact_id": f"{manifest_data['experiment_id']}-candidate",
+        "model_family": manifest_data.get("model_family", "experiment-sim-output"),
+        "strategy": STRATEGY,
+        "fingerprint": artifact_sha256(model_artifact_path),
+        "uri": f"file://{model_artifact_path}",
+        "local_artifact_path": str(model_artifact_path),
+        "promotion_status": "diagnostic",
+        "metrics": {"accepted": False, **sim_metrics},
+        "provenance": provenance,
+    }
+    out = output_dir / "candidate_artifact_manifest.json"
+    tmp = out.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2) + "\n")
+    tmp.rename(out)
+    log.info(
+        "Wrote candidate artifact manifest with baked-in provenance=%s -> "
+        "%s -- renquant_artifacts.validate_artifact_manifest rejects any "
+        "promotion attempt against this manifest (EXPLORATORY_ONLY, "
+        "registered experiment) because provenance is set by THIS "
+        "producer at the source, not left for a separate caller to assert.",
+        provenance, out,
+    )
+    return out
+
+
+def _resolve_strategy_config(
+    repo_root: Path,
+    strategy_dir: Path,
+    config_name: str,
+    *,
+    experiment_manifest: str | None = None,
+) -> tuple[Path, str, dict | None]:
+    """Resolve strategy config from pinned subrepo or experiment manifest.
+
+    Returns (cfg_path, source, manifest_data) where source is "PINNED" or
+    "EXPLORATORY_ONLY", and manifest_data is the parsed manifest dict (or
+    None for PINNED mode).
+
+    Default mode (strict-pinned): ALL configs resolve from the pinned
+    renquant-strategy-104 subrepo. The checkout HEAD, clean state, and remote
+    URL are verified against subrepos.lock.json. No filename-based routing.
+
+    Experiment mode (--experiment-manifest): resolves the config through an
+    immutable manifest containing experiment_id, config_digest, pins, and
+    status. Outputs are classified EXPLORATORY_ONLY.
+    """
+    if experiment_manifest:
+        manifest_path = Path(experiment_manifest)
+        if not manifest_path.is_absolute():
+            manifest_path = (repo_root / manifest_path).resolve()
+        allowed_root = (repo_root / EXPERIMENT_MANIFESTS_DIR).resolve()
+        try:
+            manifest_path.resolve().relative_to(allowed_root)
+        except ValueError:
+            log.error(
+                "Experiment manifest %s is outside the registered location "
+                "%s/ — manifests must be registered under that directory",
+                manifest_path, EXPERIMENT_MANIFESTS_DIR,
+            )
+            sys.exit(1)
+        manifest = load_experiment_manifest(manifest_path, repo_root=repo_root)
+        cfg_path = Path(manifest["config_path"])
+        if not cfg_path.is_absolute():
+            cfg_path = (repo_root / cfg_path).resolve()
+        log.warning(
+            "EXPLORATORY_ONLY [experiment_id=%s, manifest=%s]: using %s — "
+            "results CANNOT be used for promotion or live deployment",
+            manifest["experiment_id"], manifest_path, cfg_path,
+        )
+        return cfg_path, "EXPLORATORY_ONLY", manifest
+
+    lock_path = repo_root / "subrepos.lock.json"
+    if not lock_path.exists():
+        log.error(
+            "subrepos.lock.json not found at %s — cannot resolve pinned "
+            "config. Use --experiment-config for research experiments.",
+            lock_path,
+        )
+        sys.exit(1)
+
+    lock = json.loads(lock_path.read_text())
+    strat_entry = None
+    for entry in lock.get("subrepos", []):
+        if entry.get("name") == "renquant-strategy-104":
+            strat_entry = entry
+            break
+
+    if strat_entry is None:
+        log.error("renquant-strategy-104 not found in subrepos.lock.json")
+        sys.exit(1)
+
+    raw_local = strat_entry["local_path"]
+    local_path = Path(raw_local)
+    if not local_path.is_absolute():
+        local_path = (repo_root / local_path).resolve()
+
+    expected_commit = strat_entry.get("commit", "")
+    expected_remote = strat_entry.get("remote", "")
+    pin_errors = _verify_pin(local_path, expected_commit, expected_remote)
+    if pin_errors:
+        for err in pin_errors:
+            log.error("PIN DRIFT [renquant-strategy-104]: %s", err)
+        log.error(
+            "Strategy subrepo checkout does not match lock pin. "
+            "Fix the checkout or use --experiment-config for experiments.",
+        )
+        sys.exit(1)
+
+    cfg_path = local_path / "configs" / config_name
+    if not cfg_path.exists():
+        log.error(
+            "Config %s not found in pinned subrepo: %s (commit %s). "
+            "Use --experiment-config to load from an explicit path.",
+            config_name, cfg_path, expected_commit[:12],
+        )
+        sys.exit(1)
+
+    log.info("Using PINNED config: %s (commit %s, verified)",
+             cfg_path, expected_commit[:12])
+    return cfg_path, "PINNED", None
 
 
 def main() -> None:
@@ -66,16 +552,30 @@ def main() -> None:
     p.add_argument("--allow-raw-qp-mu", action="store_true",
                    help="Emergency/debug override: allow QP configs that do "
                         "not have a strict expected-return μ contract.")
+    p.add_argument("--experiment-manifest", default=None,
+                   help="Path to an experiment manifest JSON file. The "
+                        "manifest must contain experiment_id, config_path, "
+                        "config_digest (sha256), and status. All outputs "
+                        "are classified EXPLORATORY_ONLY.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / STRATEGY
     sys.path.insert(0, str(strategy_dir))
 
-    cfg_path = strategy_dir / args.strategy_config_name
-    if not cfg_path.exists():
-        log.error("Config not found: %s", cfg_path)
-        sys.exit(1)
-    config = json.loads(cfg_path.read_text())
+    cfg_path, config_source, manifest_data = _resolve_strategy_config(
+        REPO_ROOT, strategy_dir, args.strategy_config_name,
+        experiment_manifest=args.experiment_manifest,
+    )
+    cfg_bytes = cfg_path.read_bytes()
+    config = json.loads(cfg_bytes)
+    # Full-file audit fingerprint, "sha256:"-prefixed to match the convention
+    # used elsewhere for content fingerprints (e.g.
+    # renquant_common.model_fingerprint.artifact_sha256) rather than a
+    # truncated, unprefixed hex digest.
+    config_digest = "sha256:" + hashlib.sha256(cfg_bytes).hexdigest()
+    log.info("Config fingerprint: %s  source=%s  path=%s",
+             config_digest, config_source, cfg_path)
+
     from qp_contracts import validate_qp_contract_config  # noqa: PLC0415
     qp_contract = validate_qp_contract_config(config)
     if not qp_contract.passed and not args.allow_raw_qp_mu:
@@ -126,9 +626,30 @@ def main() -> None:
 
     config["_strategy_dir"]         = str(strategy_dir)
     config["_strategy_config_name"] = args.strategy_config_name
+    config["_strategy_config_path"] = str(cfg_path)
+    config["_strategy_config_source"] = config_source
+    config["_strategy_config_digest"] = config_digest
+    if config_source == "EXPLORATORY_ONLY" and manifest_data is not None:
+        config["_exploratory_only"] = True
+        config["_experiment_id"]    = manifest_data["experiment_id"]
+        config["_experiment_manifest"] = args.experiment_manifest
     config["initial_cash"]          = args.initial_cash
     config["backtest_start"]        = args.start
     config["backtest_end"]          = args.end
+
+    experiment_output_dir = None
+    if config_source == "EXPLORATORY_ONLY" and manifest_data is not None:
+        # F-7 r7 (Codex review 2026-07-14, findings 2+3): verify all 5
+        # required pin categories against the ACTUAL environment, then
+        # atomically write the EXPLORATORY_ONLY classification BEFORE any
+        # simulation output is produced. See verify_and_classify_experiment.
+        experiment_output_dir = verify_and_classify_experiment(
+            manifest_data, config,
+            repo_root=REPO_ROOT,
+            strategy_dir=strategy_dir,
+            experiment_manifest_arg=args.experiment_manifest,
+            config_digest=config_digest,
+        )
 
     # Per-seed DB isolation
     if args.no_persist:
@@ -162,6 +683,23 @@ def main() -> None:
         snapshot      = False,
     )
     result.print_summary()
+
+    if config_source == "EXPLORATORY_ONLY" and manifest_data is not None:
+        # F-7 follow-up (Codex review 2026-07-14, round 3): connect this
+        # run's output to artifact publication -- see
+        # write_candidate_artifact_manifest's docstring for why this call
+        # site (not a later, disconnected caller) must be the one to bind
+        # provenance into the manifest.
+        write_candidate_artifact_manifest(
+            experiment_output_dir,
+            manifest_data=manifest_data,
+            sim_metrics={
+                "apy": float(result.apy),
+                "sharpe": float(result.sharpe) if result.sharpe == result.sharpe else None,
+                "max_dd": float(result.max_dd) if result.max_dd == result.max_dd else None,
+                "n_trades": len(result.buys),
+            },
+        )
 
     # Emit daily equity curve for paired-returns analysis (industry-standard
     # eval per doc/research/evaluation-protocol.md). Records date + nav so

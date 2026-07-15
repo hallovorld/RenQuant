@@ -1,0 +1,3 @@
+{
+  "_comment": "Immutable registry index for scripts/run_sim_104.py --experiment-manifest. Each entry binds an experiment_id to the SHA-256 digest of its manifest file. Registering a new experiment is a deliberate act: add the manifest JSON under this directory AND append its entry here, in the SAME commit/PR. verify_manifest_registered() (renquant_artifacts.experiment_registry) fails closed if a manifest's experiment_id is absent here, or if its current digest does not match the registered one -- 'lives under experiments/manifests/' alone is not sufficient. See README.md in this directory."
+}

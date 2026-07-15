@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# RETIRED (2026-07-14, PR #471 r5): completed BB DOE sweep.
+# run_sim_104.py now requires strict-pinned configs or an experiment manifest;
+# --strategy-config-name with local sweep configs no longer works.
+# To re-run: register experiment manifests in experiments/manifests/ and
+# use --experiment-manifest instead.
+echo "ERROR: this script is RETIRED — see header for migration instructions" >&2
+exit 1
+# --- original below for reference ---
 # Orchestrate the 27-run BB sweep in 3 batches of 9.
 # Batch 1 must already be launched before this script starts; this script
 # waits for batch 1 to finish, then launches batch 2, then batch 3.

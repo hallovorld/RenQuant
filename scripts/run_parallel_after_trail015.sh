@@ -1,4 +1,12 @@
 #!/bin/bash
+# RETIRED (2026-07-14, PR #471 r5): completed re-evaluation queue.
+# run_sim_104.py now requires strict-pinned configs or an experiment manifest;
+# --strategy-config-name with local sweep configs no longer works.
+# To re-run: register experiment manifests in experiments/manifests/ and
+# use --experiment-manifest instead.
+echo "ERROR: this script is RETIRED — see header for migration instructions" >&2
+exit 1
+# --- original below for reference ---
 # Wait for re_trail015 16/16, then:
 #   1. Stop the sequential queue (so it doesn't double-launch)
 #   2. Re-run missing re_sdl_n2 Q13 (silent race-loss earlier)
