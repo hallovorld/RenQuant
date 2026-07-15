@@ -512,8 +512,10 @@ account → `--comment` "VERDICT: APPROVE").
 $ORCH repos agent --as codex --workflow fix --repo all
 ```
 Per PR: read findings, §3.2 rebase, smallest fix, run focused tests, post
-**`fixed by codex`**, commit `Co-Authored-By: Codex <noreply@openai.com>`,
-`git push --force-with-lease`.
+**`fixed by <your-github-login> (agent: codex)`**, then
+`git push --force-with-lease`. The commit attribution must resolve only to the
+PR creator's GitHub account. Do not add a `Co-Authored-By` trailer for agent
+provenance, and never push to a peer-owned PR branch.
 
 **merge** — merge your own approved + green PRs:
 ```bash
@@ -522,7 +524,10 @@ $ORCH repos agent --as codex --workflow merge --repo hallovorld/RenQuant --execu
 Deterministic; cross-repo (`--repo all --execute`) needs `--allow-all
 --max-merges N`. Dry-run by omitting `--execute`.
 
-Rules: never review/merge your own PR (queue excludes self-authored;
-GitHub blocks self-approve). Author fixes its own PRs; the reviewer never
-fixes findings it raised. Design:
+Rules: never review/approve a PR you authored or contributed to. A reviewer
+never directly fixes or pushes a peer PR; the author fixes its own branch.
+Every PR branch has exactly one GitHub commit identity, the PR creator. Any
+additional attribution, including a `Co-Authored-By` trailer, is a merge
+blocker. The author must rebuild/squash the branch from its target base as a
+clean single-identity history before re-review. Design:
 `renquant-orchestrator/doc/cross-repo-control-plane-design.md`.

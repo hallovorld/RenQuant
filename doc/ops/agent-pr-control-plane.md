@@ -11,8 +11,10 @@ Design: [`renquant-orchestrator/doc/cross-repo-control-plane-design.md`](../../.
 ## 1 · One-time setup — per-agent tokens
 
 Each agent uses its OWN GitHub token, so reviews/commits/merges are
-attributed correctly and GitHub's native "cannot approve your own PR" rule
-enforces review separation for free.
+attributed correctly. GitHub's native "cannot approve your own PR" rule
+blocks a PR creator, but it does not block a reviewer who has directly
+contributed to a peer-owned branch. The orchestrator therefore enforces the
+stronger contributor-separation rule below.
 
 Store and load tokens via [`doc/ops/agent-token-storage.md`](agent-token-storage.md).
 Do not paste token values into this runbook, shell profiles, PR bodies, comments,
@@ -48,6 +50,21 @@ the Codex login, and Claude PRs by the Claude login. If a Codex PR is opened
 with `hallovorld`, then Claude-as-`hallovorld` cannot approve it; GitHub sees
 the PR author and reviewer as the same login even if the commits say
 `Agent-Origin: Codex`.
+
+### 1.2 · Single-identity branches and contributor separation
+
+The PR creator cannot approve its own PR. The branch has one GitHub commit
+identity: its creator. A reviewer submits findings only and must never commit
+or push to a peer-owned PR branch. Any additional commit attribution, including
+a `Co-Authored-By` trailer, is a merge blocker because it breaks the audit trail
+needed for independent review and merge.
+
+`repos agent --workflow review` surfaces this condition as
+`branch_identity_violations`; `merge` excludes the PR. The only repair is for
+the PR owner to rebuild/squash from the target base under its own GitHub
+identity, force-push the clean branch, and request a new review. There is no
+third-reviewer or owner-override exception for a mixed branch: preserve the
+diff, replace the history.
 
 **Until both agent tokens map to different logins and PRs are created by the
 right login**, agent-authored PRs cannot complete the normal review-gated merge
