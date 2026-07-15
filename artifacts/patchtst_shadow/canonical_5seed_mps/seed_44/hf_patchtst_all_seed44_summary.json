@@ -1,8 +1,0 @@
-{
-  "arch": "hf_patchtst",
-  "cut": "all",
-  "seed": 44,
-  "best_val_ic": 0.06570017769008384,
-  "n_params": 67841,
-  "n_features": 172
-}

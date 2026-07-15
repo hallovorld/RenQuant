@@ -111,13 +111,17 @@ def check_live_checkout_branch(repo: Path = REPO, expected: str | None = None) -
 
 
 def check_bundle(python: str | None = None) -> dict:
-    checker = REPO / ".subrepo_runtime" / "repos" / "renquant-orchestrator" / "scripts" / "check_model_bundle_consistency.py"
+    orch_runtime = REPO / ".subrepo_runtime" / "repos" / "renquant-orchestrator"
+    checker = orch_runtime / "scripts" / "check_model_bundle_consistency.py"
     if not checker.exists():
         return {"check": "bundle_consistency", "ok": True, "skip": True,
                 "detail": "checker not in runtime (orchestrator pin pre-#188) — SKIP"}
-    import sys
+    import os, sys
     py = python or sys.executable
-    p = subprocess.run([py, str(checker), "--json"], capture_output=True, text=True)
+    env = dict(os.environ)
+    orch_src = str(orch_runtime / "src")
+    env["PYTHONPATH"] = orch_src + os.pathsep + env.get("PYTHONPATH", "")
+    p = subprocess.run([py, str(checker), "--json", "--repo", str(REPO)], capture_output=True, text=True, env=env)
     ok = p.returncode == 0
     return {"check": "bundle_consistency", "ok": ok,
             "detail": "deploy_ready" if ok else (p.stdout or p.stderr)[-200:]}

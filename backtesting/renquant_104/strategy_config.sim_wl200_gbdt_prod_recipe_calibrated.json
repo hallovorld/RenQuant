@@ -1,6 +1,0 @@
-{
-  "_schema_note": "Minimal base config for run_wf_gate --derive-config-from-prod. Wrapper expects walkforward.manifest_path; all other semantics derived from strategy_config.json (prod). Points at the gbdt_prod_recipe_v2 regen: 43 scorer/calibrator pairs, 100% coverage, recipe fingerprint sha256:cfdd6cb8 matches the weekly no-drop-sentiment staging candidate. Replaces walkforward_manifest_v2_20260602.json, whose 39 artifacts were lost (0/39 present) and crashed the gate (recipe-mismatch / FileNotFoundError on the missing panel-ltr scorers).",
-  "walkforward": {
-    "manifest_path": "artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.calibrated.json"
-  }
-}
