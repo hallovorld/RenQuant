@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import json
 import subprocess
 import sys
@@ -154,3 +155,100 @@ def test_strategy_snapshot_check_skips_when_renderer_absent(tmp_path):
     root.mkdir()
     res = sd.check_strategy_snapshot(repo=root, python=sys.executable)
     assert res["ok"] and res.get("skip")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# check_bundle: PYTHONPATH + --repo wiring
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_check_bundle_passes_repo_and_pythonpath_with_existing_pythonpath(tmp_path, monkeypatch):
+    """check_bundle must pass --repo <REPO> and prepend orchestrator src
+    to PYTHONPATH. When PYTHONPATH already has a value, the result must
+    be ``orch_src:<existing>`` with no empty segment."""
+    orch_rt = tmp_path / ".subrepo_runtime" / "repos" / "renquant-orchestrator"
+    checker = orch_rt / "scripts" / "check_model_bundle_consistency.py"
+    checker.parent.mkdir(parents=True)
+    checker.write_text("")
+    orch_src = orch_rt / "src"
+
+    monkeypatch.setattr(sd, "REPO", tmp_path)
+    monkeypatch.setenv("PYTHONPATH", "/existing/path")
+
+    captured = {}
+    def mock_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    result = sd.check_bundle()
+
+    assert result["ok"]
+    assert "--repo" in captured["cmd"]
+    repo_idx = captured["cmd"].index("--repo")
+    assert captured["cmd"][repo_idx + 1] == str(tmp_path)
+
+    pp = captured["env"]["PYTHONPATH"]
+    assert str(orch_src) in pp
+    assert "/existing/path" in pp
+    segments = pp.split(os.pathsep)
+    assert "" not in segments, f"empty PYTHONPATH segment found: {pp!r}"
+
+
+def test_check_bundle_pythonpath_no_empty_segment_when_unset(tmp_path, monkeypatch):
+    """When PYTHONPATH is absent from env, the constructed value must be
+    just the orchestrator src — no trailing pathsep, no empty segment."""
+    orch_rt = tmp_path / ".subrepo_runtime" / "repos" / "renquant-orchestrator"
+    checker = orch_rt / "scripts" / "check_model_bundle_consistency.py"
+    checker.parent.mkdir(parents=True)
+    checker.write_text("")
+    orch_src = orch_rt / "src"
+
+    monkeypatch.setattr(sd, "REPO", tmp_path)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    captured = {}
+    def mock_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    sd.check_bundle()
+
+    pp = captured["env"]["PYTHONPATH"]
+    assert pp == str(orch_src)
+    segments = pp.split(os.pathsep)
+    assert "" not in segments
+
+
+def test_check_bundle_subprocess_failure_is_red_not_skip(tmp_path, monkeypatch):
+    """A checker that exists but fails (import error, assertion, etc.)
+    must be RED, never silently changed to SKIP."""
+    orch_rt = tmp_path / ".subrepo_runtime" / "repos" / "renquant-orchestrator"
+    checker = orch_rt / "scripts" / "check_model_bundle_consistency.py"
+    checker.parent.mkdir(parents=True)
+    checker.write_text("")
+
+    monkeypatch.setattr(sd, "REPO", tmp_path)
+
+    def mock_run(cmd, **kwargs):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = "ModuleNotFoundError: No module named 'renquant_orchestrator'"
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    result = sd.check_bundle()
+    assert not result["ok"]
+    assert not result.get("skip")

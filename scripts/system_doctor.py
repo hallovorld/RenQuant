@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -96,7 +97,6 @@ def check_live_checkout_branch(repo: Path = REPO, expected: str | None = None) -
     reported RED. When active: a stray git op / a sub-agent operating in the shared live
     tree can leave it on a feature branch, whose committed pins ``preflight_pin_align``
     would deploy — silently reverting the live model (2026-06-25 incident class)."""
-    import os
     expected = expected or os.environ.get("RENQUANT_DOCTOR_EXPECT_BRANCH")
     if not expected:
         return {"check": "live_checkout_branch", "ok": True, "skip": True,
@@ -111,13 +111,17 @@ def check_live_checkout_branch(repo: Path = REPO, expected: str | None = None) -
 
 
 def check_bundle(python: str | None = None) -> dict:
-    checker = REPO / ".subrepo_runtime" / "repos" / "renquant-orchestrator" / "scripts" / "check_model_bundle_consistency.py"
+    orch_runtime = REPO / ".subrepo_runtime" / "repos" / "renquant-orchestrator"
+    checker = orch_runtime / "scripts" / "check_model_bundle_consistency.py"
     if not checker.exists():
         return {"check": "bundle_consistency", "ok": True, "skip": True,
                 "detail": "checker not in runtime (orchestrator pin pre-#188) — SKIP"}
-    import sys
     py = python or sys.executable
-    p = subprocess.run([py, str(checker), "--json"], capture_output=True, text=True)
+    env = dict(os.environ)
+    orch_src = str(orch_runtime / "src")
+    parts = [orch_src] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    p = subprocess.run([py, str(checker), "--json", "--repo", str(REPO)], capture_output=True, text=True, env=env)
     ok = p.returncode == 0
     return {"check": "bundle_consistency", "ok": ok,
             "detail": "deploy_ready" if ok else (p.stdout or p.stderr)[-200:]}
