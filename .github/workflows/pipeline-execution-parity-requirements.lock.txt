@@ -1,0 +1,134 @@
+# Hashed, pinned dependency set for pipeline-execution-parity-ci.yml ONLY.
+#
+# Generated 2026-07-14 by resolving/downloading each package below as a
+# manylinux2014/manylinux_2_17/manylinux_2_28 x86_64 cp311 wheel (matching
+# the runner: ubuntu-latest + actions/setup-python@v5 python-version "3.11")
+# via:
+#
+#   pip download --dest wheels-linux-cp311 \
+#     --platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 \
+#     --platform manylinux_2_28_x86_64 --python-version 311 \
+#     --implementation cp --abi cp311 --only-binary=:all: \
+#     "arch>=6.3,<8" "numpy>=1.24,<3.0" "pandas>=2.0,<3.0" \
+#     "pandas_market_calendars>=4,<5" "pyarrow>=14.0,<26" \
+#     "pydantic>=2.0,<3.0" "scipy>=1.10,<2.0" "statsmodels>=0.14,<1.0" \
+#     "requests>=2.31,<3.0" "cvxpy>=1.4,<2.0" "pytest>=7.4,<9.0"
+#
+# then sha256-hashing every downloaded wheel. Direct (top-level) packages are
+# arch, numpy, pandas, pandas_market_calendars, pyarrow, pydantic, scipy,
+# statsmodels, requests, cvxpy, pytest; everything else here is a transitive
+# dependency of those. All packages -- direct and transitive -- must be
+# listed with a hash for `pip install --require-hashes` to succeed; that is
+# also why this pins exact versions rather than ranges (a hash only matches
+# one exact artifact).
+#
+# The `<3.0` / `<8` ceilings on pandas/arch (and the pre-existing `<5` on
+# pandas_market_calendars, `<3.0` on pydantic) are deliberate: they keep this
+# CI job on the same major-version line already validated elsewhere in this
+# repo's own dev environment (see `requirements.lock.txt`,
+# `environment.yml`), rather than silently picking up an unproven new major
+# release the moment PyPI publishes one -- pandas 3.0 in particular is a
+# breaking major bump over the 2.x line renquant-pipeline/renquant-execution
+# are actually developed and tested against.
+#
+# Verified by installing this file with `pip install --require-hashes` in a
+# clean `python:3.11-slim` (linux/amd64) container; see
+# doc/progress/2026-07-13-g3-a2-a3-pipeline-execution-parity-ci.md
+# ("Codex hardening follow-up" section) for the full verification record,
+# including a disclosed QEMU-emulation caveat on cross-arch import checks.
+#
+# To regenerate: bump the version ceilings above if a deliberate upgrade is
+# wanted, re-run the `pip download` command in a clean venv, sha256sum each
+# wheel, and replace the body below. Do not hand-edit a version or hash.
+annotated-types==0.7.0 \
+    --hash=sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53
+arch==7.2.0 \
+    --hash=sha256:dde9c7cd52370b53cc1f7df499a855dc25a83c1e69f64155210d16d436c1bc76
+certifi==2026.6.17 \
+    --hash=sha256:2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db
+cffi==2.1.0 \
+    --hash=sha256:aa7a1b53a2a4452ada2d1b5dade9960b2522f1e61293a811a077439e39029565
+charset-normalizer==3.4.9 \
+    --hash=sha256:04ce310cb89c15df659582aee80a0603788732a5e017d5bd5c81158106ce249c
+clarabel==0.11.1 \
+    --hash=sha256:c8c41aaa6f3f8c0f3bd9d86c3e568dcaee079562c075bd2ec9fb3a80287380ef
+cvxpy==1.9.2 \
+    --hash=sha256:44f3c7a067446e27af669bd29c9868f6ee74aeab73c98a52dc3535a367c40267
+exceptiongroup==1.3.1 \
+    --hash=sha256:a7a39a3bd276781e98394987d3a5701d0c4edffb633bb7a5144577f82c773598
+exchange-calendars==4.13.2 \
+    --hash=sha256:fc5a2ad0d61b5c3a6539a3061cd4cbb55c59f4a903455cec7926e4b798919996
+highspy==1.15.1 \
+    --hash=sha256:a24329c328942b37a6a318ecf163d07dd387974f071b98b4498725eaea80f06f
+idna==3.18 \
+    --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+iniconfig==2.3.0 \
+    --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+jinja2==3.1.6 \
+    --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+joblib==1.5.3 \
+    --hash=sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713
+korean-lunar-calendar==0.4.0 \
+    --hash=sha256:c042e20de0bb702add6bec8d0f6da1ea8d3b170838e63846f70420cf341fe4e7
+markupsafe==3.0.3 \
+    --hash=sha256:0bf2a864d67e76e5c9a34dc26ec616a66b9888e25e7b9460e1c76d3293bd9dbf
+numpy==2.4.6 \
+    --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93
+osqp==1.1.3 \
+    --hash=sha256:f6e6b384c356681b93c8698304b8910bd4a198e95664ab533cf5a422c126cd40
+packaging==26.2 \
+    --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
+pandas==2.3.3 \
+    --hash=sha256:b98560e98cb334799c0b07ca7967ac361a47326e9b4e5a7dfb5ab2b1c9d35a1b
+pandas-market-calendars==4.6.1 \
+    --hash=sha256:e3603bea8f1dce556fb21027a3ab73056296a145c5c440be1f5494e6fb34a4f1
+patsy==1.0.2 \
+    --hash=sha256:37bfddbc58fcf0362febb5f54f10743f8b21dd2aa73dec7e7ef59d1b02ae668a
+pluggy==1.6.0 \
+    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+pyarrow==25.0.0 \
+    --hash=sha256:0222f0071d13313962a88d21bf28b80d355ac39d81bfa6ff3fe00eeaf748e4be
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pydantic==2.13.4 \
+    --hash=sha256:45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba
+pydantic-core==2.46.4 \
+    --hash=sha256:f9fa868638bf362d3d138ea55829cefb3d5f4b0d7f142234382a15e2485dbec4
+pygments==2.20.0 \
+    --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
+pyluach==2.3.0 \
+    --hash=sha256:4497b731aef59508b079dbf5f00bc5bf4329ac45090a6cd37b5a83756f0e69ab
+pytest==8.4.2 \
+    --hash=sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79
+python-dateutil==2.9.0.post0 \
+    --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+pytz==2026.2 \
+    --hash=sha256:04156e608bee23d3792fd45c94ae47fae1036688e75032eea2e3bf0323d1f126
+qdldl==0.1.9.post1 \
+    --hash=sha256:e6d333d1de8f39ca3c34d0d88ee00a3d1b0d90f54dafad8d554b646c6110c7dd
+requests==2.34.2 \
+    --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
+scipy==1.17.1 \
+    --hash=sha256:43af8d1f3bea642559019edfe64e9b11192a8978efbd1539d7bc2aaa23d92de4
+scs==3.2.11 \
+    --hash=sha256:67a9bf34da4be7baf28eb50c8ea7d2e29ae5f345e4b04f057ba3dbeca42efbba
+setuptools==83.0.0 \
+    --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+sparsediffpy==0.3.0 \
+    --hash=sha256:7ad6e232bc2fda5302ff9da612805b1d6293ad7ba1418deb657d7a0dc6b10d27
+statsmodels==0.14.6 \
+    --hash=sha256:a3764ba8195c9baf0925a96da0743ff218067a269f01d155ca3558deed2658ca
+tomli==2.4.1 \
+    --hash=sha256:5a881ab208c0baf688221f8cecc5401bd291d67e38a1ac884d6736cbcd8247e9
+toolz==1.1.0 \
+    --hash=sha256:15ccc861ac51c53696de0a5d6d4607f99c210739caf987b5d2054f3efed429d8
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+typing-inspection==0.4.2 \
+    --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7
+tzdata==2026.3 \
+    --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931
+urllib3==2.7.0 \
+    --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897

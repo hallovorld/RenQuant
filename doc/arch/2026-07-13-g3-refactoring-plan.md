@@ -132,7 +132,11 @@ METRICS:
   - Regressions introduced: 0
   - Parity tests added: X
   - Test count delta: +Y across repos
-DELIVERABLES: A1 merged, A2 in review, A3/A4 pending
-NEXT: A2 codex review, then A3
+DELIVERABLES: A1 merged, A2+A3 relocated from orchestrator (wrong owner —
+  see orchestrator#515 Codex review) to this repo and in review here
+  (doc/progress/2026-07-13-g3-a2-a3-pipeline-execution-parity-ci.md,
+  scripts/check_pipeline_execution_parity.py,
+  .github/workflows/pipeline-execution-parity-ci.yml), A4 pending
+NEXT: A2/A3 codex review here, then A4
 RISKS: none identified — Phase A is read-only tests
 ```

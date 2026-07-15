@@ -1,0 +1,302 @@
+name: pipeline-execution-parity-ci
+
+# Guards G3 Phase A registry items A2 (duplicated constants:
+# MIN_FRACTIONAL_NOTIONAL_USD value equality + compute_parent_intent_id
+# golden-vector parity, between renquant-pipeline and renquant-execution)
+# and A3 (a baselined upper-bound inventory of non-canonical
+# pandas_market_calendars imports in the pipeline kernel). See
+# doc/arch/2026-07-13-g3-refactoring-plan.md Phase A.
+#
+# These checks were originally orchestrator-local pytest tests
+# (renquant-orchestrator PR #515, tests/test_cross_repo_parity.py) that
+# imported renquant-pipeline/renquant-execution from local sibling
+# directories on a developer machine. Codex flagged the same no-op-green
+# pattern already fixed here for F-6 (umbrella PR #468, kernel-parity-ci.yml):
+# orchestrator's own CI has no job that checks those siblings out, so a
+# green orchestrator build proved none of the actual pipeline/execution
+# invariants. This is the ONE job that checks out renquant-pipeline AND
+# renquant-execution -- plus their own renquant-common / renquant-base-data
+# / renquant-artifacts dependencies, all at their subrepos.lock.json pins --
+# as real siblings, so scripts/check_pipeline_execution_parity.py +
+# tests/test_pipeline_execution_parity.py have something real to compare
+# against.
+#
+# RENQUANT_PIPELINE_EXECUTION_PARITY_STRICT=1 tells the test to FAIL (not
+# skip) if any sibling checkout is somehow still missing here specifically.
+# Without that flag the test skips cleanly when siblings aren't present
+# (local dev, or any other job) -- a skip in THIS job would mean the guard
+# went green without ever comparing pipeline and execution.
+#
+# --- Security/reproducibility hardening (Codex blocking review, PR #469) ---
+#
+# subrepos.lock.json is PR-editable, and this job checks out + imports
+# whatever it points at. A modified lock could therefore make the job
+# execute arbitrary pinned-repo Python. To keep that from being able to do
+# more than what this job is FOR (read the 5 pins and report a comparison):
+#
+#  - No checkout in this workflow ever uses AGENT_GIT_PUSH_TOKEN. That
+#    secret is a contents:write + pull-requests:write PAT scoped to THIS
+#    repo (see .github/workflows/README.md's secrets table -- it exists so
+#    the G3 agent-fix template can push fix commits), and its old fallback
+#    role here (`SUBREPO_CI_READ_TOKEN || AGENT_GIT_PUSH_TOKEN ||
+#    github.token`, copied from kernel-parity-ci.yml / subrepo-pin-ci-green.yml
+#    / strategy-104-snapshot-fresh.yml) had nothing to do with why it
+#    exists: this job only ever needs READ access to the 5 pinned repos, so
+#    a push-capable credential being reachable from a job that runs
+#    PR-editable pinned code was strictly more exposure than the job needs.
+#    Only `secrets.SUBREPO_CI_READ_TOKEN` (a dedicated fine-grained
+#    READ-ONLY PAT -- provision it read-only across the renquant-* repos if
+#    not already set) or the ambient `github.token` are used here.
+#  - Every checkout sets `persist-credentials: false`. This job never needs
+#    to push or run further authenticated git operations from any checkout
+#    (including the umbrella one) after the initial fetch -- every later
+#    step only reads files / runs Python -- so there is no reason for the
+#    checkout token to remain on disk in .git/config (where actions/checkout
+#    stores it as a plaintext-ish http.extraheader by default) for a later
+#    step, or the pinned repos' own code, to find and reuse.
+#  - Two-stage trust framing: this repo doesn't yet have a prior example of
+#    a fully separate no-secret-PR-stage / trusted-main-stage split (checked
+#    the other 3 workflows here -- all of them use the same read-token on
+#    `pull_request` too), and a literal zero-secret PR run isn't achievable
+#    here without dropping pre-merge signal entirely (the 5 sibling repos
+#    are private, so *some* credential is required to check them out at
+#    all, even just to validate a lock bump before merge). Given that, the
+#    read-only-token change above is what actually shrinks the blast radius
+#    for a `pull_request` run to "can read the already-intentionally-checked-
+#    out private repos", not "can push". The `push`-to-`main` run of this
+#    same job is the trusted, protected-main integration execution -- it is
+#    only reachable after a lock-file-changing PR has been reviewed and
+#    merged -- and its run record (below) is tagged with `trigger` so
+#    consumers can tell a pre-merge validation run's record apart from a
+#    post-merge trusted one.
+#  - The third-party dependency set is a committed, hashed lock file
+#    (.github/workflows/pipeline-execution-parity-requirements.lock.txt,
+#    `pip install --require-hashes`) instead of open-ended version ranges
+#    resolved live against PyPI, so the parity result can't silently change
+#    because a new release showed up.
+#  - After every checkout, HEAD is asserted to equal the lock-declared SHA
+#    for that repo (fail closed on mismatch, before any pinned code runs),
+#    and a machine-readable run record (umbrella SHA, all 5 pin SHAs,
+#    dependency-environment digest, per-check pass/fail) is emitted as a
+#    step-summary + uploaded artifact for pin-level integration audit.
+
+on:
+  pull_request:
+    paths:
+      - subrepos.lock.json
+      - scripts/check_pipeline_execution_parity.py
+      - tests/test_pipeline_execution_parity.py
+      - .github/workflows/pipeline-execution-parity-ci.yml
+      - .github/workflows/pipeline-execution-parity-requirements.lock.txt
+  push:
+    branches:
+      - main
+    paths:
+      - subrepos.lock.json
+      - scripts/check_pipeline_execution_parity.py
+      - tests/test_pipeline_execution_parity.py
+      - .github/workflows/pipeline-execution-parity-ci.yml
+      - .github/workflows/pipeline-execution-parity-requirements.lock.txt
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out umbrella
+        uses: actions/checkout@v4
+        with:
+          path: umbrella
+          persist-credentials: false
+
+      - name: Read subrepo pins from subrepos.lock.json
+        id: pins
+        working-directory: umbrella
+        run: |
+          set -euo pipefail
+          for name in renquant-common renquant-base-data renquant-artifacts renquant-pipeline renquant-execution; do
+            key="$(echo "${name}" | tr '-' '_')"
+            pin="$(python3 -c "import json; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == '${name}'))")"
+            test -n "${pin}"
+            echo "${key}=${pin}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Check out renquant-common at its pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-common
+          ref: ${{ steps.pins.outputs.renquant_common }}
+          path: renquant-common
+          persist-credentials: false
+          # Private subrepo: needs a PAT/App token with READ access only.
+          # Deliberately no AGENT_GIT_PUSH_TOKEN fallback here (see header
+          # comment) -- that token is push-capable and unrelated to this
+          # job's needs. Provision `SUBREPO_CI_READ_TOKEN` as a dedicated
+          # fine-grained, read-only PAT scoped to the renquant-* repos.
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || github.token }}
+
+      - name: Check out renquant-base-data at its pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-base-data
+          ref: ${{ steps.pins.outputs.renquant_base_data }}
+          path: renquant-base-data
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || github.token }}
+
+      - name: Check out renquant-artifacts at its pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-artifacts
+          ref: ${{ steps.pins.outputs.renquant_artifacts }}
+          path: renquant-artifacts
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || github.token }}
+
+      - name: Check out renquant-pipeline at its pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-pipeline
+          ref: ${{ steps.pins.outputs.renquant_pipeline }}
+          path: renquant-pipeline
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || github.token }}
+
+      - name: Check out renquant-execution at its pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-execution
+          ref: ${{ steps.pins.outputs.renquant_execution }}
+          path: renquant-execution
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || github.token }}
+
+      - name: Verify checkouts match subrepos.lock.json exactly (fail closed before any pinned code runs)
+        env:
+          PIN_COMMON: ${{ steps.pins.outputs.renquant_common }}
+          PIN_BASE_DATA: ${{ steps.pins.outputs.renquant_base_data }}
+          PIN_ARTIFACTS: ${{ steps.pins.outputs.renquant_artifacts }}
+          PIN_PIPELINE: ${{ steps.pins.outputs.renquant_pipeline }}
+          PIN_EXECUTION: ${{ steps.pins.outputs.renquant_execution }}
+        run: |
+          set -euo pipefail
+          assert_pin() {
+            local dir="$1" expected="$2" name="$3"
+            local actual
+            actual="$(git -C "${dir}" rev-parse HEAD)"
+            if [ "${actual}" != "${expected}" ]; then
+              echo "SHA MISMATCH for ${name}: checked out HEAD=${actual} but subrepos.lock.json pins ${expected}" >&2
+              exit 1
+            fi
+            echo "${name}: HEAD ${actual} == lock pin (OK)"
+          }
+          assert_pin "${GITHUB_WORKSPACE}/renquant-common"    "${PIN_COMMON}"    renquant-common
+          assert_pin "${GITHUB_WORKSPACE}/renquant-base-data" "${PIN_BASE_DATA}" renquant-base-data
+          assert_pin "${GITHUB_WORKSPACE}/renquant-artifacts" "${PIN_ARTIFACTS}" renquant-artifacts
+          assert_pin "${GITHUB_WORKSPACE}/renquant-pipeline"  "${PIN_PIPELINE}"  renquant-pipeline
+          assert_pin "${GITHUB_WORKSPACE}/renquant-execution" "${PIN_EXECUTION}" renquant-execution
+
+      - name: Set up Python (pinned to match the hashed dependency lock file)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned + hashed CI dependencies (reproducible; no live resolver)
+        # Committed, hashed lock file for exactly the third-party packages
+        # this job needs (arch/numpy/pandas/pandas_market_calendars/pyarrow/
+        # pydantic/scipy/statsmodels/requests/cvxpy transitively via
+        # renquant_pipeline/renquant_execution imports, plus pytest to run
+        # the wrapper test). See that file's header for how it was generated
+        # and regenerated. `--require-hashes` refuses to install anything
+        # not listed here with a matching hash, so this can't silently drift
+        # to a different resolution than what was verified.
+        working-directory: umbrella
+        run: |
+          set -euo pipefail
+          python3 -m pip install --require-hashes \
+            -r .github/workflows/pipeline-execution-parity-requirements.lock.txt
+
+      - name: Pipeline/execution parity check (must compare, not skip)
+        working-directory: umbrella
+        env:
+          RENQUANT_COMMON_SRC_PATH: ${{ github.workspace }}/renquant-common/src
+          RENQUANT_BASE_DATA_SRC_PATH: ${{ github.workspace }}/renquant-base-data/src
+          RENQUANT_ARTIFACTS_SRC_PATH: ${{ github.workspace }}/renquant-artifacts/src
+          RENQUANT_PIPELINE_SRC_PATH: ${{ github.workspace }}/renquant-pipeline/src
+          RENQUANT_EXECUTION_SRC_PATH: ${{ github.workspace }}/renquant-execution/src
+          RENQUANT_PIPELINE_EXECUTION_PARITY_STRICT: "1"
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_pipeline_execution_parity.py -v
+
+      - name: Build machine-readable run record (umbrella SHA, pin SHAs, dependency digest, per-check results)
+        # Runs even if the parity check above failed, so a FAILING run still
+        # produces an auditable record of exactly what was compared.
+        if: always()
+        working-directory: umbrella
+        env:
+          RENQUANT_COMMON_SRC_PATH: ${{ github.workspace }}/renquant-common/src
+          RENQUANT_BASE_DATA_SRC_PATH: ${{ github.workspace }}/renquant-base-data/src
+          RENQUANT_ARTIFACTS_SRC_PATH: ${{ github.workspace }}/renquant-artifacts/src
+          RENQUANT_PIPELINE_SRC_PATH: ${{ github.workspace }}/renquant-pipeline/src
+          RENQUANT_EXECUTION_SRC_PATH: ${{ github.workspace }}/renquant-execution/src
+          PIN_COMMON: ${{ steps.pins.outputs.renquant_common }}
+          PIN_BASE_DATA: ${{ steps.pins.outputs.renquant_base_data }}
+          PIN_ARTIFACTS: ${{ steps.pins.outputs.renquant_artifacts }}
+          PIN_PIPELINE: ${{ steps.pins.outputs.renquant_pipeline }}
+          PIN_EXECUTION: ${{ steps.pins.outputs.renquant_execution }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          UMBRELLA_SHA="$(git rev-parse HEAD)"
+          DEP_DIGEST="sha256:$(sha256sum .github/workflows/pipeline-execution-parity-requirements.lock.txt | cut -d' ' -f1)"
+
+          # Re-run the underlying script directly (not just via pytest) so
+          # the run record captures the structured per-check payload, not
+          # only a pass/fail exit code. Cheap and side-effect-free; does not
+          # replace the pytest step above, which is what actually gates CI.
+          python3 scripts/check_pipeline_execution_parity.py --verbose \
+            --json-out /tmp/pipeline_execution_parity_checks.json || true
+
+          jq -n \
+            --arg umbrella_sha "${UMBRELLA_SHA}" \
+            --arg dep_digest "${DEP_DIGEST}" \
+            --arg pin_common "${PIN_COMMON}" \
+            --arg pin_base_data "${PIN_BASE_DATA}" \
+            --arg pin_artifacts "${PIN_ARTIFACTS}" \
+            --arg pin_pipeline "${PIN_PIPELINE}" \
+            --arg pin_execution "${PIN_EXECUTION}" \
+            --arg trigger "${EVENT_NAME}" \
+            --slurpfile checks /tmp/pipeline_execution_parity_checks.json \
+            '{
+              umbrella_sha: $umbrella_sha,
+              pins: {
+                "renquant-common": $pin_common,
+                "renquant-base-data": $pin_base_data,
+                "renquant-artifacts": $pin_artifacts,
+                "renquant-pipeline": $pin_pipeline,
+                "renquant-execution": $pin_execution
+              },
+              dependency_env_digest: $dep_digest,
+              trigger: $trigger,
+              trusted: ($trigger == "push"),
+              checks: $checks[0]
+            }' > pipeline-execution-parity-run-record.json
+
+          {
+            echo "### pipeline-execution-parity run record"
+            echo
+            echo '```json'
+            cat pipeline-execution-parity-run-record.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload run record artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-execution-parity-run-record
+          path: umbrella/pipeline-execution-parity-run-record.json
+          retention-days: 90
