@@ -2069,8 +2069,7 @@ class RunnerAdapter:
                 ctx=ctx,
                 broker_mode=self._broker_name,
             )
-            run_id = record_pipeline_run(
-                self._db,
+            _record_kw = dict(
                 run_type        = "live",
                 run_date        = ctx.today,
                 strategy        = str(self._config.get("model_name", "")),
@@ -2094,6 +2093,16 @@ class RunnerAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
+            if run_bundle.get("training_cutoff") is not None:
+                _record_kw["training_cutoff"] = run_bundle["training_cutoff"]
+                _record_kw["model_content_sha256"] = run_bundle.get(
+                    "model_content_sha256")
+            try:
+                run_id = record_pipeline_run(self._db, **_record_kw)
+            except TypeError:
+                _record_kw.pop("training_cutoff", None)
+                _record_kw.pop("model_content_sha256", None)
+                run_id = record_pipeline_run(self._db, **_record_kw)
             selected_tickers, blocked_map, _pending_trace_tickers = (
                 live_trace_selection_maps(
                     trade_events,
