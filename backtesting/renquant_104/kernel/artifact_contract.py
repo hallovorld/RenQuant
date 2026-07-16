@@ -382,6 +382,30 @@ def build_run_bundle(
         except Exception:  # noqa: BLE001
             bundle["model_content_sha256"] = None
 
+    if bundle.get("training_cutoff") is None and ctx is not None:
+        # Non-JSON panel artifacts (e.g. the HF PatchTST .pt checkpoint the
+        # shadow arm scores with) yield no payload above, so the run would
+        # persist NULL provenance forever. The ACTIVE scorer already carries
+        # the loaded artifact's provenance in its runtime metadata contract
+        # (stamp_artifact_metadata), which also attributes provenance to the
+        # scorer that actually produced the scores — the config panel path
+        # and the active scorer can disagree across shadow/prod swaps.
+        try:
+            scorer = getattr(ctx, "_panel_scorer", None)
+            scorer_meta = dict(getattr(scorer, "metadata", {}) or {})
+            cutoff = (
+                scorer_meta.get("effective_train_cutoff_date")
+                or scorer_meta.get("trained_date")
+            )
+            if cutoff is not None:
+                bundle["training_cutoff"] = str(cutoff)
+                fingerprint = scorer_meta.get("model_content_fingerprint")
+                bundle["model_content_sha256"] = (
+                    str(fingerprint) if fingerprint else None
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
     if ctx is not None:
         bundle["pipeline_flags"] = {
             "buy_blocked": bool(getattr(ctx, "buy_blocked", False)),

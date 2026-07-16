@@ -156,3 +156,91 @@ class TestRunBundle:
         assert evidence["final_regime"] == "BEAR"
         assert evidence["hard_bear"] is True
         assert evidence["spy_close"] == 690.0
+
+
+class TestRunBundleTrainingProvenance:
+    """training_cutoff + model_content_sha256 extraction (G4 Phase A)."""
+
+    def test_json_panel_artifact_sets_training_metadata(self, tmp_path):
+        from kernel.artifact_contract import build_run_bundle
+
+        artifact = tmp_path / "panel.json"
+        artifact.write_text(json.dumps(_panel_payload()), encoding="utf-8")
+        config = {
+            "watchlist": ["AAA"],
+            "ranking": {"panel_scoring": {"artifact_path": str(artifact)}},
+        }
+
+        bundle = build_run_bundle(
+            config, STRATEGY_DIR, run_id="r-tc1", run_type="sim",
+        )
+
+        assert bundle["training_cutoff"] == _panel_payload()["trained_date"]
+        assert bundle["model_content_sha256"]
+
+    def test_non_json_panel_falls_back_to_active_scorer_metadata(self, tmp_path):
+        from kernel.artifact_contract import build_run_bundle
+
+        # PatchTST-style checkpoint: not JSON, so the config-path read yields
+        # no payload — provenance must come from the active scorer contract.
+        checkpoint = tmp_path / "hf_patchtst_model.pt"
+        checkpoint.write_bytes(b"\x80\x02not-json")
+        scorer = SimpleNamespace(metadata={
+            "trained_date": "2026-05-19",
+            "effective_train_cutoff_date": "2026-04-09",
+            "model_content_fingerprint": "sha256:feedface",
+        })
+        ctx = SimpleNamespace(
+            ohlcv={}, buy_blocked=False, skip_buys=False, bear_only=False,
+            regime="BULL_CALM", confidence=0.9, _panel_scorer=scorer,
+        )
+        config = {
+            "watchlist": ["AAA"],
+            "ranking": {"panel_scoring": {"artifact_path": str(checkpoint)}},
+        }
+
+        bundle = build_run_bundle(
+            config, STRATEGY_DIR, run_id="r-tc2", run_type="live", ctx=ctx,
+        )
+
+        assert bundle["training_cutoff"] == "2026-04-09"
+        assert bundle["model_content_sha256"] == "sha256:feedface"
+
+    def test_scorer_fallback_prefers_effective_cutoff_over_trained_date(
+            self, tmp_path):
+        from kernel.artifact_contract import build_run_bundle
+
+        checkpoint = tmp_path / "model.pt"
+        checkpoint.write_bytes(b"\x00binary")
+        scorer = SimpleNamespace(metadata={"trained_date": "2026-05-19"})
+        ctx = SimpleNamespace(
+            ohlcv={}, buy_blocked=False, skip_buys=False, bear_only=False,
+            regime="BULL_CALM", confidence=0.9, _panel_scorer=scorer,
+        )
+        config = {
+            "watchlist": ["AAA"],
+            "ranking": {"panel_scoring": {"artifact_path": str(checkpoint)}},
+        }
+
+        bundle = build_run_bundle(
+            config, STRATEGY_DIR, run_id="r-tc3", run_type="live", ctx=ctx,
+        )
+
+        assert bundle["training_cutoff"] == "2026-05-19"
+        assert bundle["model_content_sha256"] is None
+
+    def test_no_panel_and_no_scorer_metadata_is_harmless(self):
+        from kernel.artifact_contract import build_run_bundle
+
+        ctx = SimpleNamespace(
+            ohlcv={}, buy_blocked=False, skip_buys=False, bear_only=False,
+            regime="BULL_CALM", confidence=0.9,
+        )
+
+        bundle = build_run_bundle(
+            {"watchlist": ["AAA"]}, STRATEGY_DIR,
+            run_id="r-tc4", run_type="live", ctx=ctx,
+        )
+
+        assert bundle.get("training_cutoff") is None
+        assert "run_id" in bundle
