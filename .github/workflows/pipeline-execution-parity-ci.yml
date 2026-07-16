@@ -79,6 +79,84 @@ name: pipeline-execution-parity-ci
 #    and a machine-readable run record (umbrella SHA, all 5 pin SHAs,
 #    dependency-environment digest, per-check pass/fail) is emitted as a
 #    step-summary + uploaded artifact for pin-level integration audit.
+#
+# --- PR-controlled-secret exfiltration gate (hallovorld PR #469 review, 2026-07-15/16) ---
+#
+# The hardening above narrows what a PR-controlled lock/checkout can do, but
+# a further review correctly pointed out none of it stops a PR from adding an
+# ordinary later shell/action step that just prints or curls
+# `secrets.SUBREPO_CI_READ_TOKEN` somewhere before any human looks at the
+# diff -- reducing the token from write to read shrinks the damage a leak
+# could do downstream, it does not prevent the leak itself.
+#
+# Two mitigations were weighed:
+#   (A) Keep this job exactly as-is (real checkout, real import, real parity
+#       check, pre-merge) but gate it behind a GitHub Environment protection
+#       rule, so a required reviewer must approve THIS SPECIFIC RUN before
+#       `secrets.SUBREPO_CI_READ_TOKEN` becomes resolvable to any step.
+#   (B) Split into a secret-free PR-only lock-schema/format check (no
+#       private checkout, no import of PR-selected code) plus a real
+#       checkout+import parity run that only ever executes post-merge on
+#       `push` to `main`.
+# (B) is the literal ask and is what a fully adversarial (open-source /
+# arbitrary-fork-contributor) threat model would require, but it also throws
+# away the entire reason this job runs pre-merge: catching a broken pin or a
+# real A2/A3 regression BEFORE it lands on `main`, not after. Every PR in
+# this repo comes from one of two trusted agent identities (hallovorld,
+# haorensjtu-dev) acting for a single human operator, already gated by
+# mutual review + a merge-protection ruleset -- this is a same-repo trusted-
+# agent model, not a same-repo-vs-anonymous-fork one, so paying for (B)'s
+# full loss of pre-merge signal to defend against a threat this repo doesn't
+# have was judged the wrong trade. (A) is chosen instead: it is the standard
+# GitHub-native mitigation for "a `pull_request`-triggered job needs a real
+# secret" (this is literally what GitHub's own Actions security-hardening
+# guidance recommends: environments + required reviewers so "a job cannot
+# access environment secrets until approval is granted by a reviewer"), and
+# it preserves 100% of the existing pre-merge checkout+import+compare
+# behavior while adding an explicit human-approval click in front of the one
+# thing the finding was actually about -- the secret being released to a run
+# before anyone has looked at what that run's steps are.
+#
+# Mechanically: the `parity` job below references a GitHub Environment whose
+# name depends on the trigger. `pull_request` runs target
+# `subrepo-ci-pr-gate`; referencing an environment pauses the ENTIRE job
+# (every step, not just the ones that use secrets) until a required reviewer
+# approves that run, and no step can resolve
+# `secrets.SUBREPO_CI_READ_TOKEN` before that happens. `push`-to-`main` runs
+# target a separate `subrepo-ci-trusted-main` environment with no protection
+# rules -- that trigger is already the trusted, protected-main path (see
+# the two-stage-trust bullet above), so it is intentionally not gated a
+# second time.
+#
+# OPERATOR ACTION REQUIRED -- this gate is NOT ACTIVE until configured. A
+# job that references an environment GitHub has not seen before auto-creates
+# it with NO protection rules and proceeds unblocked -- this was verified
+# against GitHub's own documented behavior, and it means this mitigation is
+# INERT, not merely weaker, until a repo admin does the following (the
+# workflow-editing token used to open this PR does not have the admin scope
+# `PUT /repos/hallovorld/RenQuant/environments/*` requires -- confirmed via
+# a live 403 while preparing this change -- so this cannot be done from a
+# workflow file or from this PR's automation):
+#   1. Settings -> Environments -> New environment -> name it exactly
+#      `subrepo-ci-pr-gate`.
+#   2. Add protection rule "Required reviewers": list at least one reviewer
+#      who is not simply whichever identity's push triggered the run --
+#      ideally the human operator's own GitHub account. The two agent
+#      accounts (hallovorld, haorensjtu-dev) may also be listed, but see (3).
+#   3. Enable "Prevent self-review" on that same protection rule -- without
+#      it, whichever identity pushed the commit that triggered a given run
+#      could also be the one clicking Approve on it, which would defeat the
+#      gate. (This repo has already hit exactly this kind of self-approval
+#      ambiguity once, on this same PR's review thread.)
+#   4. Leave "Deployment branches and tags" at its default (no restriction
+#      to protected branches only) -- this environment must remain usable
+#      from PR feature branches, since gating it to `main`-only would make
+#      the `pull_request` run unable to use it at all.
+#   5. No action is required for `subrepo-ci-trusted-main` -- it is meant to
+#      stay unprotected and will auto-create on first use.
+# Until steps 1-4 are done, this job behaves exactly as it did before this
+# change (no gate, same as the finding described) -- flagged explicitly here
+# and in the PR thread so that is not a silent gap.
 
 on:
   pull_request:
@@ -104,6 +182,15 @@ permissions:
 jobs:
   parity:
     runs-on: ubuntu-latest
+    # See "PR-controlled-secret exfiltration gate" in the header comment
+    # above for the full rationale and the required one-time manual setup.
+    # `pull_request` runs are gated behind `subrepo-ci-pr-gate` (must be
+    # created + configured with a required-reviewer protection rule, see
+    # above -- inert/no-op until that manual step is done). `push`-to-`main`
+    # runs use the separate, intentionally-unprotected
+    # `subrepo-ci-trusted-main` environment.
+    environment:
+      name: ${{ github.event_name == 'pull_request' && 'subrepo-ci-pr-gate' || 'subrepo-ci-trusted-main' }}
     steps:
       - name: Check out umbrella
         uses: actions/checkout@v4
