@@ -1,0 +1,814 @@
+{
+  "prereg": "doc/experiments/2026-07-13-equal-weight-deployment-prereg.md",
+  "section": "4.6",
+  "generated_at": "2026-07-16T18:40:16.875247+00:00",
+  "seed": 20260716,
+  "frozen_parameters": {
+    "mde_bps_per_session": 3.0,
+    "bootstrap_draws": 10000,
+    "alpha_one_sided": 0.1,
+    "monte_carlo_trials": 5000,
+    "t_primary": 240,
+    "t_max": 480,
+    "t_step": 20
+  },
+  "dgp": {
+    "kind": "AR(1) \u2014 PROVISIONAL PARAMETRIC (see caveat)",
+    "sigma_bps": 25.0,
+    "phi": 0.35,
+    "max_holding_days": 20,
+    "b": 35,
+    "caveat": "not fitted to an A1-vs-B replay: only ~4 paired sessions exist (two-arm harness live 2026-07-11); refit before activation is mandatory"
+  },
+  "type_i": {
+    "rate": 0.0126,
+    "ci95": [
+      0.009508260438393945,
+      0.015691739561606056
+    ],
+    "trials": 5000,
+    "rejections": 63,
+    "requirement": 0.1,
+    "pass": true
+  },
+  "power_at_mde_by_t": {
+    "240": {
+      "rate": 0.1468,
+      "ci95": [
+        0.13699021429371672,
+        0.1566097857062833
+      ],
+      "trials": 5000,
+      "rejections": 734
+    },
+    "260": {
+      "rate": 0.1396,
+      "ci95": [
+        0.1299935267184674,
+        0.1492064732815326
+      ],
+      "trials": 5000,
+      "rejections": 698
+    },
+    "280": {
+      "rate": 0.1422,
+      "ci95": [
+        0.1325191411428944,
+        0.1518808588571056
+      ],
+      "trials": 5000,
+      "rejections": 711
+    },
+    "300": {
+      "rate": 0.1388,
+      "ci95": [
+        0.12921663977828238,
+        0.14838336022171764
+      ],
+      "trials": 5000,
+      "rejections": 694
+    },
+    "320": {
+      "rate": 0.1404,
+      "ci95": [
+        0.1307705201994708,
+        0.1500294798005292
+      ],
+      "trials": 5000,
+      "rejections": 702
+    },
+    "340": {
+      "rate": 0.1308,
+      "ci95": [
+        0.12145380581652618,
+        0.14014619418347382
+      ],
+      "trials": 5000,
+      "rejections": 654
+    },
+    "360": {
+      "rate": 0.1248,
+      "ci95": [
+        0.11563922922090067,
+        0.13396077077909932
+      ],
+      "trials": 5000,
+      "rejections": 624
+    },
+    "380": {
+      "rate": 0.1326,
+      "ci95": [
+        0.12319946566216579,
+        0.1420005343378342
+      ],
+      "trials": 5000,
+      "rejections": 663
+    },
+    "400": {
+      "rate": 0.1298,
+      "ci95": [
+        0.12048424721736348,
+        0.13911575278263652
+      ],
+      "trials": 5000,
+      "rejections": 649
+    },
+    "420": {
+      "rate": 0.128,
+      "ci95": [
+        0.11873950297662161,
+        0.1372604970233784
+      ],
+      "trials": 5000,
+      "rejections": 640
+    },
+    "440": {
+      "rate": 0.1244,
+      "ci95": [
+        0.11525183190989584,
+        0.13354816809010417
+      ],
+      "trials": 5000,
+      "rejections": 622
+    },
+    "460": {
+      "rate": 0.1326,
+      "ci95": [
+        0.12319946566216579,
+        0.1420005343378342
+      ],
+      "trials": 5000,
+      "rejections": 663
+    },
+    "480": {
+      "rate": 0.1246,
+      "ci95": [
+        0.11544552671811206,
+        0.13375447328188794
+      ],
+      "trials": 5000,
+      "rejections": 623
+    }
+  },
+  "power": {
+    "requirement": 0.8,
+    "final_t": null,
+    "pass": false
+  },
+  "sensitivity_grid": [
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.0,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.123,
+        "ci95": [
+          0.10264325090786841,
+          0.14335674909213159
+        ],
+        "trials": 1000,
+        "rejections": 123
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.0,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.136,
+        "ci95": [
+          0.11475374464993891,
+          0.15724625535006112
+        ],
+        "trials": 1000,
+        "rejections": 136
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.0,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.182,
+        "ci95": [
+          0.15808510837156062,
+          0.20591489162843937
+        ],
+        "trials": 1000,
+        "rejections": 182
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.35,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.13,
+        "ci95": [
+          0.10915569718124399,
+          0.15084430281875602
+        ],
+        "trials": 1000,
+        "rejections": 130
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.35,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.161,
+        "ci95": [
+          0.13822019564614305,
+          0.18377980435385696
+        ],
+        "trials": 1000,
+        "rejections": 161
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.35,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.188,
+        "ci95": [
+          0.16378340879479525,
+          0.21221659120520475
+        ],
+        "trials": 1000,
+        "rejections": 188
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.6,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.121,
+        "ci95": [
+          0.10078642202874513,
+          0.14121357797125486
+        ],
+        "trials": 1000,
+        "rejections": 121
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.6,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.002,
+        "ci95": [
+          0.0,
+          0.00476908533635206
+        ],
+        "trials": 1000,
+        "rejections": 2
+      },
+      "power_at_mde": {
+        "rate": 0.131,
+        "ci95": [
+          0.1100877092981185,
+          0.15191229070188153
+        ],
+        "trials": 1000,
+        "rejections": 131
+      }
+    },
+    {
+      "sigma_bps": 10.0,
+      "phi": 0.6,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.001,
+        "ci95": [
+          0.0,
+          0.0029590197548774234
+        ],
+        "trials": 1000,
+        "rejections": 1
+      },
+      "power_at_mde": {
+        "rate": 0.198,
+        "ci95": [
+          0.17330120015871217,
+          0.22269879984128785
+        ],
+        "trials": 1000,
+        "rejections": 198
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.0,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.003,
+        "ci95": [
+          0.0,
+          0.006389723528549194
+        ],
+        "trials": 1000,
+        "rejections": 3
+      },
+      "power_at_mde": {
+        "rate": 0.13,
+        "ci95": [
+          0.10915569718124399,
+          0.15084430281875602
+        ],
+        "trials": 1000,
+        "rejections": 130
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.0,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          6.198064213930024e-08
+        ],
+        "trials": 1000,
+        "rejections": 0
+      },
+      "power_at_mde": {
+        "rate": 0.158,
+        "ci95": [
+          0.13539311835745585,
+          0.18060688164254415
+        ],
+        "trials": 1000,
+        "rejections": 158
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.0,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.004,
+        "ci95": [
+          8.784785571930992e-05,
+          0.00791215214428069
+        ],
+        "trials": 1000,
+        "rejections": 4
+      },
+      "power_at_mde": {
+        "rate": 0.183,
+        "ci95": [
+          0.15903416061140357,
+          0.20696583938859642
+        ],
+        "trials": 1000,
+        "rejections": 183
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.35,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.013,
+        "ci95": [
+          0.0059792044895183,
+          0.0200207955104817
+        ],
+        "trials": 1000,
+        "rejections": 13
+      },
+      "power_at_mde": {
+        "rate": 0.145,
+        "ci95": [
+          0.12317656397356272,
+          0.16682343602643726
+        ],
+        "trials": 1000,
+        "rejections": 145
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.35,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.014,
+        "ci95": [
+          0.006717868004492091,
+          0.021282131995507908
+        ],
+        "trials": 1000,
+        "rejections": 14
+      },
+      "power_at_mde": {
+        "rate": 0.146,
+        "ci95": [
+          0.12411424996944358,
+          0.1678857500305564
+        ],
+        "trials": 1000,
+        "rejections": 146
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.35,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.024,
+        "ci95": [
+          0.014513923972474183,
+          0.03348607602752582
+        ],
+        "trials": 1000,
+        "rejections": 24
+      },
+      "power_at_mde": {
+        "rate": 0.198,
+        "ci95": [
+          0.17330120015871217,
+          0.22269879984128785
+        ],
+        "trials": 1000,
+        "rejections": 198
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.6,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.03,
+        "ci95": [
+          0.019426894495939234,
+          0.040573105504060764
+        ],
+        "trials": 1000,
+        "rejections": 30
+      },
+      "power_at_mde": {
+        "rate": 0.139,
+        "ci95": [
+          0.11755801206977302,
+          0.16044198793022701
+        ],
+        "trials": 1000,
+        "rejections": 139
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.6,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.031,
+        "ci95": [
+          0.020257662153888474,
+          0.041742337846111525
+        ],
+        "trials": 1000,
+        "rejections": 31
+      },
+      "power_at_mde": {
+        "rate": 0.163,
+        "ci95": [
+          0.1401064784360291,
+          0.1858935215639709
+        ],
+        "trials": 1000,
+        "rejections": 163
+      }
+    },
+    {
+      "sigma_bps": 25.0,
+      "phi": 0.6,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.037,
+        "ci95": [
+          0.02530042523849691,
+          0.048699574761503085
+        ],
+        "trials": 1000,
+        "rejections": 37
+      },
+      "power_at_mde": {
+        "rate": 0.179,
+        "ci95": [
+          0.15523957714180994,
+          0.20276042285819004
+        ],
+        "trials": 1000,
+        "rejections": 179
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.0,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.007,
+        "ci95": [
+          0.001832509158208406,
+          0.012167490841791594
+        ],
+        "trials": 1000,
+        "rejections": 7
+      },
+      "power_at_mde": {
+        "rate": 0.136,
+        "ci95": [
+          0.11475374464993891,
+          0.15724625535006112
+        ],
+        "trials": 1000,
+        "rejections": 136
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.0,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.011,
+        "ci95": [
+          0.004535267491999379,
+          0.01746473250800062
+        ],
+        "trials": 1000,
+        "rejections": 11
+      },
+      "power_at_mde": {
+        "rate": 0.133,
+        "ci95": [
+          0.11195293992976692,
+          0.1540470600702331
+        ],
+        "trials": 1000,
+        "rejections": 133
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.0,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.019,
+        "ci95": [
+          0.010538109998351433,
+          0.027461890001648566
+        ],
+        "trials": 1000,
+        "rejections": 19
+      },
+      "power_at_mde": {
+        "rate": 0.173,
+        "ci95": [
+          0.1495559910936717,
+          0.19644400890632827
+        ],
+        "trials": 1000,
+        "rejections": 173
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.35,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.021,
+        "ci95": [
+          0.01211296143813925,
+          0.02988703856186075
+        ],
+        "trials": 1000,
+        "rejections": 21
+      },
+      "power_at_mde": {
+        "rate": 0.131,
+        "ci95": [
+          0.1100877092981185,
+          0.15191229070188153
+        ],
+        "trials": 1000,
+        "rejections": 131
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.35,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.036,
+        "ci95": [
+          0.024453620203717528,
+          0.04754637979628247
+        ],
+        "trials": 1000,
+        "rejections": 36
+      },
+      "power_at_mde": {
+        "rate": 0.14,
+        "ci95": [
+          0.11849352097622673,
+          0.1615064790237733
+        ],
+        "trials": 1000,
+        "rejections": 140
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.35,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.053,
+        "ci95": [
+          0.039114261071156495,
+          0.0668857389288435
+        ],
+        "trials": 1000,
+        "rejections": 53
+      },
+      "power_at_mde": {
+        "rate": 0.2,
+        "ci95": [
+          0.17520774314427992,
+          0.2247922568557201
+        ],
+        "trials": 1000,
+        "rejections": 200
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.6,
+      "max_holding_days": 10,
+      "b": 18,
+      "type_i": {
+        "rate": 0.05,
+        "ci95": [
+          0.036491632222951584,
+          0.06350836777704842
+        ],
+        "trials": 1000,
+        "rejections": 50
+      },
+      "power_at_mde": {
+        "rate": 0.139,
+        "ci95": [
+          0.11755801206977302,
+          0.16044198793022701
+        ],
+        "trials": 1000,
+        "rejections": 139
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.6,
+      "max_holding_days": 20,
+      "b": 35,
+      "type_i": {
+        "rate": 0.064,
+        "ci95": [
+          0.04883005582080145,
+          0.07916994417919855
+        ],
+        "trials": 1000,
+        "rejections": 64
+      },
+      "power_at_mde": {
+        "rate": 0.14,
+        "ci95": [
+          0.11849352097622673,
+          0.1615064790237733
+        ],
+        "trials": 1000,
+        "rejections": 140
+      }
+    },
+    {
+      "sigma_bps": 40.0,
+      "phi": 0.6,
+      "max_holding_days": 40,
+      "b": 70,
+      "type_i": {
+        "rate": 0.102,
+        "ci95": [
+          0.08324166335732296,
+          0.12075833664267703
+        ],
+        "trials": 1000,
+        "rejections": 102
+      },
+      "power_at_mde": {
+        "rate": 0.214,
+        "ci95": [
+          0.18858007697887344,
+          0.23941992302112655
+        ],
+        "trials": 1000,
+        "rejections": 214
+      }
+    }
+  ],
+  "verdict": {
+    "type_i_pass": true,
+    "power_pass": false,
+    "gate_pass": false
+  },
+  "code_commit": "SEE_PR_HEAD (script ran pre-commit; \u00a74.6 requires re-run at activation with the activation commit hash)"
+}
