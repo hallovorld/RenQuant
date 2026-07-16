@@ -1281,8 +1281,7 @@ class SimAdapter:
                 ctx=ctx,
             )
             selected_tickers = selected_buy_tickers(trade_events_this_bar)
-            run_id = record_pipeline_run(
-                self._db,
+            _record_kw = dict(
                 run_type        = "sim",
                 run_date        = today_ts.date(),
                 strategy        = str(self._config.get("model_name", "")),
@@ -1292,7 +1291,7 @@ class SimAdapter:
                 cash            = self._cash,
                 n_candidates    = len(ctx.candidates),
                 n_exits         = len(ctx.exits),
-                n_rotations     = int(ctx.counters.get("rotations", 0)),  # ROT-COUNTER fix: emitted, not considered
+                n_rotations     = int(ctx.counters.get("rotations", 0)),
                 n_buys          = len(selected_tickers),
                 buy_blocked     = bool(getattr(ctx, "buy_blocked", False)),
                 skip_buys        = bool(getattr(ctx, "skip_buys", False)),
@@ -1301,6 +1300,16 @@ class SimAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
+            if run_bundle.get("training_cutoff") is not None:
+                _record_kw["training_cutoff"] = run_bundle["training_cutoff"]
+                _record_kw["model_content_sha256"] = run_bundle.get(
+                    "model_content_sha256")
+            try:
+                run_id = record_pipeline_run(self._db, **_record_kw)
+            except TypeError:
+                _record_kw.pop("training_cutoff", None)
+                _record_kw.pop("model_content_sha256", None)
+                run_id = record_pipeline_run(self._db, **_record_kw)
             blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
             blocked_map.update(trade_event_blocked_map(trade_events_this_bar))
             sector_map = self._config.get("sector_map", {}) or {}

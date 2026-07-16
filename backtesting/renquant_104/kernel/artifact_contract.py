@@ -373,6 +373,14 @@ def build_run_bundle(
             "warnings": contract.warnings,
             "details": contract.details,
         }
+        bundle["training_cutoff"] = panel_payload.get("trained_date")
+        try:
+            from renquant_common.model_fingerprint import (  # noqa: PLC0415
+                model_content_sha256 as _mcs,
+            )
+            bundle["model_content_sha256"] = _mcs(panel_payload)
+        except Exception:  # noqa: BLE001
+            bundle["model_content_sha256"] = None
 
     if ctx is not None:
         bundle["pipeline_flags"] = {
