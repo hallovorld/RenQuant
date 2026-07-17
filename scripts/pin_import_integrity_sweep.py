@@ -153,8 +153,12 @@ def sweep(lock_file: Path, siblings: Path) -> dict:
             pin_srcs=[n for n in provided if n != "renquant-orchestrator"],
         )
     except Exception as exc:  # noqa: BLE001 — bootstrap refusal IS a finding
+        chain, cur = [], exc
+        while cur is not None and len(chain) < 7:
+            chain.append(repr(cur))
+            cur = cur.__cause__ or cur.__context__
         return {"ok": False, "aliased": [], "failures": [
-            {"error": f"bootstrap_multirepo failed: {exc!r}",
+            {"error": "bootstrap_multirepo failed: " + " <- ".join(chain),
              "fix_side": "renquant-orchestrator bootstrap vs lock/checkouts"}]}
 
     targets = collect_aliased_imports(pipeline_src)
