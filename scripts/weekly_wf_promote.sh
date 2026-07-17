@@ -237,10 +237,17 @@ fi
 echo "--- Step 3: Retrain panel-LTR + calibrator to staging ---"
 echo "Staging model: $STAGING_ART"
 echo "Staging calibrator: $STAGING_CAL"
+# Newly-delisted names whose removal hasn't reached the versioned universe
+# inventory yet (retrain_alpha158_fund --exclude-tickers is the designed
+# bridge; a single stale name blocks the whole retrain at the 0.0 freshness
+# tolerance). IAC: bars ceased 2026-05-12 (2026-07-17 anomaly-retrain
+# failure); REMOVE from this default once the inventory prunes it.
+RETRAIN_EXCLUDE_TICKERS="${RENQUANT_RETRAIN_EXCLUDE_TICKERS:-IAC}"
 if ! bash scripts/daily_retrain_alpha158_fund.sh \
     --xgb-artifact-out "$STAGING_ART" \
     --calibrator-out "$STAGING_CAL" \
-    --no-drop-sentiment; then
+    --no-drop-sentiment \
+    --exclude-tickers "$RETRAIN_EXCLUDE_TICKERS"; then
     echo "Training FAILED — production artifact unchanged."
     notify "RenQuant 104 WEEKLY-FAIL" "Training failed; production model unchanged. Check $LOG"
     exit 1
