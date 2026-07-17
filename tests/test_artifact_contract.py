@@ -244,3 +244,82 @@ class TestRunBundleTrainingProvenance:
 
         assert bundle.get("training_cutoff") is None
         assert "run_id" in bundle
+
+
+class TestRunBundleOverrideProvenance:
+    """Diagnostic-only admission provenance persists in the run bundle.
+
+    Adversarial re-review of pipeline#203 (orch issue #526, MED): capital
+    admitted under the governed operator override left no durable audit
+    trail — only log/ntfy text. The scoring path records the admission
+    verdict (with the override provenance) on ctx._regime_model_admission;
+    the bundle must carry it.
+    """
+
+    @staticmethod
+    def _ctx(**extra):
+        return SimpleNamespace(
+            ohlcv={},
+            buy_blocked=False,
+            skip_buys=False,
+            bear_only=False,
+            regime="BULL_CALM",
+            confidence=0.8,
+            **extra,
+        )
+
+    def _bundle(self, ctx):
+        from kernel.artifact_contract import build_run_bundle
+
+        return build_run_bundle(
+            {"watchlist": ["SPY"]},
+            STRATEGY_DIR,
+            run_id="r-admission",
+            run_type="live",
+            ctx=ctx,
+        )
+
+    def test_admission_with_override_provenance_lands_in_bundle(self):
+        admission = {
+            "ok": True,
+            "reason": "ok:diagnostic_only_operator_override",
+            "regime": "BULL_CALM",
+            "diagnostic_only_override": {
+                "operator": "renhao",
+                "authorized_at": "2026-07-16",
+                "expires": "2026-08-15",
+                "scorer_model_content_sha256": "sha256:656b70be",
+            },
+        }
+        bundle = self._bundle(self._ctx(_regime_model_admission=admission))
+
+        recorded = bundle["regime_model_admission"]
+        assert recorded["ok"] is True
+        assert recorded["reason"] == "ok:diagnostic_only_operator_override"
+        override = recorded["diagnostic_only_override"]
+        assert override["operator"] == "renhao"
+        assert override["expires"] == "2026-08-15"
+        assert override["scorer_model_content_sha256"] == "sha256:656b70be"
+
+    def test_absent_admission_record_stays_absent(self):
+        bundle = self._bundle(self._ctx())
+        assert "regime_model_admission" not in bundle
+
+    def test_malformed_admission_record_is_fail_safe(self):
+        # A non-dict (or empty) record must neither land nor break the run.
+        for bad in ("not-a-dict", [], {}, 0):
+            bundle = self._bundle(self._ctx(_regime_model_admission=bad))
+            assert "regime_model_admission" not in bundle
+
+    def test_json_round_trip(self):
+        # The bundle is persisted as run_bundle_json — the admission record
+        # must survive json serialization (dates as strings, no objects).
+        admission = {
+            "ok": True,
+            "reason": "ok:diagnostic_only_operator_override",
+            "regime": "BULL_CALM",
+            "diagnostic_only_override": {"operator": "renhao"},
+        }
+        bundle = self._bundle(self._ctx(_regime_model_admission=admission))
+        assert json.loads(json.dumps(bundle["regime_model_admission"])) == \
+            bundle["regime_model_admission"]
