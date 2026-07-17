@@ -129,6 +129,9 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Install OpenMP runtime (xgboost dylib dependency on macOS)
+        run: brew install libomp
+
       - name: Install pinned packages
         run: |
           set -euo pipefail
