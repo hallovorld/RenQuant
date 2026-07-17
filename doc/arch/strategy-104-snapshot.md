@@ -15,15 +15,19 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: 777a759ea2271475b4e615c4071b4bb1510d99efad0b8ba936bd2cb4caa24afe (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
+Source fingerprint: d712f0b25f6fec3eb49d9d4e91a48fbb2562f62cad5b74faae13093400e3feb1 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
 
 ## Provenance
 
 | | |
 |---|---|
-| Pinned config root | `scratchpad/strat104-pin/configs` |
-| strategy-104 runtime checkout commit | unknown (field absent) |
+| Pinned config root | `<redacted-external-path>/configs` |
+| strategy-104 runtime checkout commit | 0d45d960ccc1d9156235db53c0dfe5deb36957f9 |
 | subrepos.lock.json strategy-104 pin | 0d45d960ccc1d9156235db53c0dfe5deb36957f9 |
+
+### Source warnings
+
+- **UMBRELLA WORKING-COPY DRIFT: <redacted-external-path>/strategy_config.json declares kind='hf_patchtst' but the pinned config declares kind='xgb' — the pinned config is what the daily run consumes; the working copy is stale**
 
 ## Active scorer
 
@@ -31,34 +35,32 @@ Source fingerprint: 777a759ea2271475b4e615c4071b4bb1510d99efad0b8ba936bd2cb4caa2
 |---|---|
 | Scorer kind | `xgb` |
 | Artifact | `artifacts/prod/panel-ltr.alpha158_fund.json` |
-| Artifact metadata file fingerprint | unknown (file missing) |
-| trained_date | unknown (field absent) |
+| Artifact metadata file fingerprint | sha256:04d7a381cd6df847 |
+| trained_date | 2026-06-21 |
 | Binding data cutoff | unknown (field absent) |
 | label_observation_cutoff | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
-| label_col | unknown (field absent) |
-| Feature count | unknown (field absent) |
-| train_run_id | unknown (field absent) |
-| oos_mean_ic (stamped) | unknown (field absent) |
+| lookahead_days | 60 |
+| label_col | fwd_60d_excess |
+| Feature count | 172 |
+| train_run_id | 8daa5b88 |
+| oos_mean_ic (stamped) | +0.0533 |
 | promotion_status | unknown (field absent) |
-| config_fingerprint | unknown (field absent) |
-| WF gate (stamped) | unknown (field absent) |
-| Metadata | unknown (metadata file missing or unreadable) |
+| config_fingerprint | sha256:f8fb2259b2bf1537 |
+| WF gate (stamped) | passed=true; run_at=2026-06-22T05:37:02.965705; sanity_eval_end=2026-02-11 |
 
 ## Active calibrator
 
 | | |
 |---|---|
 | Artifact | `artifacts/prod/panel-rank-calibration.json` |
-| Artifact file fingerprint | unknown (file missing) |
-| kind | unknown (field absent) |
-| trained_date | unknown (field absent) |
-| Method | unknown (field absent) |
-| pool_ic (stamped) | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
-| Bound scorer content fingerprint | unknown (field absent) |
+| Artifact file fingerprint | sha256:d2b4d6ab197f0503 |
+| kind | global_panel_calibration |
+| trained_date | 2026-05-21 |
+| Method | platt |
+| pool_ic (stamped) | +0.1149 |
+| lookahead_days | 60 |
+| Bound scorer content fingerprint | sha256:6fc9985e6e53e3883a13d572b1e11b7dea484e14df23819dab5474f2cd592372 |
 | Fit data window | unknown (field absent) |
-| Metadata | unknown (file missing or unreadable) |
 
 ## In-run shadow scorers (readonly, same run)
 
@@ -67,19 +69,18 @@ Source fingerprint: 777a759ea2271475b4e615c4071b4bb1510d99efad0b8ba936bd2cb4caa2
 | Name | `hf_patchtst_pt07_strict_seed44_previous_primary` |
 | Scorer kind | `hf_patchtst` |
 | Artifact | `../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
-| Artifact metadata file fingerprint | unknown (file missing) |
-| trained_date | unknown (field absent) |
-| Binding data cutoff | unknown (field absent) |
+| Artifact metadata file fingerprint | sha256:447b7efa5fa3f64f |
+| trained_date | 2026-05-22 |
+| Binding data cutoff | effective_selection_cutoff_date=2026-02-10 |
 | label_observation_cutoff | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
+| lookahead_days | 60 |
 | label_col | unknown (field absent) |
-| Feature count | unknown (field absent) |
+| Feature count | 172 |
 | train_run_id | unknown (field absent) |
 | oos_mean_ic (stamped) | unknown (field absent) |
 | promotion_status | unknown (field absent) |
-| config_fingerprint | unknown (field absent) |
+| config_fingerprint | sha256:f8fb2259b2bf1537 |
 | WF gate (stamped) | unknown (field absent) |
-| Metadata | unknown (metadata file missing or unreadable) |
 
 ## Shadow e2e config (strategy_config.shadow.json)
 
@@ -87,34 +88,32 @@ Source fingerprint: 777a759ea2271475b4e615c4071b4bb1510d99efad0b8ba936bd2cb4caa2
 |---|---|
 | Scorer kind | `hf_patchtst` |
 | Artifact | `../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
-| Artifact metadata file fingerprint | unknown (file missing) |
-| trained_date | unknown (field absent) |
-| Binding data cutoff | unknown (field absent) |
+| Artifact metadata file fingerprint | sha256:447b7efa5fa3f64f |
+| trained_date | 2026-05-22 |
+| Binding data cutoff | effective_selection_cutoff_date=2026-02-10 |
 | label_observation_cutoff | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
+| lookahead_days | 60 |
 | label_col | unknown (field absent) |
-| Feature count | unknown (field absent) |
+| Feature count | 172 |
 | train_run_id | unknown (field absent) |
 | oos_mean_ic (stamped) | unknown (field absent) |
 | promotion_status | unknown (field absent) |
-| config_fingerprint | unknown (field absent) |
+| config_fingerprint | sha256:f8fb2259b2bf1537 |
 | WF gate (stamped) | unknown (field absent) |
-| Metadata | unknown (metadata file missing or unreadable) |
 
 ### Shadow e2e calibrator
 
 | | |
 |---|---|
 | Artifact | `artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` |
-| Artifact file fingerprint | unknown (file missing) |
-| kind | unknown (field absent) |
-| trained_date | unknown (field absent) |
-| Method | unknown (field absent) |
-| pool_ic (stamped) | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
-| Bound scorer content fingerprint | unknown (field absent) |
-| Fit data window | unknown (field absent) |
-| Metadata | unknown (file missing or unreadable) |
+| Artifact file fingerprint | sha256:bc3b8a8f803e4685 |
+| kind | global_panel_calibration |
+| trained_date | 2026-06-01 |
+| Method | platt |
+| pool_ic (stamped) | +0.1309 |
+| lookahead_days | 60 |
+| Bound scorer content fingerprint | sha256:07046963994dbb8da29bfc66f99d21399e39d6d2dbd842c180299bce67c07571 |
+| Fit data window | 2023-01-03 → 2024-04-09 |
 
 ## Key policy knobs (active pinned config)
 
@@ -157,13 +156,13 @@ Source fingerprint: 777a759ea2271475b4e615c4071b4bb1510d99efad0b8ba936bd2cb4caa2
 
 ## Source fingerprints
 
-- `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — unknown (file missing)
-- `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — unknown (file missing)
-- `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — unknown (file missing)
-- `backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — unknown (file missing)
-- `scratchpad/lock-pr.json` — sha256:222ba5218231ce65
-- `scratchpad/strat104-pin/configs/strategy_config.json` — sha256:b23d821584373314
-- `scratchpad/strat104-pin/configs/strategy_config.shadow.json` — sha256:f7354e416889c3a3
+- `<redacted-external-path>/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
+- `<redacted-external-path>/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
+- `<redacted-external-path>/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — sha256:bc3b8a8f803e4685
+- `<redacted-external-path>/panel-rank-calibration.json` — sha256:d2b4d6ab197f0503
+- `<redacted-external-path>/strategy_config.json` — sha256:b23d821584373314
+- `<redacted-external-path>/strategy_config.shadow.json` — sha256:f7354e416889c3a3
+- `subrepos.lock.json` — sha256:222ba5218231ce65
 
 <!-- snapshot-machine-block
 {
@@ -176,14 +175,14 @@ Source fingerprint: 777a759ea2271475b4e615c4071b4bb1510d99efad0b8ba936bd2cb4caa2
  "schema_version": 2,
  "shadow_e2e_kind": "hf_patchtst",
  "sources_sha256": {
-  "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": null,
-  "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": null,
-  "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": null,
-  "backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": null,
-  "scratchpad/lock-pr.json": "sha256:222ba5218231ce65",
-  "scratchpad/strat104-pin/configs/strategy_config.json": "sha256:b23d821584373314",
-  "scratchpad/strat104-pin/configs/strategy_config.shadow.json": "sha256:f7354e416889c3a3"
+  "<redacted-external-path>/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
+  "<redacted-external-path>/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
+  "<redacted-external-path>/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": "sha256:bc3b8a8f803e4685",
+  "<redacted-external-path>/panel-rank-calibration.json": "sha256:d2b4d6ab197f0503",
+  "<redacted-external-path>/strategy_config.json": "sha256:b23d821584373314",
+  "<redacted-external-path>/strategy_config.shadow.json": "sha256:f7354e416889c3a3",
+  "subrepos.lock.json": "sha256:222ba5218231ce65"
  },
- "strategy_104_pin": null
+ "strategy_104_pin": "0d45d960ccc1d9156235db53c0dfe5deb36957f9"
 }
 -->
