@@ -36,7 +36,7 @@ jobs:
         working-directory: umbrella
         run: |
           set -euo pipefail
-          for name in renquant-orchestrator renquant-pipeline renquant-backtesting renquant-common renquant-base-data; do
+          for name in renquant-orchestrator renquant-pipeline renquant-backtesting renquant-common renquant-base-data renquant-artifacts; do
             PIN="$(python3 -c "import json,sys; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == '$name'))")"
             test -n "${PIN}"
             key="$(echo "$name" | tr '-' '_')"
@@ -88,6 +88,15 @@ jobs:
           persist-credentials: false
           token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
 
+      - name: Check out renquant-artifacts at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-artifacts
+          ref: ${{ steps.pins.outputs.renquant_artifacts }}
+          path: siblings/renquant-artifacts
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -97,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --upgrade pip
-          for p in renquant-common renquant-base-data renquant-pipeline renquant-backtesting renquant-orchestrator; do
+          for p in renquant-common renquant-base-data renquant-artifacts renquant-pipeline renquant-backtesting renquant-orchestrator; do
             python3 -m pip install --quiet -e "siblings/$p"
           done
 
