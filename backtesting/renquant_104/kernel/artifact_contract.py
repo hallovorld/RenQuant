@@ -430,6 +430,18 @@ def build_run_bundle(
         fingerprint = getattr(ctx, "commit_path_fingerprint", None)
         if fingerprint:
             bundle["commit_path_fingerprint"] = _json_safe(fingerprint)
+        # Adversarial re-review of pipeline#203 (orch issue #526, MED):
+        # capital admitted under the governed diagnostic-only operator
+        # override left no durable audit trail — the provenance lived only
+        # in log/ntfy text. The scoring path records the admission verdict
+        # (including the override provenance, which it deliberately
+        # preserves across later admission stages) on
+        # ctx._regime_model_admission; persist it so every run bundle
+        # states under which authorization buys were admitted. Truthful
+        # absence: no admission record → no key, never fabricated.
+        admission = getattr(ctx, "_regime_model_admission", None)
+        if isinstance(admission, dict) and admission:
+            bundle["regime_model_admission"] = _json_safe(admission)
 
     return bundle
 
