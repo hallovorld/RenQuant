@@ -36,7 +36,7 @@ jobs:
         working-directory: umbrella
         run: |
           set -euo pipefail
-          for name in renquant-orchestrator renquant-pipeline renquant-backtesting renquant-common renquant-base-data renquant-artifacts; do
+          for name in renquant-orchestrator renquant-pipeline renquant-backtesting renquant-common renquant-base-data renquant-artifacts renquant-strategy-104 renquant-execution renquant-model; do
             PIN="$(python3 -c "import json,sys; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == '$name'))")"
             test -n "${PIN}"
             key="$(echo "$name" | tr '-' '_')"
@@ -97,6 +97,33 @@ jobs:
           persist-credentials: false
           token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
 
+      - name: Check out renquant-strategy-104 at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-strategy-104
+          ref: ${{ steps.pins.outputs.renquant_strategy_104 }}
+          path: siblings/renquant-strategy-104
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-execution at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-execution
+          ref: ${{ steps.pins.outputs.renquant_execution }}
+          path: siblings/renquant-execution
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-model at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-model
+          ref: ${{ steps.pins.outputs.renquant_model }}
+          path: siblings/renquant-model
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -106,7 +133,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --upgrade pip
-          for p in renquant-common renquant-base-data renquant-artifacts renquant-pipeline renquant-backtesting renquant-orchestrator; do
+          for p in renquant-common renquant-base-data renquant-artifacts renquant-strategy-104 renquant-execution renquant-model renquant-pipeline renquant-backtesting renquant-orchestrator; do
             python3 -m pip install --quiet -e "siblings/$p"
           done
 
