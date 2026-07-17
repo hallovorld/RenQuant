@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   import-integrity:
-    runs-on: ubuntu-latest
+    runs-on: macos-14  # the requirements lock is macOS-native (pyobjc etc.); match its platform
     steps:
       - name: Check out umbrella
         uses: actions/checkout@v4
