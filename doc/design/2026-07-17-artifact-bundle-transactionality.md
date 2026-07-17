@@ -30,6 +30,8 @@ invariant.
 
 ### 2.1 Store layout and host model
 
+(r3 note: the authoritative store lives in the renquant-artifacts registry per §5; the layout below describes the store SCHEMA and the umbrella's read-only materialization uses the same shape.)
+
 ```
 backtesting/renquant_104/artifacts/prod/bundles/<bundle_id>/
     manifest.json
@@ -75,17 +77,26 @@ historical run can be replayed against the exact archived bundle.
 5  rename bundles/<id>.tmp → bundles/<id>; fsync(bundles/ dirfd)
 6  validate: re-read manifest, verify member digests, run the PUBLIC
    pair-validation API (§2.5); failure ⇒ delete dir, abort (still locked)
-7  write ACTIVE.tmp = "<generation+1> <bundle_id>"; fsync(ACTIVE.tmp)
-8  rename ACTIVE.tmp → ACTIVE; fsync(prod/ dirfd)
-9  append an immutable operation record (§2.4); fsync; unlock
+7  append PREPARE record {generation+1, bundle_id, authorization}
+   to OPERATIONS.jsonl; fsync                    # BEFORE the flip
+8  write ACTIVE.tmp = "<generation+1> <bundle_id>"; fsync(ACTIVE.tmp)
+9  rename ACTIVE.tmp → ACTIVE; fsync(prod/ dirfd)
+10 append ACTIVATE record {generation+1, bound to the PREPARE}; fsync;
+   unlock
 ```
 
-Crash at/before step 8 ⇒ previous ACTIVE intact (worst residue: orphan
-dir, GC'd later). Crash after 8 before 9 ⇒ new state serves; the missing
-operation record is detected by the auditor (record generation gap) and
-alarmed — state is consistent, provenance is loudly incomplete, never
-silently wrong. The kill-injection suite (§4) crashes at EVERY numbered
-step and after each individual fsync.
+**Activation-audit invariant (r3, review finding 2):** a generation may
+serve ONLY if its PREPARE record exists. The reader resolves ACTIVE and
+verifies the generation has a PREPARE record in OPERATIONS.jsonl; a
+generation with PREPARE but no ACTIVATE is a detected crash interval —
+the reader serves it (state is valid and was fully prepared+validated)
+and the next writer/auditor MUST commit a RECOVERY record naming the
+interval before any further mutation, with an alarm. A generation with NO
+PREPARE record is REFUSED (fail-closed, never serve unaudited state).
+Crash at/before step 9 ⇒ previous ACTIVE intact. The kill-injection
+suite (§4) crashes at EVERY numbered step, after each fsync, and
+SPECIFICALLY in the rename→ACTIVATE interval, proving the next reader
+never serves a generation without its PREPARE record.
 
 **Pointer format:** `<generation> <bundle_id>` — generation is a
 monotonically increasing integer; readers and run bundles record it,
@@ -125,14 +136,23 @@ renquant-common pins the verdict semantics both sides test against.
 
 ### 2.6 Reader protocol and GC (race-defined)
 
-Reader: read ACTIVE (generation + id) → open bundles/<id>/ by dirfd →
-read manifest via that dirfd → verify member digests → serve. Because GC
-serializes on the store flock and NEVER deletes (a) the current ACTIVE
-target, (b) any ancestor within the retention window, (c) any bundle
-referenced by a run bundle in the last 90 days (queried before delete),
-a reader that resolved ACTIVE holds a directory that cannot disappear
-mid-read on the single-host model (unlink-after-open keeps the dirfd
-valid on POSIX regardless). GC deletions are operation-log records too.
+Reader: read ACTIVE (generation + id) → verify the generation's PREPARE
+record (§2.3) → open bundles/<id>/ by dirfd → read manifest via that
+dirfd → verify member digests → serve.
+
+**Retention guarantee (r3, review finding 3 — reference-rooted GC):** the
+replay guarantee is scoped precisely: ANY run whose persisted run bundle
+is retained can be replayed against its exact archived bundle. GC
+therefore deletes a bundle ONLY if (a) it is not the ACTIVE target, (b)
+not an ancestor within the rollback window, and (c) NO retained run
+bundle references it — determined by querying the run-bundle store for
+the bundle_id before delete, with no time cutoff. Run-bundle retention
+itself is the single knob: bundles live exactly as long as any run that
+used them remains auditable. The GC acceptance test proves this by
+constructing an old-run reference and demonstrating the bundle survives
+GC while an unreferenced sibling is collected. GC serializes on the store
+flock; unlink-after-open keeps a mid-read dirfd valid on POSIX. GC
+deletions are operation-log records.
 
 ### 2.7 WF status semantics (finding 6)
 
@@ -168,11 +188,27 @@ run-bundle replay: resolve a 30-day-old run's recorded
 {bundle_id, digests} against the archive and re-verify. Plus the
 incident-replay and live-drill items from r1.
 
-## 5. Ownership boundaries (amended)
+## 5. Ownership boundaries (r3 — registry-correct; review finding 1)
 
-- renquant-pipeline: `bundle_contract` public API + reader resolution.
-- renquant-common: digest impl (M6) + the validation contract fixture.
-- umbrella: store, writer tools, break-glass, GC, census, views.
+Per RENQUANT_REPOS.md, renquant-artifacts is the artifact registry and
+promotion-status owner; the prior draft wrongly created a second
+registry inside the umbrella working tree.
+
+- **renquant-artifacts**: AUTHORITATIVE bundle publication/registration —
+  immutable bundle identity, the manifest schema, the authorization/
+  operation log contract, retention policy and GC. Bundles are published
+  into the artifacts store and resolved by immutable reference.
+- **renquant-pipeline**: the `bundle_contract` public pair-validation API
+  and the runtime reader (resolve → verify → serve).
+- **renquant-orchestrator**: resolves the registered bundle at run time
+  and records `{bundle_id, manifest_digest, member digests, generation}`
+  in each run bundle (the existing provenance surface).
+- **umbrella**: this RFC, the pins, and an explicitly READ-ONLY
+  deployment materialization of the registered active bundle for the
+  local runtime (a cache, never a publication authority); the census and
+  compatibility views live here because the legacy flat paths do.
+- Writer tools (promote/refresh/break-glass) INVOKE the artifacts-owned
+  publication API; they do not own the store.
 - Shadow arm: out of scope for v1 (unchanged).
 
 ## 6. Open questions (narrowed)
