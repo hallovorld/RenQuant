@@ -133,8 +133,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --upgrade pip
+          # Third-party deps come from the umbrella's committed, hashed lock —
+          # never a live resolver (reviewed-environment contract). Subrepos
+          # install --no-deps on top, in dependency order.
+          python3 -m pip install --quiet -r umbrella/requirements.lock.txt
           for p in renquant-common renquant-base-data renquant-artifacts renquant-strategy-104 renquant-execution renquant-model renquant-pipeline renquant-backtesting renquant-orchestrator; do
-            python3 -m pip install --quiet -e "siblings/$p"
+            python3 -m pip install --quiet --no-deps -e "siblings/$p"
           done
 
       - name: Import-integrity sweep against the PR lock
