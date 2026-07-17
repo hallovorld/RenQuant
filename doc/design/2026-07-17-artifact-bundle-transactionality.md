@@ -26,114 +26,157 @@ panel, the calibrator went through refresh + restamp + rollback separately,
 and the pair ended orphaned. Per-file atomicity cannot fix a PAIR-level
 invariant.
 
-## 2. Design
+## 2. Design (r2 — normative protocol; review round 1 findings adopted)
 
-### 2.1 Bundle store
+### 2.1 Store layout and host model
 
 ```
 backtesting/renquant_104/artifacts/prod/bundles/<bundle_id>/
     manifest.json
-    panel-ltr.alpha158_fund.json
-    panel-rank-calibration.json
-    [panel-rank-calibration.<regime>.json ...]   # future
-backtesting/renquant_104/artifacts/prod/ACTIVE   # pointer file, one line: <bundle_id>
+    <members...>
+backtesting/renquant_104/artifacts/prod/ACTIVE      # pointer file
+backtesting/renquant_104/artifacts/prod/bundles/.lock
 ```
 
-`bundle_id` = `<utc-ts>-<short-digest>` (content-derived, collision-free).
-POINTER FILE, not a symlink: atomic via write-tmp + `rename(2)`, identical
-semantics on every filesystem, and trivially auditable in git history if
-tracked.
+**Host model (normative):** single-host POSIX filesystem (APFS on the
+live machine). `flock` is the store lock under this model ONLY; the store
+is NOT supported on network filesystems, and the writer refuses to start
+if the store path is not a local mount (checked at open).
 
-### 2.2 Manifest (the pair-level contract)
+### 2.2 Bundle identity (normative)
 
-```json
-{
-  "bundle_id": "...",
-  "created_at": "...", "created_by": "wf_promote|monthly_refresh|restamp|manual",
-  "parent_bundle": "<bundle_id|null>",
-  "members": {"panel-ltr.alpha158_fund.json": "sha256:<file>", ...},
-  "bindings": {
-    "panel_model_content_v1": "sha256:...",       // renquant-common v1 impl (M6)
-    "calibrator_scorer_binding_v1": "sha256:...", // MUST equal the line above
-    "config_fingerprint": "sha256:...",
-    "wf_gate_verdict": {"passed": true, "diagnostic_only": true, "...": "..."}
-  }
-}
+`manifest.json` fields (all REQUIRED; unknown fields REJECTED):
+
+- `schema_version: 1`
+- `members`: the EXACT allowed set for schema v1 —
+  `{panel-ltr.alpha158_fund.json, panel-rank-calibration.json}`; any
+  missing or extra file in the bundle directory ⇒ invalid bundle.
+- per-member `{sha256, bytes}` (algorithm pinned per schema version)
+- `bindings` (as v1 draft, digest basis = renquant-common v1 impl)
+- `authorization` (§2.4)
+- `parent_bundle`, `created_at`
+- `manifest_digest`: sha256 over the CANONICAL serialization (UTF-8,
+  sorted keys, no insignificant whitespace, LF) of the manifest WITHOUT
+  this field.
+- `bundle_id = <utc-ts>Z-<first 16 hex of manifest_digest>` — timestamp
+  for human ordering, digest for content identity; collision ⇒ abort.
+
+**Run-bundle binding:** every daily run's persisted run bundle records
+`{bundle_id, manifest_digest, member digests, pointer_generation}` so any
+historical run can be replayed against the exact archived bundle.
+
+### 2.3 Writer protocol (normative, with durability order)
+
+```
+1  flock(bundles/.lock, EX)                # writers AND GC serialize here
+2  write members into bundles/<id>.tmp/    # fsync each file
+3  write manifest.json                     # fsync file
+4  fsync(bundles/<id>.tmp dirfd)
+5  rename bundles/<id>.tmp → bundles/<id>; fsync(bundles/ dirfd)
+6  validate: re-read manifest, verify member digests, run the PUBLIC
+   pair-validation API (§2.5); failure ⇒ delete dir, abort (still locked)
+7  write ACTIVE.tmp = "<generation+1> <bundle_id>"; fsync(ACTIVE.tmp)
+8  rename ACTIVE.tmp → ACTIVE; fsync(prod/ dirfd)
+9  append an immutable operation record (§2.4); fsync; unlock
 ```
 
-Manifest creation VALIDATES the bindings (runs the real pipeline matcher
-in-process — the same `_assert_calibrator_matches_scorer` that guards the
-daily); a manifest whose bindings do not verify cannot be written. The v1
-digest basis is the single renquant-common implementation (M6 unification
-is a dependency of phase 3, not of phases 0-2).
+Crash at/before step 8 ⇒ previous ACTIVE intact (worst residue: orphan
+dir, GC'd later). Crash after 8 before 9 ⇒ new state serves; the missing
+operation record is detected by the auditor (record generation gap) and
+alarmed — state is consistent, provenance is loudly incomplete, never
+silently wrong. The kill-injection suite (§4) crashes at EVERY numbered
+step and after each individual fsync.
 
-### 2.3 Writer protocol (all four writers)
+**Pointer format:** `<generation> <bundle_id>` — generation is a
+monotonically increasing integer; readers and run bundles record it,
+making pointer flips totally ordered and stale-pointer rollback
+detectable.
 
-```
-with store_lock():                      # flock on bundles/.lock
-    build bundles/<new_id>/ fully       # members + manifest, fsync
-    validate manifest bindings          # fail → delete dir, abort
-    write ACTIVE.tmp; rename → ACTIVE   # the ONLY mutation of serving state
-```
+### 2.4 Writer authorization and audit (normative)
 
-Rollback = pointer swap to `parent_bundle`. A crash at ANY step leaves the
-previous bundle fully active; the worst residue is an orphan directory
-(GC'd by a janitor, never load-bearing). Concurrent writers serialize on
-the lock — today's weekly/monthly/restamp interleavings become impossible.
+`authorization` in the manifest and the append-only operation log
+(`bundles/OPERATIONS.jsonl`, one fsync'd line per commit/rollback):
 
-### 2.4 Reader contract
+- `tool` + `tool_version` (the committing script; "hand-edit" is not a
+  value — manual response uses the break-glass tool below)
+- `actor` (OS user + configured operator identity)
+- `source`: for wf_promote — the WF run/verdict IDs; for
+  monthly_refresh — the fit-input fingerprints; for restamp — the
+  incident/task reference (REQUIRED field, per the containment protocol)
+- `inputs`: content digests of everything the writer consumed.
 
-The runtime resolves the pair ONLY via `ACTIVE` → manifest → members, and
-verifies member file digests against the manifest at load (fail-closed with
-a named remedy). The existing calibrator/scorer matcher stays as
-defense-in-depth; after this design it should never fire, and its firing
-becomes a page-worthy anomaly (sentinel hook).
+**Break-glass path:** `bundle_breakglass` is the ONLY sanctioned manual
+mutation tool: it takes an incident/task reference (mandatory), performs
+the same protocol (§2.3), marks `authorization.tool=bundle_breakglass`,
+and its use ALWAYS alarms via the drift sentinel (a break-glass commit is
+by definition a containment event under the AC3 protocol). Rollback is
+the same tool with `--rollback-to <bundle_id>`, restricted to ancestors
+reachable via parent_bundle.
 
-## 3. Migration (default-ON at the end, no dark shipping)
+### 2.5 Validation API (boundary-correct)
 
-- **P0 (reader fallback)**: pipeline loader learns the pointer path; if
-  `ACTIVE` is absent → legacy flat paths + WARN. Ships inert-safe.
-- **P1 (seal + flip)**: seal the current verified-good pair as the first
-  bundle (offline validation = the 07-16 sandbox procedure, now code);
-  flip `ACTIVE`. Legacy flat paths remain as COPIES temporarily.
-- **P2 (writers)**: wf_promote, monthly refresh, restamp tooling emit
-  bundles + pointer swaps; their private backup/rollback files retire in
-  favor of `parent_bundle`. Flat paths become generated views for any
-  unmigrated reader (sim/scripts inventory required — census step).
-- **P3 (fail closed)**: remove the fallback; missing pointer/digest
-  mismatch aborts the run. Requires the M6 v1-only flip
-  (`accept_legacy_stamps=false`) to land with it.
+renquant-pipeline exposes a VERSIONED PUBLIC API (new module
+`renquant_pipeline.bundle_contract`): `validate_pair(manifest, member_paths)
+-> Verdict` — internally the same logic as the runtime loader's matcher,
+exported deliberately (the private `_assert_calibrator_matches_scorer` is
+NOT imported by umbrella code; finding 5). The pipeline reader and the
+umbrella writer call the SAME public function, and a contract fixture in
+renquant-common pins the verdict semantics both sides test against.
 
-## 4. Verification (AC4 acceptance)
+### 2.6 Reader protocol and GC (race-defined)
 
-1. **Kill-injection**: harness crashes the writer at every step boundary
-   (after member write, after manifest, mid-rename); after each crash the
-   loader must resolve a fully consistent pair. Automated in CI.
-2. **Concurrency**: two writers under contention → serialized, both
-   outcomes consistent.
-3. **Incident replay**: scripted re-enactment of the 07-13→16 churn
-   (promote-reject rollback + refresh + restamp interleaved) against the
-   bundle store → the serving pair never desynchronizes.
-4. **Live drill**: one monthly-refresh cycle through the new protocol with
-   the sentinel watching; the calibrator-mismatch class alert count stays 0.
+Reader: read ACTIVE (generation + id) → open bundles/<id>/ by dirfd →
+read manifest via that dirfd → verify member digests → serve. Because GC
+serializes on the store flock and NEVER deletes (a) the current ACTIVE
+target, (b) any ancestor within the retention window, (c) any bundle
+referenced by a run bundle in the last 90 days (queried before delete),
+a reader that resolved ACTIVE holds a directory that cannot disappear
+mid-read on the single-host model (unlink-after-open keeps the dirfd
+valid on POSIX regardless). GC deletions are operation-log records too.
 
-## 5. Ownership boundaries
+### 2.7 WF status semantics (finding 6)
 
-- umbrella: bundle store layout, writer tooling, seal/flip scripts, GC.
-- renquant-pipeline: reader resolution + manifest verification in the
-  loader path (kernel-owned; no umbrella-local loader logic).
-- renquant-common: the single v1 digest implementation (M6).
-- Shadow arm: OUT of scope for v1 (its own pair gets a bundle in a
-  follow-up; shadow breakage never blocks prod).
+The manifest's `bindings.wf_gate_verdict` is a VERBATIM COPY of the
+panel's stamped metadata — bundle validity asserts PAIR CONSISTENCY ONLY
+and is EXPLICITLY NOT a buy-admissibility statement. Admission remains
+the preflight P-WF-GATE's job (incl. the governed diagnostic-only
+override, pipeline#203); nothing in this design feeds it. P1's seal of
+the current pair asserts "this is the pair the operator is knowingly
+serving today", not "this pair passed the WF gate".
 
-## 6. Open questions for review
+## 3. Migration (census-first; unchanged phases P0-P3 otherwise)
 
-1. Track `bundles/` + `ACTIVE` in git, or filesystem-only with the drift
-   sentinel watching? (Draft position: filesystem-only + sentinel;
-   git-tracking model weights re-arms the checkout-clobber trap.)
-2. GC policy: keep last N bundles + all bundles referenced by run bundles
-   in the last M days?
-3. Does the two-arm freeze (artifact_store contract) reference flat paths
-   that P2 must preserve as views?
-4. Where does the per-ticker tournament model store fit — same mechanism
-   later, or explicitly never?
+**P2 entry criterion (finding 7):** a committed census document listing
+EVERY reader/writer of the flat paths — daily runner, sim, shadow arm,
+preflight, calibrator refresh, wf_promote, restamp tools, per-ticker
+tournament, manual-recovery scripts — each classified {migrates to
+bundle API | keeps flat VIEW}. Views are read-only (mode 0444 files
+regenerated on pointer flip); a legacy WRITER discovered post-census is
+a migration blocker, not a workaround. Rollback invariant for every
+phase: reverting the phase's commit restores the previous serving
+behavior without artifact surgery (P1's flip is reverted by pointing
+ACTIVE back; flat files remain until P3).
+
+## 4. Verification (AC4 acceptance; expanded per review)
+
+Kill-injection at every §2.3 step and after each fsync; reader/GC race
+tests (reader holding dirfd across a GC pass; pointer flip during read);
+invalid-schema/extra-member/missing-member injection; stale-pointer
+rollback (generation regression must be detected and refused without
+--rollback-to); break-glass path leaves record + triggers sentinel;
+run-bundle replay: resolve a 30-day-old run's recorded
+{bundle_id, digests} against the archive and re-verify. Plus the
+incident-replay and live-drill items from r1.
+
+## 5. Ownership boundaries (amended)
+
+- renquant-pipeline: `bundle_contract` public API + reader resolution.
+- renquant-common: digest impl (M6) + the validation contract fixture.
+- umbrella: store, writer tools, break-glass, GC, census, views.
+- Shadow arm: out of scope for v1 (unchanged).
+
+## 6. Open questions (narrowed)
+
+1. Retention: last N=8 bundles + 90-day run-bundle references — confirm.
+2. Per-ticker tournament store: explicitly out of scope for schema v1;
+   revisit only if it ever feeds the serving pair.
