@@ -136,7 +136,13 @@ jobs:
           # Third-party deps come from the umbrella's committed, hashed lock —
           # never a live resolver (reviewed-environment contract). Subrepos
           # install --no-deps on top, in dependency order.
-          python3 -m pip install --quiet -r umbrella/requirements.lock.txt
+          # The umbrella lock was generated inside a conda env and carries
+          # file:/// build paths for a few packages; those lines cannot
+          # install in CI. Keep every resolvable pin, fall back to bare
+          # names for the file:// entries (documented residual unpinning).
+          awk '{ if ($0 ~ /@ file:\/\/\//) { split($0, a, " "); print a[1] } else print }' \
+            umbrella/requirements.lock.txt > /tmp/req-ci.txt
+          python3 -m pip install --quiet -r /tmp/req-ci.txt
           for p in renquant-common renquant-base-data renquant-artifacts renquant-strategy-104 renquant-execution renquant-model renquant-pipeline renquant-backtesting renquant-orchestrator; do
             python3 -m pip install --quiet --no-deps -e "siblings/$p"
           done
