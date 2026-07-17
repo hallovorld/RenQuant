@@ -1,0 +1,158 @@
+name: pin-import-integrity
+
+# GOAL-5 AC5 (D1): a candidate pin COMBINATION must serve every aliased
+# kernel import the pinned pipeline can lazily reach. Per-repo CI is
+# structurally blind to this class (2026-07-16 incident, orchestrator
+# #524: both repos green, first daily after the pin sync died at
+# MetaLabelVetoTask). This job bootstraps the multirepo runtime against
+# the PR's lock and import-checks all aliased-namespace targets.
+
+on:
+  pull_request:
+    paths:
+      - subrepos.lock.json
+      - scripts/pin_import_integrity_sweep.py
+      - .github/workflows/pin-import-integrity.yml
+  push:
+    branches: [main]
+    paths:
+      - subrepos.lock.json
+
+permissions:
+  contents: read
+
+jobs:
+  import-integrity:
+    runs-on: macos-14  # the requirements lock is macOS-native (pyobjc etc.); match its platform
+    steps:
+      - name: Check out umbrella
+        uses: actions/checkout@v4
+        with:
+          path: umbrella
+          persist-credentials: false
+
+      - name: Read pins from subrepos.lock.json
+        id: pins
+        working-directory: umbrella
+        run: |
+          set -euo pipefail
+          for name in renquant-orchestrator renquant-pipeline renquant-backtesting renquant-common renquant-base-data renquant-artifacts renquant-strategy-104 renquant-execution renquant-model; do
+            PIN="$(python3 -c "import json,sys; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == '$name'))")"
+            test -n "${PIN}"
+            key="$(echo "$name" | tr '-' '_')"
+            echo "${key}=${PIN}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Check out renquant-orchestrator at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-orchestrator
+          ref: ${{ steps.pins.outputs.renquant_orchestrator }}
+          path: siblings/renquant-orchestrator
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-pipeline at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-pipeline
+          ref: ${{ steps.pins.outputs.renquant_pipeline }}
+          path: siblings/renquant-pipeline
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-backtesting at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-backtesting
+          ref: ${{ steps.pins.outputs.renquant_backtesting }}
+          path: siblings/renquant-backtesting
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-common at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-common
+          ref: ${{ steps.pins.outputs.renquant_common }}
+          path: siblings/renquant-common
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-base-data at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-base-data
+          ref: ${{ steps.pins.outputs.renquant_base_data }}
+          path: siblings/renquant-base-data
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-artifacts at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-artifacts
+          ref: ${{ steps.pins.outputs.renquant_artifacts }}
+          path: siblings/renquant-artifacts
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-strategy-104 at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-strategy-104
+          ref: ${{ steps.pins.outputs.renquant_strategy_104 }}
+          path: siblings/renquant-strategy-104
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-execution at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-execution
+          ref: ${{ steps.pins.outputs.renquant_execution }}
+          path: siblings/renquant-execution
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Check out renquant-model at pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-model
+          ref: ${{ steps.pins.outputs.renquant_model }}
+          path: siblings/renquant-model
+          persist-credentials: false
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install OpenMP runtime (xgboost dylib dependency on macOS)
+        run: brew install libomp
+
+      - name: Install pinned packages
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --upgrade pip
+          # Third-party deps come from the umbrella's committed, hashed lock —
+          # never a live resolver (reviewed-environment contract). Subrepos
+          # install --no-deps on top, in dependency order.
+          # The umbrella lock was generated inside a conda env and carries
+          # file:/// build paths for a few packages; those lines cannot
+          # install in CI. Keep every resolvable pin, fall back to bare
+          # names for the file:// entries (documented residual unpinning).
+          awk '{ if ($0 ~ /@ file:\/\/\//) { split($0, a, " "); print a[1] } else print }' \
+            umbrella/requirements.lock.txt > /tmp/req-ci.txt
+          python3 -m pip install --quiet -r /tmp/req-ci.txt
+          for p in renquant-common renquant-base-data renquant-artifacts renquant-strategy-104 renquant-execution renquant-model renquant-pipeline renquant-backtesting renquant-orchestrator; do
+            python3 -m pip install --quiet --no-deps -e "siblings/$p"
+          done
+
+      - name: Import-integrity sweep against the PR lock
+        run: |
+          set -euo pipefail
+          python3 umbrella/scripts/pin_import_integrity_sweep.py \
+            --lock-file umbrella/subrepos.lock.json \
+            --siblings siblings
