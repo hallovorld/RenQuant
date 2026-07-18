@@ -111,3 +111,13 @@ artifacts/hf_swa_smoke/
 # staging-then-swap dirs; always rmtree'd, ignored so crash leftovers can
 # never dirty the tree (pin-align aborts on dirty).
 backtesting/*/models/.staging/
+
+# AC4 bundle store (census §6 P0 / RFC #492 §2.1): the transactional
+# bundle store stands up alongside the flat serving pair but must NEVER
+# enter the git index — a git-tracked store would recreate census
+# blocker B1 (git checkout/reset as an unmediated pair writer). The
+# declared location is deploy/bundle_store_location.json; the store is
+# written only by the renquant-artifacts publication API.
+backtesting/*/artifacts/prod/bundles/
+backtesting/*/artifacts/prod/ACTIVE
+backtesting/*/artifacts/prod/ACTIVE.tmp
