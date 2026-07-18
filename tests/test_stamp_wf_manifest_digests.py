@@ -114,9 +114,12 @@ def test_resolver_accepts_stamped_v2_under_enforcement():
                 _MANIFEST_V2,
                 uri,
                 expected_digest=entry[digest_key],
-                # calibrator binding is not enforced by the loader today;
-                # require only the artifact digest, exactly as it wires.
-                require_digest=require and digest_key == "artifact_sha256",
+                # Task #82: the loader now enforces BOTH digest fields
+                # (calibrator_as_of binds calibrator_sha256 the same way
+                # _resolve_model_uri binds artifact_sha256) — require both,
+                # exactly as it wires.
+                require_digest=require,
+                digest_field=digest_key,
             )
             assert isinstance(resolved, Path) and resolved.exists()
 

@@ -55,7 +55,10 @@ model-validation resolution MUST have a stamped ``artifact_sha256`` (see
 ``digest_required``). Before that date a missing digest is tolerated (the
 loader warns) so existing unstamped manifests keep validating; on/after it,
 resolution fails closed. Fail-closed on this weekly-promote gate means the
-prior model stays pinned — the safe direction, no capital impact.
+prior model stays pinned — the safe direction, no capital impact. The same
+window governs the calibrator leg (``calibrator_sha256`` — task #82, PR #499
+review): both digest fields are enforced identically; ``digest_field`` only
+names the right key in the missing-digest remedy.
 """
 from __future__ import annotations
 
@@ -185,10 +188,17 @@ def resolve_manifest_uri(
     expected_digest: str | None = None,
     require_digest: bool = False,
     allow_external: bool = False,
+    digest_field: str = "artifact_sha256",
 ) -> "Path | str":
     """Resolve a manifest artifact URI to a filesystem path under the contract.
 
     Returns the original string for ``scheme://`` URIs (opaque), else a Path.
+
+    ``digest_field`` names the manifest key the caller sources
+    ``expected_digest`` from (``artifact_sha256`` for scorer artifacts,
+    ``calibrator_sha256`` for calibrators — task #82). It only shapes the
+    missing-digest error so the remedy names the RIGHT field to stamp;
+    enforcement semantics are identical for both legs.
 
     Raises ManifestUriResolutionError on:
       * a missing digest when ``require_digest`` is set (model-validation path
@@ -208,10 +218,10 @@ def resolve_manifest_uri(
     if require_digest and not want:
         raise ManifestUriResolutionError(
             f"manifest URI {text!r} is on a model-validation path that requires "
-            f"a stamped artifact_sha256 digest (compatibility window closed "
+            f"a stamped {digest_field} digest (compatibility window closed "
             f"{ARTIFACT_DIGEST_REQUIRED_AFTER.isoformat()}), but the manifest "
             f"entry does not carry one. Re-stamp the manifest with per-entry "
-            f"artifact_sha256 (schema v2)."
+            f"{digest_field} (scripts/stamp_wf_manifest_digests.py, schema v2)."
         )
 
     # scheme:// URIs (e.g. s3://) are opaque — untouched.

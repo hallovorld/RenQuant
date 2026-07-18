@@ -21,12 +21,10 @@ For every entry in ``retrains``:
   stamps ``artifact_sha256`` = sha256 of the resolved file's raw bytes
   (exactly ``_digest`` in the resolver: ``sha256(path.read_bytes())``);
 * where ``calibrator_uri`` is present, stamps ``calibrator_sha256`` the same
-  way. NOTE: the resolver/loader enforce only ``artifact_sha256`` today
-  (``calibrator_as_of`` resolves calibrators without digest binding);
-  ``calibrator_sha256`` is forward-compatible provenance so a future
-  calibrator binding needs no second corpus sweep. Unknown manifest keys are
-  ignored by ``read_manifest``/``_parse_entry`` (verified), so the field is
-  inert to every current consumer;
+  way. Since task #82 (PR #499 review follow-up) the loader ENFORCES this
+  field too: ``calibrator_as_of`` binds the resolved calibrator to the
+  stamped digest under the same compatibility window as ``artifact_sha256``,
+  and ``read_manifest``/``_parse_entry`` round-trip it;
 * self-verifies each stamp by re-resolving with ``expected_digest=<stamp>``
   and ``require_digest=True`` — i.e. the exact post-window enforcement call.
 
