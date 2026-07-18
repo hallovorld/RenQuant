@@ -426,6 +426,13 @@ def _policy_knobs(config: dict[str, Any]) -> dict[str, Any]:
             "ranking", "panel_scoring", "signal_gate_prefer_calibrated_mu"),
         "buy_floor": get("ranking", "panel_scoring", "buy_floor"),
         "buy_floor_min": get("ranking", "panel_scoring", "buy_floor_min"),
+        # Small-n guard (strategy-104 pin d3730080): capital-admission
+        # parameters — must be visible in the reviewed production
+        # declaration. Fail-soft: absent on older pins → row renders as
+        # before (the render branch only appends when a key is present).
+        "buy_floor_min_n": get("ranking", "panel_scoring", "buy_floor_min_n"),
+        "buy_floor_absolute_smalln": get(
+            "ranking", "panel_scoring", "buy_floor_absolute_smalln"),
         "panel_buy_top_n": get("rotation", "panel_buy_top_n"),
         "rotation_min_expected_advantage_pct": get("rotation", "min_expected_advantage_pct"),
         "rotation_target_horizon_days": get("rotation", "target_horizon_days"),
@@ -746,6 +753,18 @@ def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = N
     lines.extend(["", "### Shadow e2e calibrator", ""])
     lines.extend(_table(_calibrator_rows(snapshot["shadow_e2e_calibrator"])))
     lines.extend(["", "## Key policy knobs (active pinned config)", ""])
+    # Small-n guard keys are capital-admission parameters: when the pinned
+    # config declares them they MUST surface in this reviewed declaration.
+    # Fail-soft: on older pins without them the row renders exactly as before.
+    buy_floor_cell = (
+        f"mode={_fmt(policy.get('buy_floor'))}; min={_fmt(policy.get('buy_floor_min'))}"
+    )
+    if (policy.get("buy_floor_min_n") is not None
+            or policy.get("buy_floor_absolute_smalln") is not None):
+        buy_floor_cell += (
+            f"; min_n={_fmt(policy.get('buy_floor_min_n'))}; "
+            f"absolute_smalln={_fmt(policy.get('buy_floor_absolute_smalln'))}"
+        )
     lines.extend(_table([
         ("Watchlist size", f"{snapshot.get('watchlist_size')} tickers"),
         ("Conviction gate μ floor",
@@ -754,8 +773,7 @@ def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = N
          f"demean_cross_sectional={_fmt(policy.get('demean_cross_sectional'))}"),
         ("signal_gate_prefer_calibrated_mu",
          _fmt(policy.get("signal_gate_prefer_calibrated_mu"))),
-        ("Buy floor",
-         f"mode={_fmt(policy.get('buy_floor'))}; min={_fmt(policy.get('buy_floor_min'))}"),
+        ("Buy floor", buy_floor_cell),
         ("panel_buy_top_n", _fmt(policy.get("panel_buy_top_n"))),
         ("Rotation",
          f"min_expected_advantage_pct={_fmt(policy.get('rotation_min_expected_advantage_pct'))}; "

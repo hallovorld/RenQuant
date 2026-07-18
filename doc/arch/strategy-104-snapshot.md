@@ -122,7 +122,7 @@ Source fingerprint: 593aeb903fe2a6d41a910f48671fe47bedeaeb3a2edc158258bdab8ec390
 | Watchlist size | 145 tickers |
 | Conviction gate μ floor | enabled=true; mu_floor=+0.0300; demean_cross_sectional=false |
 | signal_gate_prefer_calibrated_mu | unknown (field absent) |
-| Buy floor | mode=adaptive_mean_std; min=+0.2000 |
+| Buy floor | mode=adaptive_mean_std; min=+0.2000; min_n=12; absolute_smalln=+0.5000 |
 | panel_buy_top_n | 3 |
 | Rotation | min_expected_advantage_pct=+0.0600; target_horizon_days=60 |
 | Kelly sizing | enabled=true; fractional=+0.3000; max_concentration=+0.1200; min_edge=0; use_calibrator_mu=true |
