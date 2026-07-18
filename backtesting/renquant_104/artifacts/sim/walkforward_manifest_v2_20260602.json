@@ -3,7 +3,9 @@
   "retrains": [
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-01-01/panel-ltr.json",
+      "artifact_sha256": "6cf7ed603db7391fe5bdd1d02591b4a3190eb218b2025519258c3be82e9dc795",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-01-01/panel-rank-calibration.json",
+      "calibrator_sha256": "6e62e83e94937dea45f6a65b2dc4e1e6f3b94355ce4a452d91a26f8d7b317c38",
       "cutoff_date": "2024-01-01T00:00:00",
       "effective_train_cutoff_date": "2023-10-09T00:00:00",
       "lookahead_days": 60,
@@ -11,7 +13,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-01-22/panel-ltr.json",
+      "artifact_sha256": "3c0c5a631b97870a6b8f812ebf79a89b80f681e0b04a6079ca5e70667d80a838",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-01-22/panel-rank-calibration.json",
+      "calibrator_sha256": "f1c3a66d80df368d660fe77d4f8c11ccc9e5346f57b20031c5a0a770e10e3456",
       "cutoff_date": "2024-01-22T00:00:00",
       "effective_train_cutoff_date": "2023-10-30T00:00:00",
       "lookahead_days": 60,
@@ -19,7 +23,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-02-12/panel-ltr.json",
+      "artifact_sha256": "799a938251d4f5d34fd9b7d3bb1b7dac9524bf79885acb19ea4e29d95dc4048f",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-02-12/panel-rank-calibration.json",
+      "calibrator_sha256": "d0f2f173f1f7d8c7d2e27a080357302517b44aa402f76259efaf81a7e4bafa59",
       "cutoff_date": "2024-02-12T00:00:00",
       "effective_train_cutoff_date": "2023-11-20T00:00:00",
       "lookahead_days": 60,
@@ -27,7 +33,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-03-04/panel-ltr.json",
+      "artifact_sha256": "23a672b5c1de067e539c899430f2d2480ddf87c152565be87ee8a0ba7ddfb78d",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-03-04/panel-rank-calibration.json",
+      "calibrator_sha256": "54500f87981d4ee5730c21bd648a1635da102c0871e1949ddfd060ce324b8073",
       "cutoff_date": "2024-03-04T00:00:00",
       "effective_train_cutoff_date": "2023-12-11T00:00:00",
       "lookahead_days": 60,
@@ -35,7 +43,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-03-25/panel-ltr.json",
+      "artifact_sha256": "07ac6e5ff9d400f501e6dc0e856eabbb8a38a39176452f480f98839f82b7b7ef",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-03-25/panel-rank-calibration.json",
+      "calibrator_sha256": "2454de8a137e2f881255702844c4711c25dfb42081f519fb2ebc0b6c7a15997e",
       "cutoff_date": "2024-03-25T00:00:00",
       "effective_train_cutoff_date": "2024-01-01T00:00:00",
       "lookahead_days": 60,
@@ -43,7 +53,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-04-15/panel-ltr.json",
+      "artifact_sha256": "1979a7e0cb1e742e968d4ec510ed617480185f2742f3edbe65c53ff26a92d4af",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-04-15/panel-rank-calibration.json",
+      "calibrator_sha256": "4fd36cd3ea6da1f591ac156012f52ba275bb0d920753fa378e233b604d9862e9",
       "cutoff_date": "2024-04-15T00:00:00",
       "effective_train_cutoff_date": "2024-01-22T00:00:00",
       "lookahead_days": 60,
@@ -51,7 +63,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-05-06/panel-ltr.json",
+      "artifact_sha256": "eff735023f57fcdaac6a680b7c89e56aaa1049bce9f8e20c3098a9932d6ee9e3",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-05-06/panel-rank-calibration.json",
+      "calibrator_sha256": "c15313c095820a77590cf3ad728b5c4dd7fa7cdc1ee7da61366fb40c5dda803d",
       "cutoff_date": "2024-05-06T00:00:00",
       "effective_train_cutoff_date": "2024-02-12T00:00:00",
       "lookahead_days": 60,
@@ -59,7 +73,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-05-27/panel-ltr.json",
+      "artifact_sha256": "e3c28dc9fb5dba2385b8d3a86617ccc27a08d9f0c503c184713798f5550e660d",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-05-27/panel-rank-calibration.json",
+      "calibrator_sha256": "43d3312c9791d2969409d92395bcfbd5948f3ef6e00cb7b9aa87bc3a9298e9df",
       "cutoff_date": "2024-05-27T00:00:00",
       "effective_train_cutoff_date": "2024-03-04T00:00:00",
       "lookahead_days": 60,
@@ -67,7 +83,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-06-17/panel-ltr.json",
+      "artifact_sha256": "270ec250559f04d3d392baf88853a7a212a4b4eaee3f131bc3311cbee0e86a49",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-06-17/panel-rank-calibration.json",
+      "calibrator_sha256": "900a0eaa911eb8ccbd8d789abc6d97351bcb7f1d46563d23a90adb62f8592278",
       "cutoff_date": "2024-06-17T00:00:00",
       "effective_train_cutoff_date": "2024-03-25T00:00:00",
       "lookahead_days": 60,
@@ -75,7 +93,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-07-08/panel-ltr.json",
+      "artifact_sha256": "5c78c652606d5665637e906f5cd05f3e09c534ba20aa542fe937b78e603b5e5a",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-07-08/panel-rank-calibration.json",
+      "calibrator_sha256": "3769c819664867a920185bafd87d9c32b314b89ac7a6effabe678f3b8847b936",
       "cutoff_date": "2024-07-08T00:00:00",
       "effective_train_cutoff_date": "2024-04-15T00:00:00",
       "lookahead_days": 60,
@@ -83,7 +103,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-07-29/panel-ltr.json",
+      "artifact_sha256": "303a818ad83afe19eb3fb76d01efde671b0ac224c28f9b9ea434275369732169",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-07-29/panel-rank-calibration.json",
+      "calibrator_sha256": "a4e7943e9371a2be360340fb5fffa001eabf9461f4e6491acf2ba8e02301b2de",
       "cutoff_date": "2024-07-29T00:00:00",
       "effective_train_cutoff_date": "2024-05-06T00:00:00",
       "lookahead_days": 60,
@@ -91,7 +113,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-08-19/panel-ltr.json",
+      "artifact_sha256": "29cdfa28d1312abd85884ea90b8e559e7ebd3c1c728974611ab8175cf001fba7",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-08-19/panel-rank-calibration.json",
+      "calibrator_sha256": "a2fe549ec966c2a09b5d6c9b4f12deab1faf0f1c3ed7bc4dc5c557aef31d32f3",
       "cutoff_date": "2024-08-19T00:00:00",
       "effective_train_cutoff_date": "2024-05-27T00:00:00",
       "lookahead_days": 60,
@@ -99,7 +123,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-09-09/panel-ltr.json",
+      "artifact_sha256": "cd276516bf674d41b9929aa018410182298874d43357c2eca7b2c1570d86e584",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-09-09/panel-rank-calibration.json",
+      "calibrator_sha256": "5cf519081b39ca609ab92dc0fa8fa736a7212083d09b4b057f4f603c3d55d4f1",
       "cutoff_date": "2024-09-09T00:00:00",
       "effective_train_cutoff_date": "2024-06-17T00:00:00",
       "lookahead_days": 60,
@@ -107,7 +133,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-09-30/panel-ltr.json",
+      "artifact_sha256": "a3ecb66be40bd327c6facc2d616254d07660ad3b8b6a7446d2a82e92e2136156",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-09-30/panel-rank-calibration.json",
+      "calibrator_sha256": "c1ce3b3c7a84f775196adb3b7f08b0bb51a713f1e9ebb943f7d3d32d21a2405f",
       "cutoff_date": "2024-09-30T00:00:00",
       "effective_train_cutoff_date": "2024-07-08T00:00:00",
       "lookahead_days": 60,
@@ -115,7 +143,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-10-21/panel-ltr.json",
+      "artifact_sha256": "a5ba16a95ca8632b632101cdb0103648ccdcf339b1c75e6833baa7a817af5ed2",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-10-21/panel-rank-calibration.json",
+      "calibrator_sha256": "9ff83c2b7e4e5d5fb60f7ccc873f7aed87665c2463765d92a2df0340a7c0d6f1",
       "cutoff_date": "2024-10-21T00:00:00",
       "effective_train_cutoff_date": "2024-07-29T00:00:00",
       "lookahead_days": 60,
@@ -123,7 +153,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-11-11/panel-ltr.json",
+      "artifact_sha256": "2b4070f038259e6f8a8c1a2d4a1053ac2606dc56825f1354c27bb78884112f2d",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-11-11/panel-rank-calibration.json",
+      "calibrator_sha256": "d1fd8bef862c2e20ab40deb7fbee1b13a0a9d43fb4a506cab4a5be94d7ec27c0",
       "cutoff_date": "2024-11-11T00:00:00",
       "effective_train_cutoff_date": "2024-08-19T00:00:00",
       "lookahead_days": 60,
@@ -131,7 +163,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-12-02/panel-ltr.json",
+      "artifact_sha256": "850d17ea58944fafddcb413ff5c11a5d9db1687aff3bd02076c6f012191add54",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-12-02/panel-rank-calibration.json",
+      "calibrator_sha256": "73877a881f8af964e1d8bb068fb60d1096bb4774fc2347d81836898b32e7613e",
       "cutoff_date": "2024-12-02T00:00:00",
       "effective_train_cutoff_date": "2024-09-09T00:00:00",
       "lookahead_days": 60,
@@ -139,7 +173,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2024-12-23/panel-ltr.json",
+      "artifact_sha256": "59e3bce7d99a43d4df0b4114f90b7e5c789c41a7dc5d1fdc3d3709998d04bd4c",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2024-12-23/panel-rank-calibration.json",
+      "calibrator_sha256": "9f29090918748b672d0e1fe657fb6188da2dd5893f81b8a098c8377c895d3b53",
       "cutoff_date": "2024-12-23T00:00:00",
       "effective_train_cutoff_date": "2024-09-30T00:00:00",
       "lookahead_days": 60,
@@ -147,7 +183,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-01-13/panel-ltr.json",
+      "artifact_sha256": "adf8b861a459318987c34aab99dc678e437c5af4abafd8f281d455ec3c0b37ca",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-01-13/panel-rank-calibration.json",
+      "calibrator_sha256": "be878eff00dbf5d97e29ff8438a8c6c3c2a4cba915fd5929f2e753f8da2eeff8",
       "cutoff_date": "2025-01-13T00:00:00",
       "effective_train_cutoff_date": "2024-10-21T00:00:00",
       "lookahead_days": 60,
@@ -155,7 +193,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-02-03/panel-ltr.json",
+      "artifact_sha256": "3eb111bb9b7ce6d7b6fdecc7030592a335fce7efe428b7f06c6054c7f029b713",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-02-03/panel-rank-calibration.json",
+      "calibrator_sha256": "a4d5521ab17f341bd8f7ac5336fc2f7edf8550697e9c73364ba67947f5870ccb",
       "cutoff_date": "2025-02-03T00:00:00",
       "effective_train_cutoff_date": "2024-11-11T00:00:00",
       "lookahead_days": 60,
@@ -163,7 +203,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-02-24/panel-ltr.json",
+      "artifact_sha256": "48682051d4fe651e462a7c4cd79c3a739813244bf7ac41a8a233ae3c0ff81960",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-02-24/panel-rank-calibration.json",
+      "calibrator_sha256": "194f83522ec28481289c9657d4f3d741b2718c9f603d9fb47d477bef035414f5",
       "cutoff_date": "2025-02-24T00:00:00",
       "effective_train_cutoff_date": "2024-12-02T00:00:00",
       "lookahead_days": 60,
@@ -171,7 +213,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-03-17/panel-ltr.json",
+      "artifact_sha256": "8e0a0c1c2fa2c8c37c8521046c42e98a0efa1c012bac0be3bd2e49ffafd16948",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-03-17/panel-rank-calibration.json",
+      "calibrator_sha256": "f5a26f0e440dbdd3f30d1849362cf4d12d6f383e494c1daca8e324f6530807a2",
       "cutoff_date": "2025-03-17T00:00:00",
       "effective_train_cutoff_date": "2024-12-23T00:00:00",
       "lookahead_days": 60,
@@ -179,7 +223,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-04-07/panel-ltr.json",
+      "artifact_sha256": "888568ab5c926ebcc2395dc0fe33245496f02ff41bb03c3f5428ab75f873b292",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-04-07/panel-rank-calibration.json",
+      "calibrator_sha256": "487bc38c96ed521ff7d6e7cfd2304e7fe590676de4bf6e632498f7b37bc6a2ee",
       "cutoff_date": "2025-04-07T00:00:00",
       "effective_train_cutoff_date": "2025-01-13T00:00:00",
       "lookahead_days": 60,
@@ -187,7 +233,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-04-28/panel-ltr.json",
+      "artifact_sha256": "b91d01774e774f6424f7fc3bfe823f8e26b1543f51db8045bef3fe6a3cfa17e9",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-04-28/panel-rank-calibration.json",
+      "calibrator_sha256": "0ca6f8e92c99c4aaa9faa55ada4f03233be986bcfec609d3ba12657136be3060",
       "cutoff_date": "2025-04-28T00:00:00",
       "effective_train_cutoff_date": "2025-02-03T00:00:00",
       "lookahead_days": 60,
@@ -195,7 +243,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-05-19/panel-ltr.json",
+      "artifact_sha256": "ccdc461e379db85ff2d4d50403e579fdca6897f39f2b2723f5b47eb4a80e6e22",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-05-19/panel-rank-calibration.json",
+      "calibrator_sha256": "03215a83b177818f65fad61b7af05416de595c24a24b75ee48e3aab0706c5c65",
       "cutoff_date": "2025-05-19T00:00:00",
       "effective_train_cutoff_date": "2025-02-24T00:00:00",
       "lookahead_days": 60,
@@ -203,7 +253,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-06-09/panel-ltr.json",
+      "artifact_sha256": "25ccb372de0d2f0310005e36aa1b46d522a843101fdaa9240375026fb7a68d50",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-06-09/panel-rank-calibration.json",
+      "calibrator_sha256": "2764f0ad0878daf99471fc16397ced9687762956cd767e6db8ef2329a78d84e8",
       "cutoff_date": "2025-06-09T00:00:00",
       "effective_train_cutoff_date": "2025-03-17T00:00:00",
       "lookahead_days": 60,
@@ -211,7 +263,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-06-30/panel-ltr.json",
+      "artifact_sha256": "644f3fc3fe3ab21fca8e45d91be16e2fd8d30261de999fcbd5445b55ceb837f8",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-06-30/panel-rank-calibration.json",
+      "calibrator_sha256": "af4bbf7ce655ec3f7381c8abb39041541f3e0416eed6508eeb950c60f9b6b3bb",
       "cutoff_date": "2025-06-30T00:00:00",
       "effective_train_cutoff_date": "2025-04-07T00:00:00",
       "lookahead_days": 60,
@@ -219,7 +273,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-07-21/panel-ltr.json",
+      "artifact_sha256": "af3b672626492d7d7b83b82e41b7af60598bcd444849d3627aed7ea8f3185aec",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-07-21/panel-rank-calibration.json",
+      "calibrator_sha256": "5704908be4a61837132923ebd4294594b1ccc9fdf3053405fdb2fdb5c544966d",
       "cutoff_date": "2025-07-21T00:00:00",
       "effective_train_cutoff_date": "2025-04-28T00:00:00",
       "lookahead_days": 60,
@@ -227,7 +283,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-08-11/panel-ltr.json",
+      "artifact_sha256": "bad4039ddc23b2a4bcde42a9985d0ba86530f5cf0c5355f746d06d3f636d1821",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-08-11/panel-rank-calibration.json",
+      "calibrator_sha256": "cba257677473b22ba3dd35b73088ea77335db797c16f7d521df087a8d1e7c2bb",
       "cutoff_date": "2025-08-11T00:00:00",
       "effective_train_cutoff_date": "2025-05-19T00:00:00",
       "lookahead_days": 60,
@@ -235,7 +293,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-09-01/panel-ltr.json",
+      "artifact_sha256": "3d5a28672bdb465138d4dd3f3d2fe5735c7b50506c1d1120df8c44856df8d603",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-09-01/panel-rank-calibration.json",
+      "calibrator_sha256": "f1a1cd2d6fdaacbeaaacad7d23418db6994f575fc11168a0b32cda7915093fa4",
       "cutoff_date": "2025-09-01T00:00:00",
       "effective_train_cutoff_date": "2025-06-09T00:00:00",
       "lookahead_days": 60,
@@ -243,7 +303,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-09-22/panel-ltr.json",
+      "artifact_sha256": "734dac17210b3a716f9c6a9c4969af8f47bd36b49bc0dd1704185a89196623aa",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-09-22/panel-rank-calibration.json",
+      "calibrator_sha256": "5b82f6fec1afd9cfef017ed56f5b3988815974367a750a0abab0a0e01ed1afd8",
       "cutoff_date": "2025-09-22T00:00:00",
       "effective_train_cutoff_date": "2025-06-30T00:00:00",
       "lookahead_days": 60,
@@ -251,7 +313,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-10-13/panel-ltr.json",
+      "artifact_sha256": "1b3ad4a2e6f61b276e2a5573502ff6d687f528e3517e0a682831474f665d21bc",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-10-13/panel-rank-calibration.json",
+      "calibrator_sha256": "b2404dd587b9f3f195f5d1acc82318ba8df7295fe855341f2822435d10c5a3bf",
       "cutoff_date": "2025-10-13T00:00:00",
       "effective_train_cutoff_date": "2025-07-21T00:00:00",
       "lookahead_days": 60,
@@ -259,7 +323,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-11-03/panel-ltr.json",
+      "artifact_sha256": "6a70516fc1fd3a83f0432f0e753e520aa9239206ad3febfeb8584a01f7023d72",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-11-03/panel-rank-calibration.json",
+      "calibrator_sha256": "bd533f57a89ea6a484095b9ff35ada867835d56cacf9a25749bc86b250c73921",
       "cutoff_date": "2025-11-03T00:00:00",
       "effective_train_cutoff_date": "2025-08-11T00:00:00",
       "lookahead_days": 60,
@@ -267,7 +333,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-11-24/panel-ltr.json",
+      "artifact_sha256": "faa8a3bfd8dc3d69297be82c8e101905d1a7e0fdcaeacaf508fc37feb4b619b8",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-11-24/panel-rank-calibration.json",
+      "calibrator_sha256": "3c7f2bdcf93a3091d209f473da79fe8329639669ed2e5e6bd0ad150a627b5600",
       "cutoff_date": "2025-11-24T00:00:00",
       "effective_train_cutoff_date": "2025-09-01T00:00:00",
       "lookahead_days": 60,
@@ -275,7 +343,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2025-12-15/panel-ltr.json",
+      "artifact_sha256": "f5f147828affe32f97662d77721c264c735cce4110dcf3122a428101ff7084df",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2025-12-15/panel-rank-calibration.json",
+      "calibrator_sha256": "25f927d5bbab56685271c7cc36f505e6d0607bb57f69f167e7dc30a551e3cbbd",
       "cutoff_date": "2025-12-15T00:00:00",
       "effective_train_cutoff_date": "2025-09-22T00:00:00",
       "lookahead_days": 60,
@@ -283,7 +353,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2026-01-05/panel-ltr.json",
+      "artifact_sha256": "5438501dd5d298c0c80b7fc6b23af8fa7d2143974f6c333aaa0a2dbedd82a166",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2026-01-05/panel-rank-calibration.json",
+      "calibrator_sha256": "69c5bd6f3f4c0f451e7ed4608497bc6e71d90610855b91fd5e553c694ed3b3d4",
       "cutoff_date": "2026-01-05T00:00:00",
       "effective_train_cutoff_date": "2025-10-13T00:00:00",
       "lookahead_days": 60,
@@ -291,7 +363,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2026-01-26/panel-ltr.json",
+      "artifact_sha256": "2306083cc652bc0adcdfde8acd3b12ada76c94a4a461dc280f564e28702ff63f",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2026-01-26/panel-rank-calibration.json",
+      "calibrator_sha256": "648b502354934c54dc03de1680fd40bf9f88ccfe3c7a87ac0f8933f15c9ed276",
       "cutoff_date": "2026-01-26T00:00:00",
       "effective_train_cutoff_date": "2025-11-03T00:00:00",
       "lookahead_days": 60,
@@ -299,7 +373,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2026-02-16/panel-ltr.json",
+      "artifact_sha256": "6dc7ffd66defc517d41d1ec99714b1293b9913ae4649516801997b5ef95b4b95",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2026-02-16/panel-rank-calibration.json",
+      "calibrator_sha256": "740ee8225a36569bda963b1598e12f237afd0b5e65f90a2623ed03835848a6a3",
       "cutoff_date": "2026-02-16T00:00:00",
       "effective_train_cutoff_date": "2025-11-24T00:00:00",
       "lookahead_days": 60,
@@ -307,7 +383,9 @@
     },
     {
       "artifact_uri": "artifacts/walkforward_v2_20260602/2026-03-09/panel-ltr.json",
+      "artifact_sha256": "fd4116d70d919f6175c613eb0eea761de6e422ff0efa50a00fd79b480d9a14e7",
       "calibrator_uri": "artifacts/walkforward_v2_20260602/2026-03-09/panel-rank-calibration.json",
+      "calibrator_sha256": "982fb6be7ddbb9e29b4293b38e4d0feb75b234bbc0e3326a901cfb0f3e997370",
       "cutoff_date": "2026-03-09T00:00:00",
       "effective_train_cutoff_date": "2025-12-15T00:00:00",
       "lookahead_days": 60,

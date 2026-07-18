@@ -4,234 +4,273 @@
   "retrains": [
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
+      "artifact_sha256": "e11f5f0922dad599ea81c944a64006520ef8c176ec7afed987e2b7d97dd9cba8",
       "cutoff_date": "2024-01-01T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-01-22/panel-ltr.json",
+      "artifact_sha256": "33d7ebf9a03fcfa7ba001fdf948906bd964164adc6d72609e79d088abde29f76",
       "cutoff_date": "2024-01-22T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-02-12/panel-ltr.json",
+      "artifact_sha256": "cbb9e4cea859219becdb1671b8d79a7c29a38264c765156260a1ef5de978d50c",
       "cutoff_date": "2024-02-12T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-03-04/panel-ltr.json",
+      "artifact_sha256": "f7908e72bb257e6660ef7c61942e7de520233f1a750dc671aeef2ee716dcd976",
       "cutoff_date": "2024-03-04T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-03-25/panel-ltr.json",
+      "artifact_sha256": "c5df7ce24faf1c969ab0aa86b24a05ee8a7b5a6c5d75a457c0d061dec3a5cc28",
       "cutoff_date": "2024-03-25T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-04-15/panel-ltr.json",
+      "artifact_sha256": "0eaa767b65e96065f1defe6cc78795ee5cde5dae0466d14d4eb719ffb43333e7",
       "cutoff_date": "2024-04-15T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-05-06/panel-ltr.json",
+      "artifact_sha256": "30a6995d980f778c25e5b20a0eec28ee7fdcb6e5b91b53630b1fbd3b55f14dcd",
       "cutoff_date": "2024-05-06T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-05-27/panel-ltr.json",
+      "artifact_sha256": "a42b208af965944a93197e5680482a31afbd785aa554377c3aae1cc7be8547ca",
       "cutoff_date": "2024-05-27T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-06-17/panel-ltr.json",
+      "artifact_sha256": "89f6b156b7c290639c3353e48d06875f416263e529adf2a78f9c50d538d912c9",
       "cutoff_date": "2024-06-17T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-07-08/panel-ltr.json",
+      "artifact_sha256": "b1ac912a50cfa6e34b6cad3515c609f335261c00326683ef01a5a4182e4fe46a",
       "cutoff_date": "2024-07-08T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-07-29/panel-ltr.json",
+      "artifact_sha256": "666d4452224e5502873e9696bd9c69328687380c3744be1a307c2f6172182aba",
       "cutoff_date": "2024-07-29T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-08-19/panel-ltr.json",
+      "artifact_sha256": "63792c2dfa6d5c81a9e88d64b13300de6ec3acffc08e7991d53f846a0f2c9e90",
       "cutoff_date": "2024-08-19T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-09-09/panel-ltr.json",
+      "artifact_sha256": "e45972a861b92da82e19e266eeba5ffd58cb258af25e79835e1a9af970dd7a48",
       "cutoff_date": "2024-09-09T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-09-30/panel-ltr.json",
+      "artifact_sha256": "6f52635eaaf212e0cc3ddfaa2e3d1f1c3e7450f7078705a56c96657b7000664d",
       "cutoff_date": "2024-09-30T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-10-21/panel-ltr.json",
+      "artifact_sha256": "95716744d50409bf91c1367a19b149a6ab45997eeb6365b6164f85015b8b8593",
       "cutoff_date": "2024-10-21T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-11-11/panel-ltr.json",
+      "artifact_sha256": "1158f9748e6a0ff160018bc4a469501c3d0c4e4da42dbb38f5b270f954258482",
       "cutoff_date": "2024-11-11T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-12-02/panel-ltr.json",
+      "artifact_sha256": "94f0a862dca61cd96dde529a6ea16edbf891cf2f000b04741cc1e09904548c42",
       "cutoff_date": "2024-12-02T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-12-23/panel-ltr.json",
+      "artifact_sha256": "efae75ccf7d9f7ff5feb5da24fb562d60651f3fd811fed17837b600f9d139e5c",
       "cutoff_date": "2024-12-23T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-01-13/panel-ltr.json",
+      "artifact_sha256": "56f2d0fe5683948d331ad390f34614819f58a5fd40e59eebf3a45f872a3010f9",
       "cutoff_date": "2025-01-13T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-02-03/panel-ltr.json",
+      "artifact_sha256": "72ff30a93494fbd4ee9560ae9129d72f04f7841c8e1d249fde0271c489f2402d",
       "cutoff_date": "2025-02-03T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-02-24/panel-ltr.json",
+      "artifact_sha256": "973e2d0fa75173188a03892c0bf09bad98bf053c935f3a97934b3fb623f7f3a6",
       "cutoff_date": "2025-02-24T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-03-17/panel-ltr.json",
+      "artifact_sha256": "ef38e536abd6abeb8ba39be81647f1b8c4d106b65a444d120e8cc4899a09a143",
       "cutoff_date": "2025-03-17T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-04-07/panel-ltr.json",
+      "artifact_sha256": "75cecab7061c5c2bba5ff701c92a958eb04a94239a74db94e2f31607fc20a86a",
       "cutoff_date": "2025-04-07T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-04-28/panel-ltr.json",
+      "artifact_sha256": "891c394dbac306113731336eb73a83dafbe44c7c39fa11037528f4f2bb74955d",
       "cutoff_date": "2025-04-28T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-05-19/panel-ltr.json",
+      "artifact_sha256": "d0c7238fc8d4c926bd6858da982925c773d048c536db5295fcf8a8ef3c10bc2b",
       "cutoff_date": "2025-05-19T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-06-09/panel-ltr.json",
+      "artifact_sha256": "06716f0046c3abbcfa8ce0225ea1e5048eae9a6b8a68fe404fea0d4efec4730c",
       "cutoff_date": "2025-06-09T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-06-30/panel-ltr.json",
+      "artifact_sha256": "4277e8b90a1c7aa677b12e00464eb1509c2d6906978b49866bf61d6824dc555b",
       "cutoff_date": "2025-06-30T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-07-21/panel-ltr.json",
+      "artifact_sha256": "c015296b8ac1802d4362b99ac854991430aa25d40149d8f40b6d4f3183650dbe",
       "cutoff_date": "2025-07-21T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-08-11/panel-ltr.json",
+      "artifact_sha256": "33ba9b5f7a4175fee4ddc0a79f4a40c0b7a82c0611cdfebec49a14ef3e2068ed",
       "cutoff_date": "2025-08-11T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-09-01/panel-ltr.json",
+      "artifact_sha256": "3e515c06c20303dcce7b8f562470d7271b84f0db3b2ab308f26dc02e592d8497",
       "cutoff_date": "2025-09-01T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-09-22/panel-ltr.json",
+      "artifact_sha256": "eae5d651ecd917c0cd5bf10631ece84d44f507672848703cd82fd2f6af3843f9",
       "cutoff_date": "2025-09-22T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-10-13/panel-ltr.json",
+      "artifact_sha256": "8109169271a394c24e9e2f25c663d184ba0077eaaf35966f6ca67e15f7e0c65d",
       "cutoff_date": "2025-10-13T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-11-03/panel-ltr.json",
+      "artifact_sha256": "604e365990f83d0e9f790478dec72f2ddbf141434126dbd940e720199ab93fb7",
       "cutoff_date": "2025-11-03T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-11-24/panel-ltr.json",
+      "artifact_sha256": "8500271a16131a614beed1680ddaf86fd68478782b8655926995eaca7023b6bc",
       "cutoff_date": "2025-11-24T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-12-15/panel-ltr.json",
+      "artifact_sha256": "41b95f5648581cab8d53cac6b4a60adda7a8a2ad67f0ace83be82104bdbba64d",
       "cutoff_date": "2025-12-15T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-01-05/panel-ltr.json",
+      "artifact_sha256": "36d66d8b55089db658b98b070e8b7b0709138ffb01558e0e6d4730d9e547f862",
       "cutoff_date": "2026-01-05T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-01-26/panel-ltr.json",
+      "artifact_sha256": "558dcbe4676cfb93dc7deafc298c69402c23dce3369950ded31971d0838273ec",
       "cutoff_date": "2026-01-26T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-02-16/panel-ltr.json",
+      "artifact_sha256": "925444c16018e1b9b822ed25100cde1b7cefc8dde8df7bca59718a18d504807f",
       "cutoff_date": "2026-02-16T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
     },
     {
       "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-03-09/panel-ltr.json",
+      "artifact_sha256": "2ba9279b26a1036cdefe28ba9f5adea5ad0a02112d70ab1838acc30723683a8d",
       "cutoff_date": "2026-03-09T00:00:00",
       "trained_date": "2026-05-10T00:00:00",
       "lookahead_days": 60
