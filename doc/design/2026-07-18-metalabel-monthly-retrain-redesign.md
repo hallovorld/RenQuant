@@ -1,4 +1,9 @@
-# Design: leakage-correct, consumer-gated monthly meta-label retrain (task #73)
+# Design: leakage-correct, consumer-gated monthly meta-label retrain
+
+Task refs: session tracker #73; the on-disk diagnosis
+(`doc/progress/2026-07-17-metalabel-diagnosis.md`) and the sentinel ack
+ledger reference the same work as task #75 — this RFC supersedes both
+references (r2 nit).
 
 Date: 2026-07-18
 Status: RFC — design review required before any implementation
@@ -16,11 +21,19 @@ CORRECTLY refusing a mis-designed job.
    scorer via the legacy static path. `_assert_legacy_no_leakage`
    compares the scorer's selection-cutoff anchor (~2026-06-21) + 60
    business days against the sim's first bar (2025-05-18) and raises —
-   correctly: every snapshot feature (panel_score_current/at_entry/
-   delta, rank_among_holdings, μ/σ) would be produced by a model that
-   has seen the future of the window it replays. The LABELS are clean
-   (realized forward returns for past decisions, fully-realized windows
-   by the T-60d buffer); the contamination is the FEATURE side.
+   correctly: the scorer-derived snapshot features (panel_score_current/
+   at_entry/delta, rank_among_holdings, and the calibrated μ) would be
+   produced by a model that has seen the future of the window it
+   replays. The LABELS are clean (realized forward returns for past
+   decisions, fully-realized windows by the T-60d buffer); the
+   contamination is the FEATURE side. Honest scope (r2 — review P2-3):
+   the walk-forward path fixes the SCORER/CALIBRATOR-derived features;
+   regime features come from a static GMM sim artifact (2023-12-31) —
+   stale-but-not-leaky, declared as-is; the per-ticker tournament heads
+   and the ngboost σ head have NO as-of guard and are RESIDUAL as-of
+   gaps, disclosed here and inherited as caveats by any future
+   consumer re-arm design. This RFC does not claim "every snapshot
+   feature" is point-in-time.
 2. **The as-of machinery already exists and was the ORIGINAL
    methodology.** `WalkForwardModelLoader.model_as_of(today)` (pipeline
    `kernel/walk_forward/loader.py`) selects, per sim bar, the newest
@@ -74,25 +87,64 @@ state is "skipped by design" — visible, cheap, honest.
 When (and only when) the consumer gate passes:
 
 - The snapshot config sets `walkforward.enabled=true` and OVERRIDES
-  `walkforward.manifest_path` to the real corpus manifest
-  (`artifacts/sim/walkforward_manifest.json`), never inheriting the
-  prod pointer (dead `dropsenti_v3` reference — trap 2a).
-- `fail_on_no_model` stays true: a sim bar with no vintage whose
-  `cutoff_date < bar` is a hard failure, not a silent fallback.
+  `walkforward.manifest_path` to the CALIBRATOR-BOUND corpus manifest
+  `artifacts/sim/walkforward_manifest_v2_20260602.json` (r2 — review
+  P1-1: the plain `walkforward_manifest.json` twin has 0/39
+  `calibrator_uri` entries, and with the pinned
+  `global_calibration.enabled=true` the `calibrator_as_of` load
+  hard-raises at the first scored bar; the v2 manifest carries the same
+  39 cutoffs with calibrator bindings, files verified on disk). The
+  prod pointer (dead `dropsenti_v3` reference — trap 2a) is never
+  inherited.
+- **Digest-stamping prerequisite (r2 — review P1-2, the 2026-09-01
+  time bomb):** `kernel/manifest_uri_resolver.py` enforces
+  `ARTIFACT_DIGEST_REQUIRED_AFTER = 2026-09-01`, and BOTH corpus
+  manifests are currently 0/39 `artifact_sha256` — unfixed, this
+  redesign re-creates the chronic failure ~6 weeks after landing.
+  Implementation therefore includes a mechanical digest-stamping pass
+  over the v2 manifest (content sha256 per referenced artifact,
+  stamped via the normal reviewed path), and AC-5 proves the resolver
+  accepts the stamped manifest with the enforcement date forced past
+  2026-09-01 in test.
+- **Eligibility predicate stated correctly (r2 — review P2-1):** the
+  loader's actual rule is `feature_cutoff + 60 business days < bar`
+  (the label-lookahead embargo), NOT bare `cutoff_date < bar`. Every
+  bar is thus served by a vintage ≥ 60bd stale BY DESIGN — that is the
+  embargo, not a defect; §2.3's freshness contract bounds EXTRA
+  staleness beyond it.
+- **Scorer-family parity (r2 — review P2-2):** the job asserts the
+  corpus vintages' scorer family maps to the snapshot config's pinned
+  scorer family (explicit allowlist mapping, e.g.
+  `panel_ltr_xgboost ↔ xgb`); mismatch fails closed with a named
+  error. This is also the check that surfaces training/serving family
+  skew (live tree has drifted to `hf_patchtst`) for any future
+  re-armed consumer.
+- `fail_on_no_model` stays true: a sim bar with no ELIGIBLE vintage is
+  a hard failure, not a silent fallback.
 - The legacy static-load path is NOT used; `_assert_legacy_no_leakage`
-  never fires because per-bar vintages satisfy the cutoff ordering by
-  construction. The guard itself is untouched.
+  never fires because per-bar vintages satisfy the embargo ordering by
+  construction (review-verified: the legacy assert lives only on the
+  non-WF branch). The guard itself is untouched.
 
-### 2.3 Corpus-coverage contract (trap 2b)
+### 2.3 Corpus-coverage contract (trap 2b, r2 math)
 
-The job asserts, before running, that the corpus's newest
-`cutoff_date ≥ TRAIN_END − max_vintage_staleness` (proposed: 35 days,
-one 21-day cadence step + margin). If the corpus is staler, the job
-FAILS CLOSED with `wf corpus stale for window` naming the newest cutoff
-— it does not train on features from a silently stale vintage. This
-makes the WF-corpus refresh (weekly_wf_promote) an explicit dependency;
-the corpus being maintained is exactly the condition under which
-"as-of" is meaningful for recent windows.
+Because the eligibility predicate is `feature_cutoff + 60bd < bar`
+(§2.2), the newest vintage that can serve the window's LAST bar must
+have `feature_cutoff < TRAIN_END − 60bd`. The job therefore asserts,
+before running: newest corpus `feature_cutoff ≥ TRAIN_END − 60bd −
+35d` (35d = one 21-day cadence step + margin of EXTRA staleness beyond
+the structural embargo). Staler ⇒ FAIL CLOSED with
+`wf corpus stale for window` naming the newest cutoff — never train on
+features from a silently stale vintage.
+
+**Stated plainly (r2 — review P2-4): this assert FAILS TODAY.** The
+corpus's newest cutoff is 2026-03-09, and its refresh dependency
+(weekly_wf_promote) is chronically rejecting — the known WF-gate root
+(G4 research territory). So even with this RFC landed, the §2.2 path
+cannot run until the corpus refreshes; the job's steady state remains
+the §2.1 consumer-gated skip, which is the honest state. Re-arming the
+meta-label consumer is DOUBLY gated: the consumer decision AND corpus
+freshness. Neither gate is this RFC's to open.
 
 ### 2.4 What is unchanged
 
@@ -119,21 +171,35 @@ snapshot-CONFIG construction inside the wrapper script plus the §2.1/
   in <5s, writes no artifact, and the next sentinel scan shows the
   launchd row green with no ack needed.
 - AC-2: with a test config enabling the consumer, the snapshot sim runs
-  the walk-forward path end-to-end over a 3-month test window with NO
-  leakage-guard firing, and per-bar scorer selection is verifiably
-  as-of (log shows monotone cutoff_dates ≤ each bar).
-- AC-3: corpus-staleness injection (pointing at a manifest whose newest
-  cutoff is >35d before TRAIN_END) fails closed with the named error.
+  the walk-forward path end-to-end over a test window with NO
+  leakage-guard firing, and per-bar selection verifiably satisfies the
+  TRUE predicate: every bar's serving vintage has
+  `feature_cutoff + 60bd < bar` (r2 — not bare cutoff ordering), with
+  calibrator bindings resolving at every scored bar (v2 manifest).
+- AC-3: corpus-staleness injection (newest feature_cutoff older than
+  `TRAIN_END − 60bd − 35d`) fails closed with the named error.
 - AC-4: the dead `dropsenti_v3` inheritance path is proven unreachable
   (snapshot config always carries the explicit override).
+- AC-5: the digest-stamped v2 manifest passes the resolver's
+  `ARTIFACT_DIGEST_REQUIRED_AFTER` enforcement with the date forced
+  past 2026-09-01 in test (no time bomb).
+- AC-6: scorer-family mismatch injection (corpus family ≠ pinned
+  family) fails closed with the named error.
 
 ## 5. Implementation plan (post-approval)
 
 1. Umbrella PR: `scripts/monthly_meta_label_retrain.sh` — consumer gate
-   (step 0), walk-forward snapshot config construction, corpus-coverage
-   assertion. Shell-only; no subrepo changes.
-2. Orchestrator PR: retire the sentinel ack row after the first green
-   run; add the staleness error string to the sentinel's known-loud
-   patterns.
-3. The consumer re-arm decision: separate design PR (out of scope),
-   tracked as its own task with the (a)/(b)/(c) options above.
+   (step 0), walk-forward snapshot config construction (v2 manifest
+   override), corpus-coverage assertion (§2.3 math), scorer-family
+   parity assertion. Shell-only; no subrepo changes.
+2. Digest-stamping pass over the v2 corpus manifest (content sha256 per
+   referenced artifact) via the normal reviewed path — MUST land before
+   2026-09-01 regardless of this job's state (the resolver enforcement
+   hits every consumer of unstamped manifests, not just this one; AC-5).
+3. Orchestrator PR: retire the sentinel ack row after the first green
+   run; add the staleness + family-mismatch error strings to the
+   sentinel's known-loud patterns.
+4. The consumer re-arm decision: separate design PR (out of scope),
+   tracked as its own task with the (a)/(b)/(c) options above; it
+   inherits the §1.1 residual as-of caveats (regime/per-ticker/σ heads)
+   and the §2.3 double gate.
