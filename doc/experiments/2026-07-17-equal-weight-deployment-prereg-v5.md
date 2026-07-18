@@ -232,12 +232,16 @@ confidence interval has unknown coverage.
 MBB procedure (frozen):
 1. Compute the daily paired active return series
    `d_1, d_2, …, d_T` (T = total sessions).
-2. Set MBB block length `b = ceil(1.75 * max_holding_days)`, where
-   `max_holding_days` is the maximum single-name holding period observed
-   in A1 or B during the evaluation, capped at 40 sessions. This ensures
+2. Use the FROZEN numeric MBB block length `b` from the activation
+   commit — computed at activation via the registered rule
+   `b = ceil(1.75 * max_holding_days)` (capped at 40 sessions) applied
+   to PILOT-observed holding periods (§4.7), validated by the §4.6
+   simulation, and used here VERBATIM. No re-derivation from
+   terminal-window data: `max_holding_days` observed during the terminal
+   evaluation never enters this analysis (an analysis-time b would be a
+   researcher degree of freedom at verdict time). The rule ensures
    blocks span the dominant autocorrelation induced by overlapping
-   holdings. The 1.75 multiplier and 40-session cap are frozen before
-   activation.
+   holdings.
 3. Draw 10,000 bootstrap samples: each sample draws `ceil(T/b)`
    overlapping blocks of length `b` with replacement from positions
    `{1, …, T-b+1}`, concatenates, and trims to length `T`.
@@ -353,10 +357,12 @@ tax differ because trades differ (§3.2).
 
 ### 4.6 Pre-activation simulation (power and type-I validation)
 
-**Purpose.** Before the first prospective observation, demonstrate that
-the chosen inference method (MBB, §4.1) controls the false-positive rate
-of the DEPLOYMENT rule and has adequate power at the planning effect
-under realistic dependence. If this simulation fails, the recorded
+**Purpose.** After the pilot is sealed and before the first TERMINAL
+observation, demonstrate that the chosen inference method (MBB, §4.1)
+controls the false-positive rate of the DEPLOYMENT rule and has adequate
+power at the planning effect under realistic dependence — the simulation
+is fitted FROM the sealed pilot (§4.7), so it necessarily runs between
+the two stages. If this simulation fails, the recorded
 outcome is `INFEASIBLE AT CONSERVATIVE PILOT NOISE` — the experiment
 does not start with unvalidated operating characteristics, and no
 parameter is walked to force feasibility.
@@ -645,9 +651,11 @@ feasibility_hit  : bool     # true if arm hit its feasibility ceiling
 ## 7. Pre-registration fields (filled at activation)
 
 This document is an RFC until the activation commit fills ALL fields
-below and pushes to main. No prospective observation may begin before
-the activation commit. Any field left as TBD at activation is a protocol
-violation that invalidates all subsequent data.
+below and pushes to main. No TERMINAL observation may begin before the
+activation commit; the calibration pilot is authorized solely and
+sufficiently by the pilot-registration commit (§4.7 two-stage start).
+Any field left as TBD at activation is a protocol violation that
+invalidates all subsequent data.
 
 ```yaml
 activation:
