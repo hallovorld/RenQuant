@@ -7,15 +7,19 @@ Three pins:
    is well-formed and points at the flat pair's own directory (the RFC
    §2.1 "alongside the flat files" layout), which still contains the pair
    — the flat pair stays authoritative in P0;
-2. the store paths can never enter the git index (`.gitignore` carries
-   the three store patterns — pre-empting census blocker B1);
+2. the store paths are ABSENT FROM THE GIT INDEX (the load-bearing
+   check: `git ls-files` on the store paths must be empty — `.gitignore`
+   neither evicts already-tracked entries nor stops `git add -f`, so the
+   ignore patterns are ergonomics, not proof) and `.gitignore` carries
+   the three store patterns — together pre-empting census blocker B1;
 3. ZERO serving change / revert-cleanliness: no serving-surface code
    (kernel, 104 kernel/adapters/training_panel, scripts, dagster) refers
    to the bundle store — reverting the P0 commit therefore restores the
    previous serving behavior with no artifact surgery, because nothing
    that serves ever learned the store exists.
 
-File-based only: no git subprocesses, no network, no store creation.
+No network, no store creation. One read-only git subprocess (`ls-files`)
+for the index assertion; everything else file-based.
 """
 from __future__ import annotations
 
@@ -108,4 +112,32 @@ def test_no_serving_surface_references_the_bundle_store() -> None:
     assert not offenders, (
         "P0 forbids any reader/writer redirection — serving surfaces "
         "referencing the bundle store:\n" + "\n".join(sorted(offenders))
+    )
+
+
+def test_store_paths_absent_from_git_index() -> None:
+    """The load-bearing B1 pre-emption: no store path is git-tracked.
+
+    `.gitignore` cannot evict already-tracked entries and does not stop
+    `git add -f`; only the index itself proves the store is outside
+    git's write authority. Regression guard: if any store path ever
+    lands in the index, this fails loudly.
+    """
+    import subprocess
+
+    store_paths = [
+        "backtesting/renquant_104/artifacts/prod/bundles",
+        "backtesting/renquant_104/artifacts/prod/ACTIVE",
+        "backtesting/renquant_104/artifacts/prod/ACTIVE.tmp",
+    ]
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "--", *store_paths],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tracked = [line for line in out.stdout.splitlines() if line.strip()]
+    assert not tracked, (
+        "bundle-store paths are git-tracked (census blocker B1 — git as an "
+        "unmediated writer):\n" + "\n".join(tracked)
     )
