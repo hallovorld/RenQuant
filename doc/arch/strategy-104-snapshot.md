@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: 36d2fc6522e13718c58d5ee9fd342599636739036428860a526aa4f9b8d1acb4 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
+Source fingerprint: ad55b653e7ddb85612b8a133b2d333a62eb3a0a1b5b3a320561bb9967ba5d129 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
 
 ## Provenance
 
@@ -53,13 +53,13 @@ Source fingerprint: 36d2fc6522e13718c58d5ee9fd342599636739036428860a526aa4f9b8d1
 | | |
 |---|---|
 | Artifact | `artifacts/prod/panel-rank-calibration.json` |
-| Artifact file fingerprint | sha256:d2b4d6ab197f0503 |
+| Artifact file fingerprint | sha256:9edfa1486697d5f3 |
 | kind | global_panel_calibration |
 | trained_date | 2026-05-21 |
 | Method | platt |
 | pool_ic (stamped) | +0.1149 |
 | lookahead_days | 60 |
-| Bound scorer content fingerprint | sha256:6fc9985e6e53e3883a13d572b1e11b7dea484e14df23819dab5474f2cd592372 |
+| Bound scorer content fingerprint | sha256:9c4bbd74b51adc17906ef79702d6cffc96fca9f8e943c33a27ec5adf0b83f686 |
 | Fit data window | unknown (field absent) |
 
 ## In-run shadow scorers (readonly, same run)
@@ -150,7 +150,7 @@ Source fingerprint: 36d2fc6522e13718c58d5ee9fd342599636739036428860a526aa4f9b8d1
 | renquant-common | main | `6f09cb99ae47` | bootstrapped |
 | renquant-execution | main | `c41639840b2c` | bootstrapped |
 | renquant-model | main | `5ef1c2d94f64` | active |
-| renquant-orchestrator | main | `28b1d2baf2c7` | active |
+| renquant-orchestrator | main | `8c0acd5f58ce` | active |
 | renquant-pipeline | main | `d32f7017ff05` | bootstrapped |
 | renquant-strategy-104 | main | `082dccd21584` | bootstrapped |
 
@@ -160,9 +160,9 @@ Source fingerprint: 36d2fc6522e13718c58d5ee9fd342599636739036428860a526aa4f9b8d1
 - `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:29aedd581e88c71d
 - `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
-- `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — sha256:d2b4d6ab197f0503
+- `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — sha256:9edfa1486697d5f3
 - `backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — sha256:bc3b8a8f803e4685
-- `subrepos.lock.json` — sha256:63cd4b27e562c966
+- `subrepos.lock.json` — sha256:bd5e251ad48482bd
 
 <!-- snapshot-machine-block
 {
@@ -179,9 +179,9 @@ Source fingerprint: 36d2fc6522e13718c58d5ee9fd342599636739036428860a526aa4f9b8d1
   ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:29aedd581e88c71d",
   "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
-  "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": "sha256:d2b4d6ab197f0503",
+  "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": "sha256:9edfa1486697d5f3",
   "backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": "sha256:bc3b8a8f803e4685",
-  "subrepos.lock.json": "sha256:63cd4b27e562c966"
+  "subrepos.lock.json": "sha256:bd5e251ad48482bd"
  },
  "strategy_104_pin": "082dccd21584733af57c33e95851bf3a69b21019"
 }
