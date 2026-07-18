@@ -39,18 +39,31 @@ Not derived from the paired data (frozen before the blinded pilot).
 Strictly above MEE by design: the study is sized to detect an effect
 WORTH ACTING ON, not the bare materiality line (sizing power at the
 pass line was the v3 structural error — power there is ≈ α by
-coverage). 6 bps ≈ 15% annualized is the D6-magnitude effect
-(equal-weight arm's +9.3% annualized over governor arms, adjusted down
-for the exposure-matched construction and cost symmetry of the v5
-arms): if the D6 signal is real at even ~2/3 strength, the experiment
-should find it with power ≥ 0.80; if the true effect is materially
-below PE, the experiment may correctly fail to confirm — and a
-LB > MEE outcome remains decisive on its own terms.
+coverage). PE = 6 bps = **2 × MEE**, the decisively-actionable planning
+multiple: an effect at twice the materiality threshold clears the
+deployment rule with margin and justifies the regime switch without
+re-litigation.
+
+**The D6 relation, stated honestly (r2 — corrects an arithmetic error
+caught in review):** D6's +9.3% annualized ÷ 250 sessions =
+**3.72 bps/session** — so PE = 6 sits ~1.6× ABOVE the D6 point
+estimate, and D6 is only ~1.24× MEE. Consequence, accepted as a design
+tradeoff: if the true effect is exactly D6-sized, the study has LESS
+than 0.80 power at it and may correctly return a non-confirmation —
+that is the honest cost of not inflating T (power ≥ 0.80 at
+3.72 bps/session would demand a substantially longer horizon at any
+plausible σ_d per the #485 curves). The experiment is built to confirm
+effects decisively worth deploying, not to rescue borderline-material
+ones; a true-D6-sized effect that achieves LB > MEE anyway remains a
+valid GO on its own terms. The earlier draft's "D6 at ~2/3 strength"
+detectability claim rested on a unit slip (reading 9.3%/yr as
+~9.3 bps/session) and is retracted.
 
 ## Consistency checks
 
 - MEE < PE (3 < 6), both frozen before pilot; neither may be revised
-  except by a NEW amendment with fresh rationale (v5 §4.6 step 4).
+  except by a NEW amendment with fresh rationale AND a NEW pilot
+  (v5 §4.6 step 4 — the invalidated pilot is never reused).
 - The deployment rule (LB90 > MEE) and the power target (≥ 0.80 at PE)
   reference exactly these constants; the verdict schema carries both.
 - If the pilot-calibrated noise makes power ≥ 0.80 at PE infeasible
