@@ -1,0 +1,5 @@
+{
+  "_comment": "AC4 migration P0 (census doc/design/2026-07-18-ac4-migration-census.md §6; RFC #492 §2.1): the DECLARED real root of the transactional bundle store for the 104 serving pair. The store stands up ALONGSIDE the flat pair (bundles/ + ACTIVE under this root, RFC §2.1 layout) and is resolved by renquant_artifacts.bundle_store_location (precedence: explicit --store-root > RQ_BUNDLE_STORE_ROOT env > this file under $RQ_ROOT). Relative store_root is joined onto the umbrella checkout root. P0 declares the location only — nothing serves from it; the flat pair stays authoritative until P2/P3. Store paths are gitignored (never in the git index — pre-empts census blocker B1). Changing this value is a reviewed deployment change.",
+  "schema_version": 1,
+  "store_root": "backtesting/renquant_104/artifacts/prod"
+}
