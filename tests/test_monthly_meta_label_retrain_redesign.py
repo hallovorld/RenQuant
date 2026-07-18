@@ -260,6 +260,28 @@ def test_ac1_gate_treats_absent_meta_label_block_as_dark(tmp_path: Path) -> None
     assert SKIP_LINE in proc.stdout
 
 
+@pytest.mark.parametrize("malformed_enabled", ["false", "true", 0, 1, None])
+def test_ac1_gate_rejects_non_boolean_enabled_without_training(
+    tmp_path: Path, malformed_enabled: object
+) -> None:
+    """Only JSON ``true`` can arm the consumer; malformed config fails closed."""
+    cfg = {"ranking": {"meta_label": {"enabled": malformed_enabled}}}
+    sandbox, env = _build_sandbox(tmp_path, cfg)
+
+    proc = _run(sandbox, env)
+
+    assert proc.returncode != 0
+    assert "must be a JSON boolean" in proc.stderr
+    assert "invalid or unreadable for consumer gate" in (
+        tmp_path / "curl_args.log"
+    ).read_text(encoding="utf-8")
+    snapshot = (
+        sandbox / "backtesting" / "renquant_104"
+        / "strategy_config.sim_monthly_retrain_snapshot.json"
+    )
+    assert not snapshot.exists(), "malformed gate must stop before snapshot/sim work"
+
+
 # ---------------------------------------------------------------------------
 # AC-3 — corpus-coverage assert (§2.3)
 # ---------------------------------------------------------------------------
