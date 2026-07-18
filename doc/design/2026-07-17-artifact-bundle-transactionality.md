@@ -130,9 +130,15 @@ renquant-pipeline exposes a VERSIONED PUBLIC API (new module
 `renquant_pipeline.bundle_contract`): `validate_pair(manifest, member_paths)
 -> Verdict` — internally the same logic as the runtime loader's matcher,
 exported deliberately (the private `_assert_calibrator_matches_scorer` is
-NOT imported by umbrella code; finding 5). The pipeline reader and the
-umbrella writer call the SAME public function, and a contract fixture in
-renquant-common pins the verdict semantics both sides test against.
+NOT imported by umbrella code; finding 5). Call sites (r4 — single write
+authority, no dual-authority residue): the artifacts-owned PUBLISHER
+invokes this validator at §2.3 step 6 BEFORE publication; the pipeline
+READER invokes it on resolution (§2.6). The umbrella's cache/
+materialization has NO write path and therefore no validator call site.
+A contract fixture in renquant-common pins the verdict semantics both
+sides test against, and the §4 integration suite proves an
+umbrella-local attempted publication is rejected — or has no available
+API to attempt at all.
 
 ### 2.6 Reader protocol and GC (race-defined)
 
@@ -147,10 +153,15 @@ therefore deletes a bundle ONLY if (a) it is not the ACTIVE target, (b)
 not an ancestor within the rollback window, and (c) NO retained run
 bundle references it — determined by querying the run-bundle store for
 the bundle_id before delete, with no time cutoff. Run-bundle retention
-itself is the single knob: bundles live exactly as long as any run that
-used them remains auditable. The GC acceptance test proves this by
-constructing an old-run reference and demonstrating the bundle survives
-GC while an unreferenced sibling is collected. GC serializes on the store
+itself is the single knob, and the hierarchy is stated here ONCE (r4):
+only after a run bundle is deliberately expired under that explicit
+retention policy does its referenced bundle become GC-eligible, and then
+only if it is also non-active and outside the rollback ancestry. Bundle
+GC has NO independent time or count cutoff anywhere in this design. The
+GC acceptance test exercises the full hierarchy: construct an old-run
+reference and prove the bundle survives GC while an unreferenced sibling
+is collected; then expire that run bundle under the retention policy and
+prove the same bundle becomes collectable. GC serializes on the store
 flock; unlink-after-open keeps a mid-read dirfd valid on POSIX. GC
 deletions are operation-log records.
 
@@ -185,8 +196,11 @@ invalid-schema/extra-member/missing-member injection; stale-pointer
 rollback (generation regression must be detected and refused without
 --rollback-to); break-glass path leaves record + triggers sentinel;
 run-bundle replay: resolve a 30-day-old run's recorded
-{bundle_id, digests} against the archive and re-verify. Plus the
-incident-replay and live-drill items from r1.
+{bundle_id, digests} against the archive and re-verify; write-authority
+test (r4): an umbrella-local publication attempt is rejected or has no
+API to call (§2.5); GC retention-hierarchy test (r4): referenced bundle
+survives → run bundle expired under policy → same bundle collected
+(§2.6). Plus the incident-replay and live-drill items from r1.
 
 ## 5. Ownership boundaries (r3 — registry-correct; review finding 1)
 
@@ -213,6 +227,11 @@ registry inside the umbrella working tree.
 
 ## 6. Open questions (narrowed)
 
-1. Retention: last N=8 bundles + 90-day run-bundle references — confirm.
+1. Run-bundle retention policy — the SINGLE knob per §2.6 (bundle GC has
+   no independent time/count cutoff; the r2 "last N=8 + 90-day" rule is
+   DELETED as contradictory). Proposal: retain run bundles indefinitely
+   for now (high audit value, low storage cost); pick the explicit expiry
+   policy at migration phase P2. Whatever is chosen, bundle GC
+   eligibility follows the §2.6 hierarchy only.
 2. Per-ticker tournament store: explicitly out of scope for schema v1;
    revisit only if it ever feeds the serving pair.
