@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "title": "G1 equal-weight prereg: burned-sessions manifest (v5 §4.7 rule 1)",
+  "prereg": "doc/experiments/2026-07-17-equal-weight-deployment-prereg-v5.md",
+  "prereg_pr": "RenQuant#494",
+  "prereg_rule": "§4.7 data-hygiene rule 1: every paired session observed BEFORE the pilot-registration commit — including the ~4 unblinded pairs whose sigma_d informed the #485 provisional parameterization, and every session already analyzed in any memo — is permanently excluded from BOTH the calibration pilot AND the terminal series. The burned set is ENUMERATED in this committed manifest; the manifest, not prose, is the auditable object.",
+  "status": "PREP",
+  "status_note": "Pilot registration is NOT authorized yet (turnkey after epoch-5 refreeze per operator direction). This manifest is the enumeration required at the pilot-registration commit; it becomes binding when that commit freezes it and stamps pilot_registration_commit. Every entry below predates that future commit by construction (the burn boundary is DEFINED as the registration commit's timestamp, and the pilot manifest is prospective-only).",
+  "pilot_registration_commit": null,
+  "compiled_at": "2026-07-18",
+  "compiled_from": {
+    "harness_root": "/Users/renhao/renquant-shadow-ab (read-only)",
+    "record_sources": [
+      "session_2026-07-10.json .. session_2026-07-13.json + <date>/shadow_ab_session_bundle.json (live root, epoch-3-era leftovers)",
+      "archive/pre-arming-attempts-20260710/ (session + bundle + counters)",
+      "archive/epoch1-freeze-20260711T072031/ (EPOCH-NOTE, freeze, session, counters)",
+      "archive/epoch2-freeze-20260711T094306/ (EPOCH-NOTE, freeze, the intact valid-pair record, counters)",
+      "archive/epoch3-freeze-20260717T221343Z/ (EPOCH-NOTE, freeze, swept session records, counters attempted_pairs=4/excluded_pairs=3)",
+      "logs/2026-07-10_session.log .. logs/2026-07-17_session.log, logs/launchd.err.log",
+      "run_manifest.json (epoch-4, created_at 2026-07-17T22:13:43Z, data_revision pins-20260717-goal5-g4)"
+    ],
+    "db_session_records": "none — no *.db session records exist anywhere under the harness root (the per-arm runs.<tag>.db is only created inside an arm's native-live-run step; no surviving session reached that stage on disk). The JSON session records + logs above are therefore the complete two-arm session record set; there is no separate orchestrator DB carrying two-arm paired sessions."
+  },
+  "session_convention_note": "Per renquant-model#60's PIT parity backfill (cited by the epoch-3 EPOCH-NOTE and orchestrator doc/progress/2026-07-17-shadow-ab-epoch4-refreeze.md), ALL epoch-3-era paired sessions are schedule-mismatched under the close-anchored as-of contract and are not poolable with epoch-4+ sessions for any null fit. Additionally, 2026-07-11 and 2026-07-12 were not NYSE trading sessions (Saturday/Sunday; the trading-session gate landed only later on 2026-07-11 via orchestrator#488 review), so the three valid pairs re-observed Friday 2026-07-10's close — a zero-information paired world by the harness's own weekday-gate analysis.",
+  "completeness_note": "Scope: this enumeration covers EVERY observed session, including sessions whose discrete records were overwritten by later same-date attempts and sessions that exist only in logs (session logs / launchd.err.log). The PART-B orchestrator telemetry (per-epoch/per-role counters) derives counts from RECORDED manifests alone — safe in direction (a session that left no record can never enter the pilot) but blind to overwritten/log-only sessions. This manifest, not the telemetry, is therefore the completeness surface for the burn set; compilation must sweep the logs, not just the record files. (Lesson: the 2026-07-11 09:43 PT epoch-3-minting valid pair was missed by the first compilation exactly because its discrete record had been overwritten; it was recovered from the session log, the freeze mint stamp, and its surviving sealed/per-arm artifacts.)",
+  "epochs": [
+    {
+      "epoch_id": "pre-arming",
+      "minted_at": null,
+      "retired_at": "2026-07-10T19:13Z (archive stamp, approx)",
+      "note": "arming-day attempts before the first freeze root; archived as pre-arming-attempts-20260710. A freeze-drift -> fresh-root reset was also applied during arming per the epoch-1 EPOCH-NOTE."
+    },
+    {
+      "epoch_id": "epoch-1",
+      "minted_at": "2026-07-11T08:58:18Z",
+      "orchestrator_commit": "d4d278631d30",
+      "subrepo_pins": {"renquant-strategy-104": "0e5d9891", "renquant-pipeline": "289b9199", "renquant-execution": "42e5d7d7"},
+      "retired_at": "2026-07-11T14:20Z (archive stamp 20260711T072031 PT)",
+      "retirement_reason": "orchestrator pin bump for the #470 write-containment fix -> frozen-fingerprint drift; zero counted pairs (the sole valid pair was the freeze-minting preflight, superseded by design)"
+    },
+    {
+      "epoch_id": "epoch-2",
+      "minted_at": "2026-07-11T14:20:33Z",
+      "orchestrator_commit": "fb3b69ffad7b",
+      "subrepo_pins": {"renquant-strategy-104": "0e5d9891", "renquant-pipeline": "289b9199", "renquant-execution": "42e5d7d7"},
+      "retired_at": "2026-07-11T16:43Z (archive stamp 20260711T094306 PT)",
+      "retirement_reason": "strategy-104 pin advance to f01c0259 (sleeve shadow #57) required before the frozen world seals; zero counted pairs at retirement per EPOCH-NOTE"
+    },
+    {
+      "epoch_id": "epoch-3",
+      "minted_at": "2026-07-11T16:43:08Z",
+      "orchestrator_commit": "fb3b69ffad7b",
+      "subrepo_pins": {"renquant-strategy-104": "f01c0259", "renquant-pipeline": "289b9199", "renquant-execution": "42e5d7d7"},
+      "retired_at": "2026-07-17T22:13:43Z (archive stamp 20260717T221343Z)",
+      "retirement_reason": "GOAL-5/G4 deployments of 2026-07-16/17 legitimately moved 9 pins past the frozen manifest (PRECHECK fail-closed from 2026-07-14 onward); counted state at retirement attempted_pairs=4 / excluded_pairs=3 — a count that NEVER included this epoch's own 09:43 PT minting valid pair (the counters continued from epoch-2's live file and the freeze-minting pair incremented nothing)"
+    },
+    {
+      "epoch_id": "epoch-4",
+      "minted_at": "2026-07-17T22:13:43Z (run_manifest created_at; the freeze file self-creates on the first valid session)",
+      "orchestrator_commit": "28b1d2baf2c7 (run_manifest pin)",
+      "retired_at": null,
+      "note": "current epoch at compilation; ZERO sessions recorded — no epoch-4 session exists to burn. The registration epoch is expected to be epoch-5 (turnkey after the epoch-5 refreeze); if registration instead lands in epoch-4, any session recorded between this compilation and the registration commit must be appended here before freezing."
+    }
+  ],
+  "exposure_refs_key": {
+    "E-485": "RenQuant#485 (merged 35982da) §4.6 power-simulation PR — DGP caveat counts the harness's '~4 paired sessions' as of 2026-07-16 and mandates a data-fitted refit; the §4.7 rule-1 text of the v5 prereg (#494) names these pairs as the unblinded set behind the provisional sigma_d parameterization. NOTE (honesty): #485's sigma_d=25bps was PROVISIONAL PARAMETRIC, not fitted from these pairs — they informed it as the evidence-count, and are burned as analyzed-in-a-memo regardless.",
+    "E-485-JSON": "RenQuant doc/experiments/2026-07-16-ew-prereg-power-simulation-results.json (committed artifact; dgp.caveat references the ~4 pairs and the 2026-07-11 harness-live date)",
+    "E-485-PROG": "RenQuant doc/progress/2026-07-16-g1-power-simulation.md (same caveat in the durable record)",
+    "E-V5": "RenQuant#494 doc/experiments/2026-07-17-equal-weight-deployment-prereg-v5.md §4.7 rule 1 (names the ~4 unblinded pairs and the burn rule)",
+    "E-PINS": "RenQuant doc/progress/2026-07-10-goal1-deployment-pins.md (arming-day deployment context for the two-arm runner)",
+    "E-STORE": "renquant-orchestrator doc/progress/2026-07-10-shadow-ab-artifact-store-contract.md (diagnoses the 2026-07-10 armed-attempt artifact-resolution failure; names the 2026-07-11 14:35 PT session)",
+    "E-WC": "renquant-orchestrator doc/progress/2026-07-11-shadow-ab-write-containment.md (analyzes the 02:15 PT valid pair: its stray admission-shadow byproducts and the poisoning of the next session)",
+    "E-WG": "renquant-orchestrator doc/progress/2026-07-11-shadow-ab-weekday-gate.md (analyzes the Saturday 2026-07-11 paired world: re-observation of Friday's close, zero information)",
+    "E-DIAG": "renquant-orchestrator doc/progress/2026-07-11-shadow-ab-setup-diagnosability.md (2026-07-11 wrapper-failure forensics)",
+    "E-E4": "renquant-orchestrator doc/progress/2026-07-17-shadow-ab-epoch4-refreeze.md (epoch-3 retirement record; attempted=4/excluded=3; stall since 2026-07-14)",
+    "E-M60": "renquant-model#60 PIT parity backfill — epoch-3-era sessions schedule-mismatched under the close-anchored as-of contract",
+    "E-NOTES": "harness-local EPOCH-NOTE.md records (archive/epoch{1,2,3}-freeze-*/)"
+  },
+  "burn_reason_base": "§4.7 rule 1: observed before the pilot-registration commit (pre-freeze sessions are burned)",
+  "sessions": [
+    {
+      "session_date": "2026-07-10",
+      "attempt": 1,
+      "epoch_id": "pre-arming",
+      "pair_status": "failed",
+      "detail": "arm_failure: both arms failed (exit 4); pre-arming attempt at ~19:13Z; paired-inclusion excludes the session in both arms",
+      "record": "archive/pre-arming-attempts-20260710/session_2026-07-10.json (+ bundle, counters attempted=1/excluded=1)",
+      "exposure_refs": ["E-PINS", "E-STORE", "E-485", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); failed pair (excluded by paired inclusion regardless of registration); pre-arming world with no epoch freeze"
+    },
+    {
+      "session_date": "2026-07-10",
+      "attempt": 2,
+      "epoch_id": "pre-epoch-1 (arming root)",
+      "pair_status": "failed",
+      "detail": "precheck_failure: artifact unresolvable fail-closed (patchtst_shadow seed_44 model path) at ~2026-07-11T05:17Z (22:17 PT 07-10); neither arm ran",
+      "record": "session_2026-07-10.json + 2026-07-10/shadow_ab_session_bundle.json (live root; swept copy in archive/epoch3-freeze-20260717T221343Z/); counters attempted=1/excluded=1 after fresh-root reset",
+      "exposure_refs": ["E-STORE", "E-485", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); precheck abort — no observation; diagnosed in a committed memo (E-STORE)"
+    },
+    {
+      "session_date": "2026-07-11",
+      "attempt": 1,
+      "epoch_id": "epoch-1",
+      "pair_status": "valid",
+      "detail": "the 01:58-02:00 PT preflight pair (start 2026-07-11T08:58:16Z, end 09:00:17Z, exit 0; the '02:15 PT pair' of the E-WC memo): BOTH arms completed and it MINTED the epoch-1 freeze (frozen_at 2026-07-11T08:58:18Z, orchestrator d4d27863); superseded by design at the epoch-2 mint (2026-07-11T14:20:33Z, 07:20 PT) and its discrete session record was overwritten by later same-date attempts. EVIDENCE CITE (corrected): its exit=0 evidence is the session log's FIRST run, logs/2026-07-11_session.log line 163 — NOT a launchd.err.log line; launchd.err.log's 2026-07-11 exit lines read 3,0,0,3 chronologically, so BOTH launchd exit=0 lines belong to the later 07:20 PT and 09:43 PT pairs",
+      "record": "no intact discrete record (overwritten); evidence in archive/epoch1-freeze-20260711T072031/ (EPOCH-NOTE.md, shadow_ab_freeze.json) + logs/2026-07-11_session.log (first run: start 08:58:16Z, exit=0 at line 163, end 09:00:17Z)",
+      "exposure_refs": ["E-WC", "E-WG", "E-485", "E-485-JSON", "E-485-PROG", "E-V5", "E-NOTES"],
+      "burn_reason": "pre-registration (§4.7 rule 1); UNBLINDED and analyzed in committed memos (write-containment forensics read its byproducts; weekday-gate memo analyzes its Saturday world); non-NYSE-session observation (Saturday, re-observes 2026-07-10 close); epoch-1 retired with zero counted pairs; record no longer intact"
+    },
+    {
+      "session_date": "2026-07-11",
+      "attempt": 2,
+      "epoch_id": "epoch-1",
+      "pair_status": "failed",
+      "detail": "the ~04:5x PT sanity kickstart after amending the run manifest's base-data pin: precheck abort 'renquant-strategy-104: working tree DIRTY (?? logs/)' — the 02:15 pair's own stray admission-shadow JSONL poisoned it (self-poisoning incident)",
+      "record": "no intact discrete record (overwritten); documented verbatim in E-WC; counter arithmetic (attempted 2→3, excluded 1→2)",
+      "exposure_refs": ["E-WC", "E-DIAG", "E-485", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); precheck abort — no observation; incident analyzed in a committed memo"
+    },
+    {
+      "session_date": "2026-07-11",
+      "attempt": 3,
+      "epoch_id": "epoch-1",
+      "pair_status": "failed",
+      "detail": "frozen_fingerprint_mismatch: orchestrator_commit d4d27863 -> fb3b69ff (the #470 write-containment pin bump); the surviving epoch-1 session record; counters at epoch-1 retirement attempted=4/excluded=3 (this attempt-numbering counts the 2026-07-10 attempt 2 as the series' first)",
+      "record": "archive/epoch1-freeze-20260711T072031/session_2026-07-11.json (+ 2026-07-11/ bundle in the same archive)",
+      "exposure_refs": ["E-WC", "E-NOTES", "E-485", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); precheck abort — no observation; epoch retired for legitimate fingerprint drift"
+    },
+    {
+      "session_date": "2026-07-11",
+      "attempt": 4,
+      "epoch_id": "epoch-2",
+      "pair_status": "valid",
+      "detail": "the 07:20-07:22 PT pair (exit 0): BOTH arms completed (native-live-context -> native-live-inference -> native-live-run), sealed decision snapshot as_of 2026-07-11T14:20:31Z, digest f215af9b..., universe 145; it MINTED the epoch-2 freeze (orchestrator fb3b69ff) and is the ONLY intact discrete valid-pair session record in the harness (the 09:43 PT pair's discrete record was overwritten, but its sealed inputs + per-arm output trees survive on disk — see the next valid entry). Epoch-2 was retired ~2h20m later for the strategy-104 pin advance -> zero counted pairs; the pair is orphaned. Its bundle + sealed inputs were archived into epoch2-freeze-20260711T094306/ at the 09:43 PT epoch-3 mint.",
+      "record": "archive/epoch2-freeze-20260711T094306/session_2026-07-11.json (intact, 47k) + 2026-07-11/ bundle + sealed/ inputs in the same archive",
+      "exposure_refs": ["E-WG", "E-485", "E-485-JSON", "E-485-PROG", "E-V5", "E-NOTES", "E-E4"],
+      "burn_reason": "pre-registration (§4.7 rule 1); UNBLINDED (arm-level outputs on disk, referenced by the #485 evidence count); non-NYSE-session observation (Saturday, re-observes 2026-07-10 close per the weekday-gate memo); epoch-2 retired with zero counted pairs (§4.7 rule 3 restart)"
+    },
+    {
+      "session_date": "2026-07-11",
+      "attempt": 5,
+      "epoch_id": "epoch-3",
+      "pair_status": "valid",
+      "detail": "the 09:43-09:45 PT pair (start 2026-07-11T16:43:06Z, end 16:45:08Z, exit 0 at logs/2026-07-11_session.log line 819 — the log's SIXTH-run block is the 21:35Z abort; this is the fifth): BOTH arms completed and it MINTED the epoch-3 freeze (frozen_at 2026-07-11T16:43:08Z = session start + 2s, strategy-104 f01c0259, orchestrator fb3b69ff); sealed decision snapshot as_of 2026-07-11T16:43:06Z, digest 36bffe24..., universe 145. MISSED by the first compilation of this manifest (caught in Codex review): its discrete session JSON and top-level bundle were overwritten by the 14:35 PT abort — the same overwrite pathology as the epoch-1 preflight pair — but its sealed inputs AND full per-arm output trees survive UNBLINDED in the live harness root. Never counted: the epoch-3 counters continued from epoch-2's live file (attempted=1/excluded=0) and this freeze-minting pair incremented nothing.",
+      "record": "no intact discrete session JSON (overwritten by the 14:35 PT abort); surviving on disk in the LIVE root: 2026-07-11/sealed/{decision,account,market}_snapshot.json (09:43 PT mtimes) + 2026-07-11/arm_alpaca_shadow_a/ and arm_alpaca_shadow_b/ full output trees (native_bundle/native_inference/native_execution/native_context, live_state_contract, admission_shadow.jsonl; 09:44-09:45 PT mtimes) + logs/2026-07-11_session.log (start/end/exit lines) + logs/launchd.err.log (second exit=0 line) + the epoch-3 freeze payload (frozen_at = start + 2s) + the 14:35 PT bundle's own same_world reason quoting this pair's digest 36bffe24... as the already-recorded bundle",
+      "exposure_refs": ["E-WG", "E-485", "E-485-JSON", "E-485-PROG", "E-V5", "E-NOTES", "E-E4", "E-M60"],
+      "burn_reason": "pre-registration (§4.7 rule 1); UNBLINDED — per-arm outputs (inference/execution/admission-shadow) sit on disk in the live harness root, readable by any operator or agent; non-NYSE-session observation (Saturday, re-observes 2026-07-10 close per the weekday-gate memo); never counted by the cross-epoch-contaminated counters (in the #485 '~4 paired sessions' evidence count only as part of the harness evidence base); epoch-3-era schedule mismatch (E-M60)"
+    },
+    {
+      "session_date": "2026-07-11",
+      "attempt": 6,
+      "epoch_id": "epoch-3",
+      "pair_status": "failed",
+      "detail": "the 14:35 PT scheduled run (start 2026-07-11T21:35:05Z): same_world_violation — decision_snapshot_digest conflicts with the already-recorded bundle for the same session date: 36bffe24... (the 09:43 PT pair's, attempt 5) != bde4f1cd... (this run's fresh snapshot); neither arm ran; counters continued from epoch-2's live file (attempted 1→2, excluded 0→1) — the cross-epoch counter continuation this PR's PART-B telemetry replaces. ATTRIBUTION CORRECTED from the first compilation, which mis-attributed the collided bundle to the 07:20 PT pair: the 07:20 PT pair's digest is f215af9b... and its bundle had already been ARCHIVED into epoch2-freeze-20260711T094306/ at the 09:43 PT epoch-3 mint — the recorded bundle this run collided with (and thereby overwrote the discrete record of) was the 09:43 PT pair's.",
+      "record": "session_2026-07-11.json + 2026-07-11/shadow_ab_session_bundle.json (live root; swept copy in the epoch-3 archive)",
+      "exposure_refs": ["E-STORE", "E-485", "E-V5", "E-E4"],
+      "burn_reason": "pre-registration (§4.7 rule 1); precheck abort — no observation"
+    },
+    {
+      "session_date": "2026-07-12",
+      "attempt": 1,
+      "epoch_id": "epoch-3",
+      "pair_status": "failed",
+      "detail": "precheck_failure: run manifest verification failed — renquant-model working tree DIRTY ('M README.md'); neither arm ran; also a Sunday (non-session; the identity check correctly fails closed BEFORE the session-calendar gate)",
+      "record": "session_2026-07-12.json + 2026-07-12/shadow_ab_session_bundle.json (live root; swept copy in the epoch-3 archive); counters attempted=3/excluded=2",
+      "exposure_refs": ["E-485", "E-V5", "E-E4"],
+      "burn_reason": "pre-registration (§4.7 rule 1); precheck abort — no observation"
+    },
+    {
+      "session_date": "2026-07-13",
+      "attempt": 1,
+      "epoch_id": "epoch-3",
+      "pair_status": "failed",
+      "detail": "precheck_failure: identical dirty-tree abort (renquant-model 'M README.md'); neither arm ran; counters attempted=4/excluded=3 — the final counted state cited by the epoch-3 EPOCH-NOTE and #485's '~4 paired sessions'",
+      "record": "session_2026-07-13.json + 2026-07-13/shadow_ab_session_bundle.json (live root; swept copy in the epoch-3 archive)",
+      "exposure_refs": ["E-485", "E-485-JSON", "E-V5", "E-E4"],
+      "burn_reason": "pre-registration (§4.7 rule 1); precheck abort — no observation"
+    },
+    {
+      "session_date": "2026-07-14",
+      "attempt": 1,
+      "epoch_id": "epoch-3",
+      "pair_status": "no_record",
+      "detail": "scheduled launchd invocation failed before any session artifact: '/bin/bash: .../scripts/shadow_ab_daily.sh: No such file or directory' (runtime orchestrator checkout mid-GOAL-5 churn); no session JSON, bundle, or session log exists",
+      "record": "logs/launchd.err.log only",
+      "exposure_refs": ["E-E4", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); no observation exists (scheduler failure; part of the silent stall documented in E-E4)"
+    },
+    {
+      "session_date": "2026-07-15",
+      "attempt": 1,
+      "epoch_id": "epoch-3",
+      "pair_status": "no_record",
+      "detail": "same scheduler failure as 2026-07-14 (second 'No such file or directory' line)",
+      "record": "logs/launchd.err.log only",
+      "exposure_refs": ["E-E4", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); no observation exists (scheduler failure)"
+    },
+    {
+      "session_date": "2026-07-16",
+      "attempt": 1,
+      "epoch_id": "epoch-3",
+      "pair_status": "no_record",
+      "detail": "same scheduler failure as 2026-07-14 (third 'No such file or directory' line; launchd.err.log's last write)",
+      "record": "logs/launchd.err.log only",
+      "exposure_refs": ["E-E4", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); no observation exists (scheduler failure)"
+    },
+    {
+      "session_date": "2026-07-17",
+      "attempt": 1,
+      "epoch_id": "epoch-3",
+      "pair_status": "failed",
+      "detail": "wrapper PRECHECK abort at 2026-07-17T21:35:04Z: run manifest verification failed on all 8 repos (runtime checkouts at the GOAL-5 pins vs the frozen epoch-3 manifest pins-20260710-final) — the CORRECT fail-closed behavior that triggered the epoch-4 refreeze ~38 minutes later; no session JSON or bundle was written",
+      "record": "logs/2026-07-17_session.log only",
+      "exposure_refs": ["E-E4", "E-V5"],
+      "burn_reason": "pre-registration (§4.7 rule 1); precheck abort — no observation"
+    }
+  ],
+  "totals": {
+    "entries": 14,
+    "by_pair_status": {"valid": 3, "failed": 8, "no_record": 3},
+    "by_epoch": {"pre-arming": 1, "pre-epoch-1 (arming root)": 1, "epoch-1": 3, "epoch-2": 1, "epoch-3": 8, "epoch-4": 0},
+    "valid_pairs_all_burned": 3,
+    "note": "ALL 14 enumerated sessions are burned; zero pilot-eligible sessions exist at compilation. The pilot therefore starts at n=0 and needs >= 40 fresh single-epoch paired sessions strictly postdating the registration commit.",
+    "recount_note": "The first compilation's by_epoch stated epoch-3=6 while actually enumerating 7 epoch-3 entries (its by_epoch summed to 12, not 13). With the recovered 09:43 PT minting pair the mechanical recount is epoch-3=8, and by_epoch now sums to entries (1+1+3+1+8+0=14)."
+  }
+}
