@@ -80,6 +80,12 @@ class RetrainEntry:
     # against a stale/wrong same-named artifact. Absent (older manifests) → the
     # resolver still enforces bounded roots / containment / no-ambiguity.
     artifact_sha256: str | None = None
+    # 2026-07-18 task #82 (PR #499 review): the calibrator leg of the same
+    # contract. ``calibrator_sha256`` binds the resolved calibrator file the
+    # same way ``artifact_sha256`` binds the scorer artifact — the corpus
+    # manifests stamp both (scripts/stamp_wf_manifest_digests.py), and the
+    # loader enforces both under the same compatibility window.
+    calibrator_sha256: str | None = None
 
 
 def _optional_timestamp(raw: object) -> pd.Timestamp | None:
@@ -140,6 +146,9 @@ def _parse_entry(r: dict) -> RetrainEntry:
         effective_train_cutoff_date=effective,
         artifact_sha256=(
             str(r.get("artifact_sha256")) if r.get("artifact_sha256") else None
+        ),
+        calibrator_sha256=(
+            str(r.get("calibrator_sha256")) if r.get("calibrator_sha256") else None
         ),
     )
 
@@ -385,15 +394,19 @@ class WalkForwardModelLoader:
                 "walk-forward manifest with per-fold calibrator artifacts; "
                 "do not reuse a static production or sim calibrator."
             )
-        if uri in self._calibrator_cache:
-            cal = self._calibrator_cache[uri]
-            self._assert_calibrator_matches_entry(chosen, cal, uri)
+        # Mirror ``model_as_of``: resolve (digest-verifying) BEFORE the cache
+        # lookup, so a stamped ``calibrator_sha256`` is enforced on every call
+        # — a cache hit must never bypass the digest binding (task #82).
+        resolved = self._resolve_calibrator_uri(chosen)
+        cache_key = str(resolved)
+        if cache_key in self._calibrator_cache:
+            cal = self._calibrator_cache[cache_key]
+            self._assert_calibrator_matches_entry(chosen, cal, resolved)
             return cal
-        resolved = self._resolve_uri(uri)
         from training_panel.global_calibrator import GlobalPanelCalibration  # noqa: PLC0415
         cal = GlobalPanelCalibration.load(resolved)
         self._assert_calibrator_matches_entry(chosen, cal, resolved)
-        self._calibrator_cache[uri] = cal
+        self._calibrator_cache[cache_key] = cal
         return cal
 
     def _resolve_uri(
@@ -402,6 +415,7 @@ class WalkForwardModelLoader:
         *,
         expected_digest: str | None = None,
         require_digest: bool = False,
+        digest_field: str = "artifact_sha256",
     ):
         """Resolve a manifest URI via the shared bounded resolver.
 
@@ -422,6 +436,7 @@ class WalkForwardModelLoader:
             uri,
             expected_digest=expected_digest,
             require_digest=require_digest,
+            digest_field=digest_field,
         )
 
     def _resolve_model_uri(self, entry: RetrainEntry):
@@ -449,6 +464,35 @@ class WalkForwardModelLoader:
             entry.artifact_uri,
             expected_digest=entry.artifact_sha256,
             require_digest=require,
+        )
+
+    def _resolve_calibrator_uri(self, entry: RetrainEntry):
+        """Resolve a calibrator artifact URI on the model-validation path.
+
+        Task #82 (PR #499 review): mirrors ``_resolve_model_uri`` for the
+        calibrator leg. Binds the resolved file to the entry's stamped
+        ``calibrator_sha256`` (a present digest is ALWAYS verified) under the
+        SAME ``ARTIFACT_DIGEST_REQUIRED_AFTER`` window: before the cutoff a
+        missing digest warns so operators re-stamp; on/after it, resolution
+        fails closed (the gate keeps the prior model — safe direction).
+        """
+        require = digest_required()
+        if not entry.calibrator_sha256 and not require:
+            warnings.warn(
+                f"WalkForwardModelLoader: manifest entry cutoff="
+                f"{entry.cutoff_date.date()} calibrator={entry.calibrator_uri} "
+                f"has no calibrator_sha256; the bounded resolver cannot bind it "
+                f"to an expected digest. Re-stamp the manifest "
+                f"(scripts/stamp_wf_manifest_digests.py) before "
+                f"{ARTIFACT_DIGEST_REQUIRED_AFTER.isoformat()}, after which "
+                f"this resolution fails closed.",
+                stacklevel=2,
+            )
+        return self._resolve_uri(
+            entry.calibrator_uri,
+            expected_digest=entry.calibrator_sha256,
+            require_digest=require,
+            digest_field="calibrator_sha256",
         )
 
     def _scorer_claim_for_entry(self, entry: RetrainEntry):

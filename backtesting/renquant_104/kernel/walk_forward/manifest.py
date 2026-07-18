@@ -59,6 +59,11 @@ class WalkForwardManifest:
         # when absent so pre-digest manifests round-trip unchanged.
         if e.artifact_sha256:
             row["artifact_sha256"] = e.artifact_sha256
+        # 2026-07-18 task #82 (PR #499 review): same for the calibrator leg —
+        # without this a manifest round-trip silently DROPPED the stamped
+        # calibrator_sha256, un-stamping the corpus on the next rewrite.
+        if e.calibrator_sha256:
+            row["calibrator_sha256"] = e.calibrator_sha256
         return row
 
     def to_dict(self) -> dict[str, Any]:
@@ -115,6 +120,10 @@ def _validate_entry(raw: dict, idx: int) -> RetrainEntry:
         effective_train_cutoff_date=effective,
         artifact_sha256=(
             str(raw.get("artifact_sha256")) if raw.get("artifact_sha256") else None
+        ),
+        calibrator_sha256=(
+            str(raw.get("calibrator_sha256"))
+            if raw.get("calibrator_sha256") else None
         ),
     )
 

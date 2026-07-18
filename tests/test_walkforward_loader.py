@@ -548,3 +548,191 @@ class TestGlobPatternTolerance:
         from kernel.walk_forward import WalkForwardModelLoader
         loader = WalkForwardModelLoader(str(tmp_path / "no-such-*.json"))
         assert loader.has_walkforward_model() is False
+
+
+def _digest_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _matched_scorer_and_calibrator(tmp_path):
+    """A scorer + calibrator pair whose stamped fingerprints match."""
+    from training_panel.global_calibrator import GlobalPanelCalibration
+    import numpy as np
+
+    scorer_path = tmp_path / "panel-ltr.json"
+    scorer_path.write_text(json.dumps({
+        "kind": "panel_ltr_xgboost",
+        "feature_cols": ["f0"],
+        "artifact_fingerprint": "sha256:abc123abc123",
+    }))
+    cal_path = tmp_path / "panel-rank-calibration.json"
+    GlobalPanelCalibration(
+        prob_x=np.array([-1.0, 1.0]),
+        prob_y=np.array([0.25, 0.75]),
+        er_x=np.array([-1.0, 1.0]),
+        er_y=np.array([-0.01, 0.01]),
+        metadata={"scorer_artifact_fingerprint": "sha256:abc123abc123"},
+    ).save(cal_path)
+    return scorer_path, cal_path
+
+
+class TestCalibratorDigestBinding:
+    """Task #82 (PR #499 review follow-up): ``calibrator_sha256`` round-trips
+    through RetrainEntry / manifest I/O and is ENFORCED at calibrator
+    resolution with the artifact leg's exact window semantics — a present
+    digest is ALWAYS verified; a missing digest warns before
+    ``ARTIFACT_DIGEST_REQUIRED_AFTER`` and fails closed on/after it.
+    """
+
+    @staticmethod
+    def _force_window(monkeypatch, *, closed: bool):
+        """Date-inject the loader's ``digest_required()`` wiring through the
+        REAL window function (deterministic — never wall-clock dependent)."""
+        from datetime import timedelta
+        import kernel.walk_forward.loader as loader_mod
+        from kernel.manifest_uri_resolver import (
+            ARTIFACT_DIGEST_REQUIRED_AFTER,
+            digest_required,
+        )
+        day = timedelta(days=1)
+        now = (ARTIFACT_DIGEST_REQUIRED_AFTER + day if closed
+               else ARTIFACT_DIGEST_REQUIRED_AFTER - day)
+        monkeypatch.setattr(
+            loader_mod, "digest_required", lambda: digest_required(now=now),
+        )
+
+    def test_round_trip_preserves_calibrator_sha256(self, tmp_path):
+        """The #499 review finding: ``_entry_to_dict`` kept artifact_sha256
+        but silently DROPPED calibrator_sha256 — one read → write pass would
+        have un-stamped the corpus calibrator digests."""
+        from kernel.walk_forward import (
+            RetrainEntry, WalkForwardManifest,
+            WalkForwardModelLoader, read_manifest, write_manifest,
+        )
+        entry = RetrainEntry(
+            cutoff_date=pd.Timestamp("2024-04-01"),
+            trained_date=pd.Timestamp("2024-04-02T03:44:12"),
+            artifact_uri="artifacts/wf/2024-04-01/panel-ltr.json",
+            calibrator_uri="artifacts/wf/2024-04-01/panel-rank-calibration.json",
+            artifact_sha256="a" * 64,
+            calibrator_sha256="b" * 64,
+        )
+        manifest = WalkForwardManifest(
+            cadence_days=30, training_window_years=3.0, retrains=[entry],
+        )
+        path = tmp_path / "walkforward_manifest.json"
+        write_manifest(manifest, path)
+
+        # Serialized row carries BOTH digests.
+        row = json.loads(path.read_text())["retrains"][0]
+        assert row["artifact_sha256"] == "a" * 64
+        assert row["calibrator_sha256"] == "b" * 64
+
+        # Loader parse preserves both fields.
+        loaded = WalkForwardModelLoader(path).entries[0]
+        assert loaded.artifact_sha256 == "a" * 64
+        assert loaded.calibrator_sha256 == "b" * 64
+
+        # And a full read → write round-trip does not drop the stamp.
+        rewritten = tmp_path / "rewritten.json"
+        write_manifest(read_manifest(path), rewritten)
+        row2 = json.loads(rewritten.read_text())["retrains"][0]
+        assert row2["calibrator_sha256"] == "b" * 64
+
+    def test_tampered_calibrator_byte_refused(self, tmp_path):
+        """One flipped byte in the calibrator file → digest mismatch refusal,
+        including on the CACHED path (resolution digest-verifies every call,
+        mirroring model_as_of)."""
+        from kernel.manifest_uri_resolver import ManifestUriResolutionError
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        scorer_path, cal_path = _matched_scorer_and_calibrator(tmp_path)
+        rows = [_row(
+            "2024-01-01T00:00:00", "2024-01-02T03:00:00", str(scorer_path),
+            calibrator_uri=str(cal_path),
+            artifact_sha256=_digest_of(scorer_path),
+            calibrator_sha256=_digest_of(cal_path),
+        )]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+
+        # Positive control: the untampered pair digest-verifies and loads.
+        cal = loader.calibrator_as_of("2024-01-15")
+        assert (cal.metadata["scorer_artifact_fingerprint"]
+                == "sha256:abc123abc123")
+
+        payload = bytearray(cal_path.read_bytes())
+        payload[0] ^= 0x01  # one-byte flip
+        cal_path.write_bytes(payload)
+        # Same loader instance: the warm cache must NOT bypass the digest.
+        with pytest.raises(ManifestUriResolutionError, match="digest"):
+            loader.calibrator_as_of("2024-01-15")
+        # A fresh loader refuses identically.
+        with pytest.raises(ManifestUriResolutionError, match="digest"):
+            WalkForwardModelLoader(path).calibrator_as_of("2024-01-15")
+
+    def test_missing_calibrator_digest_tolerated_pre_window(
+        self, tmp_path, monkeypatch,
+    ):
+        """Before the window closes an unstamped calibrator still loads —
+        with the re-stamp warning (exactly the artifact-leg semantics)."""
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        self._force_window(monkeypatch, closed=False)
+        scorer_path, cal_path = _matched_scorer_and_calibrator(tmp_path)
+        rows = [_row(
+            "2024-01-01T00:00:00", "2024-01-02T03:00:00", str(scorer_path),
+            calibrator_uri=str(cal_path),
+            artifact_sha256=_digest_of(scorer_path),
+            # calibrator_sha256 deliberately absent.
+        )]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+        with pytest.warns(UserWarning, match="no calibrator_sha256"):
+            cal = loader.calibrator_as_of("2024-01-15")
+        assert (cal.metadata["scorer_artifact_fingerprint"]
+                == "sha256:abc123abc123")
+
+    def test_missing_calibrator_digest_fails_closed_post_window(
+        self, tmp_path, monkeypatch,
+    ):
+        """On/after ARTIFACT_DIGEST_REQUIRED_AFTER (date-injected) a missing
+        calibrator_sha256 fails closed, and the remedy names the RIGHT field."""
+        from kernel.manifest_uri_resolver import ManifestUriResolutionError
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        self._force_window(monkeypatch, closed=True)
+        scorer_path, cal_path = _matched_scorer_and_calibrator(tmp_path)
+        rows = [_row(
+            "2024-01-01T00:00:00", "2024-01-02T03:00:00", str(scorer_path),
+            calibrator_uri=str(cal_path),
+            artifact_sha256=_digest_of(scorer_path),
+            # calibrator_sha256 deliberately absent.
+        )]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+        with pytest.raises(ManifestUriResolutionError,
+                           match="calibrator_sha256"):
+            loader.calibrator_as_of("2024-01-15")
+
+    def test_stamped_v2_corpus_manifest_loads_clean_under_enforcement(
+        self, monkeypatch,
+    ):
+        """The committed 39/39-stamped v2 corpus manifest (#499) parses with
+        both digests populated and every calibrator resolves + digest-verifies
+        under the CLOSED window — the exact post-2026-09-01 wiring."""
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        manifest = (
+            _STRATEGY_DIR / "artifacts" / "sim"
+            / "walkforward_manifest_v2_20260602.json"
+        )
+        self._force_window(monkeypatch, closed=True)
+        loader = WalkForwardModelLoader(manifest)
+        entries = loader.entries
+        assert len(entries) == 39
+        for e in entries:
+            assert e.artifact_sha256, e.artifact_uri
+            assert e.calibrator_sha256, e.calibrator_uri
+            resolved = loader._resolve_calibrator_uri(e)
+            assert isinstance(resolved, Path) and resolved.exists()
