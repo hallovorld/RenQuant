@@ -1,7 +1,9 @@
 # Pre-registration v5: equal-weight top-k deployment experiment (G1)
 
-STATUS: RFC — no observation begins until the activation commit fills all
-TBD fields, freezes every executable schema, and is pushed to main.
+STATUS: RFC — start is TWO-STAGE (r2): the PILOT REGISTRATION commit
+(§4.7) authorizes ONLY blinded pilot collection; no TERMINAL observation
+begins until the ACTIVATION commit fills all TBD fields, freezes every
+executable schema, and is pushed to main.
 DATE: 2026-07-17 (v5). Drafted personally per design-review policy.
 REPO: RenQuant (umbrella) — cross-repo strategy specification
 PRIOR: D6 confirmatory replay REJECTED deployment governor (PBO 0.874)
@@ -69,11 +71,12 @@ return, with non-degradation on drawdown.
 ### 2.1 Power considerations
 
 Daily portfolio returns from overlapping holdings are not independent
-observations. The sampling unit is a predeclared non-overlapping
-20-session calendar block — but the test statistic within each block is
-the arithmetic mean daily active return (bps/session), not a cumulated
-block return. This keeps the statistic, the MDE, and the gate threshold
-on one common scale: bps per trading session.
+observations. The INFERENTIAL series is the daily paired active return
+`d_t` under the moving-block bootstrap (§4.1); predeclared
+non-overlapping 20-session calendar blocks are DESCRIPTIVE reporting
+units only, never the inferential basis. Every quantity in the decision
+chain — the statistic, MEE, and PE — lives on one common scale: bps per
+trading session.
 
 Historical results, including D6, are hypothesis-generating diagnostics
 only and never enter confirmation.
@@ -208,13 +211,14 @@ portfolio returns for arms B and A1 on session `t`. `S_j` is a mean
 daily return, expressed in basis points per session (bps/session).
 
 **Units:** every quantity in the decision chain is in bps/session:
-- `S_j` (block statistic) = arithmetic mean daily active return
-  within block j (bps/session).
-- `mean(S_j)` (point estimate) = grand mean of block statistics
-  across all blocks (bps/session).
-- MDE = 3 bps/session.
-- The bootstrap operates on the vector `{S_1, …, S_n}` and produces
-  a confidence bound in the same bps/session unit.
+- `S_j` (block statistic, DESCRIPTIVE) = arithmetic mean daily active
+  return within block j (bps/session).
+- `mean(S_j)` = grand mean of block statistics (bps/session),
+  reported for transparency only.
+- MEE = 3 bps/session (deployment eligibility threshold, §4.1 step 6).
+- PE = 6 bps/session (planning effect for power, §4.6).
+- The bootstrap operates on the DAILY series `{d_1, …, d_T}` and
+  produces a confidence bound in the same bps/session unit.
 
 **Inference method: moving-block bootstrap.**
 
@@ -374,8 +378,9 @@ parameter is walked to force feasibility.
    mean of `d_t` to **MEE** (the deployment rule's null boundary,
    H0: μ ≤ MEE). Run 5,000 Monte Carlo trials of length T. For each,
    apply the full MBB inference (§4.1) and record whether LB > MEE. The
-   empirical rejection rate must be ≤ 0.10. Report the exact rate with a
-   95% simulation confidence interval.
+   empirical rejection rate must be ≤ 0.10 — the Monte Carlo POINT
+   ESTIMATE governs the gate; its 95% simulation confidence interval is
+   reported alongside so borderline calibration is visible.
 
 3. **Alternative simulation (power).** Set the true mean of `d_t` to
    **PE = 6 bps/session**. Run 5,000 Monte Carlo trials under the same
@@ -408,6 +413,22 @@ prerequisites for activation.
 
 ### 4.7 Calibration pilot (blinded) and data hygiene — HARD activation prerequisites
 
+**Two-stage start (r2 — resolves the pilot/activation deadlock).** The
+protocol starts in two explicitly ordered commits:
+
+1. **PILOT REGISTRATION commit**: freezes this document, the frozen
+   inputs listed below, the burned-sessions manifest (hygiene rule 1),
+   and the pilot scope (epoch, target n ≥ 40). It authorizes ONLY
+   blinded pilot collection — no terminal observation, no capital. The
+   burn boundary "pre-freeze" is DEFINED as this commit's timestamp;
+   pilot sessions must strictly POSTDATE it (the pilot manifest is
+   prospective-only, it can never admit an already-collected session).
+2. **ACTIVATION commit** (§7): fills every TBD — including the §4.6
+   outputs, which are computed FROM the sealed pilot — and starts the
+   terminal series. The header's "no observation before activation"
+   applies to the TERMINAL series; the pilot is authorized by commit 1
+   alone. There is no state in which either series runs unregistered.
+
 **Pilot definition.** At least **40 paired sessions** are collected from
 the two-arm harness solely to size the future experiment. They are a
 named **calibration pilot**: stored under a distinct pilot manifest and
@@ -416,18 +437,24 @@ claim**. The pilot is observation FOR SIZING, not "observation-free
 plumbing" (the v4 language claiming otherwise is repudiated) — which is
 exactly why it is blinded:
 
-- Before the pilot starts, universe, arm definitions, timing, costs,
-  admissibility rules, the MBB block-length rule, MEE, PE, and the
-  terminal decision rule are frozen (this document + its activation
-  fields).
-- The sizing analysis receives an **arm-label-blinded** series with one
-  global random orientation; it may estimate dispersion and dependence
-  but must not reveal the mean, sign, cumulative PnL, arm-level returns,
-  or any provisional verdict. The unblinding key is sealed until the
-  pilot report and activation commit are both immutable.
-- The MBB block length rule `b = ceil(1.75 × max_holding_days)` (cap 40)
-  is fixed BEFORE pilot collection for every later terminal analysis; it
-  is not tuned from 40 observations.
+- At pilot registration, universe, arm definitions, timing, costs,
+  admissibility rules, the MBB block-length RULE, MEE, PE, and the
+  terminal decision rule are frozen (this document + the registration
+  commit).
+- The sizing analysis receives a **DEMEANED, arm-label-blinded** series:
+  the per-series sample mean is removed before delivery and one global
+  random orientation is applied, so neither the sign NOR the magnitude
+  of the mean can leak through the sizing path; it may estimate
+  dispersion and dependence only, and must not reveal cumulative PnL,
+  arm-level returns, or any provisional verdict. The unblinding key is
+  sealed until the pilot report and activation commit are both
+  immutable.
+- The MBB block length RULE `b = ceil(1.75 × max_holding_days)` (cap 40)
+  is fixed at pilot registration; the NUMERIC b is computed from
+  pilot-observed holding periods, frozen in the activation commit, used
+  by the §4.6 simulation, and the terminal analysis uses that frozen b
+  VERBATIM — no re-derivation from terminal-window data (this binds the
+  simulation-validated b to the realized analysis).
 - Any change to frozen inputs, any access to unblinded pilot outcomes,
   or any performance analysis of pilot data invalidates the pilot for
   sizing and requires a new registration and a new pilot.
@@ -436,18 +463,26 @@ exactly why it is blinded:
 series):**
 
 1. **Pre-freeze sessions are burned.** Every paired session observed
-   BEFORE this protocol's freeze — including the ~4 unblinded pairs
-   whose σ_d informed the #485 provisional parameterization, and any
-   session already analyzed in any memo — is permanently excluded from
-   BOTH the calibration pilot AND the terminal series. Analyzed data
-   cannot re-enter as if unseen.
-2. **No cross-epoch pooling.** The two-arm harness freezes a pin
-   manifest per epoch (e.g. epoch-3 was refrozen as epoch-4 on
-   2026-07-17 after the GOAL-5 deployments changed 9 pins). Sessions
-   from different epochs are draws from DIFFERENT processes and may
-   never be pooled — not in the pilot fit, not in the terminal series.
-   The pilot and the terminal series must each come entirely from the
-   then-current epoch.
+   BEFORE the pilot-registration commit — including the ~4 unblinded
+   pairs whose σ_d informed the #485 provisional parameterization, and
+   every session already analyzed in any memo — is permanently excluded
+   from BOTH the calibration pilot AND the terminal series. The burned
+   set is ENUMERATED in a committed **burned-sessions manifest** at
+   pilot registration; the manifest, not prose, is the auditable
+   object ("analyzed in any memo" is resolved once, at registration,
+   by listing the sessions). Analyzed data cannot re-enter as if
+   unseen.
+2. **No cross-epoch pooling, and pilot epoch = terminal epoch.** The
+   two-arm harness freezes a pin manifest per epoch (e.g. epoch-3 was
+   refrozen as epoch-4 on 2026-07-17 after the GOAL-5 deployments
+   changed 9 pins). Sessions from different epochs are draws from
+   DIFFERENT processes and may never be pooled — not in the pilot fit,
+   not in the terminal series. Additionally the TERMINAL series must
+   run in the SAME epoch the pilot was collected in: a pin refreeze
+   between pilot completion and terminal start invalidates the sizing
+   (T, power, type-I were fitted to a dead process) and requires a new
+   pilot in the new epoch. The activation commit records the epoch_id
+   and is valid only while that epoch is current.
 3. **Epoch break mid-series.** A pin/deployment change that re-freezes
    the harness during pilot collection restarts the pilot (counter to
    zero, prior pilot sessions retained only as a labeled archive). An
@@ -668,11 +703,12 @@ inference:
   materiality_rationale_doc: TBD-AT-ACTIVATION  # written economic rationale for MEE and PE
 
 pilot:                                  # §4.7 calibration pilot
-  epoch_id:              TBD-AT-ACTIVATION  # harness pin-manifest epoch the pilot ran in
-  pilot_manifest_digest: TBD-AT-ACTIVATION  # SHA-256 of the pilot session manifest
+  pilot_registration_commit: TBD-AT-ACTIVATION # commit that authorized pilot collection (§4.7 stage 1)
+  epoch_id:              TBD-AT-ACTIVATION  # harness pin-manifest epoch; terminal series MUST run in this same epoch (§4.7 rule 2)
+  pilot_manifest_digest: TBD-AT-ACTIVATION  # SHA-256 of the pilot session manifest (prospective-only)
   n_pilot_sessions:      TBD-AT-ACTIVATION  # must be >= 40, single epoch
-  burned_sessions_digest: TBD-AT-ACTIVATION # manifest of pre-freeze/analyzed sessions excluded (§4.7.1)
-  blinding_program_commit: TBD-AT-ACTIVATION # arm-label-blinded sizing program version
+  burned_sessions_digest: TBD-AT-ACTIVATION # manifest committed at pilot registration (§4.7 rule 1)
+  blinding_program_commit: TBD-AT-ACTIVATION # demeaned arm-label-blinded sizing program version
   orientation_seal_digest: TBD-AT-ACTIVATION # sealed unblinding key commitment
   variance_upper_bound:  TBD-AT-ACTIVATION  # conservative 90% upper CL used for sizing
 
