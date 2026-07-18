@@ -76,17 +76,21 @@ fi
 # inert scaffolding — skip BY DESIGN, with zero training compute, zero
 # artifact churn, and no alarm. Re-arming the consumer is a config
 # change via its own design PR, not an ops change; this gate then
-# passes without touching this script.
+# passes without touching this script. Only a JSON boolean true arms the
+# consumer; malformed values must fail closed rather than relying on
+# Python truthiness (for example, the string "false" is truthy).
 if ! CONSUMER_ENABLED="$("$PYTHON" - "$PROD_STRATEGY_CONFIG" <<'PY'
 import json
 import sys
 
 cfg = json.load(open(sys.argv[1]))
 enabled = cfg.get("ranking", {}).get("meta_label", {}).get("enabled", False)
-print("true" if enabled else "false")
+if type(enabled) is not bool:
+    raise ValueError("ranking.meta_label.enabled must be a JSON boolean")
+print("true" if enabled is True else "false")
 PY
 )"; then
-    notify "META-LABEL RETRAIN ✗" "pinned strategy config unreadable for consumer gate; monthly job fails closed"
+    notify "META-LABEL RETRAIN ✗" "pinned strategy config invalid or unreadable for consumer gate; monthly job fails closed"
     exit 1
 fi
 if [ "$CONSUMER_ENABLED" != "true" ]; then
