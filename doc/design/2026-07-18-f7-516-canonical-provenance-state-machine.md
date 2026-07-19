@@ -16,7 +16,9 @@ Verified on umbrella `main`:
 - **Scorer** (`panel-ltr`/`panel-rank`): published by `weekly_wf_promote.sh` / `manual_promote.sh` from a `panel-ltr.staging.json` staging path.
 - **Calibrator** (`panel-rank-calibration.json`): published by `monthly_calibrator_refresh.sh` via `monthly_calibrator_atomic_swap.py` (unique staging path -> verify-before-write -> `os.replace`), with a production-overwrite guard + rollback snapshot.
 
-Each artifact publish is individually atomic; the **pair is not jointly atomic** (weekly vs monthly cadence). That non-joint-atomicity IS the calibrator<->scorer orphan class that drained the book on 2026-07-16 (RenQuant#505 fixed the `calibrator_sha256` binding; the durable fix is the pair-atomic seal). The F-7 run-intent therefore binds at the **pair-atomic publish point = AC4's bundle seal** (`bundle_seal.py`, RenQuant#556 — the only point the pair is one unit), NOT retrofitted into the two legacy jobs. #55's producer IS an AC4 bundle-seal hook.
+Each artifact publish is individually atomic; the **pair is not jointly atomic** (weekly vs monthly cadence). That non-joint-atomicity IS the calibrator<->scorer orphan class that drained the book on 2026-07-16 (RenQuant#505 fixed the `calibrator_sha256` binding; the durable fix is the pair-atomic seal). The F-7 run-intent therefore binds at the **pair-atomic publish point = AC4's bundle seal** (`renquant_orchestrator.bundle_seal`, **renquant-orchestrator#556** — the only point the pair is one unit), NOT retrofitted into the two legacy jobs. The producer hook is therefore an ORCHESTRATOR-owned addition to that repo's AC4 sealing workflow (§7), invoked under the designated producer CI principal — NOT umbrella code.
+
+**Hard dependency (activation primitive):** orch#556 P1 seals only BYTE-IDENTICAL (genesis) content — its own review-fix deferred a truly pair-atomic CHANGED-content activation (per-generation directory / single-pointer flip) to a larger AC4 P2/P3 change (tracked as the orchestrator changed-content activation follow-up; codex refs it as orch#558 — to be filed/confirmed). F-7 MUST NOT claim any producer or activation path is READY until that changed-content activation lands and the exact orchestrator pin carrying it is part of DEPLOYMENT validation (§2). P1's byte-identical seal alone is an unsafe activation primitive for a changing pair.
 
 ## 2. Two distinct validations (the fix for the activation cycle)
 
@@ -31,7 +33,7 @@ Two validation operations, at different times, against different targets — con
 | # | state | actor | transition guard | on failure |
 |---|-------|-------|------------------|-----------|
 | 1 | STAGED | scorer job + calibrator job | members produced to staging paths; prod untouched | job non-zero -> prod untouched; prior ACTIVE stays |
-| 2 | PAIR-VALIDATED -> SEALED | AC4 seal hook (producer principal) | §4 pair checks ALL pass; compose bundle gen N (identity = bundle_id+manifest_digest+member digests). **SEALED is staging-only / NON-admissible.** | any pair check fails -> NO identity; not sealed; prior ACTIVE stays |
+| 2 | PAIR-VALIDATED -> SEALED | orch AC4 seal hook (producer principal) | §4 pair checks ALL pass; compose bundle gen N (identity = bundle_id+manifest_digest+member digests). **SEALED is staging-only / NON-admissible.** | any pair check fails -> NO identity; not sealed; prior ACTIVE stays |
 | 3 | RUN-INTENT PREPARED | producer principal | `write_canonical_run_intent` + `build_canonical_provenance_reference` (digest from bytes); write a CANDIDATE entry to the producer's staging ref ONLY (§5) — never the live INDEX | prepare fails -> discard staging ref; prior ACTIVE stays |
 | 4 | REGISTERED (immutable) | **verified-publisher** (§5), NOT the producer | publisher proves the candidate came from the producer principal (§5), `verify_canonical_run_intent` + append-only + digest checks pass; APPENDS to protected-branch `INDEX.json` | publisher refuses -> no append; prior ACTIVE stays |
 | 5 | COMMITTED + PINNED | operator | append-only registry commit pushed; artifacts subrepo pin advanced past it | push/pin fails -> prior pin ACTIVE; re-run |
@@ -55,16 +57,18 @@ Three-principal split (producer prepares · publisher appends · operator activa
 Reuse artifacts' EXISTING `PROVENANCE_REQUIRED_AFTER` + `RQ_REQUIRE_PROVENANCE` (owned by `experiment_registry`) as the single enforcement contract; the canonical path opts IN through it. NO second `CANONICAL_PROVENANCE_REQUIRED_AFTER`/`RQ_REQUIRE_CANONICAL_PROVENANCE` window. Governed rollout: opt-in -> the existing dated window -> consumer suites (backtesting/model/orch) in the gate-introducing PR -> never a flag-day (the artifacts#24 lesson).
 
 ## 7. Ownership, artifacts preconditions, phasing
-- **Producer hook** = umbrella (rides AC4 seal, RenQuant#556); sequences AFTER the AC4 P1-seal live cutover (operator-gated).
-- **Admission adapter** = orchestrator (narrow): supply the snapshot + call `validate_artifact_manifest`; proceeds independently of the producer.
+Repo ownership (corrected r4): the **umbrella** owns this cross-repo PROTOCOL + the lock/pin integration + integration acceptance; **renquant-orchestrator** owns the seal-hook producer AND the admission adapter; **renquant-artifacts** owns the registry invariant.
+- **Producer hook** = **renquant-orchestrator** (an addition to that repo's AC4 sealing workflow around `renquant_orchestrator.bundle_seal`, orch#556, run under the producer CI principal); sequences AFTER the AC4 P1-seal live cutover (operator-gated) AND after the orch changed-content activation follow-up lands (§1 hard dependency).
+- **Admission adapter** = renquant-orchestrator (narrow): supply the snapshot + call `validate_artifact_manifest`; proceeds independently of the producer.
 - **Registry** = renquant-artifacts. **PRECONDITIONS (not open items):** the `INDEX.json` append-only + content-addressed invariant AND the producer allow-list must be specified, implemented, and independently tested in renquant-artifacts before the producer is "ready". artifacts#29 landed the record SHAPE but NOT the append-only INDEX invariant — so #29 is NOT "done" for this gate. A follow-up renquant-artifacts issue will track the invariant + allow-list + acceptance tests; the artifacts pin stays FROZEN past 0b67302f until they land.
+- **Umbrella** = this protocol + `subrepos.lock.json` pin/ACTIVE integration + the cross-repo integration-acceptance test.
 - **Pin gate** = operator; unchanged.
 
-Phasing: (P0) artifacts append-only INDEX + allow-list + tests -> (P1) admission adapter in orchestrator (opt-in OFF) -> (P2) producer hook on AC4 seal (after the AC4 P1 cutover) -> (P3) dated-window enforcement via the EXISTING policy -> (P4) operator pin advance + ACTIVE activation.
+Phasing: (P0) artifacts append-only INDEX + allow-list + tests -> (P1) admission adapter in orchestrator (opt-in OFF) -> (P2) orch producer hook on AC4 seal (after BOTH the AC4 P1 cutover AND the changed-content activation follow-up) -> (P3) dated-window enforcement via the EXISTING policy -> (P4) operator pin advance + ACTIVE activation.
 
 ## 8. References
 - RenQuant#516 (this issue); orch#559 (closed superseded RFC).
 - renquant-artifacts#29 (record shape merged, commit 0b67302f) — append-only INDEX invariant still OWED (new artifacts issue to file).
-- RenQuant#556 (AC4 P1 bundle_seal); RenQuant#505 (calibrator_sha256 binding).
+- **renquant-orchestrator#556** (AC4 P1 bundle_seal — byte-identical genesis only); the orchestrator CHANGED-content activation follow-up (deferred by #556's review-fix; codex refs orch#558 — file/confirm) is a HARD dependency of the activation primitive (§1). RenQuant#505 (calibrator_sha256 binding).
 - Incident 2026-07-16 (book drained to 94% cash — the orphan class this gate prevents); artifacts#24 (the flag-day lesson governing §6).
 - artifacts pin-gate: do not advance the artifacts pin past 0b67302f until §7 preconditions + the integration land.
