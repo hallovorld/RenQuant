@@ -1,0 +1,549 @@
+{
+  "validation": {
+    "prereg": "doc/experiments/2026-07-19-equal-weight-deployment-prereg-v7.md",
+    "section": "4.6 step 2 (method calibration)",
+    "protocol_version": "v7",
+    "generated_at": "2026-07-19T02:24:46.020662+00:00",
+    "seed": 20260719,
+    "frozen_parameters": {
+      "bootstrap_draws": 10000,
+      "monte_carlo_trials": 5000,
+      "alpha_one_sided": 0.1,
+      "type_i_requirement": 0.1,
+      "type_i_ci_upper_max": 0.12,
+      "cp_accept_conf": 0.95,
+      "mee_bps_per_session": 3.0,
+      "acceptance_rule": "point <= 0.10 AND 95% MC-CI upper <= 0.12 AND one-sided Clopper-Pearson 95% upper <= alpha, in EVERY frozen DGP cell (conjunction); fixed N, no optional stopping"
+    },
+    "dgp": {
+      "marginal_sigma_bps": 25.000000000000004,
+      "mbb_block_length": 35,
+      "suite": [
+        {
+          "name": "iid",
+          "kind": "gaussian",
+          "phi": 0.0
+        },
+        {
+          "name": "ar1",
+          "kind": "gaussian",
+          "phi": 0.35
+        },
+        {
+          "name": "ar1_persist",
+          "kind": "gaussian",
+          "phi": 0.6
+        },
+        {
+          "name": "garch",
+          "kind": "garch",
+          "phi": 0.35
+        },
+        {
+          "name": "heavy_t5",
+          "kind": "t5",
+          "phi": 0.35
+        },
+        {
+          "name": "skew",
+          "kind": "skew",
+          "phi": 0.35
+        },
+        {
+          "name": "missing",
+          "kind": "missing",
+          "phi": 0.35
+        }
+      ],
+      "source": "synthetic-default: mirrors #485 provisional (marginal sigma_d=25bps, phi=0.35, mhd=20) \u2014 NOT a fitted blinded pilot"
+    },
+    "cells": {
+      "iid_T240": {
+        "dgp": "iid",
+        "kind": "gaussian",
+        "phi": 0.0,
+        "t_sessions": 240,
+        "core_cell": true,
+        "percentile": {
+          "rate": 0.142,
+          "ci95": [
+            0.13232482374734184,
+            0.15167517625265814
+          ],
+          "cp95_upper": 0.1503742143223008,
+          "rejections": 710,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1168,
+          "ci95": [
+            0.10789729422236138,
+            0.12570270577763862
+          ],
+          "cp95_upper": 0.12453744292374891,
+          "rejections": 584,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.025199999999999986,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.12453744292374891,
+          "binomial_accept": false
+        }
+      },
+      "iid_T480": {
+        "dgp": "iid",
+        "kind": "gaussian",
+        "phi": 0.0,
+        "t_sessions": 480,
+        "core_cell": true,
+        "percentile": {
+          "rate": 0.1238,
+          "ci95": [
+            0.11467079381220907,
+            0.13292920618779092
+          ],
+          "cp95_upper": 0.13172431380931504,
+          "rejections": 619,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.105,
+          "ci95": [
+            0.09650277268751742,
+            0.11349722731248257
+          ],
+          "cp95_upper": 0.11240261258838179,
+          "rejections": 525,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.018799999999999997,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.11240261258838179,
+          "binomial_accept": false
+        }
+      },
+      "ar1_T240": {
+        "dgp": "ar1",
+        "kind": "gaussian",
+        "phi": 0.35,
+        "t_sessions": 240,
+        "core_cell": true,
+        "percentile": {
+          "rate": 0.1388,
+          "ci95": [
+            0.12921663977828238,
+            0.14838336022171764
+          ],
+          "cp95_upper": 0.14709861183783648,
+          "rejections": 694,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1158,
+          "ci95": [
+            0.10693047005782155,
+            0.12466952994217845
+          ],
+          "cp95_upper": 0.12351006138996608,
+          "rejections": 579,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.023000000000000007,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.12351006138996608,
+          "binomial_accept": false
+        }
+      },
+      "ar1_T480": {
+        "dgp": "ar1",
+        "kind": "gaussian",
+        "phi": 0.35,
+        "t_sessions": 480,
+        "core_cell": true,
+        "percentile": {
+          "rate": 0.1216,
+          "ci95": [
+            0.11254092155786252,
+            0.13065907844213748
+          ],
+          "cp95_upper": 0.12946646925622982,
+          "rejections": 608,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1116,
+          "ci95": [
+            0.10287214662927935,
+            0.12032785337072066
+          ],
+          "cp95_upper": 0.11919310070427085,
+          "rejections": 558,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.009999999999999995,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.11919310070427085,
+          "binomial_accept": false
+        }
+      },
+      "ar1_persist_T240": {
+        "dgp": "ar1_persist",
+        "kind": "gaussian",
+        "phi": 0.6,
+        "t_sessions": 240,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1504,
+          "ci95": [
+            0.14049162946449822,
+            0.1603083705355018
+          ],
+          "cp95_upper": 0.15896611623492393,
+          "rejections": 752,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.117,
+          "ci95": [
+            0.10809068422829228,
+            0.12590931577170772
+          ],
+          "cp95_upper": 0.1247428981461901,
+          "rejections": 585,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.0334,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.1247428981461901,
+          "binomial_accept": false
+        }
+      },
+      "ar1_persist_T480": {
+        "dgp": "ar1_persist",
+        "kind": "gaussian",
+        "phi": 0.6,
+        "t_sessions": 480,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1336,
+          "ci95": [
+            0.12416952604304535,
+            0.14303047395695465
+          ],
+          "cp95_upper": 0.14177267021070686,
+          "rejections": 668,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1024,
+          "ci95": [
+            0.09399645617154287,
+            0.11080354382845714
+          ],
+          "cp95_upper": 0.10972520125841706,
+          "rejections": 512,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.03119999999999999,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.10972520125841706,
+          "binomial_accept": false
+        }
+      },
+      "garch_T240": {
+        "dgp": "garch",
+        "kind": "garch",
+        "phi": 0.35,
+        "t_sessions": 240,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1564,
+          "ci95": [
+            0.1463316633343536,
+            0.16646833666564642
+          ],
+          "cp95_upper": 0.1650976576240657,
+          "rejections": 782,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.118,
+          "ci95": [
+            0.10905775909964398,
+            0.12694224090035602
+          ],
+          "cp95_upper": 0.12577006969272778,
+          "rejections": 590,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.03840000000000002,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.12577006969272778,
+          "binomial_accept": false
+        }
+      },
+      "garch_T480": {
+        "dgp": "garch",
+        "kind": "garch",
+        "phi": 0.35,
+        "t_sessions": 480,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.127,
+          "ci95": [
+            0.11777046010247531,
+            0.13622953989752468
+          ],
+          "cp95_upper": 0.13500705218452438,
+          "rejections": 635,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1108,
+          "ci95": [
+            0.10209957081775847,
+            0.11950042918224152
+          ],
+          "cp95_upper": 0.11837045549806732,
+          "rejections": 554,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.016200000000000006,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.11837045549806732,
+          "binomial_accept": false
+        }
+      },
+      "heavy_t5_T240": {
+        "dgp": "heavy_t5",
+        "kind": "t5",
+        "phi": 0.35,
+        "t_sessions": 240,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.145,
+          "ci95": [
+            0.13524026270845366,
+            0.15475973729154632
+          ],
+          "cp95_upper": 0.1534438210311624,
+          "rejections": 725,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1122,
+          "ci95": [
+            0.10345167179106773,
+            0.12094832820893225
+          ],
+          "cp95_upper": 0.11981000646730704,
+          "rejections": 561,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.032799999999999996,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.11981000646730704,
+          "binomial_accept": false
+        }
+      },
+      "heavy_t5_T480": {
+        "dgp": "heavy_t5",
+        "kind": "t5",
+        "phi": 0.35,
+        "t_sessions": 480,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1218,
+          "ci95": [
+            0.11273450694097668,
+            0.1308654930590233
+          ],
+          "cp95_upper": 0.12967176082813683,
+          "rejections": 609,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1094,
+          "ci95": [
+            0.10074790905937761,
+            0.11805209094062238
+          ],
+          "cp95_upper": 0.11693053669024427,
+          "rejections": 547,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.012400000000000008,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.11693053669024427,
+          "binomial_accept": false
+        }
+      },
+      "skew_T240": {
+        "dgp": "skew",
+        "kind": "skew",
+        "phi": 0.35,
+        "t_sessions": 240,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1398,
+          "ci95": [
+            0.13018776513046004,
+            0.14941223486953997
+          ],
+          "cp95_upper": 0.14812239021916737,
+          "rejections": 699,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1162,
+          "ci95": [
+            0.10731717447547234,
+            0.12508282552452765
+          ],
+          "cp95_upper": 0.1239210351506375,
+          "rejections": 581,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.02360000000000001,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.1239210351506375,
+          "binomial_accept": false
+        }
+      },
+      "skew_T480": {
+        "dgp": "skew",
+        "kind": "skew",
+        "phi": 0.35,
+        "t_sessions": 480,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1082,
+          "ci95": [
+            0.09958969702256651,
+            0.1168103029774335
+          ],
+          "cp95_upper": 0.11569602311270842,
+          "rejections": 541,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1092,
+          "ci95": [
+            0.10055485080549792,
+            0.11784514919450209
+          ],
+          "cp95_upper": 0.116724803617263,
+          "rejections": 546,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": -0.0010000000000000009,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.116724803617263,
+          "binomial_accept": false
+        }
+      },
+      "missing_T240": {
+        "dgp": "missing",
+        "kind": "missing",
+        "phi": 0.35,
+        "t_sessions": 240,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1538,
+          "ci95": [
+            0.14380032817242486,
+            0.16379967182757513
+          ],
+          "cp95_upper": 0.16244120423645889,
+          "rejections": 769,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.1126,
+          "ci95": [
+            0.10383806601732244,
+            0.12136193398267757
+          ],
+          "cp95_upper": 0.12022124002632853,
+          "rejections": 563,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.04119999999999999,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.12022124002632853,
+          "binomial_accept": false
+        }
+      },
+      "missing_T480": {
+        "dgp": "missing",
+        "kind": "missing",
+        "phi": 0.35,
+        "t_sessions": 480,
+        "core_cell": false,
+        "percentile": {
+          "rate": 0.1274,
+          "ci95": [
+            0.11815805483262318,
+            0.13664194516737685
+          ],
+          "cp95_upper": 0.13541728018245366,
+          "rejections": 637,
+          "trials": 5000
+        },
+        "studentized": {
+          "rate": 0.109,
+          "ci95": [
+            0.1003618016878518,
+            0.1176381983121482
+          ],
+          "cp95_upper": 0.11651906289299688,
+          "rejections": 545,
+          "trials": 5000
+        },
+        "studentized_reduces_type_i_by": 0.018400000000000014,
+        "studentized_cell_accepted": false,
+        "acceptance_detail": {
+          "retained_bars": false,
+          "cp95_upper": 0.11651906289299688,
+          "binomial_accept": false
+        }
+      }
+    },
+    "studentized_controls_core_cells": false,
+    "studentized_controls_all_cells": false,
+    "percentile_anticonservative": true,
+    "worst_cell_studentized_type_i": 0.118,
+    "verdict": {
+      "studentized_controls": false,
+      "note": "Studentized-t still under-controls boundary type-I in at least one cell (it roughly halves the percentile excess, ~0.15 -> ~0.11, but does not clear <= 0.10 at the few-blocks operating point) -> INFEASIBLE \u2014 INFERENCE METHOD UNCALIBRATED -> v8 needs a different pivot or a small-sample calibration layer (do NOT relax alpha / MEE / block)."
+    },
+    "code_commit": "4c308d20667fa62c14e3c5301e7b812060abf2e5"
+  },
+  "resolved_outcome": "INFEASIBLE \u2014 INFERENCE METHOD UNCALIBRATED"
+}
