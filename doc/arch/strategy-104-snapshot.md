@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: ad55b653e7ddb85612b8a133b2d333a62eb3a0a1b5b3a320561bb9967ba5d129 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
+Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd583e (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
 
 ## Provenance
 
@@ -146,11 +146,11 @@ Source fingerprint: ad55b653e7ddb85612b8a133b2d333a62eb3a0a1b5b3a320561bb9967ba5
 |---|---|---|---|
 | renquant-artifacts | main | `c09d66f8dd09` | bootstrapped |
 | renquant-backtesting | main | `8f6700ab3558` | bootstrapped |
-| renquant-base-data | main | `0678958ec2f5` | active |
+| renquant-base-data | main | `021ca6474102` | active |
 | renquant-common | main | `6f09cb99ae47` | bootstrapped |
 | renquant-execution | main | `c41639840b2c` | bootstrapped |
 | renquant-model | main | `5ef1c2d94f64` | active |
-| renquant-orchestrator | main | `8c0acd5f58ce` | active |
+| renquant-orchestrator | main | `ade07dd797b0` | active |
 | renquant-pipeline | main | `d32f7017ff05` | bootstrapped |
 | renquant-strategy-104 | main | `082dccd21584` | bootstrapped |
 
@@ -162,7 +162,7 @@ Source fingerprint: ad55b653e7ddb85612b8a133b2d333a62eb3a0a1b5b3a320561bb9967ba5
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
 - `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — sha256:9edfa1486697d5f3
 - `backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — sha256:bc3b8a8f803e4685
-- `subrepos.lock.json` — sha256:bd5e251ad48482bd
+- `subrepos.lock.json` — sha256:04851d22d8c5c01c
 
 <!-- snapshot-machine-block
 {
@@ -181,7 +181,7 @@ Source fingerprint: ad55b653e7ddb85612b8a133b2d333a62eb3a0a1b5b3a320561bb9967ba5
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
   "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": "sha256:9edfa1486697d5f3",
   "backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": "sha256:bc3b8a8f803e4685",
-  "subrepos.lock.json": "sha256:bd5e251ad48482bd"
+  "subrepos.lock.json": "sha256:04851d22d8c5c01c"
  },
  "strategy_104_pin": "082dccd21584733af57c33e95851bf3a69b21019"
 }
