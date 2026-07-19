@@ -1,0 +1,133 @@
+{
+  "validation": {
+    "prereg": "doc/experiments/2026-07-19-equal-weight-deployment-prereg-v6.md",
+    "section": "4.6 step 2 (method calibration)",
+    "protocol_version": "v6",
+    "generated_at": "2026-07-19T01:38:32.928773+00:00",
+    "seed": 20260719,
+    "frozen_parameters": {
+      "bootstrap_draws": 10000,
+      "monte_carlo_trials": 8000,
+      "alpha_one_sided": 0.1,
+      "type_i_requirement": 0.1,
+      "type_i_ci_upper_max": 0.12,
+      "mee_bps_per_session": 3.0
+    },
+    "dgp": {
+      "marginal_sigma_bps": 25.000000000000004,
+      "phi_ar1": 0.35,
+      "mbb_block_length": 35,
+      "source": "synthetic-default: mirrors #485 provisional (marginal sigma_d=25bps, phi=0.35, mhd=20) \u2014 NOT a fitted blinded pilot"
+    },
+    "cells": {
+      "iid_T240": {
+        "dgp": "iid",
+        "phi": 0.0,
+        "t_sessions": 240,
+        "percentile": {
+          "rate": 0.1445,
+          "ci95": [
+            0.13679531285839586,
+            0.15220468714160412
+          ],
+          "rejections": 1156,
+          "trials": 8000
+        },
+        "bca": {
+          "rate": 0.145875,
+          "ci95": [
+            0.13813996596019934,
+            0.15361003403980067
+          ],
+          "rejections": 1167,
+          "trials": 8000
+        },
+        "bca_reduces_type_i_by": -0.001375000000000015,
+        "bca_cell_calibrated": false
+      },
+      "iid_T480": {
+        "dgp": "iid",
+        "phi": 0.0,
+        "t_sessions": 480,
+        "percentile": {
+          "rate": 0.11775,
+          "ci95": [
+            0.1106870298749393,
+            0.1248129701250607
+          ],
+          "rejections": 942,
+          "trials": 8000
+        },
+        "bca": {
+          "rate": 0.11875,
+          "ci95": [
+            0.11166112281898606,
+            0.12583887718101391
+          ],
+          "rejections": 950,
+          "trials": 8000
+        },
+        "bca_reduces_type_i_by": -0.0010000000000000009,
+        "bca_cell_calibrated": false
+      },
+      "ar1_T240": {
+        "dgp": "ar1",
+        "phi": 0.35,
+        "t_sessions": 240,
+        "percentile": {
+          "rate": 0.14875,
+          "ci95": [
+            0.14095227118402415,
+            0.15654772881597584
+          ],
+          "rejections": 1190,
+          "trials": 8000
+        },
+        "bca": {
+          "rate": 0.151375,
+          "ci95": [
+            0.14352090650540275,
+            0.15922909349459727
+          ],
+          "rejections": 1211,
+          "trials": 8000
+        },
+        "bca_reduces_type_i_by": -0.002625000000000016,
+        "bca_cell_calibrated": false
+      },
+      "ar1_T480": {
+        "dgp": "ar1",
+        "phi": 0.35,
+        "t_sessions": 480,
+        "percentile": {
+          "rate": 0.1195,
+          "ci95": [
+            0.11239179882459703,
+            0.12660820117540295
+          ],
+          "rejections": 956,
+          "trials": 8000
+        },
+        "bca": {
+          "rate": 0.120875,
+          "ci95": [
+            0.11373160547450478,
+            0.1280183945254952
+          ],
+          "rejections": 967,
+          "trials": 8000
+        },
+        "bca_reduces_type_i_by": -0.0013750000000000012,
+        "bca_cell_calibrated": false
+      }
+    },
+    "bca_controls_boundary_type_i": false,
+    "percentile_anticonservative": true,
+    "verdict": {
+      "bca_controls": false,
+      "note": "BCa still under-controls boundary type-I in at least one cell -> INFEASIBLE \u2014 INFERENCE METHOD UNCALIBRATED -> a v7 studentized-t block bootstrap is required (do NOT relax alpha / MEE)."
+    },
+    "code_commit": "fc648ccb528fa2c62404ec513db5e72eb883e2d5"
+  },
+  "resolved_outcome": "INFEASIBLE \u2014 INFERENCE METHOD UNCALIBRATED"
+}
