@@ -106,3 +106,74 @@ because the pair is only atomic there. This supersedes the v1 §5 "sequence
 after AC4 or go independent" framing: the PRODUCER must ride AC4; only the
 admission adapter + registry-invariant work is independent. The operator's AC4
 P1-seal cutover timing therefore gates #55's producer (not the whole thing).
+
+## 7. r2 — resolutions to codex round-2 review (making it an implementable gate)
+
+### 7.1 SEALED is staging-only; only ACTIVE is live (point 1)
+A SEALED bundle generation is **staging-only and NON-admissible**. It cannot
+become live until ALL of REGISTERED (immutable) → COMMITTED+PINNED → VALIDATED
+succeed AND the ACTIVE pointer (§7.3) is advanced to it. A crash at any point
+before ACTIVE advances leaves the PRIOR generation live and admissible; a
+half-sealed / registered-but-unpinned / pinned-but-unvalidated generation is
+never admitted. Admission (state VALIDATED) is gated on `ACTIVE == this
+generation AND pinned-snapshot validates`, so an unproven pair can never be
+served.
+
+### 7.2 Authorized writer + transport for the registry commit (point 2)
+`re-verifiable evidence IS the review` was wrong as an AUTHORIZATION claim;
+it only justifies not needing a per-run *human content review*, not who may
+write. Concrete transport:
+- The daily producer (AC4 seal hook) only PREPARES the run-intent + candidate
+  append-only entry into a **staging ref** in the artifacts registry repo — it
+  never writes the live `INDEX.json` on the default branch.
+- A single, code-reviewed **verified-publisher** (a dedicated CI job with a
+  dedicated least-privilege credential — NOT the interactive multi-account
+  agent tokens, NOT a shared branch) promotes the staged entry by APPENDING to
+  `INDEX.json` on the protected default branch, only if
+  `verify_canonical_run_intent` + append-only + digest checks pass. This is the
+  only writer of the live registry; it eliminates the multi-account/shared-
+  branch failure mode ([[agent-pr-merge-control-plane]], [[dual-identity-commit-emails]]).
+- The subrepo **pin advance** past the new registry commit is a SEPARATE
+  operator action ([[artifacts-pin-gate-f7-canonical-snapshot]]) — the producer
+  and verified-publisher never advance the umbrella pin.
+
+### 7.3 ACTIVE pointer state + recovery table (point 3)
+Add **ACTIVE** = the single mutable pointer naming the pinned generation the
+daily run admits. It lives in the pinned config/lock (advanced only by the
+operator pin action after VALIDATED). Mutable surface = ONLY the ACTIVE
+pointer; everything else (sealed bundles, registry entries) is immutable/
+append-only.
+
+| failure at | detection | recovery (prior ACTIVE stays live) |
+|---|---|---|
+| seal | seal job non-zero; prod untouched (existing atomic-swap) | prior generation ACTIVE |
+| verify/register | verified-publisher refuses; no INDEX append | prior generation ACTIVE; staged ref discarded |
+| commit/push | protected-branch push fails | prior generation ACTIVE; re-run publisher |
+| pin advance | operator pin step fails / not run | prior pin ACTIVE (daily run unaffected) |
+| validation | admission `validate_artifact_manifest` raises | fail-closed: refuse admit; prior ACTIVE stays served |
+
+No path advances ACTIVE without a validated, pinned, registered generation.
+
+### 7.4 Pair VALIDATION at seal, before pair identity (point 4)
+SEALED is not "compose two staged files"; the seal MUST first validate the pair
+or refuse to assign an identity:
+- **binding**: the calibrator was fit against THIS scorer (the
+  `calibrator_sha256` scorer-binding, RenQuant#505 / [[calibrator-scorer-fingerprint-triple-impl-bug]]);
+- **digests**: exact member content digests recorded;
+- **fingerprints**: code/config/data fingerprints of both producing runs
+  present + consistent;
+- **freshness/cadence**: reject a fresh weekly scorer beside a stale monthly
+  calibrator beyond a declared freshness bound (a valid pair is not "whatever
+  two files are staged"). This is the CORE 2026-07-16 orphan-class protection.
+A pair failing any check is refused a bundle identity (never SEALED).
+
+### 7.5 append-only + allow-list are artifacts PRECONDITIONS, not open items (point 5)
+Reclassifying §5: the `INDEX.json` **append-only + content-addressed**
+invariant and the **producer allow-list** are hard PRECONDITIONS of the
+REGISTERED state — not implementation details. They must be specified,
+implemented, and INDEPENDENTLY TESTED in `renquant-artifacts` (its own issue +
+acceptance tests) before the producer is called ready. artifacts#29 landed the
+record SHAPE but NOT the append-only INDEX invariant — so #29 is NOT "done" for
+this gate. The artifacts pin stays FROZEN past 0b67302f until these invariants
+land ([[artifacts-pin-gate-f7-canonical-snapshot]]). Follow-up artifacts issue
+to be filed for the append-only INDEX + allow-list + tests.
