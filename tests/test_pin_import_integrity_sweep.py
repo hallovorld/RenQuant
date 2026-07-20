@@ -128,10 +128,21 @@ def _run_sweep(lock: Path, siblings: Path) -> subprocess.CompletedProcess:
 
 
 def _fixture_lock(tmp_path: Path, orch_sha: str) -> Path:
+    # Pin EVERY fixture repo to its frozen SHA so the sweep lock matches the
+    # cloned checkouts. Overriding only the orchestrator pin let the
+    # pipeline/backtesting/common entries inherit the LIVE lock's pins; once
+    # the live lock advanced past the frozen fixture, the sweep's strict pin
+    # guard aborted on drift before it could run (fixture rot, not a code bug).
+    frozen = {
+        "renquant-orchestrator": orch_sha,
+        "renquant-pipeline": PIPELINE_PIN,
+        "renquant-backtesting": BACKTESTING_PIN,
+        "renquant-common": COMMON_PIN,
+    }
     lock = json.loads((REPO / "subrepos.lock.json").read_text())
     for e in lock["subrepos"]:
-        if e["name"] == "renquant-orchestrator":
-            e["commit"] = orch_sha
+        if e["name"] in frozen:
+            e["commit"] = frozen[e["name"]]
     out = tmp_path / "lock.json"
     out.write_text(json.dumps(lock))
     return out

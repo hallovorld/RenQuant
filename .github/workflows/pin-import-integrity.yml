@@ -155,4 +155,5 @@ jobs:
           set -euo pipefail
           python3 umbrella/scripts/pin_import_integrity_sweep.py \
             --lock-file umbrella/subrepos.lock.json \
-            --siblings siblings
+            --siblings siblings \
+            --check-entrypoint

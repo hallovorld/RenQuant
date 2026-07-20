@@ -36,11 +36,29 @@ sweep, so coverage extends automatically.
   sibling checkouts. The sweep already bootstraps from `--siblings` at the
   candidate lock, so the entrypoint import there checks the *candidate* pins.
 
+## `--check-entrypoint` flag (needs the full closure)
+Importing the daily entrypoint pulls the WHOLE daily module closure (execution,
+artifacts, model_gbdt, …), so it only makes sense where every subrepo pin is
+present. The CI workflow checks out all 9 and now passes `--check-entrypoint`;
+the sweep defaults it OFF so partial-repo invocations (the local 4-repo
+aliased-regression fixture) don't misreport a legitimately-absent repo as a pin
+gap. `n_entrypoint_modules` reflects whether the check ran.
+
+## Also fixed: rotted #524 regression fixture (same file)
+`_fixture_lock` overrode only the orchestrator pin, so pipeline/backtesting/
+common inherited the LIVE lock's pins while the fixture cloned the frozen
+`#524`-era SHAs → the sweep's strict pin guard aborted on drift before running
+(the local-only `TestRegression524` had been silently failing since the live
+pipeline pin advanced). Now pins every fixture repo to its frozen SHA.
+
 ## Verification
-- `py_compile` OK. Pure unit tests 7/7 (4 AST + 3 new `TestCheckDailyEntrypoint`).
+- `py_compile` OK. Full sweep test file **9/9** (7 pure units incl. 3 new
+  `TestCheckDailyEntrypoint`; the 2 local `TestRegression524` now actually run
+  and pass, entrypoint check OFF by default).
 - **No false positive on the current green lock**: `renquant_orchestrator.daily`
   and `.cli` both import cleanly at the current deployed pins (smoke-tested
-  against `.subrepo_runtime` srcs).
+  against `.subrepo_runtime` srcs, all 9); `#519` CI re-runs the sweep WITH
+  `--check-entrypoint` against all 9 checked-out pins as the end-to-end proof.
 - Would catch g5: on a lock PR advancing the orchestrator pin to the g5 daily.py
   while the pipeline pin lacks `decision_schedule`, importing
   `renquant_orchestrator.daily` raises ImportError → sweep FAIL → CI red.

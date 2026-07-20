@@ -104,7 +104,7 @@ def collect_aliased_imports(pipeline_src: Path) -> list[dict]:
     return out
 
 
-def sweep(lock_file: Path, siblings: Path) -> dict:
+def sweep(lock_file: Path, siblings: Path, check_entrypoint: bool = False) -> dict:
     orch_src = siblings / "renquant-orchestrator" / "src"
     pipeline_src = (siblings / "renquant-pipeline" / "src" / "renquant_pipeline")
     for required, label in ((orch_src, "orchestrator src"),
@@ -207,13 +207,20 @@ def sweep(lock_file: Path, siblings: Path) -> dict:
                     "fix_side": "alias target repo is missing this "
                                 "submodule/attribute the pinned pipeline imports",
                 })
-    # Beyond the aliased-namespace targets above, exercise the daily run's
-    # actual import entrypoint so a NON-aliased cross-repo import break (the
-    # g5 class) fails here too rather than at 06:25 in production.
-    failures.extend(check_daily_entrypoint())
+    # Beyond the aliased-namespace targets above, optionally exercise the daily
+    # run's actual import entrypoint so a NON-aliased cross-repo import break
+    # (the g5 class) fails here too rather than at 06:25 in production. This
+    # needs the FULL daily closure (all 9 subrepos) importable — the CI
+    # workflow provides that and opts in with --check-entrypoint. Partial-repo
+    # invocations (e.g. the local 4-repo aliased-regression fixture) leave it
+    # OFF so a legitimately-absent repo is not misreported as a pin gap.
+    n_entrypoint = 0
+    if check_entrypoint:
+        failures.extend(check_daily_entrypoint())
+        n_entrypoint = len(DAILY_ENTRYPOINT_MODULES)
 
     return {"ok": not failures, "n_targets": len(targets),
-            "n_entrypoint_modules": len(DAILY_ENTRYPOINT_MODULES),
+            "n_entrypoint_modules": n_entrypoint,
             "aliased": aliased, "failures": failures}
 
 
@@ -248,10 +255,17 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lock-file", type=Path, required=True)
     ap.add_argument("--siblings", type=Path, required=True)
+    ap.add_argument("--check-entrypoint", action="store_true",
+                    help="Also import the daily entrypoint modules post-bootstrap "
+                         "(the g5 non-aliased-import class). Requires the FULL daily "
+                         "closure (all 9 subrepos) to be importable — enable in CI "
+                         "where every pin is checked out; leave off for partial-repo "
+                         "invocations.")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
-    result = sweep(args.lock_file.resolve(), args.siblings.resolve())
+    result = sweep(args.lock_file.resolve(), args.siblings.resolve(),
+                   check_entrypoint=args.check_entrypoint)
     if args.json:
         print(json.dumps(result, indent=2, default=str))
     else:
