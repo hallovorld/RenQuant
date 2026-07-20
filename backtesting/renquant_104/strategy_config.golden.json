@@ -175,7 +175,9 @@
  "training_years": 2.5,
  "max_concurrent_positions": 8,
  "parallel_workers": null,
- "parallel_ticker_timeout_seconds": 600,
+ "parallel_ticker_timeout_seconds": 2400,
+ "_parallel_ticker_timeout_note_20260701": "Raised 600->2400 (10min->40min). On 2026-06-30 the 600s cap timed out the per-ticker RL+RF+XGB tournament retrain (scripts/train_104.py --skip-panel, 142 tickers) at only ~67/142 done -> ParallelTimeoutError -> the whole retrain failed silently -> per-ticker models never refreshed -> universe staleness gate dropped all non-held tickers -> 0 buy candidates (the recurring no-buys root cause). The full 142-ticker tournament measured ~493-1280s; 2400s (40min) covers it with comfortable headroom. Kept in lockstep with strategy_config.golden.json per the active==golden semantic-match contract.",
+ "_parallel_ticker_timeout_umbrella_mirror_lag_20260720": "2026-07-20 drift fix: this umbrella working-copy (the config train_104.py actually loads, per scripts/weekly_tournament_retrain.sh:97 + train_104.py comment) still carried the pre-fix 600 while the pinned renquant-strategy-104 config was corrected to 2400 on 2026-07-01. The umbrella mirror commit was never made, so every weekly tournament retrain on the live host kept timing out -> per-ticker models stayed stale -> the 60d universe-staleness gate dropped all non-held names -> ~0 buy candidates for ~18 days (a pipeline-reliability freeze, NOT a strategy no-trade). This commit re-mirrors ONLY parallel_ticker_timeout_seconds; the other umbrella-vs-pinned drifts are deliberately left out of this surgical fix. Merging does NOT deploy: a live-tree sync + a retrain re-run (both ask-first) are still required.",
  "parallel_progress_log_seconds": 30,
  "panel_inference_timeout_seconds": 1800,
  "inference_frame_cache": {
