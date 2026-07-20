@@ -83,6 +83,28 @@ class TestCollectAliasedImports:
         assert got and got[0].get("syntax_error")
 
 
+class TestCheckDailyEntrypoint:
+    """Unit coverage for the daily-entrypoint import check (GOAL-5 AC5, D2) —
+    the layer that catches non-aliased cross-repo import breaks (the g5 class)
+    the aliased-namespace sweep is blind to. Pure: no bootstrap needed."""
+
+    def test_importable_modules_produce_no_findings(self):
+        m = _import_mod()
+        assert m.check_daily_entrypoint(("os", "sys", "json")) == []
+
+    def test_missing_module_is_a_finding_naming_it(self):
+        m = _import_mod()
+        got = m.check_daily_entrypoint(("renquant_orchestrator._ac5_nonexistent_xyz",))
+        assert len(got) == 1
+        assert got[0]["module"] == "renquant_orchestrator._ac5_nonexistent_xyz"
+        assert "Error" in got[0]["error"]
+        assert got[0]["fix_side"]
+
+    def test_default_list_targets_the_daily_entrypoint(self):
+        m = _import_mod()
+        assert "renquant_orchestrator.daily" in m.DAILY_ENTRYPOINT_MODULES
+
+
 def _clone_at(name: str, sha: str, dest: Path) -> bool:
     src = SIBLINGS / name
     if not src.is_dir():
@@ -106,10 +128,21 @@ def _run_sweep(lock: Path, siblings: Path) -> subprocess.CompletedProcess:
 
 
 def _fixture_lock(tmp_path: Path, orch_sha: str) -> Path:
+    # Pin EVERY fixture repo to its frozen SHA so the sweep lock matches the
+    # cloned checkouts. Overriding only the orchestrator pin let the
+    # pipeline/backtesting/common entries inherit the LIVE lock's pins; once
+    # the live lock advanced past the frozen fixture, the sweep's strict pin
+    # guard aborted on drift before it could run (fixture rot, not a code bug).
+    frozen = {
+        "renquant-orchestrator": orch_sha,
+        "renquant-pipeline": PIPELINE_PIN,
+        "renquant-backtesting": BACKTESTING_PIN,
+        "renquant-common": COMMON_PIN,
+    }
     lock = json.loads((REPO / "subrepos.lock.json").read_text())
     for e in lock["subrepos"]:
-        if e["name"] == "renquant-orchestrator":
-            e["commit"] = orch_sha
+        if e["name"] in frozen:
+            e["commit"] = frozen[e["name"]]
     out = tmp_path / "lock.json"
     out.write_text(json.dumps(lock))
     return out
