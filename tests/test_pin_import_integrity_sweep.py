@@ -83,6 +83,28 @@ class TestCollectAliasedImports:
         assert got and got[0].get("syntax_error")
 
 
+class TestCheckDailyEntrypoint:
+    """Unit coverage for the daily-entrypoint import check (GOAL-5 AC5, D2) —
+    the layer that catches non-aliased cross-repo import breaks (the g5 class)
+    the aliased-namespace sweep is blind to. Pure: no bootstrap needed."""
+
+    def test_importable_modules_produce_no_findings(self):
+        m = _import_mod()
+        assert m.check_daily_entrypoint(("os", "sys", "json")) == []
+
+    def test_missing_module_is_a_finding_naming_it(self):
+        m = _import_mod()
+        got = m.check_daily_entrypoint(("renquant_orchestrator._ac5_nonexistent_xyz",))
+        assert len(got) == 1
+        assert got[0]["module"] == "renquant_orchestrator._ac5_nonexistent_xyz"
+        assert "Error" in got[0]["error"]
+        assert got[0]["fix_side"]
+
+    def test_default_list_targets_the_daily_entrypoint(self):
+        m = _import_mod()
+        assert "renquant_orchestrator.daily" in m.DAILY_ENTRYPOINT_MODULES
+
+
 def _clone_at(name: str, sha: str, dest: Path) -> bool:
     src = SIBLINGS / name
     if not src.is_dir():

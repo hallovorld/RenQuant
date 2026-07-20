@@ -23,6 +23,12 @@ Method:
   3. Import each target in-process, post-bootstrap. For ``from M import
      n`` also require ``n`` to resolve as an attribute or submodule of the
      ALIASED ``M``.
+  3b. Import the daily run's entrypoint modules (DAILY_ENTRYPOINT_MODULES)
+     in-process too, so a NON-aliased cross-repo import break in the daily
+     closure — invisible to the aliased AST walk (2b) — fails here as well.
+     This is the g5 class (2026-07-19): a candidate orchestrator pin whose
+     daily.py module-loads ``renquant_pipeline.decision_schedule`` while the
+     candidate pipeline pin lacks it.
   4. Any failure names the import, the source site, and which side must
      fix it. Exit 1.
 
@@ -50,6 +56,20 @@ import tempfile
 from pathlib import Path
 
 ALIASED_PREFIXES = ("kernel.", "renquant_pipeline.kernel.")
+
+# The daily run's import ENTRYPOINT closure. Importing these post-bootstrap
+# exercises every module-level import the daily reaches through the
+# orchestrator — including NON-aliased cross-repo imports that the
+# aliased-namespace sweep is structurally blind to. This is the class that
+# broke the 2026-07-19 g5 pin advance: the candidate orchestrator pin's
+# daily.py module-loaded ``renquant_orchestrator.g4_admission``, which imports
+# ``renquant_pipeline.decision_schedule`` — absent from the deployed pipeline
+# pin. Caught locally by ``make subrepo-daily-contract`` but by NO CI until
+# this check. (GOAL-5 AC5, D2.)
+DAILY_ENTRYPOINT_MODULES = (
+    "renquant_orchestrator.daily",
+    "renquant_orchestrator.cli",
+)
 
 
 def collect_aliased_imports(pipeline_src: Path) -> list[dict]:
@@ -187,8 +207,41 @@ def sweep(lock_file: Path, siblings: Path) -> dict:
                     "fix_side": "alias target repo is missing this "
                                 "submodule/attribute the pinned pipeline imports",
                 })
+    # Beyond the aliased-namespace targets above, exercise the daily run's
+    # actual import entrypoint so a NON-aliased cross-repo import break (the
+    # g5 class) fails here too rather than at 06:25 in production.
+    failures.extend(check_daily_entrypoint())
+
     return {"ok": not failures, "n_targets": len(targets),
+            "n_entrypoint_modules": len(DAILY_ENTRYPOINT_MODULES),
             "aliased": aliased, "failures": failures}
+
+
+def check_daily_entrypoint(modules: tuple[str, ...] = DAILY_ENTRYPOINT_MODULES) -> list[dict]:
+    """Import each daily-run entrypoint module in-process (post-bootstrap); any
+    failure is a finding.
+
+    ``collect_aliased_imports`` only sees imports in aliased namespaces
+    (``kernel.*``). A daily-path module that adds a plain
+    ``from renquant_pipeline.<mod> import ...`` for a module missing from the
+    candidate pipeline pin is invisible to it — but importing the entrypoint
+    triggers Python's own import machinery over the full module-level closure,
+    so the missing module surfaces as an ImportError here. Runs after
+    ``bootstrap_multirepo`` so the aliases + pinned checkouts are already active.
+    """
+    failures: list[dict] = []
+    for mod in modules:
+        try:
+            importlib.import_module(mod)
+        except Exception as exc:  # noqa: BLE001 — any import failure breaks the daily run
+            failures.append({
+                "module": mod, "names": [], "file": None, "line": None,
+                "error": f"{type(exc).__name__}: {exc}",
+                "fix_side": "the daily entrypoint's module-level import closure is "
+                            "unsatisfiable under this pin combination — a subrepo pin "
+                            "is missing a module the daily imports at load time",
+            })
+    return failures
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -203,7 +256,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, default=str))
     else:
         print(f"pin import-integrity sweep: {result.get('n_targets', 0)} "
-              f"aliased-namespace import target(s) checked")
+              f"aliased-namespace import target(s) + "
+              f"{result.get('n_entrypoint_modules', 0)} daily-entrypoint module(s) "
+              f"checked")
         for f in result["failures"]:
             loc = f" [{f.get('file')}:{f.get('line')}]" if f.get("file") else ""
             print(f"  FAIL {f.get('module') or ''}{loc}: "
