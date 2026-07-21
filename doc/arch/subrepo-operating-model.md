@@ -45,6 +45,41 @@ End-to-end data flow:
 6. `main` is the stable interface consumed by other repos and automation.
    Work on large changes, optimizations, or experiments happens on feature
    branches. `main` stays runnable.
+7. **HARD capital-admission gates ship a governed override path** (GOAL-5 P0
+   AC6). This applies to **every** repo, not only `renquant-orchestrator` —
+   `renquant-pipeline`, `renquant-execution`, `renquant-strategy-104`, and
+   `renquant-model` are the repos most likely to carry this kind of gate. A
+   "HARD capital-admission gate" is any change that can, on its own, take a
+   name or the whole book from *tradeable* to *not-tradeable* — a `raise`, a
+   zero-candidates return, a forced sell-only, a blocked buy — where the block
+   is not itself a market/economic decision (pure sizing/ranking is out of
+   scope). A PR that adds or tightens such a gate must document, in its
+   progress doc, a **governed override path** with all three properties:
+   - **Identity** — who may lift/relax the gate, and through what *reviewed
+     surface* (a config field, a manifest entry, a governed flag) — never
+     "whoever can edit the live tree."
+   - **Expiry** — an explicit restore condition, not an open-ended
+     "temporary," with an auto-alarm when the expiry passes.
+   - **Binding** — scoped to the specific gate/artifact/state by fingerprint,
+     with the override's provenance (who/when/why/expiry) recorded in the
+     run bundle for any session it was active in.
+
+   The full rule text, scope boundary, reviewer heuristic, and the current
+   per-repo enforcement/rollout state live in
+   [`renquant-orchestrator` `doc/design/2026-07-20-ac6-gate-design-rule.md`](https://github.com/hallovorld/renquant-orchestrator/blob/main/doc/design/2026-07-20-ac6-gate-design-rule.md) —
+   this entry is the canonical *cross-repo* statement of the rule; that
+   document is the canonical *detail* (rationale, reviewer heuristic, rollout
+   tracking). Keep the two in sync: a change to the rule's substance updates
+   both.
+
+   **Current state (honest, not aspirational):** as of 2026-07-21 the rule is
+   mechanically wired (PR-template checklist item) only in
+   `renquant-orchestrator`. It is not yet wired into the other gate-owning
+   repos' PR templates/CONTRIBUTING, and no shared run-bundle schema/validator
+   exists yet that would *mechanically* reject a run bundle missing required
+   override provenance — until that lands, the provenance requirement is a
+   per-gate-PR acceptance criterion enforced by human review, not an automated
+   gate. Rollout tracking: `renquant-orchestrator`#564.
 
 ## Branching And SDLC
 
