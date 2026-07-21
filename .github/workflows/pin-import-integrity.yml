@@ -157,3 +157,26 @@ jobs:
             --lock-file umbrella/subrepos.lock.json \
             --siblings siblings \
             --check-entrypoint
+
+      # AC5 full-funnel closer (SHADOW). The sweep above proves every aliased
+      # kernel import RESOLVES under the candidate pins; it does NOT prove the
+      # decision Tasks EXECUTE. This step drives the real (synthetic, no-network)
+      # scoring -> selection -> execution funnel through the actual package
+      # contracts against the same candidate pin combination, catching runtime
+      # breaks the import closure misses (a Task that imports fine but fails when
+      # run). Readonly: paper broker, no --execute; writes only to /tmp.
+      #
+      # SHADOW ROLLOUT: continue-on-error keeps this from blocking pin-bumps until
+      # it has run green across a few real pin-bump PRs. Flip to a hard gate
+      # (remove continue-on-error) in a follow-up once stable — see
+      # doc/progress/2026-07-20-ac5-pin-funnel-preflight.md.
+      - name: Execution-funnel preflight against the PR lock (SHADOW — AC5)
+        continue-on-error: true
+        env:
+          RENQUANT_SUBREPO_ROOT: ${{ github.workspace }}/siblings
+        run: |
+          set -euo pipefail
+          python3 umbrella/scripts/subrepo_daily_contract.py \
+            --broker-type paper \
+            --run-id ac5-pin-funnel-preflight \
+            --output-dir /tmp/ac5-funnel-out
