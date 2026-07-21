@@ -166,17 +166,30 @@ jobs:
       # breaks the import closure misses (a Task that imports fine but fails when
       # run). Readonly: paper broker, no --execute; writes only to /tmp.
       #
-      # SHADOW ROLLOUT: continue-on-error keeps this from blocking pin-bumps until
-      # it has run green across a few real pin-bump PRs. Flip to a hard gate
-      # (remove continue-on-error) in a follow-up once stable — see
-      # doc/progress/2026-07-20-ac5-pin-funnel-preflight.md.
+      # SHADOW ROLLOUT (bounded, promotion criterion in the progress doc):
+      # continue-on-error keeps a funnel failure from blocking pin-bumps until it
+      # has run GREEN across 3 real candidate-pin PRs; the outcome is written to
+      # the job step-summary on every run so a shadow failure is NOT easy to
+      # overlook. Promotion = after 3 green pin-bump PRs, a linked follow-up
+      # removes continue-on-error (hard gate). AC5 is NOT hard-enforced until that
+      # flip lands — see doc/progress/2026-07-20-ac5-pin-funnel-preflight.md.
       - name: Execution-funnel preflight against the PR lock (SHADOW — AC5)
         continue-on-error: true
+        timeout-minutes: 15
         env:
           RENQUANT_SUBREPO_ROOT: ${{ github.workspace }}/siblings
         run: |
-          set -euo pipefail
+          set -uo pipefail
           python3 umbrella/scripts/subrepo_daily_contract.py \
             --broker-type paper \
             --run-id ac5-pin-funnel-preflight \
             --output-dir /tmp/ac5-funnel-out
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "### AC5 execution-funnel preflight: ✅ PASS (shadow)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### AC5 execution-funnel preflight: ❌ FAIL rc=$rc (shadow — did NOT block this PR)" >> "$GITHUB_STEP_SUMMARY"
+            echo "A shadow FAIL means the candidate pins import-resolve but the decision funnel does not execute. Investigate before promotion; do NOT flip to a hard gate with a red shadow." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Funnel output dir: /tmp/ac5-funnel-out (run-id ac5-pin-funnel-preflight)" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc

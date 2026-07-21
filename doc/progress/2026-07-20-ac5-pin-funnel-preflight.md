@@ -27,13 +27,26 @@ daily-contract funnel is the one existing piece of infra that runs a real
 (no-network, synthetic-fixture) funnel end-to-end — reused here against the
 candidate pins. No new machinery; env-redirect + one step.
 
-## SHADOW ROLLOUT (protect production)
-`continue-on-error: true` — the step runs and reports but does NOT block
-pin-bumps yet. It gates nothing until it has run green across a few real
-pin-bump PRs; a follow-up removes `continue-on-error` to make it a hard gate.
-This avoids a spurious CI-environment issue freezing all pin-bumps
-([[fix-wave-protect-production]], [[never-deploy-inert-scaffolding]] — shadow
-here is a deliberate staged-enforce, not dark scaffolding).
+## SHADOW ROLLOUT (protect production) — bounded, with a promotion criterion
+`continue-on-error: true` + `timeout-minutes: 15` — the step runs and reports but
+does NOT block pin-bumps yet, and cannot hang the job. Every run writes the funnel
+outcome (PASS/FAIL + output path) to the **job step-summary**, so a shadow failure
+is visible, not silently swallowed.
+
+**AC5 is NOT hard-enforced by this PR.** Hard enforcement requires the
+`continue-on-error` flip, which is gated on a concrete criterion:
+- **Promotion criterion:** the funnel step passes GREEN (step-summary ✅) on **3
+  real candidate-pin-bump PRs** (not this workflow-only PR).
+- **Owner:** the loop driver (claude), tracked in task #66.
+- **Then:** a linked follow-up PR removes `continue-on-error` (and keeps the
+  timeout). That follow-up is what closes AC5's hard-enforcement.
+- **Hardening deadline:** flip within the first 3 qualifying pin-bump PRs or by
+  the end of the GOAL-5 month-1 window, whichever comes first; if no pin-bump
+  happens in that window, cut a synthetic candidate-pin PR to exercise it.
+
+This staged-enforce (not dark scaffolding) avoids a spurious CI-environment issue
+freezing all pin-bumps on day one ([[fix-wave-protect-production]],
+[[never-deploy-inert-scaffolding]]).
 
 ## EVIDENCE
 Validated the funnel locally before wiring: `subrepo_daily_contract.py
