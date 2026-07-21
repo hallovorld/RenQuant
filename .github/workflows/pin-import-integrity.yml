@@ -173,7 +173,17 @@ jobs:
       # overlook. Promotion = after 3 green pin-bump PRs, a linked follow-up
       # removes continue-on-error (hard gate). AC5 is NOT hard-enforced until that
       # flip lands — see doc/progress/2026-07-20-ac5-pin-funnel-preflight.md.
+      #
+      # The funnel's own output directory does not survive the hosted runner
+      # (codex review, 2026-07-21): a shadow FAIL with nothing but the
+      # step-summary line is not actionable -- the decision/stage traces and
+      # run bundle needed to diagnose it are gone the moment the job ends. The
+      # artifact-upload step below (if: always()) preserves that output for
+      # every run, pass or fail, with a bounded retention period, and the
+      # step-summary links the exact artifact name so a shadow failure is
+      # diagnosable from the Actions UI alone.
       - name: Execution-funnel preflight against the PR lock (SHADOW — AC5)
+        id: ac5_funnel
         continue-on-error: true
         timeout-minutes: 15
         env:
@@ -192,4 +202,14 @@ jobs:
             echo "A shadow FAIL means the candidate pins import-resolve but the decision funnel does not execute. Investigate before promotion; do NOT flip to a hard gate with a red shadow." >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "Funnel output dir: /tmp/ac5-funnel-out (run-id ac5-pin-funnel-preflight)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Full trace/run-bundle: uploaded as artifact 'ac5-funnel-output-${{ github.run_id }}' (see this job's Artifacts section, 14-day retention)." >> "$GITHUB_STEP_SUMMARY"
           exit $rc
+
+      - name: Upload AC5 funnel output (shadow diagnosis artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ac5-funnel-output-${{ github.run_id }}
+          path: /tmp/ac5-funnel-out
+          retention-days: 14
+          if-no-files-found: ignore
