@@ -157,3 +157,59 @@ jobs:
             --lock-file umbrella/subrepos.lock.json \
             --siblings siblings \
             --check-entrypoint
+
+      # AC5 full-funnel closer (SHADOW). The sweep above proves every aliased
+      # kernel import RESOLVES under the candidate pins; it does NOT prove the
+      # decision Tasks EXECUTE. This step drives the real (synthetic, no-network)
+      # scoring -> selection -> execution funnel through the actual package
+      # contracts against the same candidate pin combination, catching runtime
+      # breaks the import closure misses (a Task that imports fine but fails when
+      # run). Readonly: paper broker, no --execute; writes only to /tmp.
+      #
+      # SHADOW ROLLOUT (bounded, promotion criterion in the progress doc):
+      # continue-on-error keeps a funnel failure from blocking pin-bumps until it
+      # has run GREEN across 3 real candidate-pin PRs; the outcome is written to
+      # the job step-summary on every run so a shadow failure is NOT easy to
+      # overlook. Promotion = after 3 green pin-bump PRs, a linked follow-up
+      # removes continue-on-error (hard gate). AC5 is NOT hard-enforced until that
+      # flip lands — see doc/progress/2026-07-20-ac5-pin-funnel-preflight.md.
+      #
+      # The funnel's own output directory does not survive the hosted runner
+      # (codex review, 2026-07-21): a shadow FAIL with nothing but the
+      # step-summary line is not actionable -- the decision/stage traces and
+      # run bundle needed to diagnose it are gone the moment the job ends. The
+      # artifact-upload step below (if: always()) preserves that output for
+      # every run, pass or fail, with a bounded retention period, and the
+      # step-summary links the exact artifact name so a shadow failure is
+      # diagnosable from the Actions UI alone.
+      - name: Execution-funnel preflight against the PR lock (SHADOW — AC5)
+        id: ac5_funnel
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          RENQUANT_SUBREPO_ROOT: ${{ github.workspace }}/siblings
+        run: |
+          set -uo pipefail
+          python3 umbrella/scripts/subrepo_daily_contract.py \
+            --broker-type paper \
+            --run-id ac5-pin-funnel-preflight \
+            --output-dir /tmp/ac5-funnel-out
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "### AC5 execution-funnel preflight: ✅ PASS (shadow)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### AC5 execution-funnel preflight: ❌ FAIL rc=$rc (shadow — did NOT block this PR)" >> "$GITHUB_STEP_SUMMARY"
+            echo "A shadow FAIL means the candidate pins import-resolve but the decision funnel does not execute. Investigate before promotion; do NOT flip to a hard gate with a red shadow." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Funnel output dir: /tmp/ac5-funnel-out (run-id ac5-pin-funnel-preflight)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Full trace/run-bundle: uploaded as artifact 'ac5-funnel-output-${{ github.run_id }}' (see this job's Artifacts section, 14-day retention)." >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: Upload AC5 funnel output (shadow diagnosis artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ac5-funnel-output-${{ github.run_id }}
+          path: /tmp/ac5-funnel-out
+          retention-days: 14
+          if-no-files-found: ignore
