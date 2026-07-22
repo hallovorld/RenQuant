@@ -412,8 +412,18 @@ def _run_once_multi_pipeline(
     strategy_dir: Path,
     sell_only: bool,
     use_intraday_prices: bool = False,
+    dry_run: bool = False,
 ) -> None:
-    """Create RunnerAdapter + InferencePipeline and execute one trading cycle."""
+    """Create RunnerAdapter + InferencePipeline and execute one trading cycle.
+
+    ``dry_run`` runs the real scoring/selection funnel (preflight, context,
+    pipeline) but skips ``adapter.commit`` entirely — no broker order, no
+    live_state write, no run-bundle persistence. Explicit and orthogonal to
+    broker choice: `--broker readonly-alpaca` only constrains the broker: it
+    does not stop `commit()` writing state/notifying (GOAL-5 AC5 finding —
+    the dawn preflight needs this to be an actual read-only probe, not just
+    a broker-level guard).
+    """
     _load_kernel(strategy_dir)  # ensure kernel/ is importable
 
     from kernel.pipeline import InferencePipeline, SellOnlyPipeline  # noqa: PLC0415
@@ -532,6 +542,22 @@ def _run_once_multi_pipeline(
 
     ctx = adapter.make_context()
     pipeline.run(ctx)
+
+    if dry_run:
+        # Never call adapter.commit(): that is the ONLY place orders are
+        # placed and live_state.json / run-bundle records are written. A
+        # dry-run cycle must attest that it took this branch — the shell
+        # preflight guard greps the log for this exact marker and fails
+        # closed if it is absent (a silently-ignored --dry-run flag must
+        # not look identical to a real committed cycle).
+        log.info(
+            "DRY_RUN_ATTESTATION commit=skipped orders_placed=0 exits_placed=0 "
+            "state_written=false label=%s run_mode=%s",
+            label, run_mode,
+        )
+        _notify_dry_run_probe(label, run_mode)
+        return
+
     adapter.commit(ctx)
 
     # ── Decision-level ntfy (mandatory — user requirement, 2026-04-23) ──
@@ -609,6 +635,33 @@ def _post_ntfy_with_retries(
         force=force,
     )
     return post_ntfy_alert(url, event, logger=log)
+
+
+def _notify_dry_run_probe(label: str, run_mode: str) -> None:
+    """Best-effort ntfy confirming a dry-run funnel cycle completed.
+
+    Deliberately does NOT read ctx.orders_placed / ctx.exits_placed: those
+    fields are populated only by adapter.commit(), which a dry-run cycle
+    never calls. Reading them here would silently report "0 orders" as if
+    that were a real no-trade decision, when in fact no decision was
+    applied at all. Reuses _post_ntfy_with_retries so a successful send
+    still logs the "ntfy sent:" line the dawn-preflight analyzer's
+    COMPLETION_MARKERS check looks for.
+    """
+    import os  # noqa: PLC0415
+    topic = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+    _post_ntfy_with_retries(
+        f"https://ntfy.sh/{topic}",
+        title=f"{label} [DRY-RUN PREFLIGHT]",
+        body=(
+            f"{run_mode} funnel reached the decision line. No orders placed, "
+            "no state written, no commit executed — this is a read-only probe."
+        ),
+        priority="default",
+        taxonomy="DRY_RUN_PREFLIGHT",
+        key=f"dry-run-preflight:{label}",
+        cooldown_seconds=0,
+    )
 
 
 def _no_trade_reason(ctx) -> str:
@@ -1064,11 +1117,13 @@ def run_once_multi(
     strategy_dir: Path,
     sell_only: bool = False,
     use_intraday_prices: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Execute one multi-stock trading cycle via the kernel pipeline."""
     _run_once_multi_pipeline(
         config, models, broker, strategy_dir,
         sell_only, use_intraday_prices,
+        dry_run=dry_run,
     )
 
 
@@ -1110,6 +1165,14 @@ def main():
     parser.add_argument("--intraday", action="store_true",
                         help="Overlay latest Alpaca 5-min close onto today's bar "
                              "(only useful with --sell-only during market hours)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Run the real scoring/selection funnel but never call "
+                             "adapter.commit() — no broker order, no live_state "
+                             "write, no run-bundle persistence. Orthogonal to "
+                             "--broker: readonly-alpaca only constrains broker "
+                             "access, it does not by itself make commit() a "
+                             "no-op. For read-only operational probes (e.g. the "
+                             "dawn preflight), combine both.")
     # Audit #84: 86400 (24h) was misleading — production scheduling lives
     # in macOS launchd, not in this loop. Default kept for back-compat but
     # the scheduled-mode path emits a warning when a user actually picks it.
@@ -1174,6 +1237,7 @@ def main():
         config, models, broker, strategy_dir,
         sell_only=args.sell_only,
         use_intraday_prices=args.intraday,
+        dry_run=args.dry_run,
     )
 
     try:
