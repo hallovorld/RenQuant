@@ -45,9 +45,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _strip_full_streams(value: Any) -> Any:
+    """Drop the untruncated stream copies before a payload is persisted.
+
+    `_run` keeps a full `stdout_full` alongside the log-sized `stdout` so JSON
+    parsing never sees a truncated document. status.json must stay bounded, so
+    the full copy is removed on the way out.
+    """
+    if isinstance(value, dict):
+        return {k: _strip_full_streams(v) for k, v in value.items() if k != "stdout_full"}
+    if isinstance(value, list):
+        return [_strip_full_streams(v) for v in value]
+    return value
+
+
 def _write_status(payload: dict[str, Any]) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    STATUS_PATH.write_text(
+        json.dumps(_strip_full_streams(payload), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _run(
@@ -71,7 +88,11 @@ def _run(
         "cmd": cmd,
         "cwd": str(cwd),
         "rc": proc.returncode,
+        # `stdout` is the log-sized tail that lands in status.json; `stdout_full`
+        # is what callers must parse. Truncating before json.loads silently kills
+        # the loop as soon as a control-plane payload exceeds the tail budget.
         "stdout": proc.stdout[-8000:],
+        "stdout_full": proc.stdout,
         "stderr": proc.stderr[-8000:],
         "elapsed_s": round(time.time() - started, 3),
     }
@@ -104,8 +125,19 @@ def _orch_json(args: list[str]) -> dict[str, Any]:
         raise RuntimeError(
             f"orchestrator command failed rc={result['rc']}: {result['stderr'] or result['stdout']}"
         )
-    text = str(result["stdout"]).strip()
-    return json.loads(text) if text else {}
+    raw = result.get("stdout_full")
+    if raw is None:
+        raw = result.get("stdout", "")
+    text = str(raw).strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"orchestrator command returned non-JSON stdout ({len(text)} chars): {exc}; "
+            f"head={text[:200]!r}"
+        ) from exc
 
 
 def _queue_total(plan_bundle: dict[str, Any]) -> int:

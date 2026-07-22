@@ -346,3 +346,106 @@ def test_main_fails_when_roadmap_mark_fails(monkeypatch) -> None:
 
     assert mod.main() == 1
     assert len(recorder["dispatched"]) == 1
+
+
+def _big_plan_json(n_repos: int = 12) -> str:
+    """A control-plane plan bundle comfortably larger than the 8000-char log tail."""
+    import json as _json
+
+    filler = "x" * 900
+    repos = [
+        {
+            "plan": {
+                "repo": f"owner/repo-{i}",
+                "instructions": filler,
+                "queue": [{"number": 100 + i, "title": f"pr {i}"}],
+            }
+        }
+        for i in range(n_repos)
+    ]
+    return _json.dumps({"action": "agent", "n_repos": n_repos, "repos": repos}, indent=2)
+
+
+def test_run_keeps_untruncated_stdout_alongside_log_tail(tmp_path) -> None:
+    """Regression: `stdout` is a log-sized tail, so parsers need `stdout_full`."""
+    import json as _json
+
+    mod = _load_module()
+    payload = _big_plan_json()
+    assert len(payload) > 8000
+
+    result = mod._run(
+        [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read())"],
+        cwd=tmp_path,
+        stdin_text=payload,
+    )
+
+    assert result["rc"] == 0
+    assert len(result["stdout"]) == 8000
+    assert result["stdout_full"] == payload
+    assert _json.loads(result["stdout_full"])["n_repos"] == 12
+
+
+def test_orch_json_parses_payload_larger_than_log_tail(monkeypatch) -> None:
+    """Regression for the loop dying every cycle on a >8KB `repos agent` plan:
+    json.loads must see the full stdout, not the truncated tail."""
+    mod = _load_module()
+    payload = _big_plan_json()
+
+    def fake_orch(args):
+        return {
+            "rc": 0,
+            "stdout": payload[-8000:],
+            "stdout_full": payload,
+            "stderr": "",
+            "cmd": args,
+            "cwd": "",
+            "elapsed_s": 0.0,
+        }
+
+    monkeypatch.setattr(mod, "_orch", fake_orch)
+
+    plan = mod._orch_json(["repos", "agent", "--as", "codex", "--workflow", "review"])
+
+    assert plan["n_repos"] == 12
+    assert mod._queue_total(plan) == 12
+
+
+def test_orch_json_falls_back_to_stdout_when_full_absent(monkeypatch) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_orch", lambda args: _ok('{"ok": true}'))
+
+    assert mod._orch_json(["repos", "agent"]) == {"ok": True}
+
+
+def test_orch_json_reports_non_json_stdout_with_head(monkeypatch) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_orch", lambda args: _ok("not json at all"))
+
+    try:
+        mod._orch_json(["repos", "agent"])
+    except RuntimeError as exc:
+        assert "non-JSON stdout" in str(exc)
+        assert "not json at all" in str(exc)
+    else:  # pragma: no cover - guard
+        raise AssertionError("expected RuntimeError")
+
+
+def test_write_status_strips_full_stdout(tmp_path, monkeypatch) -> None:
+    """status.json must stay bounded: the untruncated copy is dropped on write."""
+    import json as _json
+
+    mod = _load_module()
+    monkeypatch.setattr(mod, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(mod, "STATUS_PATH", tmp_path / "status.json")
+
+    mod._write_status(
+        {
+            "ok": True,
+            "steps": [{"name": "plan", "result": {"stdout": "tail", "stdout_full": "x" * 50000}}],
+        }
+    )
+
+    written = (tmp_path / "status.json").read_text(encoding="utf-8")
+    assert "stdout_full" not in written
+    assert _json.loads(written)["steps"][0]["result"]["stdout"] == "tail"
