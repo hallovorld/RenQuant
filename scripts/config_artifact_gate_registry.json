@@ -1,8 +1,8 @@
 {
-  "_comment": "Declared registry of strategy-104 config profiles + manifests that scheduled live / shadow / A-B paths can load. The config-artifact-path gate (scripts/check_config_artifact_paths.py) validates EVERY profile listed here, not just the live config: a bad artifact path in a shadow / A-B profile matters because those profiles carry the ../../ PatchTST checkpoint as their PRIMARY scorer (the live config carries it as a shadow). Validating only strategy_config.json would miss the escape on the scheduled shadow / A-B load paths. Add a profile here whenever a new scheduled path can load one; codex CR on umbrella PR #525.",
+  "_comment": "Declared registry of strategy-104 config profiles that scheduled live / shadow / A-B paths actually load. The config-artifact-path gate (scripts/check_config_artifact_paths.py) validates EVERY profile listed here, not just the live config: a bad artifact path in a shadow / A-B profile matters because those profiles carry the ../../ PatchTST checkpoint as their PRIMARY scorer (the live config carries it as a shadow). Validating only strategy_config.json would miss the escape on the scheduled shadow / A-B load paths. Add a profile here whenever a new scheduled path can load one; codex CR on umbrella PR #525. Only add a profile once its file is confirmed to actually exist / be loaded somewhere in this repo -- a required entry for a file nothing produces makes this gate permanently fail closed (grepped-and-removed once already: xgb_prod_artifact_manifest.json, 2026-07-22).",
   "_shapes": {
     "strategy_config": "kernel strategy config: ranking.panel_scoring.{artifact_path, global_calibration.artifact_path, shadow_models[*].artifact_path} + panel_ltr.artifact_path",
-    "artifact_manifest": "operator artifact-manifest: production_primary.{artifact_path, global_calibration.artifact_path} + readonly_shadow.artifact_path"
+    "artifact_manifest": "operator artifact-manifest shape (production_primary.{artifact_path, global_calibration.artifact_path} + readonly_shadow.artifact_path) -- handler exists (collect_paths_artifact_manifest) and is unit-tested, but is NOT currently registered to any profile: no scheduled path in this repo loads a file in this shape today. Register a profile here only once a real file/loader exists."
   },
   "profiles": [
     {
@@ -28,12 +28,6 @@
       "shape": "strategy_config",
       "loaded_by": "two-arm A/B experiment arm B",
       "required": false
-    },
-    {
-      "file": "xgb_prod_artifact_manifest.json",
-      "shape": "artifact_manifest",
-      "loaded_by": "production artifact manifest (operator override audit)",
-      "required": true
     }
   ]
 }
