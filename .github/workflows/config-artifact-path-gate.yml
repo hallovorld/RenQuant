@@ -1,0 +1,142 @@
+name: config-artifact-path-gate
+
+# Pre-deploy static gate born from a silent shadow-scorer death that NO gate
+# caught: a strategy-104 config carried a PatchTST checkpoint artifact_path of
+# `../../artifacts/patchtst_shadow/.../model.pt`. After the pinned-subrepo
+# migration that relative path resolved OUTSIDE the repo
+# (`RenQuant/../../artifacts` = `/Users/renhao/git/artifacts`), the file was
+# never found, and the scorer silently failed to load for a long time. Nothing
+# statically verified that configured artifact paths point at real, identified
+# artifacts before deploy.
+#
+# The gate CALLS the canonical runtime resolver — renquant-pipeline #211's
+# `renquant_pipeline.kernel.panel_pipeline.shadow_health.resolve_artifact_identity`
+# (which delegates path resolution to `kernel.artifact_resolver` and stamps the
+# immutable content_sha256 scoring uses) — so CI and live agree, and it does
+# NOT re-implement resolution.
+#
+# Two layers:
+#   1. unit — always; fixture-based pytest with a faithful fake of the #211
+#      contract, fully deterministic, needs no pinned checkout or pipeline.
+#   2. verify-pinned-paths — only when subrepos.lock.json changes: clone
+#      renquant-strategy-104 AND renquant-pipeline at their lock pins (same
+#      pattern as strategy-104-snapshot-fresh.yml / pin-import-integrity.yml),
+#      make the pinned pipeline's canonical #211 resolver importable, and
+#      validate EVERY config profile the scheduled live / shadow / A-B paths
+#      can load — declared in scripts/config_artifact_gate_registry.json (live
+#      strategy_config.json, the shadow / A-B profiles, and the production
+#      artifact manifest), NOT just the live config. The shadow / A-B profiles
+#      carry the `../../` checkpoint as their PRIMARY scorer, so validating
+#      only the live config would miss the escape on those scheduled paths.
+#
+# For each configured artifact path the gate (a) resolves it via the pinned
+# #211 canonical resolver and FAILS on `resolved==false`; (b) requires the
+# resolved scorer / calibrator to carry identity metadata (trained_date +
+# config_fingerprint for scorers; trained_date for calibrators) with the
+# canonical content_sha256 as the swap-detection anchor, and FAILS a
+# config-pinned expected_content_sha256 / expected_config_fingerprint mismatch
+# — metadata field extraction reuses the umbrella snapshot contract
+# (render_strategy_104_snapshot.py); and (c) HARD-fails a `../../` repo escape
+# EVEN IF the resolver resolves it (on a machine where `<umbrella>/artifacts`
+# exists the resolver resolves the escape, so resolved==false alone is
+# topology-dependent — the lint makes the incident class deterministic).
+# Primary/calibrator artifacts live in the umbrella at backtesting/renquant_104
+# (the runtime strategy_dir); the umbrella repo root is the resolver repo_root.
+#
+# NOTE: verify-pinned-paths requires the PINNED renquant-pipeline to contain
+# #211's shadow_health. A pin whose pipeline predates #211 fails closed with an
+# actionable message (advance the renquant-pipeline pin to a #211-containing
+# commit) — the #211 rollout advances that pin.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test tools
+        run: python3 -m pip install pytest
+      - name: Config-artifact-path gate unit tests (fixture-based, deterministic)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_check_config_artifact_paths.py
+
+  verify-pinned-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect lock changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          ZERO_SHA="0000000000000000000000000000000000000000"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git fetch --no-tags origin "${BASE_SHA}"
+            RANGE="${BASE_SHA}..HEAD"
+          elif [ -n "${BEFORE_SHA:-}" ] && [ "${BEFORE_SHA}" != "${ZERO_SHA}" ]; then
+            RANGE="${BEFORE_SHA}..HEAD"
+          else
+            RANGE="HEAD^..HEAD"
+          fi
+          if git diff --name-only "${RANGE}" | grep -qx 'subrepos.lock.json'; then
+            echo "lock_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lock_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Read strategy-104 + pipeline pins from subrepos.lock.json
+        if: steps.changes.outputs.lock_changed == 'true'
+        id: pin
+        run: |
+          set -euo pipefail
+          read_pin() { python3 -c "import json,sys; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == sys.argv[1]))" "$1"; }
+          S104="$(read_pin renquant-strategy-104)"; test -n "${S104}"
+          PIPE="$(read_pin renquant-pipeline)"; test -n "${PIPE}"
+          echo "strategy_104=${S104}" >> "$GITHUB_OUTPUT"
+          echo "pipeline=${PIPE}" >> "$GITHUB_OUTPUT"
+      - name: Check out renquant-strategy-104 at the lock pin
+        if: steps.changes.outputs.lock_changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-strategy-104
+          ref: ${{ steps.pin.outputs.strategy_104 }}
+          path: pinned-strategy-104
+          # Private subrepo: needs a PAT/App token with read access (same
+          # fallback chain as subrepo-pin-ci-green.yml / snapshot-fresh).
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+      - name: Check out renquant-pipeline at the lock pin (canonical #211 resolver)
+        if: steps.changes.outputs.lock_changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-pipeline
+          ref: ${{ steps.pin.outputs.pipeline }}
+          path: pinned-pipeline
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+      - name: Verify every configured artifact path across ALL profiles at the candidate pin
+        if: steps.changes.outputs.lock_changed == 'true'
+        # The #211 resolver path (shadow_health -> artifact_resolver) is
+        # stdlib-only, so we make the pinned pipeline importable via PYTHONPATH
+        # rather than a full install — the gate consumes the REAL pinned
+        # resolver without pulling torch/xgboost. If the pinned pipeline
+        # predates #211 the gate fails closed (advance the pipeline pin).
+        env:
+          PYTHONPATH: pinned-pipeline/src
+        run: |
+          set -euo pipefail
+          python3 scripts/check_config_artifact_paths.py \
+            --registry scripts/config_artifact_gate_registry.json \
+            --configs-dir pinned-strategy-104/configs \
+            --strategy-dir backtesting/renquant_104 \
+            --data-root .

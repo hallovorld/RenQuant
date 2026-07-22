@@ -1,0 +1,39 @@
+{
+  "_comment": "Declared registry of strategy-104 config profiles + manifests that scheduled live / shadow / A-B paths can load. The config-artifact-path gate (scripts/check_config_artifact_paths.py) validates EVERY profile listed here, not just the live config: a bad artifact path in a shadow / A-B profile matters because those profiles carry the ../../ PatchTST checkpoint as their PRIMARY scorer (the live config carries it as a shadow). Validating only strategy_config.json would miss the escape on the scheduled shadow / A-B load paths. Add a profile here whenever a new scheduled path can load one; codex CR on umbrella PR #525.",
+  "_shapes": {
+    "strategy_config": "kernel strategy config: ranking.panel_scoring.{artifact_path, global_calibration.artifact_path, shadow_models[*].artifact_path} + panel_ltr.artifact_path",
+    "artifact_manifest": "operator artifact-manifest: production_primary.{artifact_path, global_calibration.artifact_path} + readonly_shadow.artifact_path"
+  },
+  "profiles": [
+    {
+      "file": "strategy_config.json",
+      "shape": "strategy_config",
+      "loaded_by": "live daily_104 (production scorer)",
+      "required": true
+    },
+    {
+      "file": "strategy_config.shadow.json",
+      "shape": "strategy_config",
+      "loaded_by": "readonly shadow path (PatchTST primary, XGB shadow)",
+      "required": true
+    },
+    {
+      "file": "strategy_config.shadow_a.json",
+      "shape": "strategy_config",
+      "loaded_by": "two-arm A/B experiment arm A",
+      "required": false
+    },
+    {
+      "file": "strategy_config.shadow_b.json",
+      "shape": "strategy_config",
+      "loaded_by": "two-arm A/B experiment arm B",
+      "required": false
+    },
+    {
+      "file": "xgb_prod_artifact_manifest.json",
+      "shape": "artifact_manifest",
+      "loaded_by": "production artifact manifest (operator override audit)",
+      "required": true
+    }
+  ]
+}
