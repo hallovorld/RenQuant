@@ -172,12 +172,56 @@ def _relativize_for_display(raw: str, *, repo_root: Path) -> str:
         return f"<redacted-external-path>/{p.name}"
 
 
-def _resolve_artifact_path(raw: str, *, strategy_dir: Path) -> Path:
-    """Artifact paths in strategy_config*.json are relative to STRATEGY_DIR
-    (e.g. "../../artifacts/..." or "artifacts/prod/...")."""
+_CANONICAL_RESOLVER: Any = None
+
+
+def _canonical_resolver(repo_root: Path):
+    """renquant-pipeline's ONE artifact-resolution authority
+    (``kernel.artifact_resolver``: the pure absolute→strategy_dir→repo_root
+    contract the daily loader AND the pre-deploy CI gate (#525) both use),
+    imported from the pinned runtime checkout under ``repo_root``. Memoized.
+
+    codex #524 CR: the snapshot must not carry a SECOND, divergent resolver.
+    The old strategy_dir-only join rendered the PatchTST shadow ref (which lives
+    under the umbrella root, not ``strategy_dir``) as ``unknown`` while the real
+    loader resolved and scored it — a green verifier over a null digest that is
+    not evidence the pin restores a traceable scorer. Returns None only when the
+    pinned pipeline is absent (a declaration-only context, e.g. a hosted CI
+    runner with no ``.subrepo_runtime`` and no live artifacts); the caller then
+    records provenance as context-unverified rather than mis-resolving it."""
+    global _CANONICAL_RESOLVER
+    if _CANONICAL_RESOLVER is not None:
+        return _CANONICAL_RESOLVER or None
+    pin_src = repo_root / ".subrepo_runtime" / "repos" / "renquant-pipeline" / "src"
+    if pin_src.is_dir() and str(pin_src) not in sys.path:
+        sys.path.insert(0, str(pin_src))
+    try:
+        from renquant_pipeline.kernel.artifact_resolver import (  # noqa: PLC0415
+            locate_artifact,
+        )
+        _CANONICAL_RESOLVER = (locate_artifact,)
+    except ImportError:
+        _CANONICAL_RESOLVER = ()  # sentinel: tried, unavailable in this context
+    return _CANONICAL_RESOLVER or None
+
+
+def _resolve_artifact_path(raw: str, *, strategy_dir: Path, repo_root: Path) -> Path:
+    """Resolve an artifact ref through the canonical pipeline resolver — the SAME
+    absolute→strategy_dir→repo_root order the daily run loads with — so a
+    repo-root-relative ref (e.g. the shadow ``artifacts/patchtst_shadow/…`` under
+    the umbrella root, not ``strategy_dir``) resolves to the file that is actually
+    scored, not a phantom ``strategy_dir/artifacts/…`` that silently renders
+    provenance ``unknown`` (codex #524 CR). Falls back to the strategy_dir join
+    ONLY when the pinned pipeline is unavailable (declaration-only CI) — a context
+    with no live artifact to resolve, so the fallback is display-only and matches
+    ``locate_artifact``'s own no-file return (the strategy_dir candidate)."""
     p = Path(raw)
     if p.is_absolute():
         return p
+    resolver = _canonical_resolver(repo_root)
+    if resolver is not None:
+        (locate_artifact,) = resolver
+        return Path(locate_artifact(raw, strategy_dir=strategy_dir, repo_root=repo_root))
     return (strategy_dir / p).resolve()
 
 
@@ -326,7 +370,7 @@ def _describe_model(
     }
     if not artifact_rel:
         return row
-    resolved = _resolve_artifact_path(artifact_rel, strategy_dir=strategy_dir)
+    resolved = _resolve_artifact_path(artifact_rel, strategy_dir=strategy_dir, repo_root=repo_root)
     metadata_file = _metadata_file_for(resolved)
     if sources is not None:
         sources[_relativize_for_display(str(metadata_file), repo_root=repo_root)] = (
@@ -371,7 +415,7 @@ def _describe_calibrator(
     }
     if not artifact_rel:
         return row
-    resolved = _resolve_artifact_path(artifact_rel, strategy_dir=strategy_dir)
+    resolved = _resolve_artifact_path(artifact_rel, strategy_dir=strategy_dir, repo_root=repo_root)
     if sources is not None:
         sources[_relativize_for_display(str(resolved), repo_root=repo_root)] = (
             _sha256_file(resolved)
@@ -474,6 +518,7 @@ def collect_snapshot(
     lock_path: Optional[Path] = None,
     strategy_dir: Optional[Path] = None,
     pinned_git_dir: Optional[Path] = None,
+    source_pin: Optional[str] = None,
 ) -> dict[str, Any]:
     """Pure collection: sources under ``repo_root`` -> snapshot dict. Only
     reads files; never writes, never invokes git. Every path can be
@@ -513,7 +558,11 @@ def collect_snapshot(
         )
 
     # Pin coupling: the runtime checkout the configs came from vs the lock.
-    runtime_head = _read_pinned_checkout_head(pinned_git_dir)
+    # ``source_pin`` (from --source-pin) renders the snapshot as a PRE-DEPLOY
+    # interface declaration from a CANDIDATE lock assembly (a strategy-104
+    # checkout at the lock pin), so the snapshot never depends on a
+    # post-deploy/pin-aligned live runtime (release-contract requirement).
+    runtime_head = source_pin or _read_pinned_checkout_head(pinned_git_dir)
     lock_pin = None
     if lock and isinstance(lock.get("subrepos"), list):
         for entry in lock["subrepos"]:
@@ -532,9 +581,16 @@ def collect_snapshot(
         artifact_rel=panel_scoring.get("artifact_path"),
         strategy_dir=strategy_dir, repo_root=repo_root, sources=sources,
     )
+    # The pooled calibrator is a per-promote RE-FIT live artifact (uncommitted,
+    # mutable). codex #524 CR: a candidate-lock snapshot cannot fold mutable live
+    # artifact state into its reproducible Source fingerprint — else the same
+    # candidate pin renders a different fingerprint whenever the calibrator is
+    # re-fit. So the calibrator is NOT passed `sources` (excluded from the
+    # candidate-interface fingerprint); its digest is recorded on the row as a
+    # time-stamped runtime OBSERVATION (rendered under a distinct section).
     active_calibrator = _describe_calibrator(
         artifact_rel=(panel_scoring.get("global_calibration") or {}).get("artifact_path"),
-        strategy_dir=strategy_dir, repo_root=repo_root, sources=sources,
+        strategy_dir=strategy_dir, repo_root=repo_root,
     )
     in_run_shadows = [
         _describe_model(
@@ -552,10 +608,30 @@ def collect_snapshot(
         artifact_rel=shadow_scoring.get("artifact_path"),
         strategy_dir=strategy_dir, repo_root=repo_root, sources=sources,
     )
-    shadow_e2e_calibrator = _describe_calibrator(
+    shadow_e2e_calibrator = _describe_calibrator(  # runtime observation, not in fingerprint (see active_calibrator)
         artifact_rel=(shadow_scoring.get("global_calibration") or {}).get("artifact_path"),
-        strategy_dir=strategy_dir, repo_root=repo_root, sources=sources,
+        strategy_dir=strategy_dir, repo_root=repo_root,
     )
+
+    # codex #524 CR: a CONFIGURED scorer whose artifact does not resolve to a
+    # real file has no verifiable identity — the pin does not provably restore a
+    # traceable scorer, and a green verifier over that null digest is not
+    # evidence. Surface it as a warning so the pre-deploy snapshot is never
+    # silently green over a required-scorer-rendered-``unknown``. Gated on the
+    # canonical resolver being available (i.e. a live/artifact-bearing context);
+    # a declaration-only CI render with no ``.subrepo_runtime`` has no artifacts
+    # to resolve and is not expected to. Calibrators are runtime observations
+    # (excluded above) and are intentionally exempt.
+    if _canonical_resolver(repo_root) is not None:
+        for _m in (active, shadow_e2e, *in_run_shadows):
+            if _m.get("kind") and _m.get("artifact_path") and _m.get("metadata_missing"):
+                warnings.append(
+                    f"SCORER PROVENANCE UNRESOLVED: {_m.get('role')} scorer "
+                    f"{_m.get('name') or _m.get('kind')} artifact "
+                    f"{_m.get('artifact_path')!r} did not resolve to a metadata-"
+                    "bearing file under the canonical resolver — no digest; the "
+                    "candidate pin does not provably restore a traceable scorer"
+                )
 
     # Known rot vector: the umbrella WORKING-COPY config that the previous
     # snapshot version treated as canonical. Flag when it disagrees with the
@@ -715,7 +791,9 @@ def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = N
         f"{_source_fingerprint(snapshot.get('sources') or {})} "
         "(sha256 over the sorted per-file source hashes below — deterministic;"
         " changes iff pinned/artifact CONTENT changes, never on a bare"
-        " regeneration)",
+        " regeneration. EXCLUDES the pooled calibrators: they are re-fit per"
+        " promote (mutable live state) and are recorded below as runtime"
+        " observations, NOT folded into this candidate-interface fingerprint)",
         "",
         "## Provenance",
         "",
@@ -731,7 +809,11 @@ def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = N
         lines.extend(f"- **{warning}**" for warning in warnings)
     lines.extend(["", "## Active scorer", ""])
     lines.extend(_table(_model_rows(snapshot["active"])))
-    lines.extend(["", "## Active calibrator", ""])
+    lines.extend(["", "## Active calibrator", "",
+                  "> Runtime observation, not a locked identity: the pooled"
+                  " calibrator is re-fit per promote, so the digest below"
+                  " reflects the live artifact as of this regeneration and is"
+                  " EXCLUDED from the candidate Source fingerprint above.", ""])
     lines.extend(_table(_calibrator_rows(snapshot["active_calibrator"])))
     lines.extend(["", "## In-run shadow scorers (readonly, same run)", ""])
     if snapshot.get("in_run_shadows"):
@@ -743,7 +825,10 @@ def render_markdown(snapshot: dict[str, Any], *, generated_at: Optional[str] = N
         lines.append("(none configured)")
     lines.extend(["", "## Shadow e2e config (strategy_config.shadow.json)", ""])
     lines.extend(_table(_model_rows(snapshot["shadow_e2e"])))
-    lines.extend(["", "### Shadow e2e calibrator", ""])
+    lines.extend(["", "### Shadow e2e calibrator", "",
+                  "> Runtime observation (re-fit per promote), excluded from the"
+                  " candidate Source fingerprint — same as the active calibrator.",
+                  ""])
     lines.extend(_table(_calibrator_rows(snapshot["shadow_e2e_calibrator"])))
     lines.extend(["", "## Key policy knobs (active pinned config)", ""])
     lines.extend(_table([
@@ -1085,6 +1170,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     ap.add_argument("--lock-file", type=Path, default=None,
                     help="override <repo-root>/subrepos.lock.json")
+    ap.add_argument("--source-pin", default=None,
+                    help="explicit strategy-104 source commit for the snapshot "
+                         "(render from a CANDIDATE lock assembly pre-deploy; "
+                         "overrides reading the live runtime checkout HEAD)")
     ap.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     ap.add_argument(
         "--check", action="store_true",
@@ -1130,6 +1219,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     snapshot = collect_snapshot(
         args.repo_root, configs_dir=args.configs_dir, lock_path=args.lock_file,
+        source_pin=args.source_pin,
     )
     pin_drift = [w for w in (snapshot.get("warnings") or []) if PIN_DRIFT_MARKER in w]
     if pin_drift and not args.allow_pin_drift:
