@@ -42,6 +42,95 @@ logging.basicConfig(
 log = logging.getLogger("live.runner")
 
 
+# ── Preflight / dry-run mode (GOAL-5 AC5, PR #565 codex CR) ─────────────────────
+#
+# `--broker readonly-alpaca --once` only constrains BROKER writes — the runner
+# still opens/creates the runs DB, allocates a run id, persists live_state, runs
+# the score-distribution DB writer, and emits an ntfy on every cycle. That is NOT
+# a safe read-only operational probe. `--preflight` drives the SAME funnel to a
+# decision line but GUARANTEES zero of: DB/state persistence, order placement,
+# promotion, and notification — enforced structurally (not scattered ifs):
+#   • persistence + orders + promotion — RunnerAdapter.commit() is the single
+#     write chokepoint (every broker.place_order / record_* / save_live_state /
+#     L6-sidecar / trade-log write lives there); dry-run never calls it, AND the
+#     adapter opens NO runs DB (ctx._db is None ⇒ ScoreDistributionJob no-ops and
+#     the data/runs_*.db file is never created), AND meta-label parquet capture is
+#     forced off. commit() also refuses (notes the guard + returns) if ever
+#     entered with a guard attached — defense in depth.
+#   • notifications — the single ntfy send chokepoint (_post_ntfy_with_retries)
+#     is intercepted by the active guard: any attempted send is recorded and
+#     suppressed, so nothing leaves the process.
+# A machine-readable `preflight_attestation:` line is emitted so the dawn shell
+# guard can verify no-write/no-notify and fail closed otherwise. The guard's
+# flags flip true iff a boundary is actually hit, so the attestation is
+# self-attesting: a clean probe is `{...all false..., reached_decision:true}`.
+
+
+class PreflightGuard:
+    """Records whether any real side effect was reached during a dry-run.
+
+    A clean preflight leaves every mutation flag False and reached_decision
+    True. Any boundary that is actually hit flips its flag, which makes
+    ``clean()`` False and is reflected verbatim in the attestation — so a
+    miswired (or regressed) dry-run cannot silently claim to be side-effect
+    free.
+    """
+
+    __slots__ = ("persisted", "notified", "promoted", "ordered", "reached_decision")
+
+    def __init__(self) -> None:
+        self.persisted = False
+        self.notified = False
+        self.promoted = False
+        self.ordered = False
+        self.reached_decision = False
+
+    def note_persist(self) -> None:
+        self.persisted = True
+
+    def note_notify(self) -> None:
+        self.notified = True
+
+    def note_promote(self) -> None:
+        self.promoted = True
+
+    def note_order(self) -> None:
+        self.ordered = True
+
+    def note_decision(self) -> None:
+        self.reached_decision = True
+
+    def payload(self) -> dict[str, bool]:
+        return {
+            "persisted": self.persisted,
+            "notified": self.notified,
+            "promoted": self.promoted,
+            "ordered": self.ordered,
+            "reached_decision": self.reached_decision,
+        }
+
+    def clean(self) -> bool:
+        """True iff a decision was reached and NO mutation boundary was hit."""
+        return self.reached_decision and not (
+            self.persisted or self.notified or self.promoted or self.ordered
+        )
+
+
+# Process-wide active guard. Single-threaded --once runner, so a module global
+# is a safe way to thread the guard to the ntfy send chokepoint without touching
+# every intermediate signature. Set/reset around the dry-run in
+# _run_once_multi_pipeline (try/finally).
+_ACTIVE_PREFLIGHT_GUARD: "PreflightGuard | None" = None
+
+
+def _emit_preflight_attestation(guard: "PreflightGuard") -> None:
+    """Print the machine-readable attestation line consumed by the shell guard."""
+    line = "preflight_attestation: " + json.dumps(guard.payload())
+    # stdout so the dawn wrapper's `> "$LOG"` capture gets it; also logged.
+    print(line, flush=True)
+    log.info(line)
+
+
 _BUY_SIDE_PREFLIGHT_CHECKS = frozenset({
     "P-MODEL-ARTIFACT",
     "P-PANEL-CONTRACT",
@@ -412,16 +501,46 @@ def _run_once_multi_pipeline(
     strategy_dir: Path,
     sell_only: bool,
     use_intraday_prices: bool = False,
+    dry_run: bool = False,
 ) -> None:
-    """Create RunnerAdapter + InferencePipeline and execute one trading cycle."""
+    """Create RunnerAdapter + InferencePipeline and execute one trading cycle.
+
+    ``dry_run=True`` (the ``--preflight`` probe) drives the funnel to the
+    decision line but GUARANTEES no persistence / order / promotion / ntfy
+    side effect and emits a ``preflight_attestation:`` line. See the
+    ``PreflightGuard`` block at the top of this module for the enforcement
+    contract.
+    """
+    global _ACTIVE_PREFLIGHT_GUARD  # noqa: PLW0603
     _load_kernel(strategy_dir)  # ensure kernel/ is importable
 
     from kernel.pipeline import InferencePipeline, SellOnlyPipeline  # noqa: PLC0415
     from adapters.runner import RunnerAdapter                          # noqa: PLC0415
 
+    guard: PreflightGuard | None = PreflightGuard() if dry_run else None
+    if dry_run:
+        _ACTIVE_PREFLIGHT_GUARD = guard
+    try:
+        return _run_once_multi_pipeline_inner(
+            config, models, broker, strategy_dir, sell_only,
+            use_intraday_prices, dry_run, guard,
+            InferencePipeline, SellOnlyPipeline, RunnerAdapter,
+        )
+    finally:
+        if dry_run:
+            _ACTIVE_PREFLIGHT_GUARD = None
+
+
+def _run_once_multi_pipeline_inner(
+    config, models, broker, strategy_dir, sell_only,
+    use_intraday_prices, dry_run, guard,
+    InferencePipeline, SellOnlyPipeline, RunnerAdapter,
+):  # noqa: ANN001, ANN201
     run_mode = "sell-only" if sell_only else "full"
     if use_intraday_prices:
         run_mode += " (intraday)"
+    if dry_run:
+        run_mode += " (preflight)"
     sep = "=" * 62
     log.info(sep)
     label = strategy_dir.name.upper().replace("_", "-")
@@ -469,6 +588,22 @@ def _run_once_multi_pipeline(
                 run_mode=run_mode,
             )
         except PreflightFailed as exc:
+            if dry_run:
+                # Probe path: a preflight-contract failure (buy-side model
+                # block OR a hard broker/state failure) means the funnel did
+                # NOT reach a normal decision line — exactly a daily-killer the
+                # dawn probe must surface 8h early. Log it (analyzer + operator
+                # see the P-* class), NEVER notify (a clean probe emits no
+                # ntfy), emit the attestation with reached_decision:false so
+                # the shell guard fails closed, and exit non-zero.
+                buy_side = _is_buy_side_preflight_block(str(exc))
+                log.error(
+                    "PRE-FLIGHT FAILED (preflight probe, %s; no orders, no ntfy):\n%s",
+                    "buy-side model-contract block" if buy_side else "hard failure",
+                    exc,
+                )
+                _emit_preflight_attestation(guard)
+                raise SystemExit(2) from exc
             import os as _os  # noqa: PLC0415
             suppress_preflight_ntfy = (
                 _os.environ.get("RENQUANT_SUPPRESS_PREFLIGHT_NTFY") == "1"
@@ -493,6 +628,15 @@ def _run_once_multi_pipeline(
         except ImportError as exc:
             # Full/buy runs must never silently trade when the preflight
             # contract itself is unavailable. Sell-only risk exits may proceed.
+            if dry_run:
+                # A probe that cannot import its own preflight contract is
+                # broken — fail closed (attestation reached_decision:false).
+                log.error(
+                    "P-PREFLIGHT-IMPORT preflight module not importable (preflight "
+                    "probe) — no decision reached: %s", exc,
+                )
+                _emit_preflight_attestation(guard)
+                raise SystemExit(2) from exc
             if sell_only:
                 log.warning(
                     "preflight module not importable during sell-only; "
@@ -509,6 +653,13 @@ def _run_once_multi_pipeline(
         except Exception as exc:
             # Full/buy runs must fail closed on broken preflight code. Sell-only
             # risk exits are still allowed because they reduce exposure.
+            if dry_run:
+                log.error(
+                    "P-PREFLIGHT-EXCEPTION preflight raised unexpectedly (preflight "
+                    "probe) — no decision reached: %s", exc,
+                )
+                _emit_preflight_attestation(guard)
+                raise SystemExit(2) from exc
             if sell_only:
                 log.warning(
                     "preflight raised unexpectedly during sell-only; "
@@ -527,11 +678,28 @@ def _run_once_multi_pipeline(
         config, models, broker, strategy_dir,
         sell_only=sell_only,
         use_intraday_prices=use_intraday_prices,
+        preflight=dry_run,
+        preflight_guard=guard,
     )
     pipeline = SellOnlyPipeline() if sell_only else InferencePipeline()
 
     ctx = adapter.make_context()
     pipeline.run(ctx)
+
+    if dry_run:
+        # Reached the decision line. Skip commit() (the sole persistence /
+        # order / promotion chokepoint) and the decision ntfy entirely — the
+        # probe never mutates state or notifies. Emit the attestation for the
+        # shell guard. The "DECISION" token keeps the dawn analyzer's
+        # completion check satisfied without an ntfy.
+        guard.note_decision()
+        log.info(
+            "%s [%s] PREFLIGHT-DECISION reached — no orders, no state persisted, "
+            "no ntfy (dry-run probe)", label, run_mode.upper(),
+        )
+        _emit_preflight_attestation(guard)
+        return
+
     adapter.commit(ctx)
 
     # ── Decision-level ntfy (mandatory — user requirement, 2026-04-23) ──
@@ -599,6 +767,16 @@ def _post_ntfy_with_retries(
     function must never raise. A transient ntfy/SSL failure is common enough
     that a single `urlopen(..., timeout=5)` is not acceptable for trade alerts.
     """
+    # Dry-run safety net: this is the single ntfy send chokepoint. If a
+    # preflight guard is active, record the attempt and suppress the send so
+    # NOTHING leaves the process (defense in depth — the dry-run path already
+    # skips the decision ntfy). A caught send flips guard.notified → the
+    # attestation reports notified:true → the shell guard fails closed.
+    _guard = _ACTIVE_PREFLIGHT_GUARD
+    if _guard is not None:
+        _guard.note_notify()
+        log.info("PREFLIGHT: ntfy send suppressed (title=%r)", title)
+        return False
     event = AlertEvent(
         taxonomy=taxonomy,
         title=title,
@@ -1064,11 +1242,12 @@ def run_once_multi(
     strategy_dir: Path,
     sell_only: bool = False,
     use_intraday_prices: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Execute one multi-stock trading cycle via the kernel pipeline."""
     _run_once_multi_pipeline(
         config, models, broker, strategy_dir,
-        sell_only, use_intraday_prices,
+        sell_only, use_intraday_prices, dry_run=dry_run,
     )
 
 
@@ -1105,6 +1284,12 @@ def main():
     parser.add_argument("--strategy", required=True, help="Strategy directory name")
     parser.add_argument("--broker", choices=["paper", "alpaca", "alpaca-paper", "alpaca-shorts", "ibkr", "readonly-alpaca"], default="paper")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
+    parser.add_argument("--preflight", action="store_true",
+                        help="Read-only dry-run probe: drive the full funnel to a "
+                             "decision line but place NO orders, persist NO DB/state, "
+                             "promote nothing, and send NO notification. Emits a "
+                             "machine-readable `preflight_attestation:` line. Implies "
+                             "--once. Used by the dawn preflight guard.")
     parser.add_argument("--sell-only", action="store_true",
                         help="Process exits only — skip buy scan (for intraday runs)")
     parser.add_argument("--intraday", action="store_true",
@@ -1174,10 +1359,12 @@ def main():
         config, models, broker, strategy_dir,
         sell_only=args.sell_only,
         use_intraday_prices=args.intraday,
+        dry_run=args.preflight,
     )
 
     try:
-        if args.once:
+        if args.once or args.preflight:
+            # --preflight is a single-shot read-only probe (implies --once).
             run_fn()
         else:
             log.warning("Scheduled mode invoked (interval=%ds). Production "

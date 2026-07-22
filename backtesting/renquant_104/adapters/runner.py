@@ -178,6 +178,8 @@ class RunnerAdapter:
         strategy_dir: Path,
         sell_only: bool = False,
         use_intraday_prices: bool = False,
+        preflight: bool = False,
+        preflight_guard: Any = None,
     ) -> None:
         self._config              = config
         self._models              = models
@@ -185,6 +187,14 @@ class RunnerAdapter:
         self._strategy_dir        = strategy_dir
         self._sell_only           = sell_only
         self._use_intraday_prices = use_intraday_prices
+        # Dry-run probe (live.runner --preflight). When True the adapter opens
+        # NO runs DB (so data/runs_*.db is never created and the only
+        # pre-commit DB writer, ScoreDistributionJob, no-ops on ctx._db is
+        # None) and forces meta-label parquet capture off. commit() must never
+        # be called in this mode; if it is, the guard below records it and
+        # commit() refuses to write (defense in depth).
+        self._preflight           = bool(preflight)
+        self._preflight_guard     = preflight_guard
         self._universe_rejections = dict(
             config.get("_universe_rejections") or {}
         )
@@ -234,14 +244,19 @@ class RunnerAdapter:
 
         # Mutate config.persistence.db_path to broker-specific BEFORE
         # constructing the DB connection (kernel.persistence reads it).
-        if self._broker_name:
-            from kernel.state_paths import runs_db_path  # noqa: PLC0415
-            persist_cfg = config.setdefault("persistence", {})
-            base_db = persist_cfg.get("db_path", "data/runs.db")
-            persist_cfg["db_path"] = str(runs_db_path(base_db, self._broker_name))
+        # Skipped entirely in preflight/dry-run: no DB path is resolved and no
+        # connection is opened, so the runs DB file is never created/touched.
+        if self._preflight:
+            self._db = None
+        else:
+            if self._broker_name:
+                from kernel.state_paths import runs_db_path  # noqa: PLC0415
+                persist_cfg = config.setdefault("persistence", {})
+                base_db = persist_cfg.get("db_path", "data/runs.db")
+                persist_cfg["db_path"] = str(runs_db_path(base_db, self._broker_name))
 
-        from kernel.persistence import get_connection  # noqa: PLC0415
-        self._db = get_connection(config, strategy_dir=strategy_dir)
+            from kernel.persistence import get_connection  # noqa: PLC0415
+            self._db = get_connection(config, strategy_dir=strategy_dir)
 
         # ── Meta-label snapshot logger (P5, 2026-05-11) ────────────────────
         # Mirror of SimAdapter wiring. Owned by adapter so it persists
@@ -252,7 +267,7 @@ class RunnerAdapter:
         # dedicated training data-capture run (intraday cron or research
         # batch).
         ml_train_cfg = config.get("meta_label_training", {}) or {}
-        if ml_train_cfg.get("enabled", False):
+        if ml_train_cfg.get("enabled", False) and not self._preflight:
             from kernel.meta_label import SnapshotLogger  # noqa: PLC0415
             self._meta_label_logger = SnapshotLogger()
             self._meta_label_output_path = str(
@@ -848,6 +863,12 @@ class RunnerAdapter:
         if self._db is not None:
             ctx._db = self._db   # noqa: SLF001
 
+        # Dry-run probe: attach the guard so commit() (the single write
+        # chokepoint) can fail closed if it is ever entered in preflight.
+        if self._preflight:
+            ctx._preflight = True          # noqa: SLF001
+            ctx._preflight_guard = self._preflight_guard  # noqa: SLF001
+
         # UNMANAGED-NTFY: pass through to ntfy decision-summary path.
         ctx.non_wl_holds = list(self._non_wl_holds)
 
@@ -1038,6 +1059,25 @@ class RunnerAdapter:
 
     def commit(self, ctx) -> None:  # noqa: ANN001
         """Apply pipeline outputs: execute broker orders, update live_state.json."""
+        # Dry-run safety net: this method is the single write chokepoint
+        # (every broker.place_order / record_* / save_live_state_atomic /
+        # L6-sidecar / trade-log write lives below). The --preflight probe
+        # never calls commit(); if it is reached anyway (miswiring / regression)
+        # record the attempt on the guard and REFUSE to write anything so the
+        # attestation honestly reports the boundary was hit and the shell guard
+        # fails closed.
+        if getattr(self, "_preflight", False) or getattr(ctx, "_preflight", False):
+            guard = getattr(self, "_preflight_guard", None) or getattr(ctx, "_preflight_guard", None)
+            if guard is not None:
+                guard.note_persist()
+                guard.note_order()
+                guard.note_promote()
+            log.error(
+                "PREFLIGHT: commit() entered during dry-run — refusing ALL writes "
+                "(no orders, no state, no DB). This is a fail-closed guard; the "
+                "probe should never reach commit().",
+            )
+            return
         broker        = self._broker
         today_str     = ctx.today.isoformat()
         pos_cache     = self._positions_cache
