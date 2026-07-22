@@ -433,6 +433,13 @@ def test_manifest_shape_extracts_all_three_paths() -> None:
 
 
 def test_shipped_registry_declares_expected_profiles() -> None:
+    """Only profiles a real scheduled path actually loads belong here. An
+    earlier round declared xgb_prod_artifact_manifest.json as required, but
+    no scheduled path in this repo ever loads a file by that name (grepped
+    the full checkout + git history: zero hits) -- a required profile that
+    can never exist would make this gate permanently fail closed. Removed;
+    the artifact_manifest shape handler stays available (test_manifest_
+    shape_extracts_all_three_paths) for whenever a real one shows up."""
     profiles = mod.load_registry(REGISTRY)
     files = {p["file"] for p in profiles}
     assert {
@@ -440,8 +447,8 @@ def test_shipped_registry_declares_expected_profiles() -> None:
         "strategy_config.shadow.json",
         "strategy_config.shadow_a.json",
         "strategy_config.shadow_b.json",
-        "xgb_prod_artifact_manifest.json",
     } <= files
+    assert "xgb_prod_artifact_manifest.json" not in files
     shapes = {p["shape"] for p in profiles}
     assert shapes <= set(mod.COLLECTORS)
 
@@ -458,18 +465,6 @@ def test_registry_run_validates_multiple_profiles_and_skips_optional(
         "../../artifacts/patchtst_shadow/x/model.pt"  # ../../ as PRIMARY
     )
     _write_json(configs_dir / "strategy_config.shadow.json", shadow_cfg)
-    _write_json(
-        configs_dir / "xgb_prod_artifact_manifest.json",
-        {
-            "production_primary": {
-                "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
-                "global_calibration": {
-                    "artifact_path": "artifacts/prod/panel-rank-calibration.json"
-                },
-            },
-            "readonly_shadow": {"artifact_path": good},
-        },
-    )
     # shadow_a/shadow_b intentionally absent -> optional skip.
 
     run = mod.check_registry(
@@ -482,7 +477,7 @@ def test_registry_run_validates_multiple_profiles_and_skips_optional(
     assert shadow_fail.kind == "primary"
     assert any("shadow_a" in s for s in run.skipped_profiles)
     assert any("shadow_b" in s for s in run.skipped_profiles)
-    assert len(run.validated_profiles) == 3
+    assert len(run.validated_profiles) == 2
 
 
 def test_required_profile_absent_fails(tmp_path: Path) -> None:
