@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: fa2f0201dd37874624038c3cb72a9445473fb4ea6db342b606368cb476f99a1c (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
+Source fingerprint: f8a897b1b47742e893646e617cc8ecf246f67c0a4e72fb1f0fe6b1c41da78e6c (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
@@ -50,16 +50,18 @@ Source fingerprint: fa2f0201dd37874624038c3cb72a9445473fb4ea6db342b606368cb476f9
 
 ## Active calibrator
 
+> Runtime observation, not a locked identity: the pooled calibrator is re-fit per promote, so the digest below reflects the live artifact as of this regeneration and is EXCLUDED from the candidate Source fingerprint above.
+
 | | |
 |---|---|
 | Artifact | `artifacts/prod/panel-rank-calibration.json` |
-| Artifact file fingerprint | sha256:d2b4d6ab197f0503 |
+| Artifact file fingerprint | sha256:9edfa1486697d5f3 |
 | kind | global_panel_calibration |
 | trained_date | 2026-05-21 |
 | Method | platt |
 | pool_ic (stamped) | +0.1149 |
 | lookahead_days | 60 |
-| Bound scorer content fingerprint | sha256:6fc9985e6e53e3883a13d572b1e11b7dea484e14df23819dab5474f2cd592372 |
+| Bound scorer content fingerprint | sha256:9c4bbd74b51adc17906ef79702d6cffc96fca9f8e943c33a27ec5adf0b83f686 |
 | Fit data window | unknown (field absent) |
 
 ## In-run shadow scorers (readonly, same run)
@@ -69,19 +71,18 @@ Source fingerprint: fa2f0201dd37874624038c3cb72a9445473fb4ea6db342b606368cb476f9
 | Name | `hf_patchtst_pt07_strict_seed44_previous_primary` |
 | Scorer kind | `hf_patchtst` |
 | Artifact | `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
-| Artifact metadata file fingerprint | unknown (file missing) |
-| trained_date | unknown (field absent) |
-| Binding data cutoff | unknown (field absent) |
+| Artifact metadata file fingerprint | sha256:447b7efa5fa3f64f |
+| trained_date | 2026-05-22 |
+| Binding data cutoff | effective_selection_cutoff_date=2026-02-10 |
 | label_observation_cutoff | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
+| lookahead_days | 60 |
 | label_col | unknown (field absent) |
-| Feature count | unknown (field absent) |
+| Feature count | 172 |
 | train_run_id | unknown (field absent) |
 | oos_mean_ic (stamped) | unknown (field absent) |
 | promotion_status | unknown (field absent) |
-| config_fingerprint | unknown (field absent) |
+| config_fingerprint | sha256:f8fb2259b2bf1537 |
 | WF gate (stamped) | unknown (field absent) |
-| Metadata | unknown (metadata file missing or unreadable) |
 
 ## Shadow e2e config (strategy_config.shadow.json)
 
@@ -89,21 +90,22 @@ Source fingerprint: fa2f0201dd37874624038c3cb72a9445473fb4ea6db342b606368cb476f9
 |---|---|
 | Scorer kind | `hf_patchtst` |
 | Artifact | `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
-| Artifact metadata file fingerprint | unknown (file missing) |
-| trained_date | unknown (field absent) |
-| Binding data cutoff | unknown (field absent) |
+| Artifact metadata file fingerprint | sha256:447b7efa5fa3f64f |
+| trained_date | 2026-05-22 |
+| Binding data cutoff | effective_selection_cutoff_date=2026-02-10 |
 | label_observation_cutoff | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
+| lookahead_days | 60 |
 | label_col | unknown (field absent) |
-| Feature count | unknown (field absent) |
+| Feature count | 172 |
 | train_run_id | unknown (field absent) |
 | oos_mean_ic (stamped) | unknown (field absent) |
 | promotion_status | unknown (field absent) |
-| config_fingerprint | unknown (field absent) |
+| config_fingerprint | sha256:f8fb2259b2bf1537 |
 | WF gate (stamped) | unknown (field absent) |
-| Metadata | unknown (metadata file missing or unreadable) |
 
 ### Shadow e2e calibrator
+
+> Runtime observation (re-fit per promote), excluded from the candidate Source fingerprint — same as the active calibrator.
 
 | | |
 |---|---|
@@ -160,10 +162,8 @@ Source fingerprint: fa2f0201dd37874624038c3cb72a9445473fb4ea6db342b606368cb476f9
 
 - `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:cdd26608f7dbc610
 - `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:dd13dee4f8906576
-- `backtesting/renquant_104/artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — unknown (file missing)
+- `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
-- `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — sha256:d2b4d6ab197f0503
-- `backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — sha256:bc3b8a8f803e4685
 - `subrepos.lock.json` — sha256:f46f4b919075de4d
 
 <!-- snapshot-machine-block
@@ -179,10 +179,8 @@ Source fingerprint: fa2f0201dd37874624038c3cb72a9445473fb4ea6db342b606368cb476f9
  "sources_sha256": {
   ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:cdd26608f7dbc610",
   ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:dd13dee4f8906576",
-  "backtesting/renquant_104/artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": null,
+  "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
-  "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": "sha256:d2b4d6ab197f0503",
-  "backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": "sha256:bc3b8a8f803e4685",
   "subrepos.lock.json": "sha256:f46f4b919075de4d"
  },
  "strategy_104_pin": "1e840cd7fc26c0ef277ffb0ce7d1375abe398b7c"
