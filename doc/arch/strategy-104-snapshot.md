@@ -15,15 +15,15 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd583e (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration)
+Source fingerprint: df2acb1e79c59c3a294175cff2d731ca2086114751227ab008108bf54635ffd6 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
 | | |
 |---|---|
 | Pinned config root | `.subrepo_runtime/repos/renquant-strategy-104/configs` |
-| strategy-104 runtime checkout commit | 082dccd21584733af57c33e95851bf3a69b21019 |
-| subrepos.lock.json strategy-104 pin | 082dccd21584733af57c33e95851bf3a69b21019 |
+| strategy-104 runtime checkout commit | 1e840cd7fc26c0ef277ffb0ce7d1375abe398b7c |
+| subrepos.lock.json strategy-104 pin | 1e840cd7fc26c0ef277ffb0ce7d1375abe398b7c |
 
 ### Source warnings
 
@@ -50,6 +50,8 @@ Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd
 
 ## Active calibrator
 
+> Runtime observation, not a locked identity: the pooled calibrator is re-fit per promote, so the digest below reflects the live artifact as of this regeneration and is EXCLUDED from the candidate Source fingerprint above.
+
 | | |
 |---|---|
 | Artifact | `artifacts/prod/panel-rank-calibration.json` |
@@ -68,7 +70,7 @@ Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd
 |---|---|
 | Name | `hf_patchtst_pt07_strict_seed44_previous_primary` |
 | Scorer kind | `hf_patchtst` |
-| Artifact | `../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
+| Artifact | `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
 | Artifact metadata file fingerprint | sha256:447b7efa5fa3f64f |
 | trained_date | 2026-05-22 |
 | Binding data cutoff | effective_selection_cutoff_date=2026-02-10 |
@@ -87,7 +89,7 @@ Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd
 | | |
 |---|---|
 | Scorer kind | `hf_patchtst` |
-| Artifact | `../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
+| Artifact | `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
 | Artifact metadata file fingerprint | sha256:447b7efa5fa3f64f |
 | trained_date | 2026-05-22 |
 | Binding data cutoff | effective_selection_cutoff_date=2026-02-10 |
@@ -102,6 +104,8 @@ Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd
 | WF gate (stamped) | unknown (field absent) |
 
 ### Shadow e2e calibrator
+
+> Runtime observation (re-fit per promote), excluded from the candidate Source fingerprint — same as the active calibrator.
 
 | | |
 |---|---|
@@ -151,18 +155,16 @@ Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd
 | renquant-execution | main | `c41639840b2c` | bootstrapped |
 | renquant-model | main | `5ef1c2d94f64` | active |
 | renquant-orchestrator | main | `ade07dd797b0` | active |
-| renquant-pipeline | main | `d32f7017ff05` | bootstrapped |
-| renquant-strategy-104 | main | `082dccd21584` | bootstrapped |
+| renquant-pipeline | main | `05eaf8f829f9` | bootstrapped |
+| renquant-strategy-104 | main | `1e840cd7fc26` | bootstrapped |
 
 ## Source fingerprints
 
-- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:b23d821584373314
-- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:29aedd581e88c71d
+- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:cdd26608f7dbc610
+- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:dd13dee4f8906576
 - `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
-- `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json` — sha256:9edfa1486697d5f3
-- `backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` — sha256:bc3b8a8f803e4685
-- `subrepos.lock.json` — sha256:04851d22d8c5c01c
+- `subrepos.lock.json` — sha256:7bd7489b7a24d2a1
 
 <!-- snapshot-machine-block
 {
@@ -171,18 +173,16 @@ Source fingerprint: a0a66b80721475e37b6c03f3fb2a87f7dcc732a0e22351206023cfee57fd
  "in_run_shadow_kinds": [
   "hf_patchtst"
  ],
- "lock_strategy_104_pin": "082dccd21584733af57c33e95851bf3a69b21019",
+ "lock_strategy_104_pin": "1e840cd7fc26c0ef277ffb0ce7d1375abe398b7c",
  "schema_version": 2,
  "shadow_e2e_kind": "hf_patchtst",
  "sources_sha256": {
-  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:b23d821584373314",
-  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:29aedd581e88c71d",
+  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:cdd26608f7dbc610",
+  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:dd13dee4f8906576",
   "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
-  "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json": "sha256:9edfa1486697d5f3",
-  "backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json": "sha256:bc3b8a8f803e4685",
-  "subrepos.lock.json": "sha256:04851d22d8c5c01c"
+  "subrepos.lock.json": "sha256:7bd7489b7a24d2a1"
  },
- "strategy_104_pin": "082dccd21584733af57c33e95851bf3a69b21019"
+ "strategy_104_pin": "1e840cd7fc26c0ef277ffb0ce7d1375abe398b7c"
 }
 -->
