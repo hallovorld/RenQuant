@@ -241,6 +241,7 @@ class WalkForwardModelLoader:
         manifest_path: "str | Path",
         *,
         accept_legacy_stamps: "bool | None" = None,
+        provenance_sink: "object | None" = None,
     ) -> None:
         """``accept_legacy_stamps`` is the M6 stage-2 migration-window flag
         (``ranking.panel_scoring.fingerprint.accept_legacy_stamps``, policy
@@ -250,12 +251,31 @@ class WalkForwardModelLoader:
         strictness: only v1-stamped identity pairs verify; a versionless
         stamp fails closed with the "re-stamp under v1" remedy. Mirrors the
         pipeline loader's constructor so the step-4 flip reaches every leg.
+
+        ``provenance_sink`` is the WF sim-time provenance emitter
+        (pipeline#215 design §2.3, mirroring the pipeline loader's
+        constructor): when set, every ``entry_as_of`` resolution served to
+        scoring emits a ``fold_resolved`` record (deduped per bar inside
+        the sink). Record construction/digest grammar is IMPORTS ONLY from
+        ``renquant_pipeline.kernel.walk_forward.provenance`` — never
+        re-implemented here (the M6/B2 no-fork rule). Default ``None`` —
+        constructed ONLY by sim entry points; the daily path never passes
+        one, so default behavior is byte-identical.
         """
         self._manifest_path = _resolve_manifest_path(manifest_path)
         self._entries: list[RetrainEntry] = []
         self._cache: dict[str, "PanelScorer"] = {}
         self._calibrator_cache: dict[str, object] = {}
         self._accept_legacy_stamps = accept_legacy_stamps
+        self._provenance_sink = provenance_sink
+        self._manifest_digest: "str | None" = None
+        # prediction_date-iso -> the fold_resolved record emitted for that
+        # bar (adapter stamps it onto ctx._wf_active_fold for the
+        # score_committed echo). Also the per-bar rebuild cache.
+        self._fold_records: dict[str, dict] = {}
+        # resolved-path-str -> sha256:<64hex> (fold artifacts are hashed
+        # once per sim, not once per bar).
+        self._digest_cache: dict[str, "str | None"] = {}
         if self._manifest_path.exists():
             self._entries = self._parse_manifest(self._manifest_path)
 
@@ -356,7 +376,101 @@ class WalkForwardModelLoader:
                     f"today={today_ts.date().isoformat()})",
             lookahead_days=chosen.lookahead_days,
         )
+        # WF sim-time provenance (pipeline#215 §2.3): fold_resolved is
+        # emitted HERE — the seam every per-bar resolution (model_as_of /
+        # calibrator_as_of / direct entry_as_of) funnels through, where the
+        # fold row + resolved artifact path + digest co-exist. ``None``
+        # (the default, the ONLY state the daily path ever sees) skips with
+        # zero behavior delta. Emit failures propagate — a sim that cannot
+        # persist its evidence chain must abort loudly, not score silently.
+        if self._provenance_sink is not None:
+            self._emit_fold_resolved(chosen, today_ts)
         return chosen
+
+    def fold_record_for(self, today: "pd.Timestamp | str") -> "dict | None":
+        """The ``fold_resolved`` record emitted for ``today``'s bar.
+
+        ``None`` when no sink is attached or the bar has not resolved a
+        fold yet. The sim adapter stamps this onto ``ctx._wf_active_fold``
+        so the ``score_committed`` emitter can echo ``artifact_digest``
+        (pair-integrity check, design §2.1). NOTE: identity fields the
+        sink completes at write time (``sim_run_id``/``seed``/
+        ``revision_pins``) are ``None`` in this view — the JSONL row is
+        the completed record of record.
+        """
+        return self._fold_records.get(pd.Timestamp(today).date().isoformat())
+
+    def _emit_fold_resolved(
+        self, entry: RetrainEntry, today_ts: pd.Timestamp,
+    ) -> None:
+        """Build + emit ``fold_resolved`` for the resolution just served.
+
+        Mirrors ``renquant_pipeline.kernel.walk_forward.loader
+        ._emit_fold_resolved`` on this loader's own URI-resolution layer.
+        Digests use the PLAIN bounded resolver (no expected-digest binding)
+        exactly like the pipeline emitter — digest ENFORCEMENT stays where
+        it already lives (``model_as_of``/``calibrator_as_of`` load paths),
+        so attaching a sink never moves a digest-policy failure earlier
+        than the load that would hit it anyway.
+        """
+        date_iso = today_ts.date().isoformat()
+        cutoff_iso = entry.cutoff_date.date().isoformat()
+        cached = self._fold_records.get(date_iso)
+        if cached is not None and cached.get("cutoff_date") == cutoff_iso:
+            # Re-entrant resolution of the same bar (model + calibrator
+            # legs): re-emit the identical record — the sink's idempotency
+            # rule makes it a no-op; a DIFFERENT fold for the same bar
+            # falls through and is appended (append-only honesty).
+            self._provenance_sink.emit(cached)
+            return
+        from renquant_pipeline.kernel.walk_forward.provenance import (  # noqa: PLC0415
+            build_fold_resolved_record,
+            file_digest,
+        )
+        claim = self._scorer_claim_for_entry(entry)
+        resolved = self._resolve_uri(entry.artifact_uri)
+        artifact_digest: "str | None" = None
+        if isinstance(resolved, Path):
+            artifact_digest = self._file_digest_cached(resolved, file_digest)
+        is_real_content_digest = artifact_digest is not None
+        suffix = Path(str(resolved)).suffix.lstrip(".").lower()
+        family = suffix or "unknown"
+        calibrator_digest: "str | None" = None
+        if entry.calibrator_uri:
+            resolved_cal = self._resolve_uri(entry.calibrator_uri)
+            if isinstance(resolved_cal, Path):
+                calibrator_digest = self._file_digest_cached(
+                    resolved_cal, file_digest,
+                )
+        if self._manifest_digest is None:
+            self._manifest_digest = file_digest(self._manifest_path)
+        record = build_fold_resolved_record(
+            prediction_date=date_iso,
+            cutoff_date=cutoff_iso,
+            trained_date=entry.trained_date.date().isoformat(),
+            effective_train_cutoff_date=(
+                None if entry.effective_train_cutoff_date is None
+                else entry.effective_train_cutoff_date.date().isoformat()
+            ),
+            lookahead_days=entry.lookahead_days,
+            artifact_uri=entry.artifact_uri,
+            calibrator_uri=entry.calibrator_uri,
+            manifest_path=str(self._manifest_path),
+            manifest_digest=self._manifest_digest,
+            artifact_digest=artifact_digest,
+            is_real_content_digest=is_real_content_digest,
+            family=family,
+            fingerprint_schema=claim.schema,
+            calibrator_digest=calibrator_digest,
+        )
+        self._provenance_sink.emit(record)
+        self._fold_records[date_iso] = record
+
+    def _file_digest_cached(self, path: Path, file_digest) -> "str | None":
+        key = str(path)
+        if key not in self._digest_cache:
+            self._digest_cache[key] = file_digest(path)
+        return self._digest_cache[key]
 
     def model_as_of(self, today: "pd.Timestamp | str") -> "PanelScorer":
         """Return the latest retrain scorer for ``today``.

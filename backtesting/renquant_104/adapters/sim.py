@@ -148,6 +148,7 @@ class SimAdapter:
         panel_factor_frames: dict[str, pd.DataFrame] | None = None,
         backtest_start: "pd.Timestamp | str | None" = None,
         backtest_end: "pd.Timestamp | str | None" = None,
+        provenance_sink: "object | None" = None,
     ) -> None:
         # Walk-forward feature flag (Track P2, 2026-05-10). Config schema:
         #   walkforward.enabled:       bool, default false
@@ -176,6 +177,13 @@ class SimAdapter:
             pd.Timestamp(backtest_end) if backtest_end is not None else None
         )
         self._universe_rejections: dict[str, str] = {}
+
+        # WF sim-time provenance sink (pipeline#215 §2.3). Constructed ONLY
+        # by sim entry points (run_backtest, walkforward.enabled=True);
+        # default None keeps every other construction byte-identical. The
+        # sink is handed to the WalkForwardModelLoader (fold_resolved emit)
+        # and stamped onto each bar's ctx (score_committed emit).
+        self._provenance_sink = provenance_sink
 
         # ── Load per-ticker policy artifacts (same path as live/runner) ─────
         self._models = self._load_models()
@@ -676,7 +684,12 @@ class SimAdapter:
             return None
         try:
             from kernel.walk_forward.loader import WalkForwardModelLoader  # noqa: PLC0415
-            loader = WalkForwardModelLoader(manifest)
+            # Sink kwarg passed only when a sink exists so the default
+            # (no-provenance) construction stays byte-identical.
+            loader_kwargs: dict = {}
+            if getattr(self, "_provenance_sink", None) is not None:
+                loader_kwargs["provenance_sink"] = self._provenance_sink
+            loader = WalkForwardModelLoader(manifest, **loader_kwargs)
         except Exception as exc:
             if fail_on_missing:
                 raise
@@ -1090,7 +1103,77 @@ class SimAdapter:
         if getattr(self, "_panel_asset_embeddings", None) is not None:
             ctx._panel_asset_embeddings = self._panel_asset_embeddings  # noqa: SLF001
 
+        # ── WF sim-time provenance ctx stamps (pipeline#215 §2.3) ───────────
+        # Placed LAST so the watermark sees every feature surface actually
+        # attached to this ctx. The fold record exists because
+        # _get_panel_scorer_for_bar (above) already routed through
+        # entry_as_of, which emitted fold_resolved into the sink.
+        # ctx.run_timestamp stays None on purpose: the sim is bar-date-only
+        # (no real intra-day decision instant), so the score_committed
+        # emitter falls back to the documented 16:00 America/New_York
+        # session close for score_timestamp.
+        if (self._provenance_sink is not None
+                and self._walkforward_loader is not None):
+            ctx._wf_provenance_sink = self._provenance_sink       # noqa: SLF001
+            ctx._wf_active_fold = (                               # noqa: SLF001
+                self._walkforward_loader.fold_record_for(today_ts)
+            )
+            ctx._wf_input_watermark = (                           # noqa: SLF001
+                self._wf_input_watermark_for_ctx(ctx)
+            )
+
         return ctx
+
+    @staticmethod
+    def _wf_input_watermark_for_ctx(ctx) -> "str | None":  # noqa: ANN001
+        """Max event time of the feature surfaces served to THIS bar's ctx.
+
+        MEASURED, not asserted: the max bar/feature DATE is read from the
+        frames actually attached to the ctx (panel history slice, panel
+        feature/factor frames, macro frame, truncated OHLCV); that date is
+        then mapped to the official session close (16:00 America/New_York)
+        — the same daily-bar event-time convention the score_timestamp
+        fallback uses, so the PIT check ``input_watermark <=
+        score_timestamp`` fails exactly when a served frame contains rows
+        AFTER the simulated decision date. Returns None when no dated
+        surface is attached (nothing to measure — never invented).
+        """
+        import datetime as _dt  # noqa: PLC0415
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+        max_ts: "pd.Timestamp | None" = None
+
+        def _fold_in(value) -> None:  # noqa: ANN001
+            nonlocal max_ts
+            if value is None:
+                return
+            ts = pd.Timestamp(value)
+            if pd.isna(ts):
+                return
+            if max_ts is None or ts > max_ts:
+                max_ts = ts
+
+        hist = getattr(ctx, "_panel_history", None)
+        if hist is not None and len(hist) and "date" in getattr(hist, "columns", []):
+            _fold_in(hist["date"].max())
+        for attr in ("_panel_feature_frames", "_panel_factor_frames"):
+            frames = getattr(ctx, attr, None) or {}
+            for df in frames.values():
+                if df is not None and len(df.index):
+                    _fold_in(df.index.max())
+        macro = getattr(ctx, "_panel_macro_frame", None)
+        if macro is not None and len(macro.index):
+            _fold_in(macro.index.max())
+        for df in (getattr(ctx, "ohlcv", None) or {}).values():
+            if df is not None and len(df.index):
+                _fold_in(df.index.max())
+        if max_ts is None:
+            return None
+        close = _dt.datetime.combine(
+            max_ts.date(), _dt.time(16, 0),
+            tzinfo=ZoneInfo("America/New_York"),
+        )
+        return close.isoformat()
 
     def commit(self, ctx) -> None:  # noqa: ANN001
         """Apply pipeline outputs to sim state. Mirrors LeanAdapter.commit."""
@@ -1265,6 +1348,19 @@ class SimAdapter:
             "kelly_held_p90": _quantile_or_nan(held_kelly, 0.90),
         })
 
+        # ── WF provenance: persistence-off score_committed leg ──────────────
+        # (pipeline#215 §2.1 durability). When the sink exists but this
+        # bar's RecordScoreDistributionTask did NOT commit rows (--no-
+        # persist / persistence.enabled=False / score_db disabled), emit
+        # the in-memory payload with persisted:false — Phase-A-inadmissible
+        # by construction, appended for honesty. The ctx handshake flag
+        # (_wf_score_committed) makes this a no-op after a persisted emit.
+        if getattr(self, "_provenance_sink", None) is not None:
+            from kernel.pipeline.task_score_distribution import (  # noqa: PLC0415
+                emit_unpersisted_wf_score_committed,
+            )
+            emit_unpersisted_wf_score_committed(ctx)
+
         # ── SQLite decision trace ───────────────────────────────────────────
         if self._db is not None:
             from kernel.persistence import (  # noqa: PLC0415
@@ -1280,6 +1376,20 @@ class SimAdapter:
                 run_type="sim",
                 ctx=ctx,
             )
+            # pipeline_runs mirror (pipeline#215 design §2.4 SECONDARY):
+            # when a WF fold served this bar, the per-bar row's provenance
+            # columns mirror the ACTIVE FOLD — not whatever static-artifact
+            # metadata build_run_bundle inferred — and the fold_resolved
+            # record itself rides in run_bundle_json. JSONL stays primary.
+            wf_fold = getattr(ctx, "_wf_active_fold", None)
+            if isinstance(wf_fold, dict):
+                run_bundle["wf_provenance_fold"] = dict(wf_fold)
+                run_bundle["training_cutoff"] = (
+                    wf_fold.get("effective_train_cutoff_date")
+                    or wf_fold.get("cutoff_date")
+                )
+                run_bundle["model_content_sha256"] = wf_fold.get(
+                    "artifact_digest")
             selected_tickers = selected_buy_tickers(trade_events_this_bar)
             _record_kw = dict(
                 run_type        = "sim",

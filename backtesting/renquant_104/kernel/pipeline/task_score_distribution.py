@@ -16,8 +16,10 @@ Default OFF — opt-in via `score_db.enabled` config flag.
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 
@@ -27,6 +29,15 @@ from .context import InferenceContext
 from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.score_db")
+
+# Simulated decision instant fallback (pipeline#215 design §2.2): the
+# official US-equity session close in the session timezone — the
+# ``decision_schedule.run_bundle_timestamp`` convention. KEEP IN SYNC with
+# ``renquant_pipeline.kernel.pipeline.task_score_distribution`` (the
+# pipeline copy of this task); the record construction + PIT check are
+# imported from the pipeline provenance module, never re-implemented.
+_SESSION_TZ = "America/New_York"
+_SESSION_CLOSE = dt.time(16, 0)
 
 
 class RecordScoreDistributionTask(Task):
@@ -63,45 +74,10 @@ class RecordScoreDistributionTask(Task):
         run_type = _ctx_run_type(ctx)
         regime = str(ctx.regime or "")
         cand_pool = candidate_trace_pool(ctx)
-        blocked_map = getattr(ctx, "_blocked_by_ticker", None) or {}
-        sector_map = (ctx.config or {}).get("sector_map", {}) or {}
-        model_types = model_types_from_models(getattr(ctx, "models", None) or {})
-        candidate_tickers = {getattr(c, "ticker", None) for c in cand_pool}
-
-        rows: list[tuple] = []
-        for c in cand_pool:
-            ticker = getattr(c, "ticker", None)
-            rows.append((
-                run_id, date_iso, run_type, ticker,
-                getattr(c, "panel_score", None),
-                getattr(c, "rank_score", None),
-                getattr(c, "expected_return_horizon_days", None),
-                getattr(c, "mu", None),
-                getattr(c, "mu_horizon_days", None),
-                getattr(c, "sigma", None),
-                regime,
-                0,  # is_holding=False
-                model_types.get(ticker),
-                _sector_for(ticker, sector_map),
-                blocked_map.get(ticker),
-            ))
-        for ticker, hs in ctx.holdings.items():
-            if ticker in candidate_tickers:
-                continue
-            rows.append((
-                run_id, date_iso, run_type, ticker,
-                getattr(hs, "panel_score", None),
-                getattr(hs, "rank_score", None),
-                getattr(hs, "expected_return_horizon_days", None),
-                getattr(hs, "mu", None),
-                getattr(hs, "mu_horizon_days", None),
-                getattr(hs, "sigma", None),
-                regime,
-                1,  # is_holding=True
-                model_types.get(ticker),
-                _sector_for(ticker, sector_map),
-                blocked_map.get(ticker),
-            ))
+        rows = collect_score_rows(
+            ctx, run_id=run_id, date_iso=date_iso, run_type=run_type,
+            regime=regime, cand_pool=cand_pool,
+        )
 
         try:
             cur = db.cursor()
@@ -155,6 +131,204 @@ class RecordScoreDistributionTask(Task):
         except Exception as exc:  # noqa: BLE001
             log.warning("RecordScoreDistributionTask: skip — %s", exc)
             return False
+
+        # WF sim-time provenance (pipeline#215 §2.3): score_committed is
+        # emitted immediately AFTER the successful INSERT, binding the
+        # provenance to the exact observation Phase-A will read. The sink
+        # and the fold echo ride on ctx (stamped by the sim adapter when it
+        # binds the fold's scorer); absent sink attr = no-op, so the
+        # default daily/live path is byte-identical. Emit failures
+        # propagate — a sim that persisted a score but cannot persist its
+        # evidence chain must fail loudly, not degrade into the post-hoc
+        # reconstruction this contract exists to kill.
+        emit_wf_score_committed(
+            ctx, rows, run_id=run_id, date_iso=date_iso, run_type=run_type,
+            persisted=True,
+        )
+
+
+# ── WF provenance emit (pipeline#215 §2.1/§2.2) ────────────────────────────────
+
+# Insert-tuple coordinates of the canonical score-payload fields. MUST
+# mirror the column order of the score_distribution INSERT above:
+# (run_id, date, run_type, ticker, raw_panel, rank_score,
+#  expected_return_horizon_days, mu, mu_horizon_days, sigma, ...).
+_ROW_TICKER, _ROW_RAW_PANEL, _ROW_RANK_SCORE = 3, 4, 5
+_ROW_MU, _ROW_SIGMA = 7, 9
+
+
+def collect_score_rows(
+    ctx: Any,
+    *,
+    run_id: str,
+    date_iso: str,
+    run_type: "str | None",
+    regime: str,
+    cand_pool: "list | None" = None,
+) -> list[tuple]:
+    """Build the score_distribution INSERT tuples for this bar.
+
+    Extracted from ``RecordScoreDistributionTask.run`` so the persistence-
+    off provenance leg (``emit_unpersisted_wf_score_committed``, called by
+    the sim adapter) digests the SAME payload the task would have
+    persisted — one row-building implementation, never two.
+    """
+    if cand_pool is None:
+        cand_pool = candidate_trace_pool(ctx)
+    blocked_map = getattr(ctx, "_blocked_by_ticker", None) or {}
+    sector_map = (ctx.config or {}).get("sector_map", {}) or {}
+    model_types = model_types_from_models(getattr(ctx, "models", None) or {})
+    candidate_tickers = {getattr(c, "ticker", None) for c in cand_pool}
+
+    rows: list[tuple] = []
+    for c in cand_pool:
+        ticker = getattr(c, "ticker", None)
+        rows.append((
+            run_id, date_iso, run_type, ticker,
+            getattr(c, "panel_score", None),
+            getattr(c, "rank_score", None),
+            getattr(c, "expected_return_horizon_days", None),
+            getattr(c, "mu", None),
+            getattr(c, "mu_horizon_days", None),
+            getattr(c, "sigma", None),
+            regime,
+            0,  # is_holding=False
+            model_types.get(ticker),
+            _sector_for(ticker, sector_map),
+            blocked_map.get(ticker),
+        ))
+    for ticker, hs in ctx.holdings.items():
+        if ticker in candidate_tickers:
+            continue
+        rows.append((
+            run_id, date_iso, run_type, ticker,
+            getattr(hs, "panel_score", None),
+            getattr(hs, "rank_score", None),
+            getattr(hs, "expected_return_horizon_days", None),
+            getattr(hs, "mu", None),
+            getattr(hs, "mu_horizon_days", None),
+            getattr(hs, "sigma", None),
+            regime,
+            1,  # is_holding=True
+            model_types.get(ticker),
+            _sector_for(ticker, sector_map),
+            blocked_map.get(ticker),
+        ))
+    return rows
+
+
+def emit_wf_score_committed(
+    ctx: Any,
+    rows: list[tuple],
+    *,
+    run_id: str,
+    date_iso: str,
+    run_type: "str | None",
+    persisted: bool,
+) -> bool:
+    """Emit ``score_committed`` for this bar (no-op without a ctx sink).
+
+    Record construction, digest grammar, and the PIT invariant
+    (``input_watermark <= score_timestamp``) are IMPORTS ONLY from
+    ``renquant_pipeline.kernel.walk_forward.provenance`` — the lazy import
+    only runs when a sink is stamped, which itself requires a post-#216
+    pipeline pin. Returns True iff a record was emitted; also stamps
+    ``ctx._wf_score_committed`` so the sim adapter's persistence-off leg
+    knows the persisted emit already happened.
+    """
+    sink = getattr(ctx, "_wf_provenance_sink", None)
+    if sink is None:
+        return False
+    from renquant_pipeline.kernel.walk_forward.provenance import (  # noqa: PLC0415
+        build_score_committed_record,
+        score_payload_digest,
+    )
+    payload_rows = [
+        {
+            "ticker": r[_ROW_TICKER],
+            "raw_panel": r[_ROW_RAW_PANEL],
+            "mu": r[_ROW_MU],
+            "rank_score": r[_ROW_RANK_SCORE],
+            "sigma": r[_ROW_SIGMA],
+        }
+        for r in rows
+    ]
+    fold = getattr(ctx, "_wf_active_fold", None)
+    record = build_score_committed_record(
+        prediction_date=date_iso,
+        score_observation_key=[run_id, date_iso, run_type],
+        score_payload_digest=score_payload_digest(payload_rows),
+        n_rows=len(rows),
+        artifact_digest=_fold_field(fold, "artifact_digest"),
+        score_timestamp=_score_timestamp(ctx),
+        input_watermark=getattr(ctx, "_wf_input_watermark", None),
+        persisted=persisted,
+    )
+    sink.emit(record)
+    ctx._wf_score_committed = True  # noqa: SLF001 - adapter handshake
+    return True
+
+
+def emit_unpersisted_wf_score_committed(ctx: Any) -> bool:
+    """Persistence-off leg (design §2.1 durability): ``persisted: false``.
+
+    Called by the sim adapter post-scoring when the task did NOT commit
+    rows this bar (``--no-persist`` / ``persistence.enabled=False`` /
+    ``score_db`` disabled). Digests the in-memory payload the task WOULD
+    have persisted. Such rows are Phase-A-INADMISSIBLE by construction —
+    emitted for append-only honesty, never as evidence. Bars with an empty
+    payload emit nothing (there is no observation to bind; the orphaned
+    ``fold_resolved`` correctly marks the date incomplete).
+    """
+    if getattr(ctx, "_wf_provenance_sink", None) is None:
+        return False
+    if getattr(ctx, "_wf_score_committed", False):
+        return False  # the persisted emit already covered this bar
+    date_iso = ctx.today.isoformat()
+    run_id = (
+        getattr(ctx, "run_id", None)
+        or getattr(ctx, "_run_id", None)
+        or f"{date_iso}-unscoped"
+    )
+    run_type = _ctx_run_type(ctx)
+    rows = collect_score_rows(
+        ctx, run_id=run_id, date_iso=date_iso, run_type=run_type,
+        regime=str(ctx.regime or ""),
+    )
+    if not rows:
+        return False
+    return emit_wf_score_committed(
+        ctx, rows, run_id=run_id, date_iso=date_iso, run_type=run_type,
+        persisted=False,
+    )
+
+
+def _fold_field(fold: Any, name: str) -> Any:
+    """Read a field off ``ctx._wf_active_fold`` (mapping or object)."""
+    if fold is None:
+        return None
+    if isinstance(fold, dict):
+        return fold.get(name)
+    return getattr(fold, name, None)
+
+
+def _score_timestamp(ctx: Any) -> str:
+    """The simulated session's decision instant for this bar (§2.2).
+
+    Primary source: ``ctx.run_timestamp`` — the one decision timestamp the
+    InferenceContext carries. A naive value is interpreted in the session
+    timezone (America/New_York). Fallback (sim/LEAN deliberately leave
+    ``run_timestamp=None`` for bar-date-only semantics): the official
+    US-equity session close — 16:00 America/New_York on the bar date.
+    ISO-8601 with offset either way. Mirrors the pipeline task's helper.
+    """
+    tz = ZoneInfo(_SESSION_TZ)
+    ts = getattr(ctx, "run_timestamp", None)
+    if isinstance(ts, dt.datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=tz)
+        return ts.isoformat()
+    return dt.datetime.combine(ctx.today, _SESSION_CLOSE, tzinfo=tz).isoformat()
 
 
 # ── Helpers (Phase 2 will use these from JointActionTask) ──────────────────────
