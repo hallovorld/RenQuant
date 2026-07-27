@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import importlib
+import importlib.util
 import logging
+import sys
 import uuid
 from pathlib import Path
 
@@ -100,6 +102,15 @@ def mint_sim_run_id() -> str:
     return f"wfsim-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+_PROVENANCE_MODULE = "renquant_pipeline.kernel.walk_forward.provenance"
+_PROVENANCE_MODULE_PARENTS = frozenset({
+    "renquant_pipeline",
+    "renquant_pipeline.kernel",
+    "renquant_pipeline.kernel.walk_forward",
+    _PROVENANCE_MODULE,
+})
+
+
 def build_wf_provenance_sink(
     *,
     seed: "int | None" = None,
@@ -113,29 +124,43 @@ def build_wf_provenance_sink(
     pins + seed captured at sim start (design §2.3/§2.4). ``data_root``
     exists for tests; the default is this checkout's root.
     """
-    try:
-        from renquant_pipeline.kernel.walk_forward.provenance import (  # noqa: PLC0415
-            PROVENANCE_DIRNAME,
-            JsonlProvenanceSink,
-            capture_revision_pins,
-        )
-    except ModuleNotFoundError as exc:
-        # Narrow to the true "module predates pipeline#216" case: the
-        # missing module is renquant_pipeline itself or one of its
-        # submodules on the path to .kernel.walk_forward.provenance. Any
-        # other ImportError/ModuleNotFoundError (a transitive dependency
-        # missing, a partial/broken provenance module) is a real break and
-        # must surface, not silently degrade to no-emit.
-        missing = exc.name or ""
-        if not missing.startswith("renquant_pipeline"):
-            raise
-        log.warning(
-            "WF provenance sink UNAVAILABLE: the pinned renquant-pipeline "
-            "predates pipeline#216 (no kernel.walk_forward.provenance). "
-            "Sim runs WITHOUT sim-time provenance emit; its scores stay "
-            "Phase-A-inadmissible until the pipeline pin advances."
-        )
-        return None
+    # Degrade to None ONLY when the provenance module genuinely does not
+    # exist on the pinned pipeline (predates pipeline#216) — decided by an
+    # EXISTENCE probe (find_spec, which locates without executing), never by
+    # catching the import. Once the module is known to exist, every import
+    # failure (missing transitive dependency, broken internal import even
+    # inside renquant_pipeline itself, missing export) propagates loudly: a
+    # post-#216 pin that cannot load provenance must fail the sim, not
+    # silently drop the evidence chain (codex MED, PR #531 round 1).
+    if sys.modules.get(_PROVENANCE_MODULE) is None:
+        if _PROVENANCE_MODULE in sys.modules:
+            # Explicit None stub: the import system would refuse this module
+            # (the canonical "absent on this pin" state in tests).
+            spec = None
+        else:
+            try:
+                spec = importlib.util.find_spec(_PROVENANCE_MODULE)
+            except ModuleNotFoundError as exc:
+                # Only a missing package ON THE PATH TO the provenance
+                # module means "predates #216" (e.g. no renquant_pipeline at
+                # all). A parent package failing on some OTHER missing
+                # module is a real environment break.
+                if (exc.name or "") not in _PROVENANCE_MODULE_PARENTS:
+                    raise
+                spec = None
+        if spec is None:
+            log.warning(
+                "WF provenance sink UNAVAILABLE: the pinned renquant-pipeline "
+                "predates pipeline#216 (no kernel.walk_forward.provenance). "
+                "Sim runs WITHOUT sim-time provenance emit; its scores stay "
+                "Phase-A-inadmissible until the pipeline pin advances."
+            )
+            return None
+    from renquant_pipeline.kernel.walk_forward.provenance import (  # noqa: PLC0415
+        PROVENANCE_DIRNAME,
+        JsonlProvenanceSink,
+        capture_revision_pins,
+    )
     root = Path(data_root) if data_root is not None else sim_repo_root()
     directory = root / "data" / PROVENANCE_DIRNAME
     run_id = sim_run_id or mint_sim_run_id()
