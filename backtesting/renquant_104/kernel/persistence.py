@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     counters_json    TEXT,
     run_bundle_json  TEXT,
     commit_sha       TEXT,
+    training_cutoff  TEXT,
+    model_content_sha256 TEXT,
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_date ON pipeline_runs(run_date);
@@ -489,6 +491,10 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("bear_only",     "INTEGER"),
         ("counters_json", "TEXT"),
         ("run_bundle_json", "TEXT"),
+        # pipeline#215 §2.4 SECONDARY mirror: per-bar WF fold provenance
+        # (JSONL under data/wf_provenance/ stays the PRIMARY record).
+        ("training_cutoff",      "TEXT"),
+        ("model_content_sha256", "TEXT"),
     ],
     "training_runs": [
         ("elapsed_sec",           "REAL"),
@@ -1012,8 +1018,16 @@ def record_pipeline_run(
     counters: dict[str, Any] | None = None,
     run_bundle: dict[str, Any] | None = None,
     run_id: str | None = None,
+    training_cutoff: str | None = None,
+    model_content_sha256: str | None = None,
 ) -> str | None:
-    """Insert a pipeline_runs row and return the generated run_id."""
+    """Insert a pipeline_runs row and return the generated run_id.
+
+    ``training_cutoff`` / ``model_content_sha256`` (pipeline#215 design
+    §2.4 SECONDARY mirror): the per-bar model-provenance columns. For WF
+    sims the caller passes the ACTIVE FOLD's cutoff + full artifact digest;
+    the JSONL provenance ledger stays the primary record.
+    """
     if conn is None:
         return None
     run_id = run_id or f"{run_date.isoformat()}-{run_type}-{uuid.uuid4().hex[:8]}"
@@ -1022,8 +1036,8 @@ def record_pipeline_run(
               (run_id, run_date, run_type, strategy, regime, confidence,
                portfolio_value, cash, n_candidates, n_exits, n_rotations, n_buys,
                buy_blocked, skip_buys, bear_only, counters_json, run_bundle_json,
-               commit_sha)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               commit_sha, training_cutoff, model_content_sha256)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (run_id, run_date.isoformat(), run_type, strategy, regime, confidence,
          portfolio_value, cash, n_candidates, n_exits, n_rotations, n_buys,
          None if buy_blocked is None else int(bool(buy_blocked)),
@@ -1031,7 +1045,9 @@ def record_pipeline_run(
          None if bear_only is None else int(bool(bear_only)),
          json.dumps(counters or {}, sort_keys=True, default=str),
          json.dumps(run_bundle or {}, sort_keys=True, default=str),
-         _commit_sha()),
+         _commit_sha(),
+         None if training_cutoff is None else str(training_cutoff),
+         None if model_content_sha256 is None else str(model_content_sha256)),
     )
     return run_id
 

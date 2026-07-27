@@ -286,6 +286,21 @@ def run_backtest(
     # seen labels inside the sim window).
     _bs = backtest_start or config.get("backtest_start")
     _be = backtest_end or config.get("backtest_end")
+
+    # WF sim-time provenance sink (pipeline#215 §2.3): one sink per
+    # run_backtest call, constructed ONLY on the walk-forward sim path.
+    # JSONL lands at <this checkout>/data/wf_provenance/<sim_run_id>.jsonl
+    # with the revision pins + seed captured at sim start. Returns None
+    # (with a loud warning) while the pinned renquant-pipeline predates
+    # pipeline#216 — the sim then runs exactly as before, no emit. The
+    # default daily/live path NEVER reaches this construction.
+    provenance_sink = None
+    if (config.get("walkforward") or {}).get("enabled", False):
+        from kernel.walk_forward.provenance_adapter import (  # noqa: PLC0415
+            build_wf_provenance_sink,
+        )
+        provenance_sink = build_wf_provenance_sink(seed=seed)
+
     adapter = SimAdapter(
         config               = config,
         strategy_dir         = strategy_dir,
@@ -298,6 +313,7 @@ def run_backtest(
         panel_factor_frames  = panel_factor_frames,
         backtest_start       = _bs,
         backtest_end         = _be,
+        provenance_sink      = provenance_sink,
     )
 
     # DB separation (architecture 2026-04-24): sim runs a TRUNCATE of the
