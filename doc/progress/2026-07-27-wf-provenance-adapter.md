@@ -6,15 +6,15 @@ approved contract; design pipeline#215 §3 step 3).
 merged on pipeline main).
 
 ## STATUS:
-Implemented and tested (15/15 new + 142 passing in the WF/sim-scoped sweep; 4
-pre-existing environment failures baselined at origin/main — see EVIDENCE).
+delivered
+
+## WHAT:
 IMPORTANT PIN CAVEAT: the PINNED runtime renquant-pipeline predates #216, so
 on today's pins the sink constructor logs a loud warning and returns `None` —
 the sim runs byte-identically with ZERO emit. The sim only starts emitting
 provenance once the pipeline pin advances past #216; that pin advance ships
 with the rerun batch (prereg'd XGB multi-seed), NOT with this PR.
 
-## WHAT:
 Two-phase `wf_sim_provenance.v1` emit through the sim path. Record
 construction, digest grammar, PIT check, and the JSONL sink are IMPORTS ONLY
 from `renquant_pipeline.kernel.walk_forward.provenance` (lazy — import runs
@@ -100,6 +100,9 @@ implementing (differs from the design's assumption, recorded honestly):
   never reference the sink.
 
 ## EVIDENCE:
+15/15 new + 142 passing in the WF/sim-scoped sweep; 4 pre-existing environment
+failures baselined at origin/main (see run configuration below).
+
 Run configuration (the pinned runtime pipeline predates #216, so tests were
 run against the merged pipeline/common mains exported read-only from the
 sibling checkouts' `origin/main` — `git archive` — with the umbrella venv):
