@@ -119,7 +119,16 @@ def build_wf_provenance_sink(
             JsonlProvenanceSink,
             capture_revision_pins,
         )
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        # Narrow to the true "module predates pipeline#216" case: the
+        # missing module is renquant_pipeline itself or one of its
+        # submodules on the path to .kernel.walk_forward.provenance. Any
+        # other ImportError/ModuleNotFoundError (a transitive dependency
+        # missing, a partial/broken provenance module) is a real break and
+        # must surface, not silently degrade to no-emit.
+        missing = exc.name or ""
+        if not missing.startswith("renquant_pipeline"):
+            raise
         log.warning(
             "WF provenance sink UNAVAILABLE: the pinned renquant-pipeline "
             "predates pipeline#216 (no kernel.walk_forward.provenance). "

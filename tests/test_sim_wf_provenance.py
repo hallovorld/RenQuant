@@ -19,12 +19,13 @@ the pipeline main export on PYTHONPATH to exercise them now.
 """
 from __future__ import annotations
 
+import builtins
 import datetime as dt
 import json
 import sqlite3
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -476,6 +477,39 @@ class TestPre216PinDegradesToNone:
         assert any("predates pipeline#216" in r.message
                    for r in caplog.records)
         assert not (tmp_path / "data").exists()
+
+    def test_build_sink_reraises_broken_provenance_module(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        import kernel.walk_forward.provenance_adapter as pa
+        # The provenance module IS importable (post-#216 pin) but is
+        # missing a required export — a real break, not "predates #216".
+        # The old bare `except ImportError` swallowed this and silently
+        # degraded to no-emit; it must now surface.
+        broken_module = ModuleType(_PROV_MOD)
+        monkeypatch.setitem(sys.modules, _PROV_MOD, broken_module)
+        with pytest.raises(ImportError):
+            pa.build_wf_provenance_sink(seed=3, data_root=tmp_path)
+
+    def test_build_sink_reraises_unrelated_module_not_found(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        import kernel.walk_forward.provenance_adapter as pa
+        # A transitive dependency of the (post-#216) provenance module is
+        # missing (e.g. numpy) — the missing module name does not start
+        # with renquant_pipeline, so it is a real break, not "predates
+        # #216", and must surface rather than degrade to no-emit.
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == _PROV_MOD:
+                raise ModuleNotFoundError(
+                    "No module named 'numpy'", name="numpy")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        with pytest.raises(ModuleNotFoundError, match="numpy"):
+            pa.build_wf_provenance_sink(seed=3, data_root=tmp_path)
 
     def test_build_sink_writes_under_data_root(self, tmp_path: Path):
         pytest.importorskip(_PROV_MOD)
