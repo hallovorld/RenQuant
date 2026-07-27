@@ -83,6 +83,21 @@ def compute_disposed_lot_tax(
     FIFO/HIFO changes which lot is sold, so the tax age must be computed from
     the same disposed slices used for cost basis. Returning split ST/LT gains
     also lets annual-net reporting stay closer to the actual lot accounting.
+
+    Netting fix (2026-07-27): gains and losses are netted WITHIN this one
+    sell event via ``compute_netted_capital_gains_tax`` — short-term lots net
+    against short-term lots at the short-term rate, long-term against
+    long-term at the long-term rate, then opposite-sign buckets offset each
+    other (Schedule-D shape). Pre-fix, each positive-gain lot was taxed
+    independently and losing lots were ignored, so a mixed-sign multi-lot
+    disposal (e.g. a topped-up position fully exited at a price between the
+    two lot bases) produced "net loss with positive tax" — an accounting
+    impossibility that trips the decision-trace integrity validator
+    (``_sell_economics_are_valid``) and fail-closes the run. Verified
+    instance: MA 2025-06-24 sim sell, lots +126.9676 / −193.2083 at rate
+    0.5 → gross −66.2407 with tax +63.4838. The reported
+    ``short_term_gross_pnl`` / ``long_term_gross_pnl`` splits stay pure
+    per-bucket sums (unaffected by netting).
     """
     if not math.isfinite(float(sell_price)) or sell_date is None:
         return {
@@ -91,7 +106,6 @@ def compute_disposed_lot_tax(
             "short_term_gross_pnl": 0.0,
             "long_term_gross_pnl": 0.0,
         }
-    tax = 0.0
     st_gross = 0.0
     lt_gross = 0.0
     total_shares = 0.0
@@ -112,12 +126,11 @@ def compute_disposed_lot_tax(
         weighted_days += shares * hold_days
         if hold_days >= int(long_term_threshold_days):
             lt_gross += gain
-            rate = long_term_rate
         else:
             st_gross += gain
-            rate = short_term_rate
-        if math.isfinite(gain) and gain > 0:
-            tax += gain * rate
+    tax = compute_netted_capital_gains_tax(
+        st_gross, lt_gross, short_term_rate, long_term_rate,
+    )
     return {
         "tax": float(tax),
         "weighted_hold_days": (
