@@ -100,8 +100,33 @@ implementing (differs from the design's assumption, recorded honestly):
   never reference the sink.
 
 ## EVIDENCE:
-15/15 new + 142 passing in the WF/sim-scoped sweep; 4 pre-existing environment
-failures baselined at origin/main (see run configuration below).
+17/17 new (`tests/test_sim_wf_provenance.py`) + 558 passing across the
+broader WF/sim-scoped sweep; the same 4 pre-existing environment failures
+baselined at origin/main (see run configuration below) — unchanged by this
+fix.
+
+**Follow-up fix (codex review on this PR)**: `build_wf_provenance_sink()`'s
+`except ImportError:` was broader than the documented "pinned pipeline
+predates #216" contract — any unrelated break inside the provenance import
+(a partial/broken module, a missing transitive dependency) was silently
+re-labeled as "predates #216" and dropped to no-emit. Replaced the
+catch-after-execute pattern with an EXISTENCE probe
+(`importlib.util.find_spec`, which locates the module without executing
+it): degrade to `None` only when the spec truly cannot be found on the path
+to `renquant_pipeline.kernel.walk_forward.provenance` (i.e.
+`find_spec` returns `None`, or raises `ModuleNotFoundError` naming one of
+that module's own parent packages); every other failure — including one
+raised while executing the module now that its spec resolved — propagates
+loudly. Added `test_build_sink_reraises_broken_provenance_module` (module
+present but missing a required export → `ImportError`, not caught) and
+`test_build_sink_reraises_unrelated_module_not_found` (a transitive
+dependency named outside `renquant_pipeline` → `ModuleNotFoundError`, not
+caught) to `TestPre216PinDegradesToNone`, pinning the narrowed contract
+against regressing back to the fail-open swallow. This also incidentally
+fixed a test-order-dependent flake: the old catch-after-execute path left 4
+provenance tests failing when run alongside the wider WF/sim test files
+(sys.modules cache pollution across files); the existence-probe path does
+not exhibit it.
 
 Run configuration (the pinned runtime pipeline predates #216, so tests were
 run against the merged pipeline/common mains exported read-only from the
