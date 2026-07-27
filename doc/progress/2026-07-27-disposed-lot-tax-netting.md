@@ -35,11 +35,20 @@ regressions attributable to this change. best-known?: n/a — bug fix, no
 variant comparison. scope: this is a correctness fix to the shared sim/live
 kernel verified via the paired scoped + full-suite runs above, not a
 performance/model claim.
-NEXT:      Merge the renquant-pipeline mirror PR #217 first (byte-identical
-fix; kernel-parity requires it), then bump the pipeline pin through the
-normal pin process, then re-run kernel-parity-ci here — it stays RED until
-the pin advances past the mirror merge. Do NOT allowlist portfolio.py to
-silence kernel-parity-ci.
+NEXT:      Done — the renquant-pipeline mirror merged (PR #217, commit
+`cb38a73`), and this PR now carries the pin bump via
+`scripts/promote_pin.py bump --subrepo renquant-pipeline --commit
+dbcab26556a0db474038ea8f9f2a76d85f944c12 --apply` (the merge-commit tip of
+renquant-pipeline main, which includes the mirror). Regenerated
+`doc/arch/strategy-104-snapshot.md` per the tool's staleness backstop (`make
+snapshot`) — diff is exactly the pin-driven fingerprint change plus the
+live prod calibrator's independently-drifting artifact fingerprint (both
+expected, no other content changed). Re-ran `kernel-parity-ci`'s own test
+locally against the freshly-synced pipeline checkout: `pytest
+tests/test_kernel_parity.py -v` -> 1 passed (was previously failing with
+"NEW drift detected: portfolio.py" because the branch's old pin, 9c5f48e,
+predated the mirror fix). No further action needed; nothing left blocking
+merge on this PR's side.
 
 ## Additional detail — new tax semantics
 
