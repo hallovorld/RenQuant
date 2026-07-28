@@ -28,6 +28,12 @@
       "shape": "strategy_config",
       "loaded_by": "two-arm A/B experiment arm B",
       "required": false
+    },
+    {
+      "file": "strategy_config.shadow_blend.json",
+      "shape": "strategy_config",
+      "loaded_by": "blend full-funnel shadow lane (daily_104 Step 5; RenQuant#535 + strategy#68)",
+      "required": true
     }
   ]
 }

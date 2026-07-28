@@ -244,6 +244,21 @@ def collect_paths_strategy_config(
             ("ranking.panel_scoring.artifact_path", "primary", v, _expected(panel_scoring))
         )
 
+    # Composite blend scorer (pipeline#218): kind="blend" carries a
+    # components[] list of TWO scorer legs, each with its own artifact path
+    # and pinned identity. The activated profile must prove BOTH legs
+    # resolve and match their pins (codex ruling on RenQuant#536) — the
+    # top-level artifact_path only anchors component 0.
+    for i, comp in enumerate(panel_scoring.get("components") or []):
+        if not isinstance(comp, dict):
+            continue
+        cv = comp.get("artifact_path")
+        if isinstance(cv, str) and cv:
+            out.append(
+                (f"ranking.panel_scoring.components[{i}].artifact_path",
+                 "primary", cv, _expected(comp))
+            )
+
     panel_ltr = config.get("panel_ltr") or {}
     v = panel_ltr.get("artifact_path")
     if isinstance(v, str) and v:
