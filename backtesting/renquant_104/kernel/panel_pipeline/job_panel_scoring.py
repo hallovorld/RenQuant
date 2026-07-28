@@ -225,6 +225,30 @@ class LoadScorerTask(Task):
         return p
 
     @staticmethod
+    def _blend_component0_path(ctx: InferenceContext, panel_cfg: dict) -> Path | None:
+        """Anchor the strict-consistency gate on the FIRST blend component
+        (the frozen construction fixes it as the production scorer) when
+        ``kind="blend"`` carries no top-level ``artifact_path``.
+
+        Umbrella mirror of pipeline#218 ``LoadScorerTask._blend_component0_path``
+        — shared by both the preloaded (adapter/LEAN) and fresh-load branches
+        of ``run()`` so the preloaded path fails closed on the same artifact
+        as the fresh-load path instead of on the composite fingerprint.
+        """
+        comps = panel_cfg.get("components") or []
+        first = comps[0] if comps and isinstance(comps[0], dict) else {}
+        if not first.get("artifact_path"):
+            return None
+        p = Path(str(first["artifact_path"]))
+        if not p.is_absolute():
+            strategy_dir = ctx.config.get("_strategy_dir")
+            if strategy_dir:
+                from kernel.artifact_resolver import locate_artifact  # noqa: PLC0415
+
+                p = locate_artifact(p, strategy_dir=Path(strategy_dir))
+        return p
+
+    @staticmethod
     def _assert_config_consistency(
         ctx: InferenceContext,
         panel_cfg: dict,
@@ -271,11 +295,15 @@ class LoadScorerTask(Task):
         scorer = getattr(ctx, "_panel_scorer", None)
         if scorer is not None:
             p = self._resolve_artifact_path(ctx, panel_cfg, scorer)
+            if p is None and panel_cfg.get("kind") == "blend":
+                p = self._blend_component0_path(ctx, panel_cfg)
             if not self._assert_config_consistency(ctx, panel_cfg, scorer, p):
                 return False
             return
 
         p = self._resolve_artifact_path(ctx, panel_cfg)
+        if p is None and panel_cfg.get("kind") == "blend":
+            p = self._blend_component0_path(ctx, panel_cfg)
         if p is None:
             log.error("LoadScorerTask: panel_scoring.enabled but no artifact_path")
             _fail_closed_panel_scoring(ctx, "panel_scorer_missing_artifact_path")
@@ -511,9 +539,13 @@ class ApplyScoresTask(Task):
         # the production XGB pipeline produces. `BuildFeatureMatrixJob` builds
         # the 21-feature matrix; alpha158 models expect 158 features computed
         # from raw OHLCV. Rebuild X here for both panel_linear and
-        # panel_ltr_xgboost alpha158 artifacts.
+        # panel_ltr_xgboost alpha158 artifacts. 2026-07-28: kind "blend"
+        # (BlendPanelScorer — both components are alpha158+fund snapshot
+        # artifacts; pipeline#218, umbrella mirror) takes the SAME rebuild
+        # path; its union feature_cols drives the fund/PEAD/SUE/sentiment
+        # lookups below.
         scorer_kind = scorer.metadata.get("kind") if hasattr(scorer, "metadata") else None
-        if scorer_kind in ("panel_linear", "panel_ltr_xgboost"):
+        if scorer_kind in ("panel_linear", "panel_ltr_xgboost", "blend"):
             from kernel.panel_pipeline.alpha158_features import compute_alpha158_at  # noqa: PLC0415
             today = getattr(ctx, "today", None)
             ohlcv_dict = getattr(ctx, "ohlcv", None) or getattr(ctx, "ohlcv_all", None)
@@ -743,24 +775,40 @@ class ApplyScoresTask(Task):
                 # propagate (X_aligned local variable below).
                 ctx._panel_matrix = X_aligned.copy()  # noqa: SLF001
 
-                # Raw inference rows must be transformed through the artifact
-                # feature contract before XGB scoring.
-                from kernel.panel_pipeline.feature_transform import (  # noqa: PLC0415
-                    transform_feature_frame,
-                )
-                # Apply artifact-stored normalization. transform_feature_frame
-                # reads feature_means / feature_stds from scorer.metadata.
-                X_aligned = transform_feature_frame(
-                    X_aligned,
-                    scorer.feature_cols,
-                    getattr(scorer, "metadata", {}) or {},
-                    source_space="raw",
-                )
-                log.info(
-                    "ApplyScoresTask[panel_ltr_xgboost]: applied raw→model "
-                    "feature transform for %d features",
-                    len(scorer.feature_cols),
-                )
+                if scorer_kind == "blend":
+                    # 2026-07-28 blend composite (pipeline#218, umbrella
+                    # mirror): BlendPanelScorer consumes the RAW union
+                    # matrix and applies EACH component's stored raw→model
+                    # transform internally — the two components carry
+                    # different feature_means/feature_stds, so one outer
+                    # transform (which would read the composite's metadata,
+                    # deliberately stat-less) cannot be correct for both
+                    # legs. Skip the outer transform here.
+                    log.info(
+                        "ApplyScoresTask[blend]: passing RAW union matrix "
+                        "(%d features) — per-component transforms applied "
+                        "inside BlendPanelScorer",
+                        len(scorer.feature_cols),
+                    )
+                else:
+                    # Raw inference rows must be transformed through the artifact
+                    # feature contract before XGB scoring.
+                    from kernel.panel_pipeline.feature_transform import (  # noqa: PLC0415
+                        transform_feature_frame,
+                    )
+                    # Apply artifact-stored normalization. transform_feature_frame
+                    # reads feature_means / feature_stds from scorer.metadata.
+                    X_aligned = transform_feature_frame(
+                        X_aligned,
+                        scorer.feature_cols,
+                        getattr(scorer, "metadata", {}) or {},
+                        source_space="raw",
+                    )
+                    log.info(
+                        "ApplyScoresTask[panel_ltr_xgboost]: applied raw→model "
+                        "feature transform for %d features",
+                        len(scorer.feature_cols),
+                    )
 
                 # 2026-05-18 PatchTST dispatch: if scorer requires history
                 # (PatchTST sequence model), call score_with_history instead

@@ -1104,6 +1104,8 @@ class ApplyShadowScoringTask(Task):
                 shadow_panel_cfg["seq_len"] = sm["seq_len"]
             if "regime_router" in sm:  # composite scorer sub-config
                 shadow_panel_cfg["regime_router"] = sm["regime_router"]
+            if "components" in sm:  # blend composite sub-config (kind=blend)
+                shadow_panel_cfg["components"] = sm["components"]
             shadow_cfg = dict(ctx.config)
             shadow_cfg.setdefault("ranking", {})["panel_scoring"] = shadow_panel_cfg
 

@@ -239,4 +239,81 @@ class RegimeRouterHandler(_ModelHandler):
             "sub-model independently then wire via config.")
 
 
+def _import_pipeline_blend_loader():
+    """Import the ONE blend implementation from the pinned renquant-pipeline.
+
+    DELEGATION, NOT DUPLICATION (2026-07-28 rehearsal-caught fork
+    divergence): pipeline#218's ``blend_scorer`` is the single source of
+    truth for the certified z(prod)+z(clf) composite — the umbrella fork
+    must not carry a second copy of the scorer/loader (pin verification,
+    z-guard, composite-fingerprint recipe) that could drift. The daily
+    run's PYTHONPATH (``.subrepo_assembly/current.env``) carries the
+    pinned pipeline src, so the direct import works in the live runner;
+    fall back to the same RENQUANT_SUBREPO_ROOT / sibling-checkout
+    discovery ``job_panel_scoring._bootstrap_gate_registry_import`` uses.
+    An unresolvable import RAISES — LoadScorerTask converts it into the
+    ``panel_scorer_load_failed`` fail-close (never a silent skip).
+    """
+    try:
+        from renquant_pipeline.kernel.panel_pipeline.blend_scorer import (  # noqa: PLC0415
+            load_blend_scorer,
+        )
+    except ImportError:
+        import os  # noqa: PLC0415
+        candidates: list[Path] = []
+        subrepo_root = os.environ.get("RENQUANT_SUBREPO_ROOT")
+        if subrepo_root:
+            candidates.append(Path(subrepo_root) / "renquant-pipeline" / "src")
+        candidates.append(_REPO.parent / "renquant-pipeline" / "src")
+        for src in candidates:
+            src_str = str(src)
+            if src.is_dir() and src_str not in sys.path:
+                sys.path.insert(0, src_str)
+        from renquant_pipeline.kernel.panel_pipeline.blend_scorer import (  # noqa: PLC0415
+            load_blend_scorer,
+        )
+    return load_blend_scorer
+
+
+@registry.register("blend")
+class BlendHandler(_ModelHandler):
+    """Composite z(prod) + z(clf) blend — the certified construction
+    (renquant-model#74/75/76 confirmatory line; pipeline#218 kind).
+
+    Umbrella mirror of the pipeline-side ``BlendHandler``: the loader is
+    IMPORTED from the pinned renquant-pipeline (see
+    ``_import_pipeline_blend_loader``), so both dispatch sites execute the
+    identical fail-closed two-pin load path. Config schema (frozen —
+    pipeline ``blend_scorer.py`` module docstring):
+
+      ranking.panel_scoring.kind = "blend"
+      ranking.panel_scoring.components = [   # exactly TWO, order-significant
+        {"artifact_path": ...,               # 0: production panel scorer
+         "expected_content_sha256": ...,     #    abbrev-tolerant content pin
+         "expected_config_fingerprint": ...},#    verbatim fp pin (both forms)
+        {"artifact_path": ...,               # 1: top-decile classifier
+         "expected_content_sha256": ...,
+         "expected_config_fingerprint": ...},
+      ]
+
+    Both pins are REQUIRED and verified fail-closed at load. The
+    ``artifact_path`` argument is ignored — components carry their own
+    pinned paths (LoadScorerTask anchors its path-based consistency gate
+    on component 0 / the top-level ``artifact_path`` when configured).
+    """
+    requires_history = False
+
+    @classmethod
+    def scorer_loader(cls, artifact_path, config):
+        del artifact_path  # components carry their own pinned paths
+        load_blend_scorer = _import_pipeline_blend_loader()
+        return load_blend_scorer(config)
+
+    @classmethod
+    def train_cmd(cls, args) -> list[str]:
+        raise NotImplementedError(
+            "blend is an inference-only composition; train each component "
+            "independently then wire via config.")
+
+
 __all__ = ["registry", "_ModelHandler"]
