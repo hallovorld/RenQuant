@@ -260,10 +260,18 @@ def _get_broker(broker_type: str, initial_cash: float = 100_000) -> BaseBroker:
         # LIVE alpaca API for ground-truth state, but writes (place_order /
         # cancel_order / place_stop_order) are swallowed locally with a
         # synthesised filled response. broker_name="alpaca_shadow" gives
-        # state-file isolation: live_state.alpaca_shadow.json + runs_alpaca_shadow.db
+        # state-file isolation: live_state.alpaca_shadow.json + runs.alpaca_shadow.db
         # never collide with prod live_state.alpaca.json. For renquant_104
         # the CLI defaults this broker to strategy_config.shadow.json so the
         # panel scorer also swaps (HF PatchTST instead of XGB).
+        #
+        # 2026-07-27 shadow_blend rail: the wrapper's tag (and therefore
+        # its state-file lane) is selected by RENQUANT_READONLY_TAG,
+        # resolved inside ReadOnlyBrokerWrapper.__init__ — env threading
+        # passes through the orchestrator live-bridge subprocess boundary
+        # unchanged, so `--broker readonly-alpaca` stays the single CLI
+        # broker type for every readonly shadow lane. Unset env =
+        # legacy "alpaca_shadow" (byte-identical).
         from .broker_readonly import ReadOnlyBrokerWrapper  # noqa: PLC0415
         real = AlpacaBroker(paper=False)
         return ReadOnlyBrokerWrapper(real)
@@ -531,6 +539,28 @@ def _run_once_multi_pipeline(
             _ACTIVE_PREFLIGHT_GUARD = None
 
 
+def _readonly_label_prefix(broker_name: str) -> str:
+    """Log/ntfy title prefix for readonly shadow-lane brokers.
+
+    2026-07-27 shadow_blend rail: generalized from the literal
+    ``== "alpaca_shadow"`` check to any tag starting with "alpaca_shadow"
+    (see live/broker_readonly.py tag parameterization). Contract:
+    - legacy tag "alpaca_shadow" → "[READONLY]" EXACTLY (byte-identical
+      legacy titles; existing consumers/tests match this literal);
+    - any other alpaca_shadow* tag → "[READONLY][<TAG-UPPER>]" so blend vs
+      legacy lanes are distinguishable in ntfy titles while STILL starting
+      with the literal "[READONLY]" — _notify_decision's is_shadow check
+      (label.startswith("[READONLY]")) keeps classifying both lanes as
+      shadow/hypothetical;
+    - non-shadow brokers → "" (no prefix).
+    """
+    if broker_name == "alpaca_shadow":
+        return "[READONLY]"
+    if broker_name.startswith("alpaca_shadow"):
+        return f"[READONLY][{broker_name.upper()}]"
+    return ""
+
+
 def _run_once_multi_pipeline_inner(
     config, models, broker, strategy_dir, sell_only,
     use_intraday_prices, dry_run, guard,
@@ -562,8 +592,13 @@ def _run_once_multi_pipeline_inner(
     # no consumer that pattern-matches the literal "[SHADOW]" title
     # substring outside this module's own `is_shadow` check below and this
     # module's own tests — safe to rename outright (Option A).
-    if getattr(broker, "broker_name", "") == "alpaca_shadow":
-        label = f"[READONLY]{label}"
+    #
+    # 2026-07-27 shadow_blend rail: prefix generalized to ANY broker tag
+    # starting with "alpaca_shadow" via _readonly_label_prefix — legacy tag
+    # keeps the byte-identical "[READONLY]" title; other lanes (e.g.
+    # alpaca_shadow_blend) get "[READONLY][ALPACA_SHADOW_BLEND]" so they
+    # stay distinguishable in ntfy while is_shadow still matches.
+    label = _readonly_label_prefix(getattr(broker, "broker_name", "")) + label
     log.info("%s  %s  [%s]", label, datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
@@ -577,7 +612,12 @@ def _run_once_multi_pipeline_inner(
     if preflight_cfg.get("enabled", True):
         try:
             from kernel.preflight import run_preflight, PreflightFailed  # noqa: PLC0415
-            is_shadow_broker = getattr(broker, "broker_name", "") == "alpaca_shadow"
+            # 2026-07-27 shadow_blend rail: startswith (not ==) so every
+            # readonly shadow lane (alpaca_shadow, alpaca_shadow_blend, …)
+            # gets the shadow preflight-strictness policy, mirroring the
+            # legacy lane exactly. Tag prefix enforced by
+            # live/broker_readonly.py validate_readonly_tag.
+            is_shadow_broker = getattr(broker, "broker_name", "").startswith("alpaca_shadow")
             preflight_strict = bool(preflight_cfg.get("strict", True))
             if is_shadow_broker:
                 preflight_strict = bool(preflight_cfg.get("shadow_strict", False))

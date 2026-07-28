@@ -645,3 +645,86 @@ else
         fi
     fi
 fi
+
+# ── Step 5: SHADOW-BLEND e2e run (2026-07-27, operator directive) ────────
+# Option-A rail: a SECOND full-funnel readonly shadow lane, cloned from
+# Step 4 verbatim, that will score with the composite blend profile
+# (strategy_config.shadow_blend.json) once that profile lands in the
+# pinned renquant-strategy-104 configs. Shadow like prod minus submission:
+# broker = readonly-alpaca wrapper (reads hit LIVE alpaca, writes
+# swallowed), sized picks visible in ntfy.
+#
+# Lane isolation: RENQUANT_READONLY_TAG=alpaca_shadow_blend threads through
+# the live-bridge subprocess into ReadOnlyBrokerWrapper, so this lane's
+# state routes to live_state.alpaca_shadow_blend.json +
+# runs.alpaca_shadow_blend.db — disjoint from BOTH prod (alpaca) and the
+# legacy PatchTST shadow (alpaca_shadow). ntfy title prefix becomes
+# "[READONLY][ALPACA_SHADOW_BLEND]" (see live/runner.py
+# _readonly_label_prefix) so blend vs legacy stay distinguishable.
+#
+# GATE: skips with an INFO line while strategy_config.shadow_blend.json is
+# absent from the pinned strategy configs dir — this rail lands BEFORE the
+# strategy profile exists and auto-activates when the profile appears.
+# Non-fatal like Step 4: prod + legacy shadow already completed above.
+echo "--- Step 5: Shadow-blend e2e run (composite blend profile, no real orders) ---"
+if BLEND_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow_blend.json)"; then
+    echo "shadow_blend profile found at $BLEND_STRATEGY_CONFIG"
+    SHADOW_BLEND_LOG="$LOG_DIR/${DATE}_shadow_blend.log"
+    SHADOW_BLEND_TIMEOUT_SEC="${RENQUANT_SHADOW_BLEND_TIMEOUT_SEC:-${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"
+    if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 RENQUANT_READONLY_TAG=alpaca_shadow_blend "$PYTHON" - <<PY > "$SHADOW_BLEND_LOG" 2>&1
+import os
+import subprocess
+import sys
+
+if os.environ.get("RQ_DAILY_RUNNER", "multirepo") == "umbrella":
+    runner = [sys.executable, "-m", "live.runner"]
+else:
+    runner = [sys.executable, "-m", "renquant_orchestrator", "live-bridge", "--repo-dir", "$REPO_DIR"]
+
+cmd = runner + [
+    "--strategy", "renquant_104",
+    "--broker", "readonly-alpaca",
+    "--once",
+    "--strategy-config-name", "strategy_config.shadow_blend.json",
+]
+try:
+    raise SystemExit(subprocess.run(
+        cmd,
+        cwd="$REPO_DIR",
+        timeout=float("$SHADOW_BLEND_TIMEOUT_SEC"),
+    ).returncode)
+except subprocess.TimeoutExpired:
+    print("SHADOW-BLEND TIMEOUT after ${SHADOW_BLEND_TIMEOUT_SEC}s", flush=True)
+    raise SystemExit(124)
+PY
+    then
+        echo "Shadow-blend run finished — see $SHADOW_BLEND_LOG"
+        # Surface the shadow-blend ntfy line in the prod log so the operator
+        # can see all three decisions in one place.
+        grep "ntfy sent:" "$SHADOW_BLEND_LOG" | tail -1 || echo "shadow-blend ntfy line not found in shadow-blend log"
+    else
+        SHADOW_BLEND_RC=$?
+        if [ "$SHADOW_BLEND_RC" -eq 124 ]; then
+            echo "Shadow-blend run TIMED OUT after ${SHADOW_BLEND_TIMEOUT_SEC}s (non-fatal) — see $SHADOW_BLEND_LOG"
+            if [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+                notify "RenQuant 104 SHADOW-BLEND-TIMEOUT" "Shadow-blend e2e exceeded ${SHADOW_BLEND_TIMEOUT_SEC}s; primary already completed. See $SHADOW_BLEND_LOG."
+            else
+                echo "Shadow-blend timeout ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
+            fi
+        else
+            SHADOW_BLEND_BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL|P-FUND-FRESHNESS"
+            if grep -Eq "$SHADOW_BLEND_BUY_SIDE_PREFLIGHT_PATTERN" "$SHADOW_BLEND_LOG"; then
+                echo "Shadow-blend run blocked by expected buy-side preflight gate (non-fatal, rc=$SHADOW_BLEND_RC) — see $SHADOW_BLEND_LOG"
+                echo "Shadow-blend preflight-block ntfy suppressed; prod path already reported the actionable gate."
+            elif [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+                echo "Shadow-blend run FAILED (non-fatal, rc=$SHADOW_BLEND_RC) — see $SHADOW_BLEND_LOG"
+                notify "RenQuant 104 SHADOW-BLEND-FAIL" "Shadow-blend e2e failed today (rc=$SHADOW_BLEND_RC) — primary already completed. See $SHADOW_BLEND_LOG."
+            else
+                echo "Shadow-blend run FAILED (non-fatal, rc=$SHADOW_BLEND_RC) — see $SHADOW_BLEND_LOG"
+                echo "Shadow-blend failure ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
+            fi
+        fi
+    fi
+else
+    echo "INFO: strategy_config.shadow_blend.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5 shadow-blend skipped (rail dormant until the blend profile lands)."
+fi
