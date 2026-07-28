@@ -16,16 +16,37 @@ This wrapper:
 
 State isolation: broker_name = "alpaca_shadow" (NOT mirroring underlying
 AlpacaBroker's "alpaca"). adapters/runner.py's state-path convention
-keys on broker_name → live_state.alpaca_shadow.json + runs_alpaca_shadow.db
+keys on broker_name → live_state.alpaca_shadow.json + runs.alpaca_shadow.db
 get written as separate files from prod alpaca state. Zero contamination
 of prod state even when the full pipeline writes its state file. See
 kernel/state_paths.py for the path convention.
 
+Shadow-lane tag (2026-07-27, shadow_blend rail — operator directive): the
+broker tag is now parameterizable so MULTIPLE readonly shadow lanes can
+coexist with disjoint state. Threading mechanism: the ``RENQUANT_READONLY_TAG``
+environment variable (read at wrapper construction), chosen over a
+``--broker readonly-alpaca:TAG`` CLI syntax because the orchestrator
+live-bridge validates ``--broker`` against a fixed set (ALPACA_BROKERS in
+renquant_orchestrator/live_bridge.py) and env vars thread through the
+bridge subprocess boundary with zero orchestrator changes. Default
+(env unset/empty) = "alpaca_shadow" → byte-identical legacy behavior.
+Tag "alpaca_shadow_blend" → live_state.alpaca_shadow_blend.json +
+runs.alpaca_shadow_blend.db. Every tag MUST start with "alpaca_shadow"
+(preserves prod-state isolation AND live/runner.py's startswith-based
+readonly-label + shadow-preflight checks) and MUST be [A-Za-z0-9_]+ (no
+path traversal). Invalid tags raise ValueError — fail closed rather than
+silently falling back to the legacy tag and contaminating its state.
+NOTE: new tags must also be added to ALLOWED_BROKERS in
+backtesting/renquant_104/kernel/state_paths.py (single-source allowlist).
+
 Verified safety property: no method on this class makes a network call or
-mutates the underlying broker. Tested in tests/test_broker_readonly.py.
+mutates the underlying broker. Tested in tests/test_broker_readonly_tag.py
+(tag routing) + tests/test_runner_trade_ntfy.py (ntfy title contract).
 """
 from __future__ import annotations
 import logging
+import os
+import re
 import time
 import uuid
 from typing import Any
@@ -33,6 +54,50 @@ from typing import Any
 from live.broker import BaseBroker
 
 log = logging.getLogger("live.broker_readonly")
+
+#: Legacy default tag — MUST stay "alpaca_shadow" (byte-identical legacy lane).
+DEFAULT_READONLY_TAG = "alpaca_shadow"
+
+#: Env var that selects the shadow-lane tag (see module docstring).
+READONLY_TAG_ENV = "RENQUANT_READONLY_TAG"
+
+_TAG_PATTERN = re.compile(r"[A-Za-z0-9_]+")
+
+
+def validate_readonly_tag(tag: str) -> str:
+    """Validate a shadow-lane broker tag; return it unchanged.
+
+    Raises ValueError (fail closed) unless the tag is [A-Za-z0-9_]+ AND
+    starts with "alpaca_shadow". The prefix rule is load-bearing:
+    - state-path isolation from prod "alpaca" state files;
+    - live/runner.py keys the [READONLY] ntfy label and the shadow
+      preflight-strictness branch off broker_name.startswith("alpaca_shadow").
+    """
+    if not _TAG_PATTERN.fullmatch(tag or ""):
+        raise ValueError(
+            f"Invalid readonly shadow tag {tag!r}: must match [A-Za-z0-9_]+ "
+            f"(filename-safe, no path separators)."
+        )
+    if not tag.startswith(DEFAULT_READONLY_TAG):
+        raise ValueError(
+            f"Invalid readonly shadow tag {tag!r}: must start with "
+            f"{DEFAULT_READONLY_TAG!r} to preserve prod-state isolation and "
+            f"the runner's readonly-label/preflight checks."
+        )
+    return tag
+
+
+def resolve_readonly_tag() -> str:
+    """Resolve the shadow-lane tag from RENQUANT_READONLY_TAG.
+
+    Unset/empty env → DEFAULT_READONLY_TAG ("alpaca_shadow", legacy lane).
+    A set-but-invalid env raises ValueError — the run aborts instead of
+    silently writing into the legacy lane's state files.
+    """
+    raw = os.environ.get(READONLY_TAG_ENV, "").strip()
+    if not raw:
+        return DEFAULT_READONLY_TAG
+    return validate_readonly_tag(raw)
 
 
 class ReadOnlyBrokerWrapper(BaseBroker):
@@ -44,15 +109,24 @@ class ReadOnlyBrokerWrapper(BaseBroker):
     ntfy aggregator, state writers gated by shadow_run) works unchanged.
     """
 
-    broker_name: str = "alpaca_shadow"
+    broker_name: str = DEFAULT_READONLY_TAG
 
-    def __init__(self, underlying: BaseBroker):
+    def __init__(self, underlying: BaseBroker, tag: str | None = None):
         self._u = underlying
-        # Do NOT mirror underlying broker_name. Keep "alpaca_shadow" so
-        # adapters/runner.py state-path resolution writes shadow state to
-        # live_state.alpaca_shadow.json + runs_alpaca_shadow.db, fully
-        # isolated from prod live_state.alpaca.json. This is the hard
-        # isolation per user mandate 2026-05-19 "隔离干净".
+        # Do NOT mirror underlying broker_name. Keep an "alpaca_shadow*"
+        # tag so adapters/runner.py state-path resolution writes shadow
+        # state to live_state.<tag>.json + runs.<tag>.db, fully isolated
+        # from prod live_state.alpaca.json. This is the hard isolation per
+        # user mandate 2026-05-19 "隔离干净".
+        #
+        # 2026-07-27 shadow_blend rail: tag now parameterized. Explicit
+        # ctor arg wins; otherwise RENQUANT_READONLY_TAG; otherwise the
+        # legacy "alpaca_shadow" (byte-identical legacy lane). Both paths
+        # validate (fail closed) — see validate_readonly_tag.
+        if tag is not None:
+            self.broker_name = validate_readonly_tag(tag)
+        else:
+            self.broker_name = resolve_readonly_tag()
         self._fake_order_seq = 0
 
     # ── Read-side: pure forwards ───────────────────────────────────────────
