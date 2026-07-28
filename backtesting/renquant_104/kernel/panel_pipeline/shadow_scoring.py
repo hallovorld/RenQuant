@@ -1090,7 +1090,18 @@ class ApplyShadowScoringTask(Task):
                 continue
             p = Path(artifact_path)
             if not p.is_absolute():
-                p = repo / p
+                # Mirror the #211 canonical resolution order: strategy_dir
+                # FIRST (where shadow/prod artifacts actually live:
+                # backtesting/renquant_104/artifacts/...), then repo root.
+                # The old repo-root-only rule could NEVER load a
+                # strategy_dir-relative shadow artifact from this copy —
+                # the 2026-07-27 preflight probe surfaced it (clf shadow
+                # "artifact not found" while the pinned-pipeline copy
+                # loaded the same config fine): the duplicated-kernel
+                # divergence class.
+                strategy_dir = Path(__file__).resolve().parents[2]
+                cand = strategy_dir / p
+                p = cand if cand.exists() else repo / p
             try:
                 handler = registry.get(kind)
             except ValueError as exc:
