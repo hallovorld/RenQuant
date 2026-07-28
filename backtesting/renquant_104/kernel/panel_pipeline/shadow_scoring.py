@@ -1088,9 +1088,8 @@ class ApplyShadowScoringTask(Task):
                 log.warning("ApplyShadowScoringTask: shadow %s missing "
                              "kind/artifact_path", name)
                 continue
-            p = Path(artifact_path)
-            if not p.is_absolute():
-                p = repo / p
+            p = resolve_shadow_artifact_path(
+                artifact_path, ctx.config, repo)
             try:
                 handler = registry.get(kind)
             except ValueError as exc:
@@ -1225,3 +1224,27 @@ class ApplyShadowScoringTask(Task):
 
 
 __all__ = ["ApplyShadowScoringTask"]
+
+
+def resolve_shadow_artifact_path(artifact_path, config, repo):
+    """Resolve a shadow artifact path with the #211 canonical order.
+
+    Absolute paths pass through. Relative paths try the runtime
+    ``config["_strategy_dir"]`` FIRST (the directory the runner stamped —
+    honoring alternate assemblies/worktrees, exactly like the pinned
+    pipeline resolver), falling back to this file's own strategy dir when
+    the stamp is absent (sim/test contexts), then the repo root. The old
+    repo-root-only rule could never load a strategy_dir-relative shadow
+    artifact from this copy — surfaced by the 2026-07-27 preflight probe
+    ("artifact not found" for the clf shadow while the pinned-pipeline
+    copy loaded the identical config): the duplicated-kernel divergence
+    class.
+    """
+    from pathlib import Path as _P
+    p = _P(artifact_path)
+    if p.is_absolute():
+        return p
+    stamped = (config or {}).get("_strategy_dir")
+    strategy_dir = _P(stamped) if stamped else _P(__file__).resolve().parents[2]
+    cand = strategy_dir / p
+    return cand if cand.exists() else _P(repo) / p
