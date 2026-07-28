@@ -685,7 +685,7 @@ cmd = runner + [
     "--strategy", "renquant_104",
     "--broker", "readonly-alpaca",
     "--once",
-    "--strategy-config-name", "strategy_config.shadow_blend.json",
+    "--strategy-config-path", "$BLEND_STRATEGY_CONFIG",
 ]
 try:
     raise SystemExit(subprocess.run(
