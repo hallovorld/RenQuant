@@ -15,15 +15,15 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: d914476cdff4091acbbc90032990c014530d04a3f167e193614270ddcef936ec (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: 3b7fda02f5a0335a3b1a741011a15365468b12f7f7a4ae67f59b9c2fd1719047 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
 | | |
 |---|---|
 | Pinned config root | `.subrepo_runtime/repos/renquant-strategy-104/configs` |
-| strategy-104 runtime checkout commit | 1d725e8ea34fbaed3f74874c0aff70a523283ea8 |
-| subrepos.lock.json strategy-104 pin | 1d725e8ea34fbaed3f74874c0aff70a523283ea8 |
+| strategy-104 runtime checkout commit | 8402a6297ec07e316f8c8a19b403ae8b5af4e64d |
+| subrepos.lock.json strategy-104 pin | 8402a6297ec07e316f8c8a19b403ae8b5af4e64d |
 
 ### Source warnings
 
@@ -89,8 +89,8 @@ Source fingerprint: d914476cdff4091acbbc90032990c014530d04a3f167e193614270ddcef9
 | Name | `topdecile_clf_blend_leg` |
 | Scorer kind | `xgb` |
 | Artifact | `artifacts/shadow/panel-clf.top-decile.fwd60.json` |
-| Artifact metadata file fingerprint | sha256:6101a9fe5b200900 |
-| trained_date | 2026-07-27 |
+| Artifact metadata file fingerprint | sha256:1e644354e0981f47 |
+| trained_date | 2026-07-28 |
 | Binding data cutoff | effective_train_cutoff_date=2026-04-28 |
 | label_observation_cutoff | unknown (field absent) |
 | lookahead_days | 60 |
@@ -169,21 +169,21 @@ Source fingerprint: d914476cdff4091acbbc90032990c014530d04a3f167e193614270ddcef9
 | renquant-artifacts | main | `c09d66f8dd09` | bootstrapped |
 | renquant-backtesting | main | `8f6700ab3558` | bootstrapped |
 | renquant-base-data | main | `021ca6474102` | active |
-| renquant-common | main | `591d8f70758b` | bootstrapped |
+| renquant-common | main | `20442b61cce3` | bootstrapped |
 | renquant-execution | main | `c41639840b2c` | bootstrapped |
 | renquant-model | main | `5ef1c2d94f64` | active |
 | renquant-orchestrator | main | `ade07dd797b0` | active |
 | renquant-pipeline | main | `d70bd3589817` | bootstrapped |
-| renquant-strategy-104 | main | `1d725e8ea34f` | bootstrapped |
+| renquant-strategy-104 | main | `8402a6297ec0` | bootstrapped |
 
 ## Source fingerprints
 
-- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:c9f321c2f629c882
+- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:f52d096e0a491008
 - `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:dd13dee4f8906576
 - `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
-- `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:6101a9fe5b200900
-- `subrepos.lock.json` — sha256:535bfc24c937a139
+- `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
+- `subrepos.lock.json` — sha256:740cfc6749b637c9
 
 <!-- snapshot-machine-block
 {
@@ -193,17 +193,17 @@ Source fingerprint: d914476cdff4091acbbc90032990c014530d04a3f167e193614270ddcef9
   "hf_patchtst",
   "xgb"
  ],
- "lock_strategy_104_pin": "1d725e8ea34fbaed3f74874c0aff70a523283ea8",
+ "lock_strategy_104_pin": "8402a6297ec07e316f8c8a19b403ae8b5af4e64d",
  "schema_version": 2,
  "shadow_e2e_kind": "hf_patchtst",
  "sources_sha256": {
-  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:c9f321c2f629c882",
+  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:f52d096e0a491008",
   ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:dd13dee4f8906576",
   "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
-  "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:6101a9fe5b200900",
-  "subrepos.lock.json": "sha256:535bfc24c937a139"
+  "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
+  "subrepos.lock.json": "sha256:740cfc6749b637c9"
  },
- "strategy_104_pin": "1d725e8ea34fbaed3f74874c0aff70a523283ea8"
+ "strategy_104_pin": "8402a6297ec07e316f8c8a19b403ae8b5af4e64d"
 }
 -->
