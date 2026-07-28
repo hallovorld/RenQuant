@@ -1,10 +1,8 @@
-# Umbrella kernel copies accept the blend scorer kind (rehearsal-caught)
+# Umbrella kernel copies accept the blend scorer kind (rehearsal-caught)   (PR #540)
 
-## STATUS
-delivered (rehearsal-caught fix, needed pre-13:55 PT)
+STATUS:    delivered (rehearsal-caught fix, needed pre-13:55 PT)
 
-## WHAT
-The umbrella-local kernel fork under `backtesting/renquant_104/kernel/`
+WHAT:      The umbrella-local kernel fork under `backtesting/renquant_104/kernel/`
 now dispatches `ranking.panel_scoring.kind="blend"` (pipeline#218 mirror):
 
 - `panel_pipeline/model_registry.py`: `BlendHandler` registered as
@@ -38,8 +36,7 @@ now dispatches `ranking.panel_scoring.kind="blend"` (pipeline#218 mirror):
   anchor in both LoadScorerTask branches, DriftGuard/ResolveFrames kind
   branches.
 
-## WHY/DIR
-Today's full-lane rehearsal ran the shadow_blend profile e2e through
+WHY/DIR:   Today's full-lane rehearsal ran the shadow_blend profile e2e through
 `live.runner` and fail-closed at scoring with `panel_scorer_invalid_kind`
 from `kernel.panel_pipeline.scoring`: pipeline#218 landed the blend kind
 in the renquant-pipeline kernel copies — which the strategy#68 acceptance
@@ -59,38 +56,28 @@ the pinned `renquant_pipeline` kernel outright. This PR moves in that
 direction by importing the blend loader rather than porting it — the only
 fork-side additions are dispatch/kind-branch wiring.
 
-## EVIDENCE
-- Rehearsal (acceptance): the failing Step-5 command rerun FROM AN
-  ISOLATED WORKTREE of origin/main + this branch — live venv +
-  pinned-runtime PYTHONPATH (`.subrepo_assembly/current.env`), live
-  `data/` + `backtesting/renquant_104/models/` APFS-cloned into the
-  worktree (read-identical to live, writes isolated; the committed
-  models/ snapshot is the stale April baseline trap),
-  `RENQUANT_DATA_ROOT` pointed at the worktree clone, state under the
-  worktree strategy dir. `--broker readonly-alpaca --once`,
-  `RENQUANT_READONLY_TAG=alpaca_shadow_blend`, pinned
-  `strategy_config.shadow_blend.json` (read-only). Result: blend loaded
-  with BOTH component pins verified (prod 04d7a381…/f8fb2259…; clf
-  1e644354…/1d8f167f…), `LoadScorerTask: loaded blend artifact`,
-  `ApplyScoresTask[blend]: passing RAW union matrix`, candidates scored,
-  decision reached, `[READONLY][ALPACA_SHADOW_BLEND]` emitted, rc=0, NO
-  `panel_scorer_invalid_kind`. (Key lines pinned in the PR body.)
-- Tests: `tests/test_blend_kind_umbrella.py` 9/9 passed. Regression
-  subset on the touched modules (`test_model_registry.py`,
-  `test_apply_scores_panel_linear_dispatch.py`,
-  `test_panel_scoring_job.py`, `test_panel_scoring_drift.py`,
-  `test_artifact_resolver_umbrella.py`,
-  `test_panel_scoring_specialist_wiring.py`): 69 passed, 3 failed —
-  the 3 (`test_panel_scoring_drift.py` NGBoost drift cases) reproduce
-  IDENTICALLY on the unmodified live tree, pre-existing and unrelated.
-- kind != blend paths: registry registration is additive; the
-  `_blend_component0_path` hooks only fire when `kind=="blend"` AND the
-  resolver returned None; the kind tuples only gained the `"blend"`
-  member; the transform branch is `if scorer_kind == "blend"` with the
-  original body verbatim in the else.
+EVIDENCE:
+artifact:      backtesting/renquant_104/kernel/panel_pipeline/{model_registry.py, job_panel_scoring.py, tasks_feature_matrix.py, shadow_scoring.py} (this PR, diffed against origin/main); strategy_config.shadow_blend.json component pins (prod panel-ltr.alpha158_fund.json content=sha256:04d7a381cd6df847… fp=sha256:f8fb2259b2bf1537 trained=2026-06-21; clf panel-clf.top-decile.fwd60.json content=sha256:1e644354e0981f47… fp=sha256:1d8f167f…e41b trained=2026-07-28)
+prod or exp:   experiment — acceptance rerun in an isolated worktree of origin/main + this branch (live venv, pinned-runtime PYTHONPATH, live data/ and backtesting/renquant_104/models/ APFS-cloned read-identical into the worktree, all writes isolated to the worktree); `--broker readonly-alpaca --once`, no live-tree file touched
+existing data: on unmodified origin/main the same full-lane rehearsal fail-closed at scoring with `panel_scorer_invalid_kind` (pipeline#218 landed kind="blend" in the renquant-pipeline copies only; the strategy#68 acceptance never exercised this umbrella fork). With this PR's branch, `grep -c panel_scorer_invalid_kind` over the full rerun log = 0; the log instead shows both component pins verified, `LoadScorerTask: loaded blend artifact`, `ApplyScoresTask[blend]: passing RAW union matrix`, 87/87 candidates scored, 5/5 holdings, 3 orders sized, `[READONLY][ALPACA_SHADOW_BLEND]` SHADOW-ACTION emitted, rc=0
+best-known?:   this is the only umbrella-fork variant that dispatches kind="blend" at all; pipeline#218 already carries the blend kind in the renquant-pipeline kernel (the best-known upstream implementation) and this PR brings the umbrella fork to parity via delegation to that same loader rather than porting a second copy
+scope:         claim is scoped to the umbrella kernel fork (`backtesting/renquant_104/kernel/panel_pipeline/`) exercised via an isolated-worktree rehearsal rerun of the shadow_blend readonly-alpaca profile, vs. the immediately-prior state on the same fork (fail-closed, rc reaching `panel_scorer_invalid_kind` before any decision)
 
-## NEXT
-Fork retirement (F-2): replace the umbrella-local panel_pipeline fork
+Tests: `tests/test_blend_kind_umbrella.py` 9/9 passed. Regression subset
+on the touched modules (`test_model_registry.py`,
+`test_apply_scores_panel_linear_dispatch.py`, `test_panel_scoring_job.py`,
+`test_panel_scoring_drift.py`, `test_artifact_resolver_umbrella.py`,
+`test_panel_scoring_specialist_wiring.py`): 69 passed, 3 failed — the 3
+(`test_panel_scoring_drift.py` NGBoost drift cases) reproduce IDENTICALLY
+on the unmodified live tree (origin/main), pre-existing and unrelated.
+
+kind != blend paths: registry registration is additive; the
+`_blend_component0_path` hooks only fire when `kind=="blend"` AND the
+resolver returned None; the kind tuples only gained the `"blend"` member;
+the transform branch is `if scorer_kind == "blend"` with the original
+body verbatim in the else.
+
+NEXT:      Fork retirement (F-2): replace the umbrella-local panel_pipeline fork
 with delegation to the pinned `renquant_pipeline` kernel so the pipeline
 and live-runner surfaces cannot diverge again — three same-day incidents
 (#537, sim-adapter, this) justify scheduling it now. Until then, every
