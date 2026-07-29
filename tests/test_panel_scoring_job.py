@@ -433,7 +433,9 @@ class TestApplyScoresTask:
         assert set(ctx._blocked_by_ticker.values()) == {"panel_scorer_missing"}
 
     def test_overwrites_candidate_rank_scores(self, tmp_path):
-        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
+        from kernel.panel_pipeline.job_panel_scoring import (
+            RANK_SCORE_DOMAIN_RAW, ApplyScoresTask,
+        )
         ctx = self._ctx_ready(tmp_path)
         before = {c.ticker: c.rank_score for c in ctx.candidates}
         ApplyScoresTask().run(ctx)
@@ -442,6 +444,12 @@ class TestApplyScoresTask:
         assert set(after.keys()) == set(before.keys())
         # Scores should differ across tickers (non-trivial scorer)
         assert len(set(after.values())) > 1
+        # regression guard (codex review #542/#219): this artifact has no
+        # "kind" field, so it falls through the plain scorer.score(X)
+        # fallback branch — that branch must stamp the RAW domain too, not
+        # just the score_with_history branch, else VetoWeakBuysTask's
+        # uncalibrated-rank_score fail-loud guard never trips for it.
+        assert ctx._rank_score_domain == RANK_SCORE_DOMAIN_RAW
 
     def test_drops_candidate_when_panel_score_missing(self, tmp_path):
         """Tickers absent from the matrix cannot fall back to prior rank_score."""

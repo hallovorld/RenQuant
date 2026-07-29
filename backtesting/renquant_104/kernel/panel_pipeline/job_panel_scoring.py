@@ -914,6 +914,15 @@ class ApplyScoresTask(Task):
         # long_short.enabled=true. ApplyScoresTask's only mutation here.
         ctx._panel_scores_all = scores  # noqa: SLF001
 
+        # rank_score below is the RAW scorer output on every branch that
+        # reaches this point (PatchTST history, non-history panel_ltr_xgboost,
+        # and the plain scorer.score(X) fallback all converge here).
+        # Calibration overwrites it with a probability when it runs. Record
+        # the domain so the probability-domain buy floor refuses a unit-
+        # mismatched comparison instead of vetoing the whole cross-section —
+        # mirrors the score_with_history branch above (RANK_SCORE_DOMAIN_*).
+        ctx._rank_score_domain = RANK_SCORE_DOMAIN_RAW  # noqa: SLF001
+
         n_cand_scored = 0
         scored_tickers: set[str] = set()
         for cand in ctx.candidates:
