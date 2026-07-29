@@ -44,6 +44,13 @@ from .panel_scorer import PanelScorer
 
 log = logging.getLogger("kernel.panel_pipeline.scoring")
 
+#: Unit domain of `cand.rank_score`. Scoring writes the scorer's RAW output;
+#: calibration overwrites it with a probability in [0, 1]. The buy floor is a
+#: probability-domain threshold, so comparing it against a raw score is a unit
+#: error. Mirror of renquant-pipeline#219.
+RANK_SCORE_DOMAIN_RAW = "raw"
+RANK_SCORE_DOMAIN_PROBABILITY = "probability"
+
 
 # ── Runtime feature-assembly cluster — EXTRACTED to runtime_features.py ─
 # (eng plan S2 item 5 decomposition slice 3, 2026-06-12; DRPH-gated.)
@@ -505,6 +512,11 @@ class ApplyScoresTask(Task):
             log.info("ApplyScoresTask[%s]: scored %d via score_with_history "
                      "(seq_len=%d)", scorer_kind_early, len(scores), scorer.seq_len)
             ctx._panel_scores_all = scores  # noqa: SLF001
+            # rank_score below is the RAW scorer output; calibration
+            # overwrites it with a probability when it runs. Record the domain
+            # so the probability-domain buy floor refuses a unit-mismatched
+            # comparison instead of vetoing the whole cross-section.
+            ctx._rank_score_domain = RANK_SCORE_DOMAIN_RAW  # noqa: SLF001
             n_cand_scored = 0
             scored_tickers: set[str] = set()
             for cand in ctx.candidates:

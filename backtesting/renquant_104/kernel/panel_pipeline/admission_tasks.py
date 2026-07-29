@@ -162,6 +162,28 @@ class VetoWeakBuysTask(Task):
             floor = float(raw_floor)
             floor_label = f"{floor:.3f} (absolute)"
 
+        # UNIT GUARD (mirror of renquant-pipeline#219): the floor is a
+        # probability-domain threshold. If calibration did not run, rank_score
+        # still carries the scorer's RAW output and this comparison is a unit
+        # error, not a verdict — an all-negative raw scale vetoes the entire
+        # cross-section and the run reports "no trade" as if the model had
+        # declined. Fail LOUD via the same fail-closed channel. Absent domain
+        # (older callers) keeps the previous behaviour.
+        if getattr(ctx, "_rank_score_domain", None) == "raw":
+            from kernel.panel_pipeline.job_panel_scoring import (  # noqa: PLC0415
+                _fail_closed_panel_scoring,
+            )
+            log.error(
+                "VetoWeakBuysTask: rank_score is in the RAW score domain "
+                "(calibration did not run) but the buy floor %.4f (%s) is a "
+                "probability-domain threshold — refusing the unit-mismatched "
+                "comparison. Fit/attach a calibrator for this scorer, or "
+                "disable panel buy admission explicitly.",
+                floor, floor_label,
+            )
+            _fail_closed_panel_scoring(ctx, "rank_score_domain_uncalibrated")
+            return None
+
         kept: list = []
         dropped = 0
         blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
