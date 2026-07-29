@@ -21,21 +21,31 @@ WHY/DIR:  `rank_score` is written twice — raw by the scoring stage, calibrated
           site naming the production incident); the uncalibrated producer path
           reopened it from the other end.
 
-EVIDENCE: Observed on this machine 2026-07-28 21:54 running a fresh PatchTST as
-          primary scorer with calibration disabled (its old calibrator failed
-          the strict scorer-match contract) `[VERIFIED — direct log read]`:
-          `HFPatchTSTPanelScorer.score_with_history: scored 82/82
-          (mean=-0.1071 std=0.0308)` then `VetoWeakBuysTask: dropped 75
-          candidate(s) below rank_score floor=max(min=0.20,
-          mean+1.00*std=-0.079) = 0.200 (n=75)` — 75 of 75, i.e. the whole
-          cross-section, because an all-negative raw scale cannot clear a 0.20
-          probability floor. Suites: this worktree runs 10 failed / 719 passed
-          on the `veto or admission or calibra or panel_scoring` selection BOTH
-          with and without this change (identical baseline measured by stashing
-          the diff and re-running) — the 10 are pre-existing environment
-          failures, not introduced here. Canonical side: pipeline 2103 passed /
-          8 skipped with 3 new guard tests. No model/IC/Sharpe number claimed,
-          so the §4(b) sanity triad does not apply.
+EVIDENCE: artifact:      local log (this machine, 2026-07-28 21:54)
+          `[VERIFIED — direct log read]`, running a fresh PatchTST as primary
+          scorer with calibration disabled (its old calibrator failed the
+          strict scorer-match contract): `HFPatchTSTPanelScorer.
+          score_with_history: scored 82/82 (mean=-0.1071 std=0.0308)` then
+          `VetoWeakBuysTask: dropped 75 candidate(s) below rank_score
+          floor=max(min=0.20, mean+1.00*std=-0.079) = 0.200 (n=75)` — 75 of
+          75, i.e. the whole cross-section, because an all-negative raw
+          scale cannot clear a 0.20 probability floor.
+          prod or exp:   experiment (manual PatchTST-as-primary-scorer swap
+          on this machine, calibration intentionally disabled); no prod
+          artifact touched.
+          existing data: this worktree's `veto or admission or calibra or
+          panel_scoring` test selection: 10 failed / 719 passed, identical
+          with and without this diff (baseline measured by stashing the
+          diff and re-running) — the 10 are pre-existing environment
+          failures, not introduced here. Canonical side
+          (renquant-pipeline#219): 2103 passed / 8 skipped, +3 new guard
+          tests.
+          best-known?:   n/a — no model/IC/Sharpe number is claimed; this is
+          a unit-domain correctness guard, not a performance result.
+          scope:         "this is a code fix (fail-loud domain guard)
+          verified by direct log read + regression-suite parity across both
+          repos, not a model/IC/Sharpe claim — the §4(b) sanity triad does
+          not apply."
 
 NEXT:     Merge alongside renquant-pipeline#219, then re-run the PatchTST e2e:
           with the guard in place an uncalibrated swap fails loudly instead of
