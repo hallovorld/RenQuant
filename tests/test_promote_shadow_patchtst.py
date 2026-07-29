@@ -999,14 +999,32 @@ class TestLabelClippedSourceSLA:
         assert v.age_beyond_frontier_days is None
 
 
-def test_default_sources_only_transformer_panel_is_label_clipped():
-    # Pin the DEFAULT_SOURCES scope: transformer_panel is the ONLY label-clipped
-    # source (its build dropna's the fwd_60d label); rawlabel keeps unlabeled
-    # rows (max(date) IS the bar frontier) and fundamentals has its own two-axis
-    # contract — both keep their existing SLAs untouched.
+def test_default_sources_both_fast_axes_are_label_clipped():
+    # Pin the DEFAULT_SOURCES scope: BOTH fast sources are label-clipped.
+    # transformer_panel always was. rawlabel became so on 2026-07-18
+    # (base-data#48 §2.3 dropped the bar-frontier extension) and its input fund
+    # panel is itself dropna'd on the fwd labels, so its max(date) tracks the
+    # LABEL frontier — raw-age SLA was unsatisfiable by construction and
+    # refused every weekly promotion. fundamentals keeps its own two-axis
+    # contract and is unaffected.
     flags = {s["name"]: bool(s.get("label_clipped")) for s in M.DEFAULT_SOURCES}
-    assert flags == {"transformer_panel": True, "rawlabel": False,
+    assert flags == {"transformer_panel": True, "rawlabel": True,
                      "fundamentals": False}
+
+
+def test_rawlabel_at_label_frontier_is_on_sla_but_a_frozen_build_still_breaches():
+    # The regression this fixes, both directions, using the real DEFAULT_SOURCES
+    # entry: a rawlabel sitting exactly at the achievable label frontier passes,
+    # while one whose build actually stopped advancing still breaches — the fix
+    # widens the bound, it does not blind the check.
+    src = next(s for s in M.DEFAULT_SOURCES if s["name"] == "rawlabel")
+    now = dt.date(2026, 7, 28)
+    healthy_cutoff = dt.date(2026, 4, 28)      # + 60 trading days ≈ 2026-07-21
+    ok = M.source_sla_verdict(src, now, healthy_cutoff, lookahead_bdays=60)
+    assert ok.on_sla, ok.detail
+    frozen_cutoff = dt.date(2026, 1, 5)        # build stalled ~4 months earlier
+    bad = M.source_sla_verdict(src, now, frozen_cutoff, lookahead_bdays=60)
+    assert not bad.on_sla, bad.detail
 
 
 # --- run_promote end-to-end: the structural RC_NOT_FRESH is gone -------------

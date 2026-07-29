@@ -135,14 +135,24 @@ DEFAULT_FISCAL_PERIOD_COLS = ["fiscal_period_end", "period_end", "report_date",
 # its achievable frontier (S12 B2, see the comment block above); ``kind=fundamentals``
 # -> the two-axis P-FUND-FRESHNESS check (above).
 DEFAULT_SOURCES: list[dict] = [
-    # transformer_panel is the ONLY label-clipped source: its rows are dropna'd on the
-    # fwd_60d label. rawlabel keeps unlabeled rows (its max(date) IS the bar frontier)
-    # and stays on the raw 28d SLA — as does every other source (S12 B2 scope).
+    # Both fast sources are label-clipped. transformer_panel always was. rawlabel
+    # BECAME so on 2026-07-18 (base-data#48 §2.3 dropped the bar-frontier axis
+    # extension from the single-writer sidecar recipe), and its input — the
+    # served alpha158 fund panel — is itself dropna'd on the fwd labels
+    # (measured 2026-07-28: all three fwd_*_excess columns carry ZERO NaN and
+    # max(date)=2026-04-28 = the labeled frontier, while the file was rebuilt
+    # two days earlier). So rawlabel's max(date) tracks the LABEL frontier, not
+    # the bar frontier the old raw-28d-SLA rule assumed. Judging it on raw age
+    # made the SLA unsatisfiable by construction and refused every weekly
+    # promotion since (served PatchTST frozen 622d). Detection is preserved:
+    # age-beyond-frontier still breaches 28d the moment the build actually
+    # stops advancing.
     {"name": "transformer_panel", "path": "data/transformer_v4_wl200_clean.parquet",
      "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date",
      "label_clipped": True},
     {"name": "rawlabel", "path": "data/alpha158_291_fundamental_dataset_rawlabel.parquet",
-     "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date"},
+     "axis": "fast", "sla_days": FAST_CEILING_DAYS, "date_col": "date",
+     "label_clipped": True},
     {"name": "fundamentals", "path": "data/sec_fundamentals_daily.parquet",
      "axis": "slow", "kind": "fundamentals", "date_col": "date",
      "max_feed_stale_days": FUND_MAX_FEED_STALE_DAYS,
