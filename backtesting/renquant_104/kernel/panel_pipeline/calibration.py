@@ -471,6 +471,9 @@ class ApplyGlobalCalibrationTask(Task):
                 return False
 
         n_cand = 0
+        # rank_score leaves this stage calibrated — the probability-domain
+        # buy floor may compare against it (mirror of renquant-pipeline#219).
+        ctx._rank_score_domain = "probability"  # noqa: SLF001
         for c in ctx.candidates:
             if c.panel_score is None or c.panel_score != c.panel_score:
                 continue
