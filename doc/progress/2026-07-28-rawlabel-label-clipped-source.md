@@ -23,26 +23,50 @@ WHY/DIR:  The weekly job (`com.renquant.weekly-retrain-patchtst`, Sat 05:30) has
           single-writer sidecar recipe; and the sidecar's input — the served
           alpha158 fund panel — is itself dropna'd on the forward labels.
 
-EVIDENCE: Read-only measurement of the two served parquets on 2026-07-28
-          `[VERIFIED — direct parquet read]`:
-          - `alpha158_291_fundamental_dataset.parquet`: max(date)=2026-04-28;
-            `fwd_5d_excess` / `fwd_20d_excess` / `fwd_60d_excess` each carry
-            **0 NaN** — the panel is dropna'd on labels at source. File mtime
-            2026-07-26, i.e. rebuilt 2 days before the read: advancing, not frozen.
-          - `..._rawlabel.parquet`: max(date)=2026-04-28, 0 unlabeled rows in the
-            last 95 days — inherits the label frontier, contradicting the raw-SLA
-            assumption.
-          - Weekly job log `logs/weekly_retrain_patchtst/stdout.log` (2026-07-25):
-            trains + saves calibrator + `manifest written (1 rows, 0 failed)`,
-            then `promote: refused — NOT FRESH (expected on a stale panel; old
-            pin kept)`, with the transformer_panel line PASSING on the very same
-            date via the frontier rule.
-          Detection preserved: with the flag, 2026-04-28 gives
-          age-beyond-frontier ≈ 7d (on SLA), while a build stalled at 2026-01-05
-          still breaches — asserted by the new test. No model/IC/Sharpe number is
-          claimed, so the §4(b) sanity triad does not apply.
-          Suites: `tests/test_promote_shadow_patchtst.py` 96/96,
-          `tests/test_promote_shadow_patchtst_snapshot_backstop.py` 3/3.
+EVIDENCE:
+artifact:      `data/alpha158_291_fundamental_dataset.parquet` (796M, mtime
+               2026-07-26 10:02) and `data/alpha158_291_fundamental_dataset_rawlabel.parquet`
+               (801M, mtime 2026-07-25 05:30), read directly with `pandas.read_parquet`
+               on 2026-07-28; plus `logs/weekly_retrain_patchtst/stdout.log`
+               (2026-07-25 run, 694K).
+prod or exp:   prod — both parquets are the live-tree files
+               `scripts/promote_shadow_patchtst.py::DEFAULT_SOURCES` reads at
+               `data/{name}.parquet` relative to `RENQUANT_REPO_ROOT`; read-only
+               measurement, no write to either path or to the log.
+existing data: direct read of `alpha158_291_fundamental_dataset.parquet` shows
+               max(date)=2026-04-28 and `fwd_5d_excess` / `fwd_20d_excess` /
+               `fwd_60d_excess` each carrying 0 NaN — the served fund panel is
+               dropna'd on labels at source, so its labeled frontier is
+               2026-04-28 even though the file itself was rebuilt 2026-07-26 (2
+               days before the read: the build is advancing, not frozen).
+               `..._rawlabel.parquet` shows the same max(date)=2026-04-28 with 0
+               unlabeled rows in the last 95 days — it inherits the fund panel's
+               label frontier, not a raw bar frontier. `logs/weekly_retrain_patchtst/stdout.log`
+               (2026-07-25) shows the job trains, saves a calibrator, and writes
+               `manifest written (1 rows, 0 failed)`, then
+               `promote: refused — NOT FRESH (expected on a stale panel; old pin
+               kept)` for rawlabel on the same run where the `transformer_panel`
+               line PASSES the freshness gate via the frontier rule
+               (`label_clipped: True`) already applied to that source.
+best-known?:   n/a — not a model/IC comparison. This is a root-cause diagnosis
+               of a freshness-gate rule mismatch (raw-calendar-age vs
+               achievable-frontier), not a performance claim; no alternative
+               root-cause was found consistent with the same log + parquet
+               reads.
+scope:         "this is a read-only measurement of the two served parquets
+               (`data/alpha158_291_fundamental_dataset.parquet`,
+               `data/alpha158_291_fundamental_dataset_rawlabel.parquet`) and the
+               2026-07-25 weekly log, prod, explaining why `rawlabel` alone
+               fails the freshness gate every week while `transformer_panel`
+               passes on the identical cutoff; no model/IC/Sharpe number is
+               claimed, so the §4(b) sanity triad does not apply."
+
+Detection preserved: with the flag, 2026-04-28 gives age-beyond-frontier ≈ 7d
+(on SLA), while a build stalled at 2026-01-05 still breaches — asserted by the
+new test.
+
+Suites: `tests/test_promote_shadow_patchtst.py` 96/96,
+`tests/test_promote_shadow_patchtst_snapshot_backstop.py` 3/3.
 
 NEXT:     After merge + deploy, next Saturday's weekly job should promote a fresh
           PatchTST into the shadow lane on its own — the 622d staleness closes
