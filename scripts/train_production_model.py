@@ -116,6 +116,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--panel", type=str, default=None,
+        help=(
+            "Merged fund panel parquet to train on. Defaults to "
+            "data/alpha158_291_fundamental_dataset.parquet. Added 2026-07-29: "
+            "the path was hardcoded, so the ONLY way to train on a rebuilt "
+            "panel was to overwrite the production file in place — the same "
+            "move that gutted 82 calibrators on 2026-06-17. --output-path, "
+            "--watchlist-file and --fingerprint-config were all already "
+            "redirectable; the input panel was the one thing that was not, "
+            "which meant no isolated training run was possible."
+        ),
+    )
+    p.add_argument(
         "--cv-n-splits", type=int, default=3,
         help="Number of purged walk-forward folds stamped into the artifact.",
     )
@@ -193,7 +206,8 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                          cutoff_embargo_days: Optional[int] = None,
                          include_features: Optional[list[str]] = None,
                          train_start_date: Optional[str] = None,
-                         return_feature_frontier: bool = False):
+                         return_feature_frontier: bool = False,
+                         panel_path: Optional[str] = None):
     """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used).
 
     When ``return_feature_frontier`` is True, returns a 4-tuple
@@ -224,7 +238,12 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     """
     label_used = label_override or LABEL
     log.info("Loading R1K + 5-fund panel (already normalized: alpha158=zscore, fund=robust-zscore)...")
-    panel = pd.read_parquet("data/alpha158_291_fundamental_dataset.parquet")
+    # Threaded as an explicit parameter, NOT read off a module-level `args`:
+    # this function has no `args` in scope, so reaching for one would have been
+    # a NameError on every call.
+    panel_path = panel_path or "data/alpha158_291_fundamental_dataset.parquet"
+    log.info("training panel: %s", panel_path)
+    panel = pd.read_parquet(panel_path)
     panel["date"] = pd.to_datetime(panel["date"])
     excl = {"ticker","date","split_label","fwd_5d_excess","fwd_20d_excess","fwd_60d_excess"}
     feat_cols = [c for c in panel.columns if c not in excl]
@@ -1048,6 +1067,7 @@ def main():
         include_features=include_features,
         train_start_date=args.train_start_date,
         return_feature_frontier=True,
+        panel_path=args.panel,
     )
     fingerprint_cfg = build_fingerprint_config(
         fingerprint_config_path=args.fingerprint_config,
