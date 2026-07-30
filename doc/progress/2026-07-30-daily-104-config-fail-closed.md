@@ -5,6 +5,12 @@ STATUS:   delivered. Detection + fail-closed. No config file edited (see BLOCKED
 WHAT:     `scripts/daily_104.sh` — the pinned-config resolution branch now fails
           CLOSED by default, and logs the resolved primary scorer kind in BOTH
           branches. `tests/test_daily_104_config_failclosed.py` — 8 tests.
+          `tests/test_live_multirepo_entrypoints.py::test_daily_full_run_defaults_to_orchestrator_daily_bridge` —
+          repaired: it pinned the OLD opt-in gate shape
+          (`assert "RENQUANT_OPS_FAIL_CLOSED" in src`), which this PR
+          deliberately removed; updated to pin the new default-closed shape
+          (`"${RQ_DAILY_RUNNER:-multirepo}" != "umbrella"` + the
+          `"refusing to run"` error text) instead.
 
 WHY/DIR:  RenQuant#546. The branch used to fall back to the umbrella copy unless
           `RENQUANT_STRICT_SUBREPO_PATHS` or `RENQUANT_OPS_FAIL_CLOSED` was set —
@@ -84,6 +90,16 @@ VERIFICATION:
           extraction returns `UNKNOWN` rather than failing on a config missing
           `ranking`, `panel_scoring`, or `kind` — observability must never be
           able to abort a run.
+
+          2026-07-30 re-review fix: `python3 -m pytest
+          tests/test_daily_104_config_failclosed.py
+          tests/test_operator_script_env.py tests/test_ops_deployment_ready.py
+          tests/test_live_multirepo_entrypoints.py -q` -> `4 failed, 59 passed,
+          1 xfailed`; the 4 failures are pre-existing on `origin/main`
+          (verified by running the same 4 node IDs on a clean `origin/main`
+          worktree — same 4 fail there, unrelated to this PR) and were already
+          named as such in Codex's prior review. `bash -n scripts/daily_104.sh`
+          clean.
 
 NEXT:     RenQuant#544 owns the config repair. Until then the xfail marker is the
           standing record that production and its own reviewed reference disagree

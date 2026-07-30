@@ -392,7 +392,12 @@ def test_daily_full_run_defaults_to_orchestrator_daily_bridge() -> None:
     assert 'renquant_load_subrepo_env "$REPO_DIR"' in src
     assert 'export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"' in src
     assert 'renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator' in src
-    assert "RENQUANT_OPS_FAIL_CLOSED" in src
+    # RenQuant#546 (2026-07-30): the resolver now fails CLOSED by default —
+    # the opt-in RENQUANT_OPS_FAIL_CLOSED / RENQUANT_STRICT_SUBREPO_PATHS
+    # gates were removed (both defaulted to 0, so the guard never fired).
+    # See tests/test_daily_104_config_failclosed.py for the full contract.
+    assert '"${RQ_DAILY_RUNNER:-multirepo}" != "umbrella"' in src
+    assert "refusing to run" in src
     assert 'RUNNER_ARGS=(-m renquant_orchestrator daily-bridge --repo-dir "$REPO_DIR")' in src
     assert "RUNNER_ARGS=(-m live.runner)" in src
 
