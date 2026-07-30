@@ -111,13 +111,40 @@ SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orchestrator renquant-common renquant-base-data renquant-artifacts renquant-model renquant-pipeline renquant-execution renquant-strategy-104 renquant-backtesting):${PYTHONPATH:-}"
 if ! PROD_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.json)"; then
-    if { [ "${RENQUANT_STRICT_SUBREPO_PATHS:-0}" = "1" ] || [ "${RENQUANT_OPS_FAIL_CLOSED:-0}" = "1" ]; } \
-        && [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
-        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable" | tee -a "$LOG"
+    # RenQuant#546 (2026-07-30): fail CLOSED by default.
+    #
+    # This used to fall back to the umbrella copy unless one of two env vars
+    # was set, and BOTH default to 0 — so the default path silently substituted
+    # a DIFFERENT config and did not even log it (the ERROR line below was
+    # inside the gate). Measured at the time: the umbrella copy names
+    # `hf_patchtst` as the PRIMARY scorer with xgb as shadow, while the pinned
+    # config — the one that actually runs — has exactly the inverse. So a
+    # resolver failure promoted a 623-day-stale shadow checkpoint to primary,
+    # and PatchTST's scores are intrinsically all-negative, which fails the
+    # ordinary buy floor for every name: a silent sell-only book. That is the
+    # 2026-07-15 incident class, reached with nobody taking an action.
+    #
+    # There is no umbrella-side reference that could validate the fallback:
+    # the golden file carries the SAME inverted intent, so the drift guard
+    # below compares one stale copy against another and reports clean forever.
+    # The only authority on which model is primary is the pinned config. If it
+    # cannot be resolved, the correct action is to not run.
+    #
+    # The umbrella runner is the one mode that legitimately has no subrepo
+    # runtime, so it keeps the fallback — loudly, and only there.
+    if [ "${RQ_DAILY_RUNNER:-multirepo}" != "umbrella" ]; then
+        echo "ERROR: pinned renquant-strategy-104 strategy_config.json unavailable — refusing to run. The umbrella copy is NOT an equivalent config (different primary panel_scoring.kind); substituting it would run a different strategy. Restore the pinned subrepo runtime, or set RQ_DAILY_RUNNER=umbrella deliberately." | tee -a "$LOG"
         exit 1
     fi
+    echo "WARN: pinned strategy_config.json unavailable; RQ_DAILY_RUNNER=umbrella so falling back to the umbrella copy. Its primary panel_scoring.kind may DIFFER from the pinned config (RenQuant#546)." | tee -a "$LOG"
     PROD_STRATEGY_CONFIG="$REPO_DIR/backtesting/renquant_104/strategy_config.json"
 fi
+
+# RenQuant#546: record WHICH scorer this run resolved, in both branches. The
+# 2026-07-30 investigation could not answer "which model was primary on day X"
+# from any log, which is why this line exists.
+RESOLVED_SCORER_KIND="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("ranking",{}).get("panel_scoring",{}) or {}).get("kind","UNKNOWN"))' "$PROD_STRATEGY_CONFIG" 2>/dev/null || echo UNREADABLE)"
+echo "strategy_config resolved: $PROD_STRATEGY_CONFIG (primary panel_scoring.kind=$RESOLVED_SCORER_KIND)" | tee -a "$LOG"
 
 exec >> "$LOG" 2>&1
 echo "=== daily_104 started at $(date) ==="
