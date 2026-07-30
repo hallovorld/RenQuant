@@ -27,6 +27,13 @@ EVIDENCE: `[VERIFIED-now]` the three configs' primary `ranking.panel_scoring.kin
           — so installing it as primary while the buy path applies the ordinary
           floor admits NO name: a sell-only book. That is the 2026-07-15 incident
           class, reached without anyone taking an action.
+  artifact:       backtesting/renquant_104/strategy_config.golden.json,
+                  backtesting/renquant_104/strategy_config.json,
+                  renquant-strategy-104/configs/strategy_config.json (pinned
+                  sibling clone, resolved via renquant_strategy_config() in
+                  scripts/subrepo_env.sh) — the three files the EVIDENCE
+                  paragraph above reads `ranking.panel_scoring.kind` /
+                  `shadow_models` from.
   prod or exp:    Production script change, behaviour-narrowing: a run that would
                   have silently proceeded on a different config now refuses.
                   No scoring, sizing, admission or gate logic touched.
