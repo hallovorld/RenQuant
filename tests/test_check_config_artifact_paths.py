@@ -763,7 +763,7 @@ def test_ledger_absent_without_marker_fails_closed(tmp_path: Path) -> None:
     fail = next(r for r in results if r.raw.endswith(".jsonl"))
     assert not fail.ok
     assert "does not resolve" in fail.reason
-    assert "no *_pending_first_artifact marker" in fail.reason
+    assert "neither a *_machine_produced_ledger" in fail.reason
     assert "fail-closed" in fail.reason
 
 
@@ -896,3 +896,77 @@ def test_momentum_kind_with_wrong_ledger_path_fails_closed(tmp_path: Path) -> No
     bad = [r for r in results if not r.ok]
     assert len(bad) == 1
     assert "restricted to the momentum contract" in bad[0].reason
+
+
+def test_machine_produced_marker_admits_an_absent_ledger_as_info(tmp_path: Path) -> None:
+    """s104#78 follow-up: the momentum ledger is run-surface state, never
+    committed — hosted runners cannot resolve it BY DESIGN. The
+    machine-produced marker downgrades exactly that case to INFO."""
+    strategy_dir, data_root = _make_tree(tmp_path)   # no ledger written
+    config = _base_config(_good_shadow(data_root))
+    entry = _momentum_entry()
+    entry["_2026_08_02_machine_produced_ledger"] = (
+        "run-surface state published by the weekly job; unresolvable off the "
+        "serving machine by design")
+    config["ranking"]["panel_scoring"]["shadow_models"].append(entry)
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    assert [r for r in results if not r.ok] == []
+    momentum = next(r for r in results if r.raw.endswith(".jsonl"))
+    assert "machine-produced ledger absent" in momentum.detail
+
+
+def test_machine_produced_marker_does_not_rescue_non_momentum_jsonl(tmp_path: Path) -> None:
+    """#554's narrowing fires FIRST: the marker cannot smuggle an unrelated
+    JSONL entry past the contract check."""
+    strategy_dir, data_root = _make_tree(tmp_path)
+    config = _base_config(_good_shadow(data_root))
+    config["ranking"]["panel_scoring"]["shadow_models"].append(
+        {
+            "name": "future_model_shadow",
+            "kind": "future_model",
+            "artifact_path": "artifacts/future/future_ledger.jsonl",
+            "_2026_09_01_machine_produced_ledger": "must not rescue this",
+        }
+    )
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    bad = [r for r in results if not r.ok]
+    assert len(bad) == 1
+    assert "restricted to the momentum contract" in bad[0].reason
+
+
+def test_machine_produced_marker_does_not_skip_verification_when_ledger_resolves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On the serving machine the ledger exists — the marker must be inert
+    there: full chain verification still runs (a tampered chain still fails)."""
+    monkeypatch.setattr(mod, "_import_canonical", _fake_import_canonical)
+    strategy_dir, data_root = _make_tree(tmp_path)
+    ledger = _write_momentum_publish_set(strategy_dir)
+    # tamper with row 0
+    rows = ledger.read_text().strip().splitlines()
+    row0 = json.loads(rows[0]); row0["artifact_content_sha256"] = "sha256:" + "0" * 16
+    rows[0] = json.dumps(row0, sort_keys=True, separators=(",", ":"))
+    ledger.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    config = _base_config(_good_shadow(data_root))
+    entry = _momentum_entry()
+    entry["_2026_08_02_machine_produced_ledger"] = "inert when the ledger resolves"
+    config["ranking"]["panel_scoring"]["shadow_models"].append(entry)
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    bad = [r for r in results if not r.ok]
+    assert len(bad) == 1
+    assert "chain verification FAILED" in bad[0].reason
