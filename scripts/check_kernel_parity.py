@@ -54,6 +54,11 @@ KNOWN_DRIFT_ALLOWLIST: frozenset[str] = frozenset({
     "live_state_v2.py",
     "meta_label/__init__.py",
     "net_safety.py",
+    # 2026-08-02 pin bump (Grant C, RenQuant#551): pipeline-side wash-sale
+    # materiality floor (pipeline#251, commit ca06733) + per-rate-bucket
+    # netting mirror (pipeline#217, commit 86dcdcb); umbrella copy lags
+    # until ported.
+    "portfolio.py",
     "panel_pipeline/__init__.py",
     "panel_pipeline/alpha158_features.py",
     "panel_pipeline/hf_patchtst_scorer.py",
@@ -126,6 +131,10 @@ KNOWN_DRIFT_ALLOWLIST: frozenset[str] = frozenset({
     "walk_forward/__init__.py",
     "walk_forward/loader.py",
     "walk_forward/manifest.py",
+    # 2026-08-02 pin bump (Grant C, RenQuant#551): pipeline-side holiday-aware
+    # trading-day bound, landed unwired then demoted to a private measurement
+    # (pipeline#229, commits 11e49ad + 67b1edd); umbrella copy lags until ported.
+    "walk_forward/leakage_guard.py",
 })
 
 
