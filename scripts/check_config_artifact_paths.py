@@ -344,6 +344,21 @@ def _pending_first_artifact_marker(entry: dict) -> Optional[str]:
     return None
 
 
+def _machine_produced_ledger_marker(entry: dict) -> Optional[str]:
+    """s104#78 follow-up (2026-08-02): a narrative key ending in
+    ``_machine_produced_ledger`` declares 'the ledger is RUN-SURFACE state,
+    published by the weekly job on the serving machine and never committed —
+    unresolvable on hosted runners BY DESIGN'. Distinct from the retired
+    pending-first-artifact marker (which meant 'not published anywhere yet').
+    On the serving machine the ledger resolves and the full chain
+    verification below runs unchanged; this marker only downgrades the
+    ABSENT case to INFO, and only inside the momentum contract (#554)."""
+    for key in entry:
+        if isinstance(key, str) and key.endswith("_machine_produced_ledger"):
+            return key
+    return None
+
+
 def _check_ledger_pointer(
     config_name: str,
     field: str,
@@ -395,6 +410,19 @@ def _check_ledger_pointer(
 
     ident = contract.resolve_identity(raw, strategy_dir, data_root)
     if not getattr(ident, "resolved", False):
+        mp_marker = expected.get("machine_produced_ledger_marker")
+        if mp_marker:
+            return PathCheck(
+                config_name, field, kind, raw, "", True, "",
+                (
+                    f"INFO: machine-produced ledger absent on THIS machine — "
+                    f"expected off the serving machine (run-surface state, "
+                    f"never committed; marker {mp_marker!r}). On the serving "
+                    f"machine the ledger resolves and the chain verification "
+                    f"runs in full; a wrongly-missing ledger there faults at "
+                    f"load (pipeline#254) and pages the sentinel."
+                ),
+            )
         marker = expected.get("pending_first_artifact_marker")
         if marker:
             return PathCheck(
@@ -409,7 +437,8 @@ def _check_ledger_pointer(
             config_name, field, kind, raw, "", False,
             (
                 f"ledger pointer does not resolve to an existing file: {raw!r} "
-                f"and the entry carries no *_pending_first_artifact marker — "
+                f"and the entry carries neither a *_machine_produced_ledger "
+                f"nor a *_pending_first_artifact marker — "
                 f"fail-closed default (canonical resolver source="
                 f"{getattr(ident, 'source', '?')}; "
                 f"error={getattr(ident, 'error', None)})"
@@ -560,6 +589,9 @@ def collect_paths_strategy_config(
             # this key — classic entries are unaffected.
             expected["pending_first_artifact_marker"] = (
                 _pending_first_artifact_marker(sm)
+            )
+            expected["machine_produced_ledger_marker"] = (
+                _machine_produced_ledger_marker(sm)
             )
             # #550: the ledger-pointer branch admits ONLY the momentum
             # contract; it needs the entry's declared model kind to decide.
