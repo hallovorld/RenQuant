@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -161,39 +162,99 @@ def _list_py_files(root: Path) -> set[str]:
     return result
 
 
+def _git_head(repo: Path) -> str | None:
+    """HEAD commit of ``repo``, or None if it is not a readable git checkout."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=10)
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _resolve_pipeline_kernel() -> Path | None:
-    """Resolve the pipeline kernel path.
+    """Resolve the pipeline kernel path — refusing any tree not at the pin.
 
-    Resolution order:
-    1. ``RENQUANT_PIPELINE_KERNEL_PATH`` env var — explicit override. CI
-       (``.github/workflows/kernel-parity-ci.yml``) sets this to wherever it
-       checked out the ``renquant-pipeline`` sibling, since the CI runner's
-       layout has nothing to do with any developer machine's
-       ``subrepos.lock.json`` ``local_path``.
-    2. ``subrepos.lock.json``'s ``local_path`` — the developer-machine pin.
-    3. A ``renquant-pipeline`` checkout that is a filesystem sibling of this
-       umbrella checkout (``../renquant-pipeline``) — the layout produced by
-       a from-scratch multirepo clone.
+    2026-08-02 hardening: this guard's estimand is "umbrella kernel vs the
+    PINNED pipeline kernel". The old order trusted the lock's ``local_path``
+    (a mutable developer checkout) without verifying its HEAD, so on a
+    machine whose sibling checkout lagged the pin the check silently measured
+    a stale tree — the measured instance: sibling at a14dad11 vs pin
+    60871e24 read two genuinely-drifted files as converged. A candidate now
+    counts only if its checkout HEAD equals the locked commit; with no
+    matching candidate the resolver returns None (exit 3: an honest skip),
+    never a wrong-object measurement.
+
+    Resolution order (EVERY leg, including the override, is verified against
+    the locked commit when a lock is present — round-2 review: an unverified
+    override is the same wrong-object measurement as an unverified
+    local_path):
+    1. ``RENQUANT_PIPELINE_KERNEL_PATH`` env var — explicit override.
+       CI (``.github/workflows/kernel-parity-ci.yml``) reads the pin out of
+       ``subrepos.lock.json`` and checks renquant-pipeline out AT that
+       commit, so the same HEAD==pin verification passes there with no CI
+       carve-out. ``git -C <kernel> rev-parse HEAD`` walks up to the
+       enclosing repo, so no layout is assumed for override checkouts.
+    2. ``.subrepo_runtime/repos/renquant-pipeline`` — the serving machine's
+       pin-materialised clone (``subrepo_assemble.py --sync``).
+    3. ``subrepos.lock.json``'s ``local_path``.
+    4. The ``../renquant-pipeline`` filesystem sibling.
+    Candidates that exist at the wrong commit are reported on stderr.
     """
-    override = os.environ.get("RENQUANT_PIPELINE_KERNEL_PATH")
-    if override:
-        kernel = Path(override)
-        return kernel if kernel.is_dir() else None
-
+    pinned_commit: str | None = None
+    lock_local: Path | None = None
     if LOCK_FILE.exists():
         with open(LOCK_FILE) as fh:
             lock = json.load(fh)
         for sub in lock.get("subrepos", []):
             if sub.get("name") == "renquant-pipeline":
-                local = Path(sub["local_path"])
-                kernel = local / "src" / "renquant_pipeline" / "kernel"
-                if kernel.is_dir():
-                    return kernel
+                pinned_commit = sub.get("commit")
+                if sub.get("local_path"):
+                    lock_local = Path(sub["local_path"])
 
-    sibling = (
-        UMBRELLA_ROOT.parent / "renquant-pipeline" / "src" / "renquant_pipeline" / "kernel"
-    )
-    return sibling if sibling.is_dir() else None
+    override = os.environ.get("RENQUANT_PIPELINE_KERNEL_PATH")
+    if override:
+        kernel = Path(override)
+        if not kernel.is_dir():
+            return None
+        if pinned_commit is None:
+            # No lock to verify against (exotic checkout): legacy trust.
+            return kernel
+        head = _git_head(kernel)
+        if head == pinned_commit:
+            return kernel
+        print(
+            f"check_kernel_parity: refusing override "
+            f"RENQUANT_PIPELINE_KERNEL_PATH={override} — enclosing checkout "
+            f"HEAD {(head or 'unreadable')[:12]} != locked pipeline commit "
+            f"{pinned_commit[:12]} (an unverified override is a wrong-object "
+            f"measurement)", file=sys.stderr)
+        return None
+
+    candidates = [
+        UMBRELLA_ROOT / ".subrepo_runtime" / "repos" / "renquant-pipeline",
+        lock_local,
+        UMBRELLA_ROOT.parent / "renquant-pipeline",
+    ]
+    for repo in candidates:
+        if repo is None:
+            continue
+        kernel = repo / "src" / "renquant_pipeline" / "kernel"
+        if not kernel.is_dir():
+            continue
+        if pinned_commit is None:
+            # No lock to verify against (exotic checkout): legacy best-effort.
+            return kernel
+        head = _git_head(repo)
+        if head == pinned_commit:
+            return kernel
+        print(
+            f"check_kernel_parity: refusing {repo} — HEAD "
+            f"{(head or 'unreadable')[:12]} != locked pipeline commit "
+            f"{pinned_commit[:12]} (a stale tree would be a wrong-object "
+            f"measurement)", file=sys.stderr)
+    return None
 
 
 def check_parity(*, verbose: bool = False) -> tuple[list[str], dict[str, object]]:
