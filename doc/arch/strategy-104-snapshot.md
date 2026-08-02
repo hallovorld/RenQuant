@@ -15,15 +15,15 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: 0fea31f66d5900915db80a871d49b85401cafbf334285e81f34e20a41c6f4bb1 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: f49a7939b438f0398c0504f799afada2b154d6acd1fe4584425ab26ff5cc17c5 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
 | | |
 |---|---|
 | Pinned config root | `.subrepo_runtime/repos/renquant-strategy-104/configs` |
-| strategy-104 runtime checkout commit | d86c567cefa87178e40a6f98d61044005b34b891 |
-| subrepos.lock.json strategy-104 pin | d86c567cefa87178e40a6f98d61044005b34b891 |
+| strategy-104 runtime checkout commit | 001ab612c1e30a1598e29dd0713115ef72d18b48 |
+| subrepos.lock.json strategy-104 pin | 001ab612c1e30a1598e29dd0713115ef72d18b48 |
 
 ### Source warnings
 
@@ -174,17 +174,17 @@ Source fingerprint: 0fea31f66d5900915db80a871d49b85401cafbf334285e81f34e20a41c6f
 | renquant-model | main | `e1f83f8c3dfe` | active |
 | renquant-orchestrator | main | `ade07dd797b0` | active |
 | renquant-pipeline | main | `40ec66dff606` | bootstrapped |
-| renquant-strategy-104 | main | `d86c567cefa8` | bootstrapped |
+| renquant-strategy-104 | main | `001ab612c1e3` | bootstrapped |
 
 ## Source fingerprints
 
-- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:9fded0f009d56a82
+- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:5384bdab32c1b618
 - `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:ae2cd4431755c3b9
 - `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl` — sha256:9aa2d8c9571bad95
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
 - `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
-- `subrepos.lock.json` — sha256:683ecf4a80d22765
+- `subrepos.lock.json` — sha256:1055b962e7f49ce4
 
 <!-- snapshot-machine-block
 {
@@ -194,18 +194,18 @@ Source fingerprint: 0fea31f66d5900915db80a871d49b85401cafbf334285e81f34e20a41c6f
   "xgb",
   "momentum_residual"
  ],
- "lock_strategy_104_pin": "d86c567cefa87178e40a6f98d61044005b34b891",
+ "lock_strategy_104_pin": "001ab612c1e30a1598e29dd0713115ef72d18b48",
  "schema_version": 2,
  "shadow_e2e_kind": "hf_patchtst",
  "sources_sha256": {
-  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:9fded0f009d56a82",
+  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:5384bdab32c1b618",
   ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:ae2cd4431755c3b9",
   "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl": "sha256:9aa2d8c9571bad95",
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
   "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
-  "subrepos.lock.json": "sha256:683ecf4a80d22765"
+  "subrepos.lock.json": "sha256:1055b962e7f49ce4"
  },
- "strategy_104_pin": "d86c567cefa87178e40a6f98d61044005b34b891"
+ "strategy_104_pin": "001ab612c1e30a1598e29dd0713115ef72d18b48"
 }
 -->

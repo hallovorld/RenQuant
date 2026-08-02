@@ -1,14 +1,16 @@
 # 2026-08-02 — routine pin advance: health-record config stamp + pending-key cleanup
 
-STATUS: complete (lock + snapshot in this PR; machine sync post-merge under
-the standing routine)
+STATUS: complete (round 2 after the verify-pinned-paths red: gate #557 +
+marker #79 landed first, per the review; lock re-pinned + snapshot
+regenerated; machine sync post-merge)
 
 WHAT: renquant-pipeline `dff3cbe3` → `40ec66df` (pipeline#257: every
 shadow-health record now stamped with `task_config_path` +
 `task_config_sha256` — the fix for the shared-sink profile-identity gap,
-pipeline#256) and renquant-strategy-104 `ce8ad100` → `d86c567c` (s104#78:
-the satisfied `_2026_08_02_pending_first_artifact` key retired from both
-configs). Both pins CI-green validated; snapshot regenerated via the mirror
+pipeline#256) and renquant-strategy-104 `ce8ad100` → `001ab612` (s104#78:
+the satisfied `_2026_08_02_pending_first_artifact` key retired; s104#79: the
+`_2026_08_02_machine_produced_ledger` key declares the true CI-invisible
+state, admitted by the RenQuant#557 gate this branch now carries). Both pins CI-green validated; snapshot regenerated via the mirror
 assembly — `--verify-pinned-declaration` OK, mirror `--check` exit 0, parity
 pre-check vs `40ec66df` zero NEW kernel drift.
 
