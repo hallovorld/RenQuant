@@ -80,11 +80,28 @@ EVIDENCE:  `[VERIFIED-now]` `python3 -m pytest -q -o addopts=''
            fail-closed; empty ledger FAILS; expected-pin on a pointer
            REFUSED; marker does NOT rescue a classic entry; classic-only
            configs byte-identical.
-           artifact: n/a (static CI gate + fixtures; no model/data artifact
-           produced; the full umbrella suite was NOT run — this change
-           touches only the gate script and its own test file, and the CI
-           unit job runs exactly the command above).
+  artifact:       scripts/check_config_artifact_paths.py +
+                  tests/test_check_config_artifact_paths.py — no model/data
+                  artifact produced (static CI gate change only).
+  prod or exp:    exp. The gate rule is inert on every config on `main`
+                  today (none has a `.jsonl` shadow `artifact_path`); it
+                  only activates when the slice-5 grant batch adds one.
+  existing data:  Yes — the pytest run above, against this branch's
+                  checkout, is the existing evidence; no new training run
+                  or backtest was needed since this is a static-analysis
+                  gate over fixtures.
+  best-known?:    N/A — this is a new gate rule (design point 5 of
+                  `check_config_artifact_paths.py`), not a variant of an
+                  existing metric or model; there is no prior IC/Sharpe
+                  baseline to compare against.
+  scope:          "this is scripts/check_config_artifact_paths.py, exp
+                  (static CI gate; no config, workflow, artifact, job, or
+                  production state touched), inert until the slice-5 grant
+                  batch introduces the first `.jsonl` shadow entry"
 
-SCOPE:     1 script + 1 test file + this doc. No config, workflow, artifact,
-           job, or production state touched. Inert until the slice-5 grant
-           batch introduces the first `.jsonl` shadow entry.
+NEXT:      The slice-5 grant batch per model#197 amendment 2's build order:
+           install the momentum publish job -> produce the first `.jsonl`
+           artifact -> merge s104#77 (frozen under DO-NOT-MERGE until then)
+           -> advance the pin. This PR (4c) is the last gate block that
+           order needs; slice 3 (evaluator) and 4b (pipeline handler)
+           already landed.
