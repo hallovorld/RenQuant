@@ -102,6 +102,8 @@ EVIDENCE:  `[VERIFIED-now]` `python3 -m pytest -q -o addopts=''
 NEXT:      The slice-5 grant batch per model#197 amendment 2's build order:
            install the momentum publish job -> produce the first `.jsonl`
            artifact -> merge s104#77 (frozen under DO-NOT-MERGE until then)
-           -> advance the pin. This PR (4c) is the last gate block that
-           order needs; slice 3 (evaluator) and 4b (pipeline handler)
-           already landed.
+           -> advance the pin. This PR (4c) is the last UMBRELLA-side gate
+           block that order needs; slice 3 (evaluator, model#198) and 4b
+           (pipeline handler, pipeline#253) are still OPEN under review and
+           must merge before the batch `[VERIFIED — gh pr list on both
+           repos, 2026-08-02]`.
