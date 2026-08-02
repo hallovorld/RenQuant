@@ -1,6 +1,6 @@
 # 2026-08-02 — kernel-parity resolver: refuse trees not at the locked commit
 
-STATUS: complete (fix + 3 unit tests + live-machine end-to-end read)
+STATUS: complete (fix + 5 unit tests + live-machine end-to-end read; round 2: the env override leg is verified too)
 
 WHAT: `scripts/check_kernel_parity.py::_resolve_pipeline_kernel` trusted the
 lock's `local_path` (a mutable developer checkout) without verifying its HEAD,
@@ -33,6 +33,14 @@ EVIDENCE:
   not asserted
 - scope: resolver only; comparison logic, allowlist, exit codes unchanged
   (exit 3 semantics now also covers "candidates exist but none at the pin")
+
+Round 2 (codex review): `RENQUANT_PIPELINE_KERNEL_PATH` no longer bypasses the
+pin check. `git -C <override-kernel> rev-parse HEAD` walks up to the enclosing
+checkout (no layout assumption) and must equal the locked commit; a
+wrong-commit override is refused with a named stderr message. No CI carve-out
+is needed: kernel-parity-ci reads the pin from subrepos.lock.json and checks
+renquant-pipeline out AT that commit, so the verification passes there by
+construction. +2 tests (refuses-wrong-commit-override, accepts-CI-shape).
 
 NEXT: none for this fix. Standing GOAL-3 measurement recorded here: allowlist
 rot = 0/93 removable as of the 60871e24 pin (honest negative — no cleanup PR

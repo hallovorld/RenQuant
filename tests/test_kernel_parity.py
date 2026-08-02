@@ -147,3 +147,46 @@ def test_resolver_prefers_the_pinned_runtime_clone(tmp_path, monkeypatch):
     monkeypatch.delenv("RENQUANT_PIPELINE_KERNEL_PATH", raising=False)
     resolved = mod._resolve_pipeline_kernel()
     assert resolved == runtime / "src" / "renquant_pipeline" / "kernel"
+
+
+def test_resolver_refuses_a_wrong_commit_override(tmp_path, monkeypatch, capsys):
+    """Round-2 review: the env override must not bypass the pin check — an
+    override pointing at a checkout whose HEAD differs from the locked commit
+    is refused (None), with the refusal named on stderr."""
+    repo = tmp_path / "ci-checkout"
+    repo.mkdir()
+    _mk_repo(repo)
+    lock = tmp_path / "subrepos.lock.json"
+    lock.write_text(
+        '{"subrepos": [{"name": "renquant-pipeline", '
+        f'"commit": "{"0" * 40}"}}]}}'
+    )
+    mod = _load_module()
+    monkeypatch.setattr(mod, "LOCK_FILE", lock)
+    monkeypatch.setattr(mod, "UMBRELLA_ROOT", tmp_path / "nowhere")
+    monkeypatch.setenv(
+        "RENQUANT_PIPELINE_KERNEL_PATH",
+        str(repo / "src" / "renquant_pipeline" / "kernel"),
+    )
+    assert mod._resolve_pipeline_kernel() is None
+    assert "refusing override" in capsys.readouterr().err
+
+
+def test_resolver_accepts_an_override_at_the_locked_commit(tmp_path, monkeypatch):
+    """The CI shape: the workflow checks renquant-pipeline out AT the lock pin
+    and points the override at it — HEAD==pin verification passes with no
+    carve-out."""
+    repo = tmp_path / "ci-checkout"
+    repo.mkdir()
+    head = _mk_repo(repo)
+    lock = tmp_path / "subrepos.lock.json"
+    lock.write_text(
+        '{"subrepos": [{"name": "renquant-pipeline", '
+        f'"commit": "{head}"}}]}}'
+    )
+    mod = _load_module()
+    monkeypatch.setattr(mod, "LOCK_FILE", lock)
+    monkeypatch.setattr(mod, "UMBRELLA_ROOT", tmp_path / "nowhere")
+    kernel = repo / "src" / "renquant_pipeline" / "kernel"
+    monkeypatch.setenv("RENQUANT_PIPELINE_KERNEL_PATH", str(kernel))
+    assert mod._resolve_pipeline_kernel() == kernel

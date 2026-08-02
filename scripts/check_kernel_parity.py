@@ -186,25 +186,22 @@ def _resolve_pipeline_kernel() -> Path | None:
     matching candidate the resolver returns None (exit 3: an honest skip),
     never a wrong-object measurement.
 
-    Resolution order:
-    1. ``RENQUANT_PIPELINE_KERNEL_PATH`` env var — explicit override, trusted
-       as-is. CI (``.github/workflows/kernel-parity-ci.yml``) sets this to
-       the sibling it checked out AT the locked commit; the CI runner's
-       layout has nothing to do with any developer machine's paths.
+    Resolution order (EVERY leg, including the override, is verified against
+    the locked commit when a lock is present — round-2 review: an unverified
+    override is the same wrong-object measurement as an unverified
+    local_path):
+    1. ``RENQUANT_PIPELINE_KERNEL_PATH`` env var — explicit override.
+       CI (``.github/workflows/kernel-parity-ci.yml``) reads the pin out of
+       ``subrepos.lock.json`` and checks renquant-pipeline out AT that
+       commit, so the same HEAD==pin verification passes there with no CI
+       carve-out. ``git -C <kernel> rev-parse HEAD`` walks up to the
+       enclosing repo, so no layout is assumed for override checkouts.
     2. ``.subrepo_runtime/repos/renquant-pipeline`` — the serving machine's
-       pin-materialised clone (``subrepo_assemble.py --sync``), verified
-       HEAD == locked commit.
-    3. ``subrepos.lock.json``'s ``local_path``, verified HEAD == locked
-       commit.
-    4. The ``../renquant-pipeline`` filesystem sibling, verified HEAD ==
-       locked commit.
+       pin-materialised clone (``subrepo_assemble.py --sync``).
+    3. ``subrepos.lock.json``'s ``local_path``.
+    4. The ``../renquant-pipeline`` filesystem sibling.
     Candidates that exist at the wrong commit are reported on stderr.
     """
-    override = os.environ.get("RENQUANT_PIPELINE_KERNEL_PATH")
-    if override:
-        kernel = Path(override)
-        return kernel if kernel.is_dir() else None
-
     pinned_commit: str | None = None
     lock_local: Path | None = None
     if LOCK_FILE.exists():
@@ -215,6 +212,25 @@ def _resolve_pipeline_kernel() -> Path | None:
                 pinned_commit = sub.get("commit")
                 if sub.get("local_path"):
                     lock_local = Path(sub["local_path"])
+
+    override = os.environ.get("RENQUANT_PIPELINE_KERNEL_PATH")
+    if override:
+        kernel = Path(override)
+        if not kernel.is_dir():
+            return None
+        if pinned_commit is None:
+            # No lock to verify against (exotic checkout): legacy trust.
+            return kernel
+        head = _git_head(kernel)
+        if head == pinned_commit:
+            return kernel
+        print(
+            f"check_kernel_parity: refusing override "
+            f"RENQUANT_PIPELINE_KERNEL_PATH={override} — enclosing checkout "
+            f"HEAD {(head or 'unreadable')[:12]} != locked pipeline commit "
+            f"{pinned_commit[:12]} (an unverified override is a wrong-object "
+            f"measurement)", file=sys.stderr)
+        return None
 
     candidates = [
         UMBRELLA_ROOT / ".subrepo_runtime" / "repos" / "renquant-pipeline",
