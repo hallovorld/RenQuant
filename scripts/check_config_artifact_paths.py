@@ -46,6 +46,20 @@ Design
    strategy_dir``) — so ``resolved==false`` alone is topology-dependent and
    would let the fragile escape through. The lint makes the incident class
    deterministically fail everywhere.
+5. Momentum LEDGER POINTER (slice 4c; model#197 amendment 2, s104#77) — a
+   SHADOW entry whose ``artifact_path`` ends in ``.jsonl`` points at an
+   append-only digest-chained artifact ledger, not a dated artifact. A JSONL
+   ledger cannot carry inline ``trained_date``/``config_fingerprint``;
+   identity lives in the chain. When the ledger RESOLVES: verify the full row
+   chain (a local re-implementation of renquant-model ``ledger.py`` — see the
+   duplication note above ``_LEDGER_ROW_REQUIRED``) and that the tail row's
+   dated artifact exists beside the ledger with a matching, recomputed
+   content sha. When the ledger is ABSENT and the entry carries a
+   ``*_pending_first_artifact`` narrative key (the bounded pending guard
+   s104#77 ships): record an INFO ("pending first artifact — the designed
+   pre-batch state") and PASS; ABSENT without the marker stays a FAIL — the
+   fail-closed default. Every other entry kind keeps its existing behavior
+   unchanged.
 
 Read-only. Touches only config / artifact JSON + ``Path.stat``/``read_bytes``
 via the canonical resolver — never mutates state.
@@ -53,6 +67,7 @@ via the canonical resolver — never mutates state.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import sys
@@ -219,6 +234,238 @@ def _metadata_identity(
     return trained, fingerprint, missing
 
 
+# ── momentum ledger pointer (slice 4c) ───────────────────────────────────────
+#
+# DUPLICATION NOTE — deliberate, cited (model#197 amendment 2 / slice 4c):
+# ``_ledger_row_sha256``, ``_load_and_verify_ledger_chain`` and
+# ``_artifact_content_sha256`` re-implement, with byte-identical recipes, the
+# chain and content-sha definitions OWNED by renquant-model:
+#   * ``src/renquant_model_momentum/ledger.py`` (``row_sha256_of``,
+#     ``load_and_verify_ledger``): each JSONL row carries ``prev_row_sha``
+#     (the previous row's ``row_sha``) and its own ``row_sha`` = sha256 over
+#     the canonical JSON (sort_keys=True, separators=(",", ":"),
+#     allow_nan=False) of the row WITHOUT ``row_sha``; ``row_index`` must
+#     equal the physical line number; required row fields as listed below.
+#   * ``src/renquant_model_momentum/train.py`` (``content_sha256_of``):
+#     artifact content sha = sha256 over the same canonical JSON of the
+#     artifact WITHOUT ``content_sha256``.
+# The umbrella cannot import the model-factory package (consumers consume by
+# artifact_path, never by importing the factory — the cross-repo rule in
+# RENQUANT_REPOS.md), so these few lines are duplicated here on purpose.
+# If ledger.py / train.py ever change the recipe, this gate must change with
+# them.
+
+#: Mirror of renquant-model ledger.py ``_ROW_REQUIRED`` (artifact-ledger rows).
+_LEDGER_ROW_REQUIRED = ("row_index", "prev_row_sha", "appended_at_utc", "kind",
+                        "cutoff_date", "params_version",
+                        "artifact_content_sha256", "row_sha")
+
+
+class _LedgerChainError(ValueError):
+    """The pointed-at ledger violates its chain contract (message names the
+    offending row)."""
+
+
+def _canonical_sha256(body: dict) -> str:
+    canon = json.dumps(body, sort_keys=True, separators=(",", ":"),
+                       allow_nan=False)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _ledger_row_sha256(row: dict) -> str:
+    """Mirror of ledger.py ``row_sha256_of``: sha over the row sans row_sha."""
+    return _canonical_sha256({k: v for k, v in row.items() if k != "row_sha"})
+
+
+def _artifact_content_sha256(doc: dict) -> str:
+    """Mirror of train.py ``content_sha256_of``: sha over the artifact sans
+    content_sha256."""
+    return _canonical_sha256(
+        {k: v for k, v in doc.items() if k != "content_sha256"}
+    )
+
+
+def _load_and_verify_ledger_chain(ledger_path: Path) -> list[dict]:
+    """Mirror of ledger.py ``load_and_verify_ledger`` for an EXISTING file:
+    parse + verify the full chain; raise :class:`_LedgerChainError` (naming
+    the row) on ANY defect."""
+    rows: list[dict] = []
+    prev_sha: Optional[str] = None
+    with open(ledger_path, encoding="utf-8") as fh:
+        for i, line in enumerate(fh):
+            line = line.strip()
+            if not line:
+                raise _LedgerChainError(f"row {i}: blank line in ledger")
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise _LedgerChainError(f"row {i}: unparseable ({exc})")
+            missing = [k for k in _LEDGER_ROW_REQUIRED if k not in row]
+            if missing:
+                raise _LedgerChainError(f"row {i}: missing fields {missing}")
+            if row["row_index"] != i:
+                raise _LedgerChainError(
+                    f"row {i}: row_index says {row['row_index']} — rows were "
+                    "reordered or removed"
+                )
+            if row["prev_row_sha"] != prev_sha:
+                raise _LedgerChainError(
+                    f"row {i}: prev_row_sha {row['prev_row_sha']!r} does not "
+                    f"match the previous row's row_sha {prev_sha!r} — the "
+                    "chain is broken (a row was rewritten or removed)"
+                )
+            actual = _ledger_row_sha256(row)
+            if row["row_sha"] != actual:
+                raise _LedgerChainError(
+                    f"row {i}: row_sha {row['row_sha']!r} does not recompute "
+                    f"({actual}) — the row was edited after it was written"
+                )
+            prev_sha = row["row_sha"]
+            rows.append(row)
+    return rows
+
+
+def _pending_first_artifact_marker(entry: dict) -> Optional[str]:
+    """The s104#77 bounded pending guard: a narrative key on the shadow entry
+    ending in ``_pending_first_artifact`` (e.g.
+    ``_2026_08_02_pending_first_artifact``) declares 'the publish set does not
+    exist yet BY DESIGN — the first artifact rides the slice-5 grant batch'.
+    Returns the marker key, or None."""
+    for key in entry:
+        if isinstance(key, str) and key.endswith("_pending_first_artifact"):
+            return key
+    return None
+
+
+def _check_ledger_pointer(
+    config_name: str,
+    field: str,
+    kind: str,
+    raw: str,
+    expected: dict,
+    strategy_dir: Path,
+    data_root: Path,
+    contract: ArtifactContract,
+) -> PathCheck:
+    """Validate a shadow LEDGER-POINTER entry (``artifact_path`` -> ``.jsonl``,
+    design point 5). Identity = the verified chain + the tail row's dated
+    artifact beside the ledger (``<ledger_dir>/<cutoff_date>/<kind>.json`` —
+    the momentum_train_run.py publish layout), NOT inline scorer metadata."""
+    # A config-pinned expected identity cannot apply here: the ledger file is
+    # append-only and changes on every weekly publish, so a pinned file sha
+    # would be stale by design. Refuse (fail closed) rather than silently
+    # ignore a pin someone believed was in force.
+    if expected.get("content_sha256") or expected.get("config_fingerprint"):
+        return PathCheck(
+            config_name, field, kind, raw, "", False,
+            (
+                "expected_content_sha256 / expected_config_fingerprint are "
+                "not supported on a ledger pointer (the append-only ledger "
+                "changes on every publish); the row chain + tail-artifact "
+                "content sha are the swap-detection anchors"
+            ),
+            "",
+        )
+
+    ident = contract.resolve_identity(raw, strategy_dir, data_root)
+    if not getattr(ident, "resolved", False):
+        marker = expected.get("pending_first_artifact_marker")
+        if marker:
+            return PathCheck(
+                config_name, field, kind, raw, "", True, "",
+                (
+                    f"INFO: pending first artifact — the designed pre-batch "
+                    f"state (ledger not yet published; bounded s104#77 guard "
+                    f"marker {marker!r})"
+                ),
+            )
+        return PathCheck(
+            config_name, field, kind, raw, "", False,
+            (
+                f"ledger pointer does not resolve to an existing file: {raw!r} "
+                f"and the entry carries no *_pending_first_artifact marker — "
+                f"fail-closed default (canonical resolver source="
+                f"{getattr(ident, 'source', '?')}; "
+                f"error={getattr(ident, 'error', None)})"
+            ),
+            "",
+        )
+
+    ledger_path = Path(ident.resolved_path)
+    try:
+        rows = _load_and_verify_ledger_chain(ledger_path)
+    except _LedgerChainError as exc:
+        return PathCheck(
+            config_name, field, kind, raw, str(ledger_path), False,
+            f"ledger chain verification FAILED at {ledger_path}: {exc}", "",
+        )
+    if not rows:
+        return PathCheck(
+            config_name, field, kind, raw, str(ledger_path), False,
+            (
+                f"ledger at {ledger_path} is EMPTY — no tail row, so no "
+                f"artifact is vouched for. (The designed pre-batch state is "
+                f"an ABSENT ledger + the *_pending_first_artifact marker, "
+                f"not an empty file.)"
+            ),
+            "",
+        )
+
+    tail = rows[-1]
+    artifact_path = (
+        ledger_path.parent / str(tail["cutoff_date"]) / f"{tail['kind']}.json"
+    )
+    if not artifact_path.is_file():
+        return PathCheck(
+            config_name, field, kind, raw, str(ledger_path), False,
+            (
+                f"ledger tail row {tail['row_index']} (cutoff_date="
+                f"{tail['cutoff_date']}) references artifact {artifact_path}, "
+                f"which does not exist beside the ledger"
+            ),
+            "",
+        )
+    try:
+        doc = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return PathCheck(
+            config_name, field, kind, raw, str(ledger_path), False,
+            f"ledger tail artifact {artifact_path} is unloadable: {exc}", "",
+        )
+    actual = _artifact_content_sha256(doc)
+    carried = doc.get("content_sha256")
+    if carried != actual:
+        return PathCheck(
+            config_name, field, kind, raw, str(ledger_path), False,
+            (
+                f"tail artifact {artifact_path} self-carried content_sha256 "
+                f"{carried!r} does not recompute ({actual}) — the artifact "
+                f"was edited after it was written"
+            ),
+            "",
+        )
+    if tail["artifact_content_sha256"] != actual:
+        return PathCheck(
+            config_name, field, kind, raw, str(ledger_path), False,
+            (
+                f"ledger tail row {tail['row_index']} pins "
+                f"artifact_content_sha256 {tail['artifact_content_sha256']!r} "
+                f"but the artifact at {artifact_path} recomputes to {actual} "
+                f"— the ledger does not vouch for these bytes"
+            ),
+            "",
+        )
+
+    detail = (
+        f"source={ident.source} ledger_rows={len(rows)} chain=verified "
+        f"tail_cutoff={tail['cutoff_date']} tail_artifact={artifact_path.name} "
+        f"tail_artifact_content={actual}"
+    )
+    return PathCheck(
+        config_name, field, kind, raw, str(ledger_path), True, "", detail
+    )
+
+
 # ── extraction (per profile shape) ───────────────────────────────────────────
 
 
@@ -281,12 +528,19 @@ def collect_paths_strategy_config(
             continue
         v = sm.get("artifact_path")
         if isinstance(v, str) and v:
+            expected = _expected(sm)
+            # slice 4c: carry the s104#77 bounded pending guard through to
+            # the checker. Only the ``.jsonl`` ledger-pointer branch reads
+            # this key — classic entries are unaffected.
+            expected["pending_first_artifact_marker"] = (
+                _pending_first_artifact_marker(sm)
+            )
             out.append(
                 (
                     f"ranking.panel_scoring.shadow_models[{i}].artifact_path",
                     "shadow",
                     v,
-                    _expected(sm),
+                    expected,
                 )
             )
     return out
@@ -366,6 +620,15 @@ def _check_one(
                 f"silently killed the scorer"
             ),
             "",
+        )
+
+    # (5) momentum ledger pointer (slice 4c): a shadow entry pointing at a
+    # ``.jsonl`` is validated by chain + tail-artifact identity — a JSONL
+    # ledger cannot carry the inline scorer metadata required below.
+    if kind == "shadow" and raw.endswith(".jsonl"):
+        return _check_ledger_pointer(
+            config_name, field, kind, raw, expected, strategy_dir, data_root,
+            contract,
         )
 
     # (1) canonical resolution + immutable content_sha256.
