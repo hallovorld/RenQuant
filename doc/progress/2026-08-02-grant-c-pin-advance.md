@@ -38,3 +38,13 @@ rationale" option — not yet ported to the umbrella copy.
 
 NEXT: machine sync (granted) → plist install → first artifact →
 s104#77 merge + second s104 pin advance → cleanups (the #747 Grant C list).
+GATING (discovered during #551/#552 review, still OPEN — must merge with
+green checks before the steps above that follow them): RenQuant#550
+narrows the ledger-pointer artifact-gate exception, required before "first
+artifact" relies on the umbrella artifact-gate path; renquant-pipeline#254
+turns post-certification ledger disappearance into a named load fault
+instead of an expected pre-first-artifact absence, required before the
+same "first artifact" / live-loader step; renquant-orchestrator#758 adds
+the required momentum shadow sentinel coverage, required before
+s104#77 can merge and be pinned.
+`[VERIFIED — gh issue view 550/254/758, all OPEN, 2026-08-02]`
