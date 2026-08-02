@@ -325,6 +325,13 @@ def _load_and_verify_ledger_chain(ledger_path: Path) -> list[dict]:
     return rows
 
 
+# #550: the exact momentum contract the ledger-pointer branch admits. The
+# reference matches the s104#77 entry and the momentum_train_run.py publish
+# layout; anything else ending in .jsonl fails closed in _check_ledger_pointer.
+_MOMENTUM_LEDGER_KIND = "momentum_residual"
+_MOMENTUM_LEDGER_REF = "artifacts/momentum/momentum_artifact_ledger.jsonl"
+
+
 def _pending_first_artifact_marker(entry: dict) -> Optional[str]:
     """The s104#77 bounded pending guard: a narrative key on the shadow entry
     ending in ``_pending_first_artifact`` (e.g.
@@ -351,6 +358,25 @@ def _check_ledger_pointer(
     design point 5). Identity = the verified chain + the tail row's dated
     artifact beside the ledger (``<ledger_dir>/<cutoff_date>/<kind>.json`` —
     the momentum_train_run.py publish layout), NOT inline scorer metadata."""
+    # #550 (post-merge review of #549): this branch is a CONTRACT for the
+    # momentum lane, not a general JSONL escape hatch. Any other shadow entry
+    # ending in .jsonl — unrelated future models, typos — must NOT inherit the
+    # pending-marker admission path; it fails closed here. Widening this set
+    # is a reviewed change by design.
+    model_kind = expected.get("model_kind")
+    if model_kind != _MOMENTUM_LEDGER_KIND or raw != _MOMENTUM_LEDGER_REF:
+        return PathCheck(
+            config_name, field, kind, raw, "", False,
+            (
+                f"ledger-pointer admission is restricted to the momentum "
+                f"contract (kind={_MOMENTUM_LEDGER_KIND!r}, "
+                f"artifact_path={_MOMENTUM_LEDGER_REF!r}); this entry declares "
+                f"kind={model_kind!r} with path {raw!r} — a JSONL artifact_path "
+                f"outside that contract fails closed (#550), it does not "
+                f"inherit the pending-marker admission path"
+            ),
+            "",
+        )
     # A config-pinned expected identity cannot apply here: the ledger file is
     # append-only and changes on every weekly publish, so a pinned file sha
     # would be stale by design. Refuse (fail closed) rather than silently
@@ -535,6 +561,9 @@ def collect_paths_strategy_config(
             expected["pending_first_artifact_marker"] = (
                 _pending_first_artifact_marker(sm)
             )
+            # #550: the ledger-pointer branch admits ONLY the momentum
+            # contract; it needs the entry's declared model kind to decide.
+            expected["model_kind"] = sm.get("kind")
             out.append(
                 (
                     f"ranking.panel_scoring.shadow_models[{i}].artifact_path",

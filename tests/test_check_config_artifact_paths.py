@@ -844,3 +844,55 @@ def test_classic_entries_untouched_by_ledger_rule(tmp_path: Path) -> None:
     fail = next(r for r in results if r.kind == "shadow")
     assert not fail.ok
     assert "escapes the repo" in fail.reason
+
+
+def test_non_momentum_jsonl_with_pending_marker_fails_closed(tmp_path: Path) -> None:
+    """#550 regression: the ledger-pointer branch is a momentum-only contract.
+    An unrelated future JSONL shadow model carrying a pending marker must NOT
+    ride the #549 exception through the identity gate."""
+    strategy_dir, data_root = _make_tree(tmp_path)
+    config = _base_config(_good_shadow(data_root))
+    config["ranking"]["panel_scoring"]["shadow_models"].append(
+        {
+            "name": "future_model_shadow",
+            "kind": "future_model",
+            "artifact_path": "artifacts/future/future_ledger.jsonl",
+            "_2026_09_01_pending_first_artifact": "should not rescue this",
+        }
+    )
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    bad = [r for r in results if not r.ok]
+    assert len(bad) == 1
+    assert bad[0].raw == "artifacts/future/future_ledger.jsonl"
+    assert "restricted to the momentum contract" in bad[0].reason
+    assert "fails closed" in bad[0].reason
+
+
+def test_momentum_kind_with_wrong_ledger_path_fails_closed(tmp_path: Path) -> None:
+    """#550 regression: even the momentum kind must point at the exact
+    published ledger reference — a typo'd path fails closed instead of
+    inheriting the pending-marker admission."""
+    strategy_dir, data_root = _make_tree(tmp_path)
+    config = _base_config(_good_shadow(data_root))
+    config["ranking"]["panel_scoring"]["shadow_models"].append(
+        {
+            "name": "momentum_residual_v0_shadow",
+            "kind": "momentum_residual",
+            "artifact_path": "artifacts/momentum/momentum_artifact_ledgr.jsonl",
+            "_2026_08_02_pending_first_artifact": "typo'd path must not pass",
+        }
+    )
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    bad = [r for r in results if not r.ok]
+    assert len(bad) == 1
+    assert "restricted to the momentum contract" in bad[0].reason
