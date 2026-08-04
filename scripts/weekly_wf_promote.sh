@@ -424,9 +424,33 @@ if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \
     fi
     if [ "$FALLBACK_PROMOTED" != "1" ]; then
         echo "WF gate REJECTED staged model — production unchanged."
-        notify "RenQuant 104 WEEKLY-REJECT" \
-            "Walk-forward gate rejected the staged model. Production unchanged. Check $LOG."
-        exit 1
+        # Operator directive 2026-08-04: a reject while the SERVED model is
+        # fresh is the healthy steady state of RFC#210 governance (the recipe
+        # is chronically placebo-dominated; staleness is bounded at 28d), and
+        # it must not be reported with a failure tone or a failure exit.
+        # scripts/reject_notify_disposition.py proves that shape from the
+        # verdict JSON; anything unproven (missing/malformed verdict, refusal
+        # on any other check, prod actually stale, disarmed/unavailable paths
+        # that never wrote a verdict) still alarms and exits 1 — fail closed
+        # toward attention, never toward silence.
+        REJECT_DISPOSITION=$("$PYTHON" scripts/reject_notify_disposition.py "$FALLBACK_JSON" 2>/dev/null \
+            || echo "ALARM|disposition helper failed")
+        case "$REJECT_DISPOSITION" in
+            "CALM_FRESH|"*)
+                REJECT_AGE=$(printf '%s' "$REJECT_DISPOSITION" | cut -d'|' -f2)
+                REJECT_TRAINED=$(printf '%s' "$REJECT_DISPOSITION" | cut -d'|' -f3)
+                echo "Reject disposition: prod FRESH (trained $REJECT_TRAINED, ${REJECT_AGE}d <= 28d SLA) — governance nominal, calm notify, exit 0."
+                notify "RenQuant 104 WEEKLY-REJECT (prod fresh — no action)" \
+                    "WF gate rejected the candidate (expected for this recipe). Served model is FRESH: trained $REJECT_TRAINED, ${REJECT_AGE}d old of a 28d SLA. Governance nominal; nothing to do."
+                exit 0
+                ;;
+            *)
+                echo "Reject disposition: ${REJECT_DISPOSITION} — alarm notify, exit 1."
+                notify "RenQuant 104 WEEKLY-REJECT" \
+                    "Walk-forward gate rejected the staged model. Production unchanged. ${REJECT_DISPOSITION#ALARM|}. Check $LOG."
+                exit 1
+                ;;
+        esac
     fi
     # Fallback-specific pair promote: same incoming/replace dance as Step 5,
     # but the license is the promotion_basis STAMP (passed=False by design —
