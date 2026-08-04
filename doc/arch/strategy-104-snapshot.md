@@ -56,13 +56,13 @@ Source fingerprint: aa2f41d518e02b1a4b65bf28d81d9c211bd67fb1ab764cc483143994621f
 | | |
 |---|---|
 | Artifact | `artifacts/prod/panel-rank-calibration.json` |
-| Artifact file fingerprint | sha256:d2b4d6ab197f0503 |
+| Artifact file fingerprint | sha256:bce257d19a3ddb54 |
 | kind | global_panel_calibration |
-| trained_date | 2026-05-21 |
+| trained_date | 2026-08-02 |
 | Method | platt |
-| pool_ic (stamped) | +0.1149 |
+| pool_ic (stamped) | +0.1192 |
 | lookahead_days | 60 |
-| Bound scorer content fingerprint | sha256:6fc9985e6e53e3883a13d572b1e11b7dea484e14df23819dab5474f2cd592372 |
+| Bound scorer content fingerprint | sha256:d7bddf2a0f4dfd4704c771e60e5205bc0e3720bcf6b549ce1f753910d99eca18 |
 | Fit data window | unknown (field absent) |
 
 ## In-run shadow scorers (readonly, same run)
