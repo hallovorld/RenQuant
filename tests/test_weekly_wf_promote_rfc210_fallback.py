@@ -31,7 +31,7 @@ import _weekly_promote_fixture as fixture  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "weekly_wf_promote.sh"
 
-_FRESHNESS_FALLBACK_SHIM = '''
+_FRESHNESS_FALLBACK_SHIM_TEMPLATE = '''
 import argparse
 import json
 import sys
@@ -45,21 +45,31 @@ def main() -> int:
     parser.add_argument("--stamp", action="store_true")
     args = parser.parse_args()
 
+    if {refuse!r}:
+        print(json.dumps({{"verdict": "REFUSE", "reason": "test-forced-refuse"}}))
+        return 1
+
     staging_path = Path(args.staging)
     payload = json.loads(staging_path.read_text())
-    meta = payload.setdefault("metadata", {})
-    gate = meta.setdefault("wf_gate_metadata", {})
-    gate["passed"] = False
+    meta = payload.setdefault("metadata", {{}})
+    gate = meta.setdefault("wf_gate_metadata", {{}})
+    gate["passed"] = {gate_passed!r}
     if args.stamp:
-        meta["promotion_basis"] = "freshness_fallback_rfc210"
+        {promotion_basis_stmt}
         staging_path.write_text(json.dumps(payload))
-    print(json.dumps({"verdict": "FALLBACK_PROMOTE", "stamped": bool(args.stamp)}))
+    print(json.dumps({{"verdict": "FALLBACK_PROMOTE", "stamped": bool(args.stamp)}}))
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
 '''
+
+# Default (arm-and-succeed) shim body — kept as a plain constant so the
+# original happy-path test reads exactly as before.
+_FRESHNESS_FALLBACK_SHIM = _FRESHNESS_FALLBACK_SHIM_TEMPLATE.format(
+    refuse=False, gate_passed=False,
+    promotion_basis_stmt='meta["promotion_basis"] = "freshness_fallback_rfc210"')
 
 
 _MODEL_ACCEPTANCE_SHIM = '''
@@ -93,14 +103,40 @@ def promote(staging_path, active_path):
 '''
 
 
-def _write_freshness_fallback_shim(pythonpath_dir: Path) -> None:
+def _write_freshness_fallback_shim(
+    pythonpath_dir: Path,
+    *,
+    refuse: bool = False,
+    gate_passed: bool = False,
+    stamp_promotion_basis: bool = True,
+) -> None:
+    """Write the `renquant_backtesting.wf_gate.freshness_fallback` shim.
+
+    Parametrized so round-2 hermetic coverage can drive every verdict shape
+    the real CLI can hand back to Step 4b:
+      - ``refuse=True``               -> CLI exits 1, staging file untouched
+        (REFUSE verdict; also stands in for module-unavailable in effect).
+      - ``gate_passed`` / ``stamp_promotion_basis`` -> what the CLI stamps
+        onto the staging artifact when it DOES exit 0 with ``--stamp``.
+        The happy path is ``gate_passed=False, stamp_promotion_basis=True``
+        (the only combination Step 4b's own swap validation accepts);
+        the other combinations reproduce a malformed/buggy fallback CLI so
+        Step 4b's validation-before-mutation guard can be pinned.
+    """
     wf_gate_pkg = pythonpath_dir / "renquant_backtesting" / "wf_gate"
     forensics_pkg = pythonpath_dir / "renquant_backtesting" / "forensics"
     wf_gate_pkg.mkdir(parents=True, exist_ok=True)
     forensics_pkg.mkdir(parents=True, exist_ok=True)
     (pythonpath_dir / "renquant_backtesting" / "__init__.py").write_text("", encoding="utf-8")
     (wf_gate_pkg / "__init__.py").write_text("", encoding="utf-8")
-    (wf_gate_pkg / "freshness_fallback.py").write_text(_FRESHNESS_FALLBACK_SHIM, encoding="utf-8")
+    promotion_basis_stmt = (
+        'meta["promotion_basis"] = "freshness_fallback_rfc210"'
+        if stamp_promotion_basis else "pass"
+    )
+    shim_src = _FRESHNESS_FALLBACK_SHIM_TEMPLATE.format(
+        refuse=refuse, gate_passed=gate_passed,
+        promotion_basis_stmt=promotion_basis_stmt)
+    (wf_gate_pkg / "freshness_fallback.py").write_text(shim_src, encoding="utf-8")
     (forensics_pkg / "__init__.py").write_text("", encoding="utf-8")
     # Faithful-enough replica of the REAL hard gate (_check_wf_gate) so a
     # pre-fix wrapper genuinely reproduces PR #559's BLOCKER instead of
@@ -163,8 +199,218 @@ def test_fallback_promote_swaps_active_artifact_instead_of_failing(tmp_path):
         f"metadata={active_meta}; log tail:\n{log_tail[-3000:]}")
     assert active_meta.get("wf_gate_metadata", {}).get("passed") is False
 
-    # Step 7's snapshot backstop correctly flags the gate-verdict change
-    # (passed True -> False) as drift needing `make snapshot`; that is
-    # separate, expected behavior — not a regression of this fix — so the
-    # overall exit code is not asserted here.
+    # Codex review round 2: Step 7's snapshot backstop correctly flags the
+    # gate-verdict change (passed True -> False) as drift needing `make
+    # snapshot` — but that must not suppress the action/notification
+    # contract for a promotion that already happened, nor leave the run
+    # exiting through a failure path. The fallback path now handles its own
+    # snapshot-staleness follow-up (WARN, not a hard fail) and reaches the
+    # FALLBACK-PROMOTED literal + notification unconditionally.
+    assert "WEEKLY-PROMOTE — SNAPSHOT STALE" in notifications, notifications
+    assert "WEEKLY-FALLBACK-PROMOTE" in notifications, notifications
+    assert "=== weekly_wf_promote FALLBACK-PROMOTED (rfc210)" in log_tail, log_tail[-3000:]
+    assert "(metadata parse failed)" not in log_tail, (
+        "Step 5's GATE_SUMMARY must read back from the active artifact once "
+        "Step 4b unlinks the staging path: " + log_tail[-3000:])
+    assert result.returncode == 0, (
+        f"a successful fallback promotion must exit 0 even when the "
+        f"snapshot backstop separately flags staleness; stdout tail:\n"
+        f"{log_tail[-3000:]}")
+    assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_fallback_promote_swaps_calibrator_together_with_model(tmp_path):
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir)
+
+    active_cal = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_CALIBRATOR_NAME)
+    # Seed a marker the retrain stub's fixed output does NOT carry, so a
+    # content match after the run genuinely proves a file swap happened
+    # (the retrain stub's calibrator payload is otherwise byte-identical to
+    # the fixture's initial active calibrator).
+    marker_payload = json.loads(active_cal.read_text(encoding="utf-8"))
+    marker_payload["pre_promote_marker"] = True
+    active_cal.write_text(json.dumps(marker_payload), encoding="utf-8")
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+
+    active_artifact = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                        / fixture.ACTIVE_ARTIFACT_NAME)
+    active_meta = json.loads(active_artifact.read_text(encoding="utf-8")).get("metadata", {})
+    assert active_meta.get("promotion_basis") == "freshness_fallback_rfc210", log_tail[-3000:]
+
+    after_cal = json.loads(active_cal.read_text(encoding="utf-8"))
+    assert "pre_promote_marker" not in after_cal, (
+        f"active calibrator was not overwritten by the fallback promote "
+        f"(marker survived): {after_cal}; log tail:\n{log_tail[-3000:]}")
+    assert after_cal.get("kind") == "global_panel_calibration"
+    assert result.returncode == 0, log_tail[-3000:]
+
+
+def test_fallback_verdict_json_preserved_on_disk(tmp_path):
+    root = tmp_path / "repo"
+    fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir)
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    _run(root, notify_log, lock_file, pythonpath_dir)
+
+    verdict_files = list((root / "logs" / "weekly_wf_promote").glob("*.fallback_verdict.json"))
+    assert len(verdict_files) == 1, (
+        f"expected exactly one fallback verdict file preserved per run, "
+        f"found: {verdict_files}")
+    verdict = json.loads(verdict_files[0].read_text(encoding="utf-8"))
+    assert verdict.get("verdict") == "FALLBACK_PROMOTE", verdict
+    assert verdict.get("stamped") is True, verdict
+
+
+def test_module_unavailable_leaves_active_artifacts_unchanged(tmp_path):
+    """The pinned backtesting runtime predates #102: the fallback module
+    import fails, Step 4b must treat this exactly like REFUSE — production
+    stays on the prior artifact/calibrator, no promotion of any kind."""
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    # No shim written at all: renquant_backtesting.wf_gate.freshness_fallback
+    # genuinely does not exist under this PYTHONPATH.
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    pythonpath_dir.mkdir(parents=True)
+
+    active_artifact = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                        / fixture.ACTIVE_ARTIFACT_NAME)
+    active_cal = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_CALIBRATOR_NAME)
+    before_artifact = active_artifact.read_text(encoding="utf-8")
+    before_cal = active_cal.read_text(encoding="utf-8")
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+
+    assert "RFC#210 fallback UNAVAILABLE" in log_tail, log_tail[-3000:]
+    assert active_artifact.read_text(encoding="utf-8") == before_artifact, (
+        "module-unavailable must not touch the active artifact")
+    assert active_cal.read_text(encoding="utf-8") == before_cal, (
+        "module-unavailable must not touch the active calibrator")
+    assert "WEEKLY-REJECT" in notifications, notifications
+    assert result.returncode == 1, log_tail[-3000:]
+    assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_refuse_verdict_leaves_active_artifacts_unchanged(tmp_path):
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir, refuse=True)
+
+    active_artifact = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                        / fixture.ACTIVE_ARTIFACT_NAME)
+    active_cal = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_CALIBRATOR_NAME)
+    before_artifact = active_artifact.read_text(encoding="utf-8")
+    before_cal = active_cal.read_text(encoding="utf-8")
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+
+    assert "RFC#210 fallback verdict: REFUSE" in log_tail, log_tail[-3000:]
+    assert active_artifact.read_text(encoding="utf-8") == before_artifact, (
+        "a REFUSE verdict must not touch the active artifact")
+    assert active_cal.read_text(encoding="utf-8") == before_cal, (
+        "a REFUSE verdict must not touch the active calibrator")
+    assert "WEEKLY-REJECT" in notifications, notifications
+    assert result.returncode == 1, log_tail[-3000:]
+    assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_malformed_missing_promotion_basis_refuses_swap(tmp_path):
+    """A fallback CLI that exits 0/--stamp but never actually writes the
+    promotion_basis stamp must not be trusted — Step 4b's own validation is
+    the license, not the CLI's exit code alone."""
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir, stamp_promotion_basis=False)
+
+    active_artifact = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                        / fixture.ACTIVE_ARTIFACT_NAME)
+    active_cal = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_CALIBRATOR_NAME)
+    before_artifact = active_artifact.read_text(encoding="utf-8")
+    before_cal = active_cal.read_text(encoding="utf-8")
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+
+    assert "Fallback promote FAILED" in log_tail, log_tail[-3000:]
+    assert active_artifact.read_text(encoding="utf-8") == before_artifact, (
+        "a missing promotion_basis stamp must not swap the active artifact")
+    assert active_cal.read_text(encoding="utf-8") == before_cal, (
+        "a missing promotion_basis stamp must not swap the active calibrator")
+    assert "RFC#210 fallback promote failed" in notifications, notifications
+    assert result.returncode == 1, log_tail[-3000:]
+    assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_malformed_passed_not_false_refuses_swap(tmp_path):
+    """The fallback license REQUIRES an explicitly rejected candidate
+    (passed=False). If the CLI stamps promotion_basis but leaves passed
+    True (or any non-False value), Step 4b must refuse the swap — that
+    combination should never occur naturally and signals a broken CLI."""
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir, gate_passed=True)
+
+    active_artifact = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                        / fixture.ACTIVE_ARTIFACT_NAME)
+    active_cal = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_CALIBRATOR_NAME)
+    before_artifact = active_artifact.read_text(encoding="utf-8")
+    before_cal = active_cal.read_text(encoding="utf-8")
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+
+    assert "Fallback promote FAILED" in log_tail, log_tail[-3000:]
+    assert active_artifact.read_text(encoding="utf-8") == before_artifact, (
+        "a passed!=False stamp must not swap the active artifact")
+    assert active_cal.read_text(encoding="utf-8") == before_cal, (
+        "a passed!=False stamp must not swap the active calibrator")
+    assert "RFC#210 fallback promote failed" in notifications, notifications
+    assert result.returncode == 1, log_tail[-3000:]
     assert not lock_file.exists(), "lock file must be released on exit"

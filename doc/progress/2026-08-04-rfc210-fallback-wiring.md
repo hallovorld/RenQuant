@@ -4,7 +4,15 @@
 
 STATUS:    script wiring; ARMS ONLY after the backtesting runtime pin
            advances past #102 (until then Step 4b prints UNAVAILABLE and
-           behaves exactly as today's REJECT — fail-closed, loud).
+           behaves exactly as today's REJECT — fail-closed, loud). Round-2
+           review (2nd finding): arming also needs the orchestrator
+           sentinel's FALLBACK-PROMOTED action-consumer contract
+           (renquant-orchestrator#774, open, not yet merged) so a real
+           fallback promotion is classified as an action rather than a
+           silent-refusal incident. Do not advance the backtesting pin past
+           #102 in production until #774 is merged — rollout order is
+           #559 (this PR) -> orchestrator#774 -> the pin-advance PR that
+           arms both.
 WHAT:      Step 4b in scripts/weekly_wf_promote.sh: on gate REJECT, consult
            `renquant_backtesting.wf_gate.freshness_fallback --stamp`.
            REFUSE → today's behavior verbatim (REJECT ntfy, exit 1).
@@ -15,6 +23,21 @@ WHAT:      Step 4b in scripts/weekly_wf_promote.sh: on gate REJECT, consult
            line "weekly_wf_promote FALLBACK-PROMOTED (rfc210)" + its own
            ntfy title (paired orchestrator PR teaches the silent-refusal
            sentinel that this line is an ACTION).
+           Round-2 review follow-up (this commit): (a) Step 5's GATE_SUMMARY
+           read `$STAGING_ART`, which Step 4b's `_swap_into_active()`
+           already unlinks on the fallback path — every fallback run logged
+           "(metadata parse failed)"; it now reads back from `$ACTIVE_ART`
+           when staging is gone (identical bytes, same copy). (b) Step 7's
+           snapshot backstop ran AFTER the fallback promote and, on
+           detecting the (expected) gate-verdict drift, `exit 1`'d BEFORE
+           the FALLBACK-PROMOTED literal/notification ever printed — a
+           genuine production mutation whose action-contract line the
+           sentinel could never observe. The fallback path now treats a
+           stale snapshot as a WARN follow-up (same notification, no hard
+           fail) and always reaches the action-literal + notification with
+           exit 0; the gate-passed path's existing hard-fail-on-stale
+           behavior (pinned by test_weekly_wf_promote_snapshot_backstop.py)
+           is untouched.
 WHY/DIR:   Operator P0 (2026-08-03): the placebo-deadlocked gate starves
            prod (42d+ stale, 4 identical Sunday REJECTs). Policy decided on
            backtesting#101 (amended), implemented+merged as #102 with the
@@ -48,6 +71,21 @@ existing data: no IC/Sharpe/APY claim is made by this PR — it is a code
                `pytest tests/test_weekly_wf_promote_rfc210_fallback.py
                tests/test_weekly_wf_promote_snapshot_backstop.py
                tests/test_weekly_wf_promote_wrapper_guard.py -v`.
+               Round-2: expanded `test_weekly_wf_promote_rfc210_fallback.py`
+               from 1 to 7 cases (real subprocess runs of the production
+               script against the fixture repo, per round-1 review) —
+               successful fallback now asserted to exit 0 and emit both the
+               FALLBACK-PROMOTED log literal and its ntfy title even with a
+               stale snapshot doc; calibrator swap verified via a planted
+               marker that the promote must overwrite; the
+               `*.fallback_verdict.json` file is asserted present with the
+               stamped verdict after the run; module-unavailable, REFUSE,
+               missing-promotion_basis, and passed!=False all assert BOTH
+               active artifacts byte-unchanged. All 7 pass; the pre-existing
+               `test_layer3_cuts_match_candidate_artifact_recipe` failure in
+               `test_weekly_wf_promote_wrapper_guard.py` also fails on clean
+               `main` (38c4a34) and is unrelated to this PR (confirmed by
+               round-1 review; re-confirmed this round).
 best-known?:   n/a — first wiring of the RFC#210 fallback consumer; no
                prior variant of this code path exists to compare against.
 scope:         "this is scripts/weekly_wf_promote.sh, prod (unarmed under
@@ -55,9 +93,14 @@ scope:         "this is scripts/weekly_wf_promote.sh, prod (unarmed under
                code-path evidence only, verified by bash -n +
                the new regression test above."
 
-NEXT:      advance the backtesting runtime pin past #102 (separate,
-           reviewed pin PR + granted runtime sync) to arm the fallback;
-           until then this script's observable behavior is unchanged.
+NEXT:      merge renquant-orchestrator#774 (sentinel action-consumer
+           contract), then advance the backtesting runtime pin past #102
+           (separate, reviewed pin PR + granted runtime sync) to arm the
+           fallback; until both land this script's observable behavior is
+           unchanged. A follow-up should also make the pin-advance
+           verification assert both contracts are present before allowing
+           the backtesting pin to cross #102 in the same lock-file change
+           that would arm this path.
 
 ## Revert
 

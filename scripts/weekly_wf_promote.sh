@@ -412,9 +412,18 @@ fi
 # correctly but noisily. Steps 6/7 (dashboard + snapshot backstop) run for
 # BOTH paths.
 FALLBACK_PROMOTED="${FALLBACK_PROMOTED:-0}"
+# On the FALLBACK_PROMOTED path, Step 4b's _swap_into_active() already
+# unlinked $STAGING_ART (same atomic-swap dance as model_acceptance.promote()).
+# Read back from $ACTIVE_ART in that case — it now holds the exact bytes
+# copied from staging, so the gate metadata is identical. Reading a gone
+# staging path here previously produced "(metadata parse failed)" for every
+# fallback promotion (codex review, PR #559 round 2).
 GATE_SUMMARY=$("$PYTHON" -c "
 import json
-m = json.load(open('$STAGING_ART'))
+from pathlib import Path
+staging = Path('$STAGING_ART')
+src = staging if staging.exists() else Path('$ACTIVE_ART')
+m = json.load(open(src))
 gate = m.get('wf_gate_metadata') or m.get('metadata', {}).get('wf_gate_metadata') or {}
 sharpe = gate.get('wf_3cut_sharpe_mean')
 apy    = gate.get('wf_3cut_apy_mean')
@@ -521,7 +530,19 @@ then
     echo "'make snapshot' from $REPO_DIR, review the diff, and commit it."
     notify "RenQuant 104 WEEKLY-PROMOTE — SNAPSHOT STALE" \
         "Model promoted ($GATE_SUMMARY) but doc/arch/strategy-104-snapshot.md is now stale. Run 'make snapshot' and commit. Check $LOG."
-    exit 1
+    # Codex review (PR #559 round 2): on the gate-passed path this stays a
+    # hard failure (pinned by test_weekly_wf_promote_snapshot_backstop.py).
+    # On the FALLBACK_PROMOTED path it must not be — production was already
+    # mutated under the stamped promotion_basis license, and swallowing the
+    # FALLBACK-PROMOTED action/notification below behind this exit would
+    # leave the orchestrator's silent-refusal sentinel unable to see that an
+    # action occurred (it only observes the log/notify contract), i.e. an
+    # unobserved production change is worse than a noisy stale-snapshot
+    # alert. Fall through instead of exiting so that literal always fires.
+    if [ "$FALLBACK_PROMOTED" != "1" ]; then
+        exit 1
+    fi
+    echo "Continuing: the fallback promotion above is licensed independently of this backstop; the FALLBACK-PROMOTED action/notification below must still fire."
 fi
 
 if [ "$FALLBACK_PROMOTED" = "1" ]; then
