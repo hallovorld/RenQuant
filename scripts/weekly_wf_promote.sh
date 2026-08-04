@@ -292,16 +292,149 @@ if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \
     --derive-config-from-prod \
     --strict \
     --jobs 3; then
-    echo "WF gate REJECTED staged model — production unchanged."
-    notify "RenQuant 104 WEEKLY-REJECT" \
-        "Walk-forward gate rejected the staged model. Production unchanged. Check $LOG."
-    exit 1
+    echo "WF gate REJECTED staged model — consulting the RFC#210 freshness fallback (backtesting#101/#102)."
+    # ── Step 4b: RFC#210 freshness fallback (operator P0, 2026-08-03) ─────
+    # The gate criterion is UNTOUCHED. When the gate rejects AND the served
+    # model is >28d stale AND the candidate is recent with a non-negative
+    # stamped genuine_ic (ordinal/sign only) AND no downward ratchet, the
+    # ALREADY-DECIDED freshness governance promotes the candidate, stamped
+    # promotion_basis=freshness_fallback_rfc210 so downstream always knows
+    # governance-served from gate-passed. Fail-closed on every malformed
+    # input, and fail-closed here too: if the pinned runtime predates
+    # backtesting#102 the module is absent, and this block REFUSES loudly
+    # instead of pretending to have consulted anything.
+    FALLBACK_JSON="$LOG_DIR/${RUN_ID}.fallback_verdict.json"
+    FALLBACK_PROMOTED=0
+    # ARMING CONTRACT [codex on #559 round 1, second demand]: BOTH sides must
+    # be present — the provider (freshness_fallback importable under the
+    # pinned runtime) AND the consumer (the orchestrator run checkout's
+    # emitter contract carrying the FALLBACK-PROMOTED action line, orch#774).
+    # A provider armed without the consumer would let the promotion be
+    # recorded as a silent-refusal incident; refuse loudly instead.
+    # RQ_ORCH_RUN_DIR is overridable for the test harness only.
+    ORCH_RUN_DIR="${RQ_ORCH_RUN_DIR:-/Users/renhao/git/github/renquant-orchestrator-run}"
+    EMITTER_CONTRACT="$ORCH_RUN_DIR/ops/renquant104/emitter_contract.json"
+    if ! grep -q "weekly_wf_promote FALLBACK-PROMOTED" "$EMITTER_CONTRACT" 2>/dev/null; then
+        echo "RFC#210 fallback DISARMED: sentinel emitter contract at $EMITTER_CONTRACT does not carry the FALLBACK-PROMOTED action line (land + sync orchestrator#774 first) — treating as REFUSE."
+    elif "$PYTHON" -c "import renquant_backtesting.wf_gate.freshness_fallback" 2>/dev/null; then
+        if "$PYTHON" -m renquant_backtesting.wf_gate.freshness_fallback \
+            --prod "$ACTIVE_ART" --staging "$STAGING_ART" --stamp \
+            > "$FALLBACK_JSON" 2>&1; then
+            echo "RFC#210 fallback verdict: FALLBACK_PROMOTE — $FALLBACK_JSON"
+            FALLBACK_PROMOTED=1
+        else
+            echo "RFC#210 fallback verdict: REFUSE — production unchanged. See $FALLBACK_JSON"
+            sed -n '1,40p' "$FALLBACK_JSON" || true
+        fi
+    else
+        echo "RFC#210 fallback UNAVAILABLE under the current backtesting pin (predates #102) — treating as REFUSE; advance the pin to arm the fallback."
+    fi
+    if [ "$FALLBACK_PROMOTED" != "1" ]; then
+        echo "WF gate REJECTED staged model — production unchanged."
+        notify "RenQuant 104 WEEKLY-REJECT" \
+            "Walk-forward gate rejected the staged model. Production unchanged. Check $LOG."
+        exit 1
+    fi
+    # Fallback-specific pair promote: same incoming/replace dance as Step 5,
+    # but the license is the promotion_basis STAMP (passed=False by design —
+    # Step 5's passed-is-True check must not run on this path).
+    #
+    # Codex review (PR #559, round 1 BLOCKER): calling the shared
+    # renquant_backtesting.forensics.model_acceptance.promote() here always
+    # raised, because that helper's internal _check_wf_gate() unconditionally
+    # refuses any staging artifact stamped passed=False — exactly what this
+    # path's license intentionally is. The stamp check two lines above is
+    # THIS path's gate; do the atomic file swap directly instead of routing
+    # through the gate-passed helper.
+    if ! "$PYTHON" - <<PY
+from pathlib import Path
+import json
+import os
+import shutil
+
+model_src = Path("$STAGING_ART")
+model_dst = Path("$ACTIVE_ART")
+cal_src = Path("$STAGING_CAL")
+cal_dst = Path("$ACTIVE_CAL")
+
+model = json.loads(model_src.read_text())
+meta = model.get("metadata") or {}
+if meta.get("promotion_basis") != "freshness_fallback_rfc210":
+    raise SystemExit(
+        "staged artifact lacks the freshness_fallback_rfc210 stamp — the "
+        "fallback CLI must have stamped it before this promote may run")
+gate = meta.get("wf_gate_metadata") or {}
+if gate.get("passed") is not False:
+    raise SystemExit(
+        f"fallback promote requires an explicitly REJECTED candidate "
+        f"(stamped passed=False); got {gate.get('passed')!r}")
+if "kind" not in model and "feature_cols" not in model:
+    raise SystemExit(
+        f"staged artifact missing both 'kind' and 'feature_cols' "
+        f"({model_src}); refusing to swap into active")
+
+if not cal_src.exists():
+    raise SystemExit(f"missing staging calibrator: {cal_src}")
+cal_payload = json.loads(cal_src.read_text())
+if not isinstance(cal_payload, dict):
+    raise SystemExit(f"staging calibrator is not a JSON object: {cal_src}")
+
+
+def _swap_into_active(staging_path: Path, active_path: Path) -> None:
+    # Same atomic-swap file dance as model_acceptance.promote() (same-
+    # filesystem os.replace via a .previous rollback target) WITHOUT its
+    # _check_wf_gate() call — the license for THIS path is the
+    # promotion_basis stamp verified above, not a passing WF gate.
+    previous_path = active_path.with_suffix(".previous.json")
+    temp_active = active_path.with_suffix(".incoming.json")
+    shutil.copy2(str(staging_path), str(temp_active))
+    if active_path.exists():
+        os.replace(str(active_path), str(previous_path))
+    os.replace(str(temp_active), str(active_path))
+    staging_path.unlink(missing_ok=True)
+
+
+cal_incoming = cal_dst.with_suffix(".incoming.json")
+shutil.copy2(cal_src, cal_incoming)
+try:
+    _swap_into_active(model_src, model_dst)
+    os.replace(cal_incoming, cal_dst)
+except Exception:
+    try:
+        cal_incoming.unlink()
+    except FileNotFoundError:
+        pass
+    raise
+print(f"FALLBACK-promoted {model_src.name} -> {model_dst.name} (rfc210 stamp verified)")
+print(f"FALLBACK-promoted {cal_src.name} -> {cal_dst.name}")
+PY
+    then
+        echo "Fallback promote FAILED — production may still be on prior model or .previous rollback target."
+        notify "RenQuant 104 WEEKLY-FAIL" \
+            "RFC#210 fallback promote failed after gate reject. Check $LOG before trading."
+        exit 1
+    fi
 fi
 
 # ── Step 5: Inspect gate metadata + promote staged pair ───────────────────
+# On the RFC#210 fallback path the pair was ALREADY promoted in Step 4b under
+# the promotion_basis stamp (passed=False by design), so the gate-passed
+# promote below must not run — its passed-is-True license check would refuse
+# correctly but noisily. Steps 6/7 (dashboard + snapshot backstop) run for
+# BOTH paths.
+FALLBACK_PROMOTED="${FALLBACK_PROMOTED:-0}"
+# On the FALLBACK_PROMOTED path, Step 4b's _swap_into_active() already
+# unlinked $STAGING_ART (same atomic-swap dance as model_acceptance.promote()).
+# Read back from $ACTIVE_ART in that case — it now holds the exact bytes
+# copied from staging, so the gate metadata is identical. Reading a gone
+# staging path here previously produced "(metadata parse failed)" for every
+# fallback promotion (codex review, PR #559 round 2).
 GATE_SUMMARY=$("$PYTHON" -c "
 import json
-m = json.load(open('$STAGING_ART'))
+from pathlib import Path
+staging = Path('$STAGING_ART')
+src = staging if staging.exists() else Path('$ACTIVE_ART')
+m = json.load(open(src))
 gate = m.get('wf_gate_metadata') or m.get('metadata', {}).get('wf_gate_metadata') or {}
 sharpe = gate.get('wf_3cut_sharpe_mean')
 apy    = gate.get('wf_3cut_apy_mean')
@@ -316,7 +449,9 @@ print('  '.join(parts) if parts else '(no metadata)')
 " 2>/dev/null || echo "(metadata parse failed)")
 echo "Gate metadata: $GATE_SUMMARY"
 
-if ! "$PYTHON" - <<PY
+if [ "$FALLBACK_PROMOTED" = "1" ]; then
+    echo "Skipping gate-passed promote — Step 4b already fallback-promoted the pair."
+elif ! "$PYTHON" - <<PY
 from pathlib import Path
 import json
 import os
@@ -406,9 +541,30 @@ then
     echo "'make snapshot' from $REPO_DIR, review the diff, and commit it."
     notify "RenQuant 104 WEEKLY-PROMOTE — SNAPSHOT STALE" \
         "Model promoted ($GATE_SUMMARY) but doc/arch/strategy-104-snapshot.md is now stale. Run 'make snapshot' and commit. Check $LOG."
-    exit 1
+    # Codex review (PR #559 round 2): on the gate-passed path this stays a
+    # hard failure (pinned by test_weekly_wf_promote_snapshot_backstop.py).
+    # On the FALLBACK_PROMOTED path it must not be — production was already
+    # mutated under the stamped promotion_basis license, and swallowing the
+    # FALLBACK-PROMOTED action/notification below behind this exit would
+    # leave the orchestrator's silent-refusal sentinel unable to see that an
+    # action occurred (it only observes the log/notify contract), i.e. an
+    # unobserved production change is worse than a noisy stale-snapshot
+    # alert. Fall through instead of exiting so that literal always fires.
+    if [ "$FALLBACK_PROMOTED" != "1" ]; then
+        exit 1
+    fi
+    echo "Continuing: the fallback promotion above is licensed independently of this backstop; the FALLBACK-PROMOTED action/notification below must still fire."
 fi
 
-echo "=== weekly_wf_promote PASSED at $(date) — $GATE_SUMMARY ==="
-notify "RenQuant 104 WEEKLY-PROMOTE ✓" \
-    "Walk-forward gate passed. New model promoted to production. $GATE_SUMMARY"
+if [ "$FALLBACK_PROMOTED" = "1" ]; then
+    # Emitter line: the silent-refusal sentinel's weekly-wf-promote lane
+    # counts this as an ACTION (paired orchestrator PR extends action_re +
+    # the emitter contract to this literal).
+    echo "=== weekly_wf_promote FALLBACK-PROMOTED (rfc210) at $(date) — $GATE_SUMMARY ==="
+    notify "RenQuant 104 WEEKLY-FALLBACK-PROMOTE" \
+        "Gate rejected all candidates; the RFC#210 freshness fallback promoted the staged model (stamped promotion_basis=freshness_fallback_rfc210). $GATE_SUMMARY Check $LOG."
+else
+    echo "=== weekly_wf_promote PASSED at $(date) — $GATE_SUMMARY ==="
+    notify "RenQuant 104 WEEKLY-PROMOTE ✓" \
+        "Walk-forward gate passed. New model promoted to production. $GATE_SUMMARY"
+fi
