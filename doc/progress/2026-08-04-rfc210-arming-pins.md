@@ -13,7 +13,7 @@ consumer vocabulary present) and stops refusing.
 | subrepo | from | to | carries |
 |---|---|---|---|
 | renquant-backtesting | `8f6700ab` | `ea7b014a` | bt#102 — RFC#210 `freshness_fallback` provider (decide/stamp) |
-| renquant-orchestrator | `ade07dd7` | `7e933c07` | orch#774 — sentinel action vocabulary + emitter contract for `FALLBACK-PROMOTED`; plus orch#775 fast-CLI wrapper step |
+| renquant-orchestrator | `ade07dd7` | `75dd9c70` | orch#774 — sentinel action vocabulary + emitter contract for `FALLBACK-PROMOTED`; orch#775 fast-CLI wrapper step; orch#776 — sentinel third watched lane for `momentum_fast_v1_shadow` (the dormant-window watch) |
 | renquant-model | `dec37193` | `96fe2d3d` | model#200+#201 — `params_v1_fast` + train CLI `--params-version` (Saturday fast step needs this pin or it exits 2 loudly) |
 | renquant-strategy-104 | `320ed77c` | `e8fd07e9` | s104#84 — `momentum_fast_v1_shadow` dormant-by-declaration entry |
 
@@ -36,9 +36,10 @@ invariant. Both advance in this single commit.
   RQ#560 (first pin wave), orch#774 (consumer vocabulary), orch#775 +
   model#200/#201 + s104#84 (fast lane), pipeline#259 (momentum primary
   surface, already pinned via #560).
-- orch#776 (sentinel third watched lane for `momentum_fast_v1_shadow`) is
-  in re-review; it is observability-only and NOT load-bearing for arming.
-  Its exact-equality parity guard is already committed on the PR branch.
+- orch#776 (sentinel third watched lane for `momentum_fast_v1_shadow`)
+  MERGED during this PR's review round 1 and is now carried by the
+  orchestrator pin (`75dd9c70`), so the fast lane is watched from the
+  dormant window onward — before Saturday's first fast run, not after.
 
 ## After merge (deployment steps, logged in the grants trail)
 
