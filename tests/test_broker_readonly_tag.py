@@ -178,3 +178,14 @@ class TestNtfyTitleBlendLane:
         )
         assert req.headers.get("Priority") == "default"
         assert "SHADOW/HYPOTHETICAL (no live orders)" in req.data.decode()
+
+
+def test_validate_accepts_the_s1_blend_mom_tag():
+    """GOAL-8 S1 lane tag (Step 5b): alpaca_shadow* prefix rule admits it
+    with no validator change; state files stay disjoint by construction."""
+    tag = "alpaca_shadow_blend_mom"
+    assert validate_readonly_tag(tag) == tag
+    assert str(live_state_path(Path("s"), tag)).endswith(
+        "live_state.alpaca_shadow_blend_mom.json")
+    assert str(runs_db_path(Path("data/runs.db"), tag)).endswith(
+        "runs.alpaca_shadow_blend_mom.db")

@@ -33,6 +33,7 @@ ALLOWED_BROKERS: frozenset[str] = frozenset({
     "alpaca_shorts",
     "alpaca_shadow",    # 2026-05-19 full-e2e shadow via ReadOnlyBrokerWrapper
     "alpaca_shadow_blend",  # 2026-07-27 shadow_blend full-funnel lane (RENQUANT_READONLY_TAG)
+    "alpaca_shadow_blend_mom",  # 2026-08-04 GOAL-8 S1 momentum-blend lane (Step 5b)
     "ibkr",
 })
 
