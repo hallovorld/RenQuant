@@ -15,15 +15,15 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: aa2f41d518e02b1a4b65bf28d81d9c211bd67fb1ab764cc483143994621ff553 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: 137c6c94af0806fd7964019b9981a4439c652399c24ffdda85ba789361802e96 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
 | | |
 |---|---|
 | Pinned config root | `.subrepo_runtime/repos/renquant-strategy-104/configs` |
-| strategy-104 runtime checkout commit | d84604d771c641b421642b5248970e67b755cf19 |
-| subrepos.lock.json strategy-104 pin | d84604d771c641b421642b5248970e67b755cf19 |
+| strategy-104 runtime checkout commit | 547fc49bef81d86feab44a220d9763483d879a61 |
+| subrepos.lock.json strategy-104 pin | 547fc49bef81d86feab44a220d9763483d879a61 |
 
 ### Source warnings
 
@@ -194,7 +194,7 @@ Source fingerprint: aa2f41d518e02b1a4b65bf28d81d9c211bd67fb1ab764cc483143994621f
 | renquant-model | main | `96fe2d3daeb3` | active |
 | renquant-orchestrator | main | `75dd9c7057c3` | active |
 | renquant-pipeline | main | `5f07a4d28791` | bootstrapped |
-| renquant-strategy-104 | main | `d84604d771c6` | bootstrapped |
+| renquant-strategy-104 | main | `547fc49bef81` | bootstrapped |
 
 ## Source fingerprints
 
@@ -205,7 +205,7 @@ Source fingerprint: aa2f41d518e02b1a4b65bf28d81d9c211bd67fb1ab764cc483143994621f
 - `backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl` — unknown (file missing)
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:6461b827ab2339a8
 - `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
-- `subrepos.lock.json` — sha256:b0b5b845ca1fe531
+- `subrepos.lock.json` — sha256:96b78e0a7fabdbc2
 
 <!-- snapshot-machine-block
 {
@@ -216,7 +216,7 @@ Source fingerprint: aa2f41d518e02b1a4b65bf28d81d9c211bd67fb1ab764cc483143994621f
   "momentum_residual",
   "momentum_residual"
  ],
- "lock_strategy_104_pin": "d84604d771c641b421642b5248970e67b755cf19",
+ "lock_strategy_104_pin": "547fc49bef81d86feab44a220d9763483d879a61",
  "schema_version": 2,
  "shadow_e2e_kind": "hf_patchtst",
  "sources_sha256": {
@@ -227,8 +227,8 @@ Source fingerprint: aa2f41d518e02b1a4b65bf28d81d9c211bd67fb1ab764cc483143994621f
   "backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl": null,
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:6461b827ab2339a8",
   "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
-  "subrepos.lock.json": "sha256:b0b5b845ca1fe531"
+  "subrepos.lock.json": "sha256:96b78e0a7fabdbc2"
  },
- "strategy_104_pin": "d84604d771c641b421642b5248970e67b755cf19"
+ "strategy_104_pin": "547fc49bef81d86feab44a220d9763483d879a61"
 }
 -->
