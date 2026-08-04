@@ -527,3 +527,81 @@ def test_retrain_call_threads_the_session_pins_only_when_set():
     for needle in ("--xgb-artifact-out", "--calibrator-out", "RETRAIN_PIN_ARGS"):
         assert needle in call
     assert "--no-freshness-fail-on-stale" not in src
+
+
+# ── 2026-08-04: the --promote-staged operator mode (source-shape guards) ─────
+
+def test_promote_staged_mode_reuses_the_one_mechanism():
+    """The operator mode must be the SAME mechanism, not a fork: dual-
+    contract arming check, the fallback CLI with --stamp as its decide
+    gate, the SHARED pair-promote script, and the VERBATIM emitter line."""
+    src = SCRIPT.read_text()
+    idx = src.index('if [ "${1:-}" = "--promote-staged" ]; then')
+    mode = src[idx:src.index("\nfi\n", idx)]
+    assert "weekly_wf_promote FALLBACK-PROMOTED" in mode          # consumer contract
+    assert "import renquant_backtesting.wf_gate.freshness_fallback" in mode  # provider
+    assert "--prod \"$ACTIVE_ART\" --staging \"$STAGING_ART\" --stamp" in mode
+    assert "scripts/fallback_pair_promote.py" in mode
+    assert 'echo "=== weekly_wf_promote FALLBACK-PROMOTED (rfc210) at $(date) — $GATE_SUMMARY ==="' in mode
+    # no training and no guard weakening in the mode
+    assert "daily_retrain_alpha158_fund.sh" not in mode
+    assert "freshness-fail-on-stale" not in mode
+
+
+def test_pair_promote_is_one_shared_implementation():
+    """Both the scheduled Step 4b path and the operator mode call the ONE
+    extracted script; the inline heredoc is gone (no twin swap dances)."""
+    src = SCRIPT.read_text()
+    assert src.count("scripts/fallback_pair_promote.py") == 2
+    assert "def _swap_into_active" not in src   # the CODE lives only in the script (comments may reference it)
+    helper = (SCRIPT.parent / "fallback_pair_promote.py").read_text()
+    assert "promotion_basis" in helper and "freshness_fallback_rfc210" in helper
+    assert "_swap_into_active" in helper
+
+
+def test_promote_staged_refuses_without_staged_pair():
+    src = SCRIPT.read_text()
+    idx = src.index('if [ "${1:-}" = "--promote-staged" ]; then')
+    mode = src[idx:src.index("\nfi\n", idx)]
+    assert "staged pair not found" in mode
+    assert "exit 1" in mode
+
+
+def test_promote_staged_rejects_traversal_run_ids():
+    """[codex on #566] EXECUTION-level regression: a traversal-like run id
+    must refuse BEFORE any path is constructed — exit 2, no file reads or
+    writes outside the usage/refusal echo. The wrapper's mode block is
+    executed under bash with stub env; every malformed form refuses."""
+    import subprocess
+    src = SCRIPT.read_text()
+    start = src.index('if [ "${1:-}" = "--promote-staged" ]; then')
+    end = src.index("\nfi\n", start) + 4
+    mode_block = src[start:end]
+    harness = (
+        "set -uo pipefail\n"
+        'ART_DIR="$TMPDIR_ART"\nLOG_DIR="$TMPDIR_ART"\n'
+        'ACTIVE_ART="$ART_DIR/active.json"\nACTIVE_CAL="$ART_DIR/cal.json"\n'
+        'PYTHON=/usr/bin/false\nLOG=/dev/null\n'
+        "notify() { :; }\n"
+        + mode_block
+        + '\necho "FELL_THROUGH"\n'
+    )
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        for bad in ("../../evil", "20260802T170002Z/../x", "foo",
+                    "20260802T170002Zx", "..%2F..", "2026-08-02T17:00:02Z"):
+            out = subprocess.run(
+                ["bash", "-c", harness, "bash", "--promote-staged", bad],
+                env={"PATH": "/usr/bin:/bin", "TMPDIR_ART": td},
+                capture_output=True, text=True)
+            assert out.returncode == 2, (bad, out.returncode, out.stdout, out.stderr)
+            assert "RUN_ID must match" in out.stdout, (bad, out.stdout)
+        # the canonical form passes validation and proceeds to the staged-
+        # pair existence check (exit 1, different message) — proving the
+        # validator admits the real format.
+        ok = subprocess.run(
+            ["bash", "-c", harness, "bash", "--promote-staged", "20260802T170002Z"],
+            env={"PATH": "/usr/bin:/bin", "TMPDIR_ART": td},
+            capture_output=True, text=True)
+        assert ok.returncode == 1, (ok.returncode, ok.stdout, ok.stderr)
+        assert "staged pair not found" in ok.stdout

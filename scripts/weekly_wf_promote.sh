@@ -220,6 +220,75 @@ ROLLBACK_CAL="$ART_DIR/panel-rank-calibration.weekly_rollback_$DATE.json"
 STAGING_ART="$ART_DIR/panel-ltr.alpha158_fund.weekly_${RUN_ID}.staging.json"
 STAGING_CAL="$ART_DIR/panel-rank-calibration.weekly_${RUN_ID}.staging.json"
 
+# ── OPERATOR MODE: --promote-staged <RUN_ID> (2026-08-04) ────────────────
+# Promote an ALREADY-TRAINED staged pair through the RFC#210 fallback
+# WITHOUT retraining. Born from the 2026-08-04 manual promotion (operator
+# order "现在就promote到104和105！"): the reviewed mechanism existed only
+# inside the scheduled retrain->gate->promote chain, so the operator path
+# had to replicate the pair-swap by hand under a grant. This mode makes it
+# first-class: the SAME dual-contract arming check, the SAME fallback CLI
+# (decide gate: 5 checks incl. no-downward-ratchet), the SAME shared
+# pair-promote script, and the SAME sentinel-visible emitter line. The PIT
+# freshness guard is not weakened - no training happens here.
+if [ "${1:-}" = "--promote-staged" ]; then
+    PS_RUN_ID="${2:-}"
+    if [ -z "$PS_RUN_ID" ]; then
+        echo "usage: $0 --promote-staged <RUN_ID>  (e.g. 20260802T170002Z)"
+        exit 2
+    fi
+    # [codex on #566] The run id is interpolated into three paths; without
+    # format validation a traversal-like value escapes ART_DIR/LOG_DIR and
+    # turns a promotion command into arbitrary JSON selection/writes.
+    # Canonical form ONLY, checked before ANY path is constructed.
+    case "$PS_RUN_ID" in
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z) ;;
+        *)
+            echo "promote-staged REFUSED: RUN_ID must match YYYYMMDDTHHMMSSZ exactly; got '$PS_RUN_ID'"
+            exit 2
+            ;;
+    esac
+    STAGING_ART="$ART_DIR/panel-ltr.alpha158_fund.weekly_${PS_RUN_ID}.staging.json"
+    STAGING_CAL="$ART_DIR/panel-rank-calibration.weekly_${PS_RUN_ID}.staging.json"
+    if [ ! -f "$STAGING_ART" ] || [ ! -f "$STAGING_CAL" ]; then
+        echo "promote-staged REFUSED: staged pair not found for RUN_ID=$PS_RUN_ID"
+        exit 1
+    fi
+    ORCH_RUN_DIR="${RQ_ORCH_RUN_DIR:-/Users/renhao/git/github/renquant-orchestrator-run}"
+    EMITTER_CONTRACT="$ORCH_RUN_DIR/ops/renquant104/emitter_contract.json"
+    if ! grep -q "weekly_wf_promote FALLBACK-PROMOTED" "$EMITTER_CONTRACT" 2>/dev/null; then
+        echo "promote-staged REFUSED: sentinel emitter contract missing the FALLBACK-PROMOTED action line at $EMITTER_CONTRACT"
+        exit 1
+    fi
+    if ! "$PYTHON" -c "import renquant_backtesting.wf_gate.freshness_fallback" 2>/dev/null; then
+        echo "promote-staged REFUSED: freshness_fallback not importable under the pinned runtime"
+        exit 1
+    fi
+    PS_VERDICT="$LOG_DIR/${PS_RUN_ID}.promote_staged.fallback_verdict.json"
+    if ! "$PYTHON" -m renquant_backtesting.wf_gate.freshness_fallback \
+        --prod "$ACTIVE_ART" --staging "$STAGING_ART" --stamp > "$PS_VERDICT" 2>&1; then
+        echo "promote-staged: RFC#210 verdict REFUSE — production unchanged. See $PS_VERDICT"
+        sed -n '1,40p' "$PS_VERDICT" || true
+        exit 1
+    fi
+    if ! "$PYTHON" scripts/fallback_pair_promote.py \
+        "$STAGING_ART" "$ACTIVE_ART" "$STAGING_CAL" "$ACTIVE_CAL"
+    then
+        echo "promote-staged: pair promote FAILED — check .previous rollback target."
+        notify "RenQuant 104 PROMOTE-STAGED-FAIL" "RFC#210 promote-staged failed after verdict PROMOTE. Check $LOG before trading."
+        exit 1
+    fi
+    GATE_SUMMARY=$("$PYTHON" -c "
+import json
+from pathlib import Path
+m = json.loads(Path('$ACTIVE_ART').read_text())
+meta = m.get('metadata') or {}
+g = meta.get('wf_gate_metadata') or {}
+print(f\"trained={m.get('trained_date')} basis={meta.get('promotion_basis')} gate_passed={g.get('passed')} genuine_ic={g.get('sanity_placebo_genuine_ic')}\")" 2>/dev/null || echo "summary unavailable")
+    echo "=== weekly_wf_promote FALLBACK-PROMOTED (rfc210) at $(date) — $GATE_SUMMARY ==="
+    notify "RenQuant 104 FALLBACK-PROMOTED" "promote-staged $PS_RUN_ID promoted under RFC#210. $GATE_SUMMARY"
+    exit 0
+fi
+
 echo "--- Step 2: Backup prior production artifacts (rollback rehearsal) ---"
 if [ -f "$ACTIVE_ART" ]; then
     cp "$ACTIVE_ART" "$ROLLBACK_ART"
@@ -370,68 +439,8 @@ if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \
     # path's license intentionally is. The stamp check two lines above is
     # THIS path's gate; do the atomic file swap directly instead of routing
     # through the gate-passed helper.
-    if ! "$PYTHON" - <<PY
-from pathlib import Path
-import json
-import os
-import shutil
-
-model_src = Path("$STAGING_ART")
-model_dst = Path("$ACTIVE_ART")
-cal_src = Path("$STAGING_CAL")
-cal_dst = Path("$ACTIVE_CAL")
-
-model = json.loads(model_src.read_text())
-meta = model.get("metadata") or {}
-if meta.get("promotion_basis") != "freshness_fallback_rfc210":
-    raise SystemExit(
-        "staged artifact lacks the freshness_fallback_rfc210 stamp — the "
-        "fallback CLI must have stamped it before this promote may run")
-gate = meta.get("wf_gate_metadata") or {}
-if gate.get("passed") is not False:
-    raise SystemExit(
-        f"fallback promote requires an explicitly REJECTED candidate "
-        f"(stamped passed=False); got {gate.get('passed')!r}")
-if "kind" not in model and "feature_cols" not in model:
-    raise SystemExit(
-        f"staged artifact missing both 'kind' and 'feature_cols' "
-        f"({model_src}); refusing to swap into active")
-
-if not cal_src.exists():
-    raise SystemExit(f"missing staging calibrator: {cal_src}")
-cal_payload = json.loads(cal_src.read_text())
-if not isinstance(cal_payload, dict):
-    raise SystemExit(f"staging calibrator is not a JSON object: {cal_src}")
-
-
-def _swap_into_active(staging_path: Path, active_path: Path) -> None:
-    # Same atomic-swap file dance as model_acceptance.promote() (same-
-    # filesystem os.replace via a .previous rollback target) WITHOUT its
-    # _check_wf_gate() call — the license for THIS path is the
-    # promotion_basis stamp verified above, not a passing WF gate.
-    previous_path = active_path.with_suffix(".previous.json")
-    temp_active = active_path.with_suffix(".incoming.json")
-    shutil.copy2(str(staging_path), str(temp_active))
-    if active_path.exists():
-        os.replace(str(active_path), str(previous_path))
-    os.replace(str(temp_active), str(active_path))
-    staging_path.unlink(missing_ok=True)
-
-
-cal_incoming = cal_dst.with_suffix(".incoming.json")
-shutil.copy2(cal_src, cal_incoming)
-try:
-    _swap_into_active(model_src, model_dst)
-    os.replace(cal_incoming, cal_dst)
-except Exception:
-    try:
-        cal_incoming.unlink()
-    except FileNotFoundError:
-        pass
-    raise
-print(f"FALLBACK-promoted {model_src.name} -> {model_dst.name} (rfc210 stamp verified)")
-print(f"FALLBACK-promoted {cal_src.name} -> {cal_dst.name}")
-PY
+    if ! "$PYTHON" scripts/fallback_pair_promote.py \
+        "$STAGING_ART" "$ACTIVE_ART" "$STAGING_CAL" "$ACTIVE_CAL"
     then
         echo "Fallback promote FAILED — production may still be on prior model or .previous rollback target."
         notify "RenQuant 104 WEEKLY-FAIL" \
