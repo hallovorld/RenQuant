@@ -254,13 +254,24 @@ RETRAIN_EXCLUDE_TICKERS="${RENQUANT_RETRAIN_EXCLUDE_TICKERS:-IAC}"
 # tolerances — the guard still measures every ticker against it.
 RETRAIN_EXPECTED_SESSION="${RENQUANT_RETRAIN_EXPECTED_SESSION:-}"
 RETRAIN_AS_OF="${RENQUANT_RETRAIN_AS_OF:-}"
+# Argument ARRAY, not ${var:+...} inline expansion: the inline form yields
+# ONE shell word ("--as-of <value>" fused), so the retrainer never sees a
+# standalone option (codex on #564). Array elements stay separate argv
+# entries; the ${arr[@]+...} guard keeps empty arrays safe under set -u on
+# macOS bash 3.2.
+RETRAIN_PIN_ARGS=()
+if [ -n "$RETRAIN_EXPECTED_SESSION" ]; then
+    RETRAIN_PIN_ARGS+=(--expected-session "$RETRAIN_EXPECTED_SESSION")
+fi
+if [ -n "$RETRAIN_AS_OF" ]; then
+    RETRAIN_PIN_ARGS+=(--as-of "$RETRAIN_AS_OF")
+fi
 if ! bash scripts/daily_retrain_alpha158_fund.sh \
     --xgb-artifact-out "$STAGING_ART" \
     --calibrator-out "$STAGING_CAL" \
     --no-drop-sentiment \
     --exclude-tickers "$RETRAIN_EXCLUDE_TICKERS" \
-    ${RETRAIN_EXPECTED_SESSION:+--expected-session "$RETRAIN_EXPECTED_SESSION"} \
-    ${RETRAIN_AS_OF:+--as-of "$RETRAIN_AS_OF"}; then
+    ${RETRAIN_PIN_ARGS[@]+"${RETRAIN_PIN_ARGS[@]}"}; then
     echo "Training FAILED — production artifact unchanged."
     notify "RenQuant 104 WEEKLY-FAIL" "Training failed; production model unchanged. Check $LOG"
     exit 1
