@@ -236,6 +236,17 @@ if [ "${1:-}" = "--promote-staged" ]; then
         echo "usage: $0 --promote-staged <RUN_ID>  (e.g. 20260802T170002Z)"
         exit 2
     fi
+    # [codex on #566] The run id is interpolated into three paths; without
+    # format validation a traversal-like value escapes ART_DIR/LOG_DIR and
+    # turns a promotion command into arbitrary JSON selection/writes.
+    # Canonical form ONLY, checked before ANY path is constructed.
+    case "$PS_RUN_ID" in
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z) ;;
+        *)
+            echo "promote-staged REFUSED: RUN_ID must match YYYYMMDDTHHMMSSZ exactly; got '$PS_RUN_ID'"
+            exit 2
+            ;;
+    esac
     STAGING_ART="$ART_DIR/panel-ltr.alpha158_fund.weekly_${PS_RUN_ID}.staging.json"
     STAGING_CAL="$ART_DIR/panel-rank-calibration.weekly_${PS_RUN_ID}.staging.json"
     if [ ! -f "$STAGING_ART" ] || [ ! -f "$STAGING_CAL" ]; then
