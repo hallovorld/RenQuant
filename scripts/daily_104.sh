@@ -586,92 +586,23 @@ else
     echo "sentiment refresh script missing — skip (non-fatal)"
 fi
 
-# ── Step 4: SHADOW e2e run (2026-05-19) ──────────────────────────────────
-# Per user mandate "整条 pipeline 都参考 shadow model 的 output — 跑两遍
-# e2e，但是 shadow 那一遍虽然连 alpaca 洗数据，但是并不真下单!"
-# Plus: "或者你直接搞一个 shadow 的 config — 避免污染么，隔离干净".
+# ── Step 4: RETIRED 2026-08-03 (was: HF PatchTST shadow e2e, 2026-05-19) ─
+# The lane this step exercised was retired: the PatchTST line was closed by
+# the operator-delegated 2026-08-02 decision (RETIRE; architecture preserved,
+# no successor training), and renquant-strategy-104#75 retired the
+# hf_patchtst shadow lane from the pinned configs in the same arc. What
+# remained here was a daily full pipeline boot of a retired scorer that ended
+# at a buy-side preflight refusal every session ("blocked by expected
+# buy-side preflight gate, rc=1") — cost and alert-surface noise measuring
+# nothing anyone still acts on.
 #
-# Runs full InferencePipeline with HF PatchTST (seed_44 from canonical
-# 5-seed 2026-05-19) as PRIMARY. Broker = readonly-alpaca wrapper:
-# reads (account / holdings / quotes / fills) hit LIVE alpaca for ground
-# truth, writes (place_order / cancel / stop) get swallowed locally.
-# State writes to live_state.alpaca_shadow.json + runs_alpaca_shadow.db
-# (broker_name="alpaca_shadow" → automatic path isolation). Prod state
-# files are NOT touched.
-#
-# Non-fatal: a shadow failure doesn't abort the prod cycle (prod already
-# completed + committed by this point). Logs to a separate file for
-# clean diff between prod and shadow outcomes, and sends one wrapper ntfy by
-# default so a broken shadow path is not silent.
-#
-# ntfy uses "[READONLY]RENQUANT-104" prefix on success (renamed from
-# "[SHADOW]" 2026-07-01 — the old title token collided with the unrelated
-# body-level SHADOW[name]/SHADOW-PICKS[name] per-model comparison segments,
-# see live/runner.py). If shadow preflight fails, daily_104 owns the single
-# non-fatal wrapper alert; suppress the inner runner preflight ntfy to avoid
-# duplicate phone errors.
-echo "--- Step 4: Shadow e2e run (HF PatchTST primary, no real orders) ---"
-SHADOW_LOG="$LOG_DIR/${DATE}_shadow.log"
-# Readonly comparison e2e is a full pass: live broker reads, panel-frame
-# assembly, fundamentals/earnings/insider context, then sequence inference.
-# Empirical 2026-05-22 run exceeded the old 420s cap during cold start,
-# producing a false shadow failure after the production pass had succeeded.
-# Keep a wall-clock kill switch, but size it for the actual workload.
-SHADOW_TIMEOUT_SEC="${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}"
-if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 "$PYTHON" - <<PY > "$SHADOW_LOG" 2>&1
-import os
-import subprocess
-import sys
-
-if os.environ.get("RQ_DAILY_RUNNER", "multirepo") == "umbrella":
-    runner = [sys.executable, "-m", "live.runner"]
-else:
-    runner = [sys.executable, "-m", "renquant_orchestrator", "live-bridge", "--repo-dir", "$REPO_DIR"]
-
-cmd = runner + [
-    "--strategy", "renquant_104",
-    "--broker", "readonly-alpaca",
-    "--once",
-    "--strategy-config-name", "strategy_config.shadow.json",
-]
-try:
-    raise SystemExit(subprocess.run(
-        cmd,
-        cwd="$REPO_DIR",
-        timeout=float("$SHADOW_TIMEOUT_SEC"),
-    ).returncode)
-except subprocess.TimeoutExpired:
-    print("SHADOW TIMEOUT after ${SHADOW_TIMEOUT_SEC}s", flush=True)
-    raise SystemExit(124)
-PY
-then
-    echo "Shadow run finished — see $SHADOW_LOG"
-    # Surface the shadow ntfy line in the prod log so the operator can
-    # see both decisions in one place if the daily log is what they read.
-    grep "ntfy sent:" "$SHADOW_LOG" | tail -1 || echo "shadow ntfy line not found in shadow log"
-else
-    SHADOW_RC=$?
-    if [ "$SHADOW_RC" -eq 124 ]; then
-        echo "Shadow run TIMED OUT after ${SHADOW_TIMEOUT_SEC}s (non-fatal) — see $SHADOW_LOG"
-        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
-            notify "RenQuant 104 SHADOW-TIMEOUT" "Shadow e2e exceeded ${SHADOW_TIMEOUT_SEC}s; primary already completed. See $SHADOW_LOG."
-        else
-            echo "Shadow timeout ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
-        fi
-    else
-        SHADOW_BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL|P-FUND-FRESHNESS"
-        if grep -Eq "$SHADOW_BUY_SIDE_PREFLIGHT_PATTERN" "$SHADOW_LOG"; then
-            echo "Shadow run blocked by expected buy-side preflight gate (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
-            echo "Shadow preflight-block ntfy suppressed; prod path already reported the actionable gate."
-        elif [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
-            echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
-            notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e failed today (rc=$SHADOW_RC) — primary already completed. See $SHADOW_LOG."
-        else
-            echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
-            echo "Shadow failure ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
-        fi
-    fi
-fi
+# Removed under the operator's 2026-08-03 104/105 repair directive. The
+# in-process per-model comparison segments (SHADOW[...] in the prod ntfy) and
+# the Step 5 blend lane are unaffected; alpaca_shadow state/log files stay on
+# disk as history, orphaned by design. To resurrect a second full-funnel
+# e2e lane, clone Step 5's shape (RENQUANT_READONLY_TAG isolation) rather
+# than reviving this block from git history verbatim — Step 5 is the
+# maintained pattern.
 
 # ── Step 5: SHADOW-BLEND e2e run (2026-07-27, operator directive) ────────
 # Option-A rail: a SECOND full-funnel readonly shadow lane, cloned from
