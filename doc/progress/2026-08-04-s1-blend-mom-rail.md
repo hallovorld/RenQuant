@@ -32,7 +32,11 @@ FOUND+FIXED (same batch): tests/test_daily_104_shadow_notify.py is
 EVIDENCE:  bash -n clean; test_broker_readonly_tag.py +
            test_daily_104_shadow_notify.py + test_state_paths.py:
            61 passed (5 new Step 5b mirrors + 1 new tag test + repairs).
+CI:        [codex round 1 — not deferred] the repaired guard file is now
+           ENUMERATED in .github/workflows/strategy-104-snapshot-fresh.yml
+           (unit job, triggers on every PR) and the same workflow's shell
+           step gains `bash -n scripts/daily_104.sh`. The tag test stays a
+           local/make-test guard: it imports live.runner, which is not
+           bare-hosted-runner-safe; the notify guard is pure stdlib.
 NEXT:      #777 freeze → s104 shadow_blend_momentum profile PR (+ pipeline
-           pin 3ecd9880 in that batch); consider enumerating the notify
-           guard file into a CI workflow (separate follow-up — the rot it
-           accumulated is the argument).
+           pin 3ecd9880 in that batch).
