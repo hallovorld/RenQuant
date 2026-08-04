@@ -49,6 +49,25 @@ invariant. Both advance in this single commit.
    consumer emitter-contract line ✓, then a decide() dry-run against the
    real staging artifact expecting `FALLBACK_PROMOTE`.
 
+## Review round 1 (codex): the candidate-pin artifact gate
+
+The gate (`scripts/check_config_artifact_paths.py`) correctly failed closed
+on the new s104 pin: its ledger-pointer admission was restricted to the v0
+momentum contract, so `shadow_models[2]`'s fast ledger path was rejected
+before deployment. Fix in this PR (umbrella-side, because this gate
+validates the pinned cross-repo surface):
+
+- `_MOMENTUM_FAST_LEDGER_REF` admitted ONLY while the entry carries its
+  `*_pending_first_artifact` marker (the s104#84 dormant declaration).
+- Marker removed (post-first-publish) → fail closed again, even for a
+  valid resolvable fast ledger: widening to the full fast serving contract
+  is a reviewed change (mirror of s104#78 for the v0 lane).
+- Marker present but the ledger resolves anyway → full chain verification
+  still runs (the marker never skips verification).
+- Any other JSONL path: fail-closed, unchanged.
+- 4 new tests; file suite 40 passed, 1 skipped (hermetic fake-contract
+  skip on this machine).
+
 ## Rollback
 
 Revert this commit; the lock returns to the #560 state where Step 4b
