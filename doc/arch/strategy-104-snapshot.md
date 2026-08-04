@@ -15,18 +15,19 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: bb53580a7914e0da66258316860b0401304575374e34e5298500fc2f317f3ee8 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: 9e4636d0896ae34cf9c8f52851d5ff0f58520fd183951d407f5c606e2c9e91ab (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
 | | |
 |---|---|
 | Pinned config root | `.subrepo_runtime/repos/renquant-strategy-104/configs` |
-| strategy-104 runtime checkout commit | 320ed77c7795ac6409553d3b0514273a0c1c8ca7 |
-| subrepos.lock.json strategy-104 pin | 320ed77c7795ac6409553d3b0514273a0c1c8ca7 |
+| strategy-104 runtime checkout commit | e8fd07e92dce46b9789e3c9ef336796f5d6e1653 |
+| subrepos.lock.json strategy-104 pin | e8fd07e92dce46b9789e3c9ef336796f5d6e1653 |
 
 ### Source warnings
 
+- **SCORER PROVENANCE UNRESOLVED: shadow scorer momentum_fast_v1_shadow artifact 'artifacts/momentum_fast/momentum_artifact_ledger.jsonl' did not resolve to a metadata-bearing file under the canonical resolver — no digest; the candidate pin does not provably restore a traceable scorer**
 - **UMBRELLA WORKING-COPY DRIFT: backtesting/renquant_104/strategy_config.json declares kind='hf_patchtst' but the pinned config declares kind='xgb' — the pinned config is what the daily run consumes; the working copy is stale**
 
 ## Active scorer
@@ -102,6 +103,25 @@ Source fingerprint: bb53580a7914e0da66258316860b0401304575374e34e5298500fc2f317f
 | config_fingerprint | unknown (field absent) |
 | WF gate (stamped) | unknown (field absent) |
 
+| | |
+|---|---|
+| Name | `momentum_fast_v1_shadow` |
+| Scorer kind | `momentum_residual` |
+| Artifact | `artifacts/momentum_fast/momentum_artifact_ledger.jsonl` |
+| Artifact metadata file fingerprint | unknown (file missing) |
+| trained_date | unknown (field absent) |
+| Binding data cutoff | unknown (field absent) |
+| label_observation_cutoff | unknown (field absent) |
+| lookahead_days | unknown (field absent) |
+| label_col | unknown (field absent) |
+| Feature count | unknown (field absent) |
+| train_run_id | unknown (field absent) |
+| oos_mean_ic (stamped) | unknown (field absent) |
+| promotion_status | unknown (field absent) |
+| config_fingerprint | unknown (field absent) |
+| WF gate (stamped) | unknown (field absent) |
+| Metadata | unknown (metadata file missing or unreadable) |
+
 ## Shadow e2e config (strategy_config.shadow.json)
 
 | | |
@@ -167,24 +187,25 @@ Source fingerprint: bb53580a7914e0da66258316860b0401304575374e34e5298500fc2f317f
 | Subrepo | Branch | Commit | Status |
 |---|---|---|---|
 | renquant-artifacts | main | `c09d66f8dd09` | bootstrapped |
-| renquant-backtesting | main | `8f6700ab3558` | bootstrapped |
+| renquant-backtesting | main | `ea7b014a7ee5` | bootstrapped |
 | renquant-base-data | main | `f8514066b53f` | active |
 | renquant-common | main | `ef7726dd6c90` | bootstrapped |
 | renquant-execution | main | `5724dc74ec2b` | bootstrapped |
-| renquant-model | main | `dec37193e255` | active |
-| renquant-orchestrator | main | `ade07dd797b0` | active |
+| renquant-model | main | `96fe2d3daeb3` | active |
+| renquant-orchestrator | main | `75dd9c7057c3` | active |
 | renquant-pipeline | main | `936869f80c76` | bootstrapped |
-| renquant-strategy-104 | main | `320ed77c7795` | bootstrapped |
+| renquant-strategy-104 | main | `e8fd07e92dce` | bootstrapped |
 
 ## Source fingerprints
 
-- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:3669b50beb05c17d
+- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:4cb055e1b914e2dc
 - `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:ae2cd4431755c3b9
 - `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl` — sha256:9aa2d8c9571bad95
+- `backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl` — unknown (file missing)
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
 - `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
-- `subrepos.lock.json` — sha256:fe98235b5178ba7e
+- `subrepos.lock.json` — sha256:039b46436cd90e4d
 
 <!-- snapshot-machine-block
 {
@@ -192,20 +213,22 @@ Source fingerprint: bb53580a7914e0da66258316860b0401304575374e34e5298500fc2f317f
  "active_kind": "xgb",
  "in_run_shadow_kinds": [
   "xgb",
+  "momentum_residual",
   "momentum_residual"
  ],
- "lock_strategy_104_pin": "320ed77c7795ac6409553d3b0514273a0c1c8ca7",
+ "lock_strategy_104_pin": "e8fd07e92dce46b9789e3c9ef336796f5d6e1653",
  "schema_version": 2,
  "shadow_e2e_kind": "hf_patchtst",
  "sources_sha256": {
-  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:3669b50beb05c17d",
+  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:4cb055e1b914e2dc",
   ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:ae2cd4431755c3b9",
   "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl": "sha256:9aa2d8c9571bad95",
+  "backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl": null,
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
   "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
-  "subrepos.lock.json": "sha256:fe98235b5178ba7e"
+  "subrepos.lock.json": "sha256:039b46436cd90e4d"
  },
- "strategy_104_pin": "320ed77c7795ac6409553d3b0514273a0c1c8ca7"
+ "strategy_104_pin": "e8fd07e92dce46b9789e3c9ef336796f5d6e1653"
 }
 -->
