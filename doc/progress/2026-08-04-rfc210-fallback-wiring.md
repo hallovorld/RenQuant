@@ -15,20 +15,49 @@ WHAT:      Step 4b in scripts/weekly_wf_promote.sh: on gate REJECT, consult
            line "weekly_wf_promote FALLBACK-PROMOTED (rfc210)" + its own
            ntfy title (paired orchestrator PR teaches the silent-refusal
            sentinel that this line is an ACTION).
-WHY:       Operator P0 (2026-08-03): the placebo-deadlocked gate starves
+WHY/DIR:   Operator P0 (2026-08-03): the placebo-deadlocked gate starves
            prod (42d+ stale, 4 identical Sunday REJECTs). Policy decided on
            backtesting#101 (amended), implemented+merged as #102 with the
            real 08-02 reject dry-running to FALLBACK_PROMOTE.
 
 EVIDENCE:
+artifact:      scripts/weekly_wf_promote.sh (Step 4b/4c diff, this PR +
+               the round-1-review follow-up commit)
+prod or exp:   prod (production weekly promotion wrapper) — UNARMED: the
+               live backtesting runtime pin (8f6700ab) predates #102, so
+               Step 4b prints UNAVAILABLE and behaves exactly as today's
+               REJECT until a separate pin-advance PR lands (see STATUS).
+existing data: no IC/Sharpe/APY claim is made by this PR — it is a code
+               path change, not a model result. `bash -n
+               scripts/weekly_wf_promote.sh` clean; the REFUSE branch is
+               byte-equivalent to the pre-PR REJECT branch plus two echo
+               lines; the module-absent path was measured live (current
+               pin → UNAVAILABLE + REFUSE, no observable change). Round-1
+               review reproduced the BLOCKER
+               (`ValueError: promote: refused — wf_gate_metadata.
+               passed=False`) with a minimal stamped fallback artifact
+               against `renquant_backtesting.forensics.model_acceptance.
+               promote()`; the fix replaces that call, for the fallback
+               path only, with an inline atomic swap that keeps this
+               path's own promotion_basis-stamp license check but skips
+               the shared helper's unconditional wf_gate_metadata.passed
+               gate. Regression-pinned by
+               `tests/test_weekly_wf_promote_rfc210_fallback.py` (fails
+               against the pre-fix script with the exact reviewer-
+               reproduced ValueError; passes after the fix) — run via
+               `pytest tests/test_weekly_wf_promote_rfc210_fallback.py
+               tests/test_weekly_wf_promote_snapshot_backstop.py
+               tests/test_weekly_wf_promote_wrapper_guard.py -v`.
+best-known?:   n/a — first wiring of the RFC#210 fallback consumer; no
+               prior variant of this code path exists to compare against.
+scope:         "this is scripts/weekly_wf_promote.sh, prod (unarmed under
+               the current pin), no IC/Sharpe/APY claim — behavioral/
+               code-path evidence only, verified by bash -n +
+               the new regression test above."
 
-```
-bash -n clean; the REFUSE path is byte-equivalent to today's REJECT branch
-plus two echo lines; module-absent path measured (current pin 8f6700ab
-predates #102 → UNAVAILABLE message + REFUSE).  [本次实测]
-scope:  "scripts/weekly_wf_promote.sh + this doc; nothing else. Arming =
-         the separate backtesting pin-advance PR + runtime sync grant."
-```
+NEXT:      advance the backtesting runtime pin past #102 (separate,
+           reviewed pin PR + granted runtime sync) to arm the fallback;
+           until then this script's observable behavior is unchanged.
 
 ## Revert
 

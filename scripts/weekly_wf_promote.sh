@@ -327,18 +327,19 @@ if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \
     # Fallback-specific pair promote: same incoming/replace dance as Step 5,
     # but the license is the promotion_basis STAMP (passed=False by design —
     # Step 5's passed-is-True check must not run on this path).
+    #
+    # Codex review (PR #559, round 1 BLOCKER): calling the shared
+    # renquant_backtesting.forensics.model_acceptance.promote() here always
+    # raised, because that helper's internal _check_wf_gate() unconditionally
+    # refuses any staging artifact stamped passed=False — exactly what this
+    # path's license intentionally is. The stamp check two lines above is
+    # THIS path's gate; do the atomic file swap directly instead of routing
+    # through the gate-passed helper.
     if ! "$PYTHON" - <<PY
 from pathlib import Path
 import json
 import os
 import shutil
-import sys
-
-try:
-    from renquant_backtesting.forensics.model_acceptance import promote
-except Exception:
-    sys.path.insert(0, "backtesting/renquant_104")
-    from kernel.model_acceptance import promote
 
 model_src = Path("$STAGING_ART")
 model_dst = Path("$ACTIVE_ART")
@@ -356,6 +357,10 @@ if gate.get("passed") is not False:
     raise SystemExit(
         f"fallback promote requires an explicitly REJECTED candidate "
         f"(stamped passed=False); got {gate.get('passed')!r}")
+if "kind" not in model and "feature_cols" not in model:
+    raise SystemExit(
+        f"staged artifact missing both 'kind' and 'feature_cols' "
+        f"({model_src}); refusing to swap into active")
 
 if not cal_src.exists():
     raise SystemExit(f"missing staging calibrator: {cal_src}")
@@ -363,10 +368,25 @@ cal_payload = json.loads(cal_src.read_text())
 if not isinstance(cal_payload, dict):
     raise SystemExit(f"staging calibrator is not a JSON object: {cal_src}")
 
+
+def _swap_into_active(staging_path: Path, active_path: Path) -> None:
+    # Same atomic-swap file dance as model_acceptance.promote() (same-
+    # filesystem os.replace via a .previous rollback target) WITHOUT its
+    # _check_wf_gate() call — the license for THIS path is the
+    # promotion_basis stamp verified above, not a passing WF gate.
+    previous_path = active_path.with_suffix(".previous.json")
+    temp_active = active_path.with_suffix(".incoming.json")
+    shutil.copy2(str(staging_path), str(temp_active))
+    if active_path.exists():
+        os.replace(str(active_path), str(previous_path))
+    os.replace(str(temp_active), str(active_path))
+    staging_path.unlink(missing_ok=True)
+
+
 cal_incoming = cal_dst.with_suffix(".incoming.json")
 shutil.copy2(cal_src, cal_incoming)
 try:
-    promote(model_src, model_dst)
+    _swap_into_active(model_src, model_dst)
     os.replace(cal_incoming, cal_dst)
 except Exception:
     try:
