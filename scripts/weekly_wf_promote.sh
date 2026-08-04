@@ -305,7 +305,18 @@ if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \
     # instead of pretending to have consulted anything.
     FALLBACK_JSON="$LOG_DIR/${RUN_ID}.fallback_verdict.json"
     FALLBACK_PROMOTED=0
-    if "$PYTHON" -c "import renquant_backtesting.wf_gate.freshness_fallback" 2>/dev/null; then
+    # ARMING CONTRACT [codex on #559 round 1, second demand]: BOTH sides must
+    # be present — the provider (freshness_fallback importable under the
+    # pinned runtime) AND the consumer (the orchestrator run checkout's
+    # emitter contract carrying the FALLBACK-PROMOTED action line, orch#774).
+    # A provider armed without the consumer would let the promotion be
+    # recorded as a silent-refusal incident; refuse loudly instead.
+    # RQ_ORCH_RUN_DIR is overridable for the test harness only.
+    ORCH_RUN_DIR="${RQ_ORCH_RUN_DIR:-/Users/renhao/git/github/renquant-orchestrator-run}"
+    EMITTER_CONTRACT="$ORCH_RUN_DIR/ops/renquant104/emitter_contract.json"
+    if ! grep -q "weekly_wf_promote FALLBACK-PROMOTED" "$EMITTER_CONTRACT" 2>/dev/null; then
+        echo "RFC#210 fallback DISARMED: sentinel emitter contract at $EMITTER_CONTRACT does not carry the FALLBACK-PROMOTED action line (land + sync orchestrator#774 first) — treating as REFUSE."
+    elif "$PYTHON" -c "import renquant_backtesting.wf_gate.freshness_fallback" 2>/dev/null; then
         if "$PYTHON" -m renquant_backtesting.wf_gate.freshness_fallback \
             --prod "$ACTIVE_ART" --staging "$STAGING_ART" --stamp \
             > "$FALLBACK_JSON" 2>&1; then

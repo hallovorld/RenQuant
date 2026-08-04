@@ -155,7 +155,7 @@ def _force_wf_gate_reject(root: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _run(root: Path, notify_log: Path, lock_file: Path, pythonpath_dir: Path) -> subprocess.CompletedProcess:
+def _run(root: Path, notify_log: Path, lock_file: Path, pythonpath_dir: Path, *, armed_consumer: bool = True) -> subprocess.CompletedProcess:
     env = {
         "RQ_WEEKLY_PROMOTE_REPO_DIR": str(root),
         "RQ_WEEKLY_PROMOTE_PYTHON": sys.executable,
@@ -166,6 +166,21 @@ def _run(root: Path, notify_log: Path, lock_file: Path, pythonpath_dir: Path) ->
         "PATH": f"{fixture.shim_bin_dir(root)}:/usr/bin:/bin:/usr/local/bin",
         "HOME": str(root),
     }
+    # Arm the CONSUMER side of the dual-contract check (codex #559 round-1
+    # second demand): Step 4b refuses unless the orchestrator emitter
+    # contract carries the FALLBACK-PROMOTED action line. Fixture contract by
+    # default; the disarm case passes armed_consumer=False.
+    orch_run = root / "fixture_orch_run"
+    contract = orch_run / "ops" / "renquant104" / "emitter_contract.json"
+    contract.parent.mkdir(parents=True, exist_ok=True)
+    if armed_consumer:
+        contract.write_text(
+            '{"lines": [{"job": "weekly-wf-promote", "kind": "action", '
+            '"template": "=== weekly_wf_promote FALLBACK-PROMOTED (rfc210) ==="}]}',
+            encoding="utf-8")
+    else:
+        contract.write_text('{"lines": []}', encoding="utf-8")
+    env["RQ_ORCH_RUN_DIR"] = str(orch_run)
     return subprocess.run(
         ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=120)
 
@@ -414,3 +429,32 @@ def test_malformed_passed_not_false_refuses_swap(tmp_path):
     assert "RFC#210 fallback promote failed" in notifications, notifications
     assert result.returncode == 1, log_tail[-3000:]
     assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_consumer_contract_absent_disarms_loudly(tmp_path):
+    """[codex on #559 round 1, second demand] provider armed but the
+    orchestrator action-consumer contract absent → a fallback promotion
+    would be recorded as a silent-refusal incident; Step 4b must refuse
+    loudly and leave both active artifacts byte-unchanged."""
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir)
+    active_art = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_ARTIFACT_NAME)
+    active_cal = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_CALIBRATOR_NAME)
+    before = (active_art.read_bytes(), active_cal.read_bytes())
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir,
+                  armed_consumer=False)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    assert result.returncode == 1, log_tail[-2000:]
+    assert "RFC#210 fallback DISARMED" in log_tail
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+    assert "WEEKLY-REJECT" in notifications
+    assert (active_art.read_bytes(), active_cal.read_bytes()) == before
