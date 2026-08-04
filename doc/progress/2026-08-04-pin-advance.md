@@ -15,6 +15,18 @@ WHAT:      Four pins advance to their repos' current mains:
            strategy-104 pin bump (round-1 review CI finding: the committed
            snapshot was generated at 001ab612 while the lock moved to
            320ed77c — `verify-pinned-declaration` failed).
+WHY/DIR:   Reaches tonight's codex-approved subrepo merges to the deployed
+           surface: strategy-104 / model / pipeline / execution each carry an
+           independently reviewed PR, so their pins advance now. backtesting
+           and orchestrator stay held — advancing either would arm the
+           RFC#210 fallback (RenQuant#559) before its sentinel action-consumer
+           contract (renquant-orchestrator#774) exists, letting a real
+           fallback promotion be misclassified as a silent-refusal incident.
+           artifacts stays held per the standing F-7 constraint (untested
+           against #31/#32 tonight). Also closes tonight's pin drift (the
+           s104 runtime clone was synced ahead of the lock under the
+           operator's repair grants; this PR legitimizes rather than
+           silences that drift alarm).
 DELIBERATE HOLDS:
            renquant-artifacts stays c09d66f8 — the F-7 canonical-snapshot
            constraint ("do NOT advance past artifacts#29 until snapshot
