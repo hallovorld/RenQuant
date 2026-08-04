@@ -37,11 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Shell syntax check (modified promotion wrappers)
+      - name: Shell syntax check (modified promotion wrappers + daily ops)
         run: |
           set -euo pipefail
           bash -n scripts/weekly_wf_promote.sh
           bash -n scripts/manual_promote.sh
+          bash -n scripts/daily_104.sh
       - name: Snapshot renderer selftest (fixture-based, deterministic)
         run: |
           set -euo pipefail
@@ -66,6 +67,7 @@ jobs:
             tests/test_weekly_wf_promote_snapshot_backstop.py \
             tests/test_weekly_wf_promote_rfc210_fallback.py \
             tests/test_manual_promote_snapshot_backstop.py \
+            tests/test_daily_104_shadow_notify.py \
             tests/test_promote_shadow_patchtst.py \
             tests/test_promote_shadow_patchtst_snapshot_backstop.py
 
