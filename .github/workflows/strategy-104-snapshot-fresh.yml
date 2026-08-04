@@ -64,6 +64,7 @@ jobs:
             tests/test_system_doctor.py \
             tests/test_restamp_prod_fingerprint_snapshot_backstop.py \
             tests/test_weekly_wf_promote_snapshot_backstop.py \
+            tests/test_weekly_wf_promote_rfc210_fallback.py \
             tests/test_manual_promote_snapshot_backstop.py \
             tests/test_promote_shadow_patchtst.py \
             tests/test_promote_shadow_patchtst_snapshot_backstop.py
