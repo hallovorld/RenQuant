@@ -315,6 +315,76 @@ def validate_feature_contract(
     )
 
 
+# GOAL-5 AC6 R4 (orch#564). Field list and statuses mirror
+# renquant_orchestrator/wf_gate_provenance.py (keep in LOCKSTEP), plus the two
+# RFC#210 identity fields this year's governance made load-bearing: a run that
+# served under a freshness-fallback promotion must be able to answer
+# "what license was in force" from its own bundle.
+_WF_GATE_PROVENANCE_FIELDS = (
+    "passed",
+    "gate_verdict_before_override",
+    "operator_authorized_override",
+    "override_applied_at",
+    "override_reason",
+    "diagnostic_only",
+    "gate_version",
+)
+
+
+def _wf_gate_provenance_block(panel_path: Any) -> dict[str, Any]:
+    """Tri-state, additive, never raises: a provenance recorder that can abort
+    a trading run is a worse defect than the gap it closes."""
+    try:
+        if panel_path is None:
+            return {
+                "status": "no_artifact_manifest",
+                "note": ("no panel artifact resolved on this run — not evidence the "
+                         "gate passed, only that there was nothing to read"),
+            }
+        import json as _json  # noqa: PLC0415
+
+        manifest = _json.loads(Path(panel_path).read_text())
+        meta = manifest.get("metadata") if isinstance(manifest, dict) else None
+        block = None
+        source = None
+        if isinstance(meta, dict) and "wf_gate_metadata" in meta:
+            # Presence of the canonical key ends the search (twin registry R8);
+            # an empty/malformed canonical block is "no usable stamp", never a
+            # fall-through to the legacy top-level copy.
+            cand = meta["wf_gate_metadata"]
+            block = cand if isinstance(cand, dict) and cand else None
+            source = "metadata.wf_gate_metadata"
+        elif isinstance(manifest, dict):
+            cand = manifest.get("wf_gate_metadata")
+            if isinstance(cand, dict) and cand:
+                block = cand
+                source = "wf_gate_metadata (legacy top-level)"
+        if block is None:
+            return {
+                "status": "artifact_carries_no_gate_stamp",
+                "source_key": source,
+                "note": "the resolved artifact carries no usable gate stamp",
+            }
+        out: dict[str, Any] = {
+            "status": "present",
+            "source_key": source,
+            "fields_absent": [f for f in _WF_GATE_PROVENANCE_FIELDS if f not in block],
+        }
+        for field in _WF_GATE_PROVENANCE_FIELDS:
+            value = block.get(field)
+            if isinstance(value, (bool, int, float, str)):
+                out[field] = value
+        basis = meta.get("promotion_basis") if isinstance(meta, dict) else None
+        if isinstance(basis, str):
+            out["promotion_basis"] = basis
+        trained = manifest.get("trained_date") if isinstance(manifest, dict) else None
+        if isinstance(trained, str):
+            out["trained_date"] = trained
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "provenance_read_failed", "error": str(exc)[:200]}
+
+
 def build_run_bundle(
     config: dict[str, Any],
     strategy_dir: str | Path,
@@ -355,6 +425,15 @@ def build_run_bundle(
         "watchlist_size": len(watchlist),
         "artifact_paths": artifact_paths,
         "artifact_hashes": artifact_hashes,
+        # GOAL-5 AC6 R4, orch#564 (2026-08-04): the gate-provenance block on
+        # the bundle producer that actually SERVES. R4 first landed in
+        # renquant_orchestrator/daily.py — a producer whose output surface
+        # stopped being exercised 2026-05-07 when daily-bridge took the runner
+        # leg — so every real run's bundle lacked the block (measured: 9,154 B,
+        # no key, on the 2026-08-04 full run). Same tri-state/never-raise
+        # contract, mirrored in lockstep with
+        # renquant_orchestrator/wf_gate_provenance.py.
+        "wf_gate_provenance": _wf_gate_provenance_block(paths.get("panel")),
         "pipeline_flags": {},
         "data_max_dates": {},
     }
