@@ -30,6 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RENDERER_SRC = REPO_ROOT / "scripts" / "render_strategy_104_snapshot.py"
 PROMOTE_PIN_SRC = REPO_ROOT / "scripts" / "promote_pin.py"
 PAIR_PROMOTE_SRC = REPO_ROOT / "scripts" / "fallback_pair_promote.py"
+REJECT_DISPOSITION_SRC = REPO_ROOT / "scripts" / "reject_notify_disposition.py"
 
 # The exact active-artifact/calibrator filenames weekly_wf_promote.sh and
 # manual_promote.sh hardcode (ART_DIR/ACTIVE_ART/ACTIVE_CAL) — the fixture's
@@ -146,6 +147,8 @@ def build_fixture_repo(root: Path) -> object:
     (root / "scripts" / "render_strategy_104_snapshot.py").write_bytes(RENDERER_SRC.read_bytes())
     (root / "scripts" / "promote_pin.py").write_bytes(PROMOTE_PIN_SRC.read_bytes())
     (root / "scripts" / "fallback_pair_promote.py").write_bytes(PAIR_PROMOTE_SRC.read_bytes())
+    (root / "scripts" / "reject_notify_disposition.py").write_bytes(
+        REJECT_DISPOSITION_SRC.read_bytes())
 
     # Render the INITIAL fresh snapshot so a run against this fixture with
     # no further mutation is genuinely "fresh" (mirrors production: a

@@ -46,7 +46,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if {refuse!r}:
-        print(json.dumps({{"verdict": "REFUSE", "reason": "test-forced-refuse"}}))
+        payload = {refuse_payload!r}
+        print(payload if payload
+              else json.dumps({{"verdict": "REFUSE", "reason": "test-forced-refuse"}}))
         return 1
 
     staging_path = Path(args.staging)
@@ -68,6 +70,7 @@ if __name__ == "__main__":
 # Default (arm-and-succeed) shim body — kept as a plain constant so the
 # original happy-path test reads exactly as before.
 _FRESHNESS_FALLBACK_SHIM = _FRESHNESS_FALLBACK_SHIM_TEMPLATE.format(
+    refuse_payload="",
     refuse=False, gate_passed=False,
     promotion_basis_stmt='meta["promotion_basis"] = "freshness_fallback_rfc210"')
 
@@ -107,6 +110,7 @@ def _write_freshness_fallback_shim(
     pythonpath_dir: Path,
     *,
     refuse: bool = False,
+    refuse_payload: str = "",
     gate_passed: bool = False,
     stamp_promotion_basis: bool = True,
 ) -> None:
@@ -134,7 +138,7 @@ def _write_freshness_fallback_shim(
         if stamp_promotion_basis else "pass"
     )
     shim_src = _FRESHNESS_FALLBACK_SHIM_TEMPLATE.format(
-        refuse=refuse, gate_passed=gate_passed,
+        refuse=refuse, refuse_payload=refuse_payload, gate_passed=gate_passed,
         promotion_basis_stmt=promotion_basis_stmt)
     (wf_gate_pkg / "freshness_fallback.py").write_text(shim_src, encoding="utf-8")
     (forensics_pkg / "__init__.py").write_text("", encoding="utf-8")
@@ -605,3 +609,84 @@ def test_promote_staged_rejects_traversal_run_ids():
             capture_output=True, text=True)
         assert ok.returncode == 1, (ok.returncode, ok.stdout, ok.stderr)
         assert "staged pair not found" in ok.stdout
+
+
+# --- reject-notify disposition (operator directive 2026-08-04) ------------------
+#
+# A REFUSE because the served model is FRESH is the healthy steady state of
+# RFC#210 governance and must notify calm + exit 0. Anything unproven keeps the
+# alarm tone + exit 1 (the tests above pin that side: the legacy stub verdict
+# {"verdict": ...} and module-unavailable both stay alarms).
+
+def _real_shape_refusal(*, refused_on="prod_stale", prod_ok=False,
+                        staleness_days=2, prod_trained="2026-08-02") -> str:
+    import json as _json
+    return _json.dumps({
+        "as_of": "2026-08-04",
+        "decision": "REFUSE",
+        "policy": "freshness_fallback_rfc210",
+        "refused_on": refused_on,
+        "checks": [
+            {"check": "gate_rejected", "ok": True, "stamped_verdict": False},
+            {"check": "prod_stale", "ok": prod_ok, "prod_trained": prod_trained,
+             "staleness_days": staleness_days,
+             "why": "served model is %dd old" % staleness_days},
+        ],
+    })
+
+
+def test_fresh_prod_refusal_notifies_calm_and_exits_zero(tmp_path):
+    """The 2026-08-04 live shape: gate reject + prod 2d fresh -> calm + rc 0."""
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(
+        pythonpath_dir, refuse=True, refuse_payload=_real_shape_refusal())
+
+    active_artifact = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                        / fixture.ACTIVE_ARTIFACT_NAME)
+    before_artifact = active_artifact.read_text(encoding="utf-8")
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+
+    assert "RFC#210 fallback verdict: REFUSE" in log_tail, log_tail[-3000:]
+    # the sentinel's log-contract line is unchanged either way
+    assert "WF gate REJECTED staged model — production unchanged." in log_tail
+    assert "WEEKLY-REJECT (prod fresh — no action)" in notifications, notifications
+    assert "trained 2026-08-02, 2d old" in notifications, notifications
+    # the ALARM-tone title must NOT fire (title match is exact-with-colon)
+    assert "RenQuant 104 WEEKLY-REJECT:" not in notifications, notifications
+    assert result.returncode == 0, log_tail[-3000:]
+    assert active_artifact.read_text(encoding="utf-8") == before_artifact
+    assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_stale_prod_refusal_keeps_alarm_and_exit_one(tmp_path):
+    """REFUSE on another check while prod is genuinely old -> alarm + rc 1,
+    with the disposition's reason in the notification body."""
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(
+        pythonpath_dir, refuse=True,
+        refuse_payload=_real_shape_refusal(
+            refused_on="candidate_stale", prod_ok=True, staleness_days=44,
+            prod_trained="2026-06-21"))
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+
+    assert "RenQuant 104 WEEKLY-REJECT:" in notifications, notifications
+    assert "candidate_stale" in notifications, notifications
+    assert result.returncode == 1
+    assert not lock_file.exists(), "lock file must be released on exit"
