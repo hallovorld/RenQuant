@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: 31737b13cdf7105e00f3a9f9a6d2b580eb2d5bd004f8775e50a5e227662cc5c7 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: aa2f41d518e02b1a4b65bf28d81d9c211bd67fb1ab764cc483143994621ff553 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
@@ -36,18 +36,18 @@ Source fingerprint: 31737b13cdf7105e00f3a9f9a6d2b580eb2d5bd004f8775e50a5e227662c
 |---|---|
 | Scorer kind | `xgb` |
 | Artifact | `artifacts/prod/panel-ltr.alpha158_fund.json` |
-| Artifact metadata file fingerprint | sha256:04d7a381cd6df847 |
-| trained_date | 2026-06-21 |
+| Artifact metadata file fingerprint | sha256:6461b827ab2339a8 |
+| trained_date | 2026-08-02 |
 | Binding data cutoff | unknown (field absent) |
 | label_observation_cutoff | unknown (field absent) |
 | lookahead_days | 60 |
 | label_col | fwd_60d_excess |
 | Feature count | 172 |
-| train_run_id | 8daa5b88 |
-| oos_mean_ic (stamped) | +0.0533 |
+| train_run_id | b43751be |
+| oos_mean_ic (stamped) | +0.0448 |
 | promotion_status | unknown (field absent) |
 | config_fingerprint | sha256:f8fb2259b2bf1537 |
-| WF gate (stamped) | passed=true; run_at=2026-06-22T05:37:02.965705; sanity_eval_end=2026-02-11 |
+| WF gate (stamped) | passed=false; run_at=2026-08-02T17:22:10.666342; sanity_eval_end=2026-05-05 |
 
 ## Active calibrator
 
@@ -193,7 +193,7 @@ Source fingerprint: 31737b13cdf7105e00f3a9f9a6d2b580eb2d5bd004f8775e50a5e227662c
 | renquant-execution | main | `5724dc74ec2b` | bootstrapped |
 | renquant-model | main | `96fe2d3daeb3` | active |
 | renquant-orchestrator | main | `75dd9c7057c3` | active |
-| renquant-pipeline | main | `a3686efbf4bf` | bootstrapped |
+| renquant-pipeline | main | `5f07a4d28791` | bootstrapped |
 | renquant-strategy-104 | main | `d84604d771c6` | bootstrapped |
 
 ## Source fingerprints
@@ -203,9 +203,9 @@ Source fingerprint: 31737b13cdf7105e00f3a9f9a6d2b580eb2d5bd004f8775e50a5e227662c
 - `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl` — sha256:9aa2d8c9571bad95
 - `backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl` — unknown (file missing)
-- `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:04d7a381cd6df847
+- `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:6461b827ab2339a8
 - `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
-- `subrepos.lock.json` — sha256:517dbfd42c3ef10a
+- `subrepos.lock.json` — sha256:b0b5b845ca1fe531
 
 <!-- snapshot-machine-block
 {
@@ -225,9 +225,9 @@ Source fingerprint: 31737b13cdf7105e00f3a9f9a6d2b580eb2d5bd004f8775e50a5e227662c
   "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl": "sha256:9aa2d8c9571bad95",
   "backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl": null,
-  "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:04d7a381cd6df847",
+  "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:6461b827ab2339a8",
   "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
-  "subrepos.lock.json": "sha256:517dbfd42c3ef10a"
+  "subrepos.lock.json": "sha256:b0b5b845ca1fe531"
  },
  "strategy_104_pin": "d84604d771c641b421642b5248970e67b755cf19"
 }
