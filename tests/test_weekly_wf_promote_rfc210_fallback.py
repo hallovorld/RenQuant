@@ -458,3 +458,27 @@ def test_consumer_contract_absent_disarms_loudly(tmp_path):
     notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
     assert "WEEKLY-REJECT" in notifications
     assert (active_art.read_bytes(), active_cal.read_bytes()) == before
+
+
+# ── 2026-08-04: manual-run session-pin passthrough (source-shape guards) ─────
+
+def test_retrain_call_threads_the_session_pins_only_when_set():
+    """The wrapper must pass the retrainer's OWN deterministic-replay pins
+    through via env, and pass NOTHING when the envs are empty (scheduled
+    runs stay byte-identical). Shape-checked against the source."""
+    src = SCRIPT.read_text()
+    assert 'RETRAIN_EXPECTED_SESSION="${RENQUANT_RETRAIN_EXPECTED_SESSION:-}"' in src
+    assert 'RETRAIN_AS_OF="${RENQUANT_RETRAIN_AS_OF:-}"' in src
+    assert '${RETRAIN_EXPECTED_SESSION:+--expected-session "$RETRAIN_EXPECTED_SESSION"}' in src
+    assert '${RETRAIN_AS_OF:+--as-of "$RETRAIN_AS_OF"}' in src
+    # The pins must ride the SAME retrain invocation that carries the
+    # staging outputs — not a second call.
+    call_start = src.index("daily_retrain_alpha158_fund.sh \\")
+    call_end = src.index("; then", call_start)
+    call = src[call_start:call_end]
+    for needle in ("--xgb-artifact-out", "--calibrator-out",
+                   "RETRAIN_EXPECTED_SESSION:+", "RETRAIN_AS_OF:+"):
+        assert needle in call
+    # No tolerance loosening rides along: the guard's failure mode is
+    # untouched (fail-on-stale never disabled by this wrapper).
+    assert "--no-freshness-fail-on-stale" not in src
