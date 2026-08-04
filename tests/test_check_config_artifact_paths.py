@@ -563,11 +563,12 @@ def _write_momentum_publish_set(
     cutoffs: tuple[str, ...] = ("2026-07-25", "2026-08-01"),
     *,
     write_tail_artifact: bool = True,
+    root_subdir: str = "momentum",
 ) -> Path:
     """Build the momentum_train_run.py publish layout under the strategy dir:
-    ``artifacts/momentum/<cutoff>/momentum_residual_v0.json`` per cutoff plus
-    the chained ledger beside them. Returns the ledger path."""
-    root = strategy_dir / "artifacts" / "momentum"
+    ``artifacts/<root_subdir>/<cutoff>/momentum_residual_v0.json`` per cutoff
+    plus the chained ledger beside them. Returns the ledger path."""
+    root = strategy_dir / "artifacts" / root_subdir
     rows: list[dict] = []
     prev = None
     for i, cutoff in enumerate(cutoffs):
@@ -969,4 +970,128 @@ def test_machine_produced_marker_does_not_skip_verification_when_ledger_resolves
     )
     bad = [r for r in results if not r.ok]
     assert len(bad) == 1
+    assert "chain verification FAILED" in bad[0].reason
+
+
+# --- RenQuant#561: the s104#84 FAST lane's bounded pending admission -------
+
+FAST_LEDGER_REL = "artifacts/momentum_fast/momentum_artifact_ledger.jsonl"
+
+
+def _fast_entry(*, pending: bool = True) -> dict:
+    entry = {
+        "name": "momentum_fast_v1_shadow",
+        "kind": "momentum_residual",
+        "artifact_path": FAST_LEDGER_REL,
+    }
+    if pending:
+        entry["_2026_08_03_pending_first_artifact"] = (
+            "declared dormant state — first fast artifact rides the arming "
+            "batch (s104#84)"
+        )
+    return entry
+
+
+def test_fast_ledger_pending_marker_admits_absent_ledger_as_info(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The exact s104#84 dormant state: fast path + pending marker + ledger
+    absent -> INFO pass, so the arming pin batch can deploy."""
+    monkeypatch.setattr(mod, "_import_canonical", _fake_import_canonical)
+    strategy_dir, data_root = _make_tree(tmp_path)  # no fast publish set
+    config = _base_config(_good_shadow(data_root))
+    config["ranking"]["panel_scoring"]["shadow_models"].append(_fast_entry())
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    assert [r for r in results if not r.ok] == []
+    fast = next(r for r in results if r.raw == FAST_LEDGER_REL)
+    assert fast.ok
+    assert fast.detail.startswith("INFO: pending first artifact")
+    assert "_2026_08_03_pending_first_artifact" in fast.detail
+
+    rc = mod.main(
+        [
+            str(config_path), "--shape", "strategy_config",
+            "--strategy-dir", str(strategy_dir), "--data-root", str(data_root),
+        ]
+    )
+    assert rc == 0
+
+
+def test_fast_ledger_without_pending_marker_fails_closed(tmp_path: Path) -> None:
+    """Marker removed (the post-first-publish state): the bounded admission
+    ends and the gate fails closed until the full fast contract is widened
+    here in a reviewed change."""
+    strategy_dir, data_root = _make_tree(tmp_path)
+    config = _base_config(_good_shadow(data_root))
+    config["ranking"]["panel_scoring"]["shadow_models"].append(
+        _fast_entry(pending=False)
+    )
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    bad = [r for r in results if not r.ok]
+    assert len(bad) == 1
+    assert bad[0].raw == FAST_LEDGER_REL
+    assert "admitted ONLY while" in bad[0].reason
+    assert "reviewed change" in bad[0].reason
+
+
+def test_fast_ledger_without_marker_fails_even_when_ledger_resolves(
+    tmp_path: Path,
+) -> None:
+    """A valid, chain-verified fast publish set does NOT substitute for the
+    reviewed widening: with the marker gone, even a resolvable fast ledger
+    fails closed (the admission is the PENDING state, not the contract)."""
+    strategy_dir, data_root = _make_tree(tmp_path)
+    _write_momentum_publish_set(strategy_dir, root_subdir="momentum_fast")
+    config = _base_config(_good_shadow(data_root))
+    config["ranking"]["panel_scoring"]["shadow_models"].append(
+        _fast_entry(pending=False)
+    )
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    bad = [r for r in results if not r.ok]
+    assert len(bad) == 1
+    assert bad[0].raw == FAST_LEDGER_REL
+    assert "admitted ONLY while" in bad[0].reason
+
+
+def test_fast_ledger_with_marker_still_verifies_when_it_resolves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If the fast ledger appears while the marker is still on the entry
+    (machine published before the s104 marker-removal change), the marker
+    does not skip verification: a tampered chain still fails."""
+    monkeypatch.setattr(mod, "_import_canonical", _fake_import_canonical)
+    strategy_dir, data_root = _make_tree(tmp_path)
+    ledger = _write_momentum_publish_set(strategy_dir, root_subdir="momentum_fast")
+    rows = ledger.read_text().strip().splitlines()
+    row0 = json.loads(rows[0])
+    row0["artifact_content_sha256"] = "sha256:" + "0" * 16
+    rows[0] = json.dumps(row0, sort_keys=True, separators=(",", ":"))
+    ledger.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    config = _base_config(_good_shadow(data_root))
+    config["ranking"]["panel_scoring"]["shadow_models"].append(_fast_entry())
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    bad = [r for r in results if not r.ok]
+    assert len(bad) == 1
+    assert bad[0].raw == FAST_LEDGER_REL
     assert "chain verification FAILED" in bad[0].reason

@@ -330,6 +330,14 @@ def _load_and_verify_ledger_chain(ledger_path: Path) -> list[dict]:
 # layout; anything else ending in .jsonl fails closed in _check_ledger_pointer.
 _MOMENTUM_LEDGER_KIND = "momentum_residual"
 _MOMENTUM_LEDGER_REF = "artifacts/momentum/momentum_artifact_ledger.jsonl"
+# RenQuant#561 (codex): the s104#84 FAST lane (momentum_fast_v1_shadow) is
+# admitted ONLY while its entry carries the *_pending_first_artifact marker —
+# the declared dormant state. Once the marker is removed (first publish),
+# this gate fails closed again until the full fast contract is widened here
+# in a reviewed change (the mirror of the v0 lane's s104#78 machine-produced
+# marker adoption). Any other JSONL path stays fail-closed regardless of
+# markers.
+_MOMENTUM_FAST_LEDGER_REF = "artifacts/momentum_fast/momentum_artifact_ledger.jsonl"
 
 
 def _pending_first_artifact_marker(entry: dict) -> Optional[str]:
@@ -379,13 +387,41 @@ def _check_ledger_pointer(
     # pending-marker admission path; it fails closed here. Widening this set
     # is a reviewed change by design.
     model_kind = expected.get("model_kind")
-    if model_kind != _MOMENTUM_LEDGER_KIND or raw != _MOMENTUM_LEDGER_REF:
+    is_v0_contract = (
+        model_kind == _MOMENTUM_LEDGER_KIND and raw == _MOMENTUM_LEDGER_REF
+    )
+    # RenQuant#561: the fast lane is a BOUNDED admission — exact path, exact
+    # kind, AND the pending-first-artifact marker still on the entry. With
+    # the marker gone (first publish happened), the entry falls through to
+    # fail-closed below: widening to the full fast serving contract is a
+    # reviewed change, not an inherited one.
+    is_fast_pending = (
+        model_kind == _MOMENTUM_LEDGER_KIND
+        and raw == _MOMENTUM_FAST_LEDGER_REF
+        and bool(expected.get("pending_first_artifact_marker"))
+    )
+    if not (is_v0_contract or is_fast_pending):
+        if raw == _MOMENTUM_FAST_LEDGER_REF and model_kind == _MOMENTUM_LEDGER_KIND:
+            return PathCheck(
+                config_name, field, kind, raw, "", False,
+                (
+                    f"the FAST momentum ledger {raw!r} is admitted ONLY while "
+                    f"its entry carries a *_pending_first_artifact marker "
+                    f"(s104#84 dormant declaration); the marker is absent — "
+                    f"after the first publish, widening this gate to the full "
+                    f"fast serving contract is a reviewed change "
+                    f"(RenQuant#561, mirror of s104#78 for the v0 lane)"
+                ),
+                "",
+            )
         return PathCheck(
             config_name, field, kind, raw, "", False,
             (
                 f"ledger-pointer admission is restricted to the momentum "
                 f"contract (kind={_MOMENTUM_LEDGER_KIND!r}, "
-                f"artifact_path={_MOMENTUM_LEDGER_REF!r}); this entry declares "
+                f"artifact_path={_MOMENTUM_LEDGER_REF!r}, or the pending-"
+                f"marker-bounded fast lane {_MOMENTUM_FAST_LEDGER_REF!r}); "
+                f"this entry declares "
                 f"kind={model_kind!r} with path {raw!r} — a JSONL artifact_path "
                 f"outside that contract fails closed (#550), it does not "
                 f"inherit the pending-marker admission path"
