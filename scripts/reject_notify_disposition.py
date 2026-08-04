@@ -30,6 +30,7 @@ in ALARM by design (never guess on an unproven verdict).
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sys
 
@@ -62,11 +63,22 @@ def dispose(path: str) -> str:
     trained = prod.get("prod_trained")
     if not isinstance(age, int) or isinstance(age, bool):
         return f"ALARM|staleness_days is {age!r}, not an int"
+    # Codex on the first round: this is the ONLY branch that suppresses the
+    # alarm, so it must PROVE freshness, not merely lack an over-SLA value.
+    # A negative age or a future/unparseable prod_trained is corrupt evidence.
+    if age < 0:
+        return f"ALARM|staleness_days {age} is negative — corrupt evidence"
     if age > SLA_DAYS:
         return f"ALARM|staleness_days {age} exceeds the {SLA_DAYS}d SLA"
     if not isinstance(trained, str) or not trained.strip():
         return f"ALARM|prod_trained is {trained!r}"
-    return f"CALM_FRESH|{age}|{trained}"
+    try:
+        trained_date = dt.date.fromisoformat(trained.strip())
+    except ValueError:
+        return f"ALARM|prod_trained {trained!r} is not an ISO date"
+    if trained_date > dt.date.today():
+        return f"ALARM|prod_trained {trained} is in the future"
+    return f"CALM_FRESH|{age}|{trained.strip()}"
 
 
 def main(argv: list[str]) -> int:

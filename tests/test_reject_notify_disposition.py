@@ -147,3 +147,28 @@ def test_cli_always_exits_zero_and_prints_one_line(tmp_path):
         lines = r.stdout.strip().splitlines()
         assert len(lines) == 1, r.stdout
         assert lines[0].startswith(("CALM_FRESH|", "ALARM|"))
+
+
+# --- codex round-1 findings: the calm branch must PROVE freshness ---------------
+
+def test_negative_staleness_days_alarms(tmp_path):
+    v = _fresh_verdict()
+    v["checks"][1]["staleness_days"] = -2
+    out = _dispose(tmp_path, v)
+    assert out.startswith("ALARM|") and "negative" in out
+
+
+def test_future_prod_trained_alarms(tmp_path):
+    import datetime as dt
+    v = _fresh_verdict()
+    v["checks"][1]["prod_trained"] = (
+        dt.date.today() + dt.timedelta(days=3)).isoformat()
+    out = _dispose(tmp_path, v)
+    assert out.startswith("ALARM|") and "future" in out
+
+
+def test_malformed_prod_trained_date_alarms(tmp_path):
+    v = _fresh_verdict()
+    v["checks"][1]["prod_trained"] = "last tuesday"
+    out = _dispose(tmp_path, v)
+    assert out.startswith("ALARM|") and "not an ISO date" in out
