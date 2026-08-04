@@ -458,3 +458,72 @@ def test_consumer_contract_absent_disarms_loudly(tmp_path):
     notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
     assert "WEEKLY-REJECT" in notifications
     assert (active_art.read_bytes(), active_cal.read_bytes()) == before
+
+
+# ── 2026-08-04: manual-run session-pin passthrough ──────────────────────────
+
+import re as _re
+import subprocess as _sp
+
+
+def _extract_pin_block() -> str:
+    """The EXACT array-building lines from the real wrapper source, so the
+    behavior test drifts red the moment the wrapper's logic changes."""
+    src = SCRIPT.read_text()
+    start = src.index('RETRAIN_EXPECTED_SESSION="${RENQUANT_RETRAIN_EXPECTED_SESSION:-}"')
+    end = src.index("if ! bash scripts/daily_retrain_alpha158_fund.sh", start)
+    return src[start:end]
+
+
+def _argv_for(expected_session: str, as_of: str) -> list[str]:
+    """Execute the wrapper's own pin-array logic under bash and capture the
+    argv the retrainer would receive after the fixed args."""
+    harness = (
+        "set -euo pipefail\n"
+        + _extract_pin_block()
+        + '\nprintf "%s\\n" ${RETRAIN_PIN_ARGS[@]+"${RETRAIN_PIN_ARGS[@]}"}\n'
+    )
+    out = _sp.run(
+        ["bash", "-c", harness],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "RENQUANT_RETRAIN_EXPECTED_SESSION": expected_session,
+            "RENQUANT_RETRAIN_AS_OF": as_of,
+        },
+        capture_output=True, text=True, check=True,
+    )
+    return [l for l in out.stdout.split("\n") if l]
+
+
+def test_session_pins_expand_to_separate_argv_entries():
+    """[codex on #564] The inline ${var:+--flag "$var"} form fused flag and
+    value into ONE word. The array form must yield SEPARATE argv entries,
+    including for an ISO timestamp with colons."""
+    argv = _argv_for("2026-08-03", "2026-08-03T20:00:00-04:00")
+    assert argv == [
+        "--expected-session", "2026-08-03",
+        "--as-of", "2026-08-03T20:00:00-04:00",
+    ]
+
+
+def test_empty_session_pins_add_nothing():
+    """Scheduled runs (both envs empty) must add ZERO argv entries —
+    byte-identical behavior — and the empty array must not trip set -u."""
+    assert _argv_for("", "") == []
+
+
+def test_only_one_pin_set_threads_just_that_pin():
+    assert _argv_for("2026-08-03", "") == ["--expected-session", "2026-08-03"]
+    assert _argv_for("", "2026-08-03") == ["--as-of", "2026-08-03"]
+
+
+def test_retrain_call_threads_the_session_pins_only_when_set():
+    """Source-shape guards kept from round 1: the pins ride the SAME
+    staging-output invocation, and no tolerance loosening rides along."""
+    src = SCRIPT.read_text()
+    call_start = src.index("daily_retrain_alpha158_fund.sh \\")
+    call_end = src.index("; then", call_start)
+    call = src[call_start:call_end]
+    for needle in ("--xgb-artifact-out", "--calibrator-out", "RETRAIN_PIN_ARGS"):
+        assert needle in call
+    assert "--no-freshness-fail-on-stale" not in src

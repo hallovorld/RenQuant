@@ -243,11 +243,35 @@ echo "Staging calibrator: $STAGING_CAL"
 # tolerance). IAC: bars ceased 2026-05-12 (2026-07-17 anomaly-retrain
 # failure); REMOVE from this default once the inventory prunes it.
 RETRAIN_EXCLUDE_TICKERS="${RENQUANT_RETRAIN_EXCLUDE_TICKERS:-IAC}"
+# Off-schedule MANUAL runs during market hours (2026-08-04 incident): the
+# wall-clock-derived expected session is only the PREVIOUS day after close,
+# so a mid-session run sees today's partial bars as "future" and the
+# freshness guard fail-closes the retrain. These envs thread the
+# retrainer's OWN deterministic-replay pins (--expected-session / --as-of,
+# built for exactly this "freshness must not depend on when the job runs"
+# case) through the wrapper. Empty = scheduled behavior, byte-identical.
+# They PIN the reference to a real completed session; they never loosen
+# tolerances — the guard still measures every ticker against it.
+RETRAIN_EXPECTED_SESSION="${RENQUANT_RETRAIN_EXPECTED_SESSION:-}"
+RETRAIN_AS_OF="${RENQUANT_RETRAIN_AS_OF:-}"
+# Argument ARRAY, not ${var:+...} inline expansion: the inline form yields
+# ONE shell word ("--as-of <value>" fused), so the retrainer never sees a
+# standalone option (codex on #564). Array elements stay separate argv
+# entries; the ${arr[@]+...} guard keeps empty arrays safe under set -u on
+# macOS bash 3.2.
+RETRAIN_PIN_ARGS=()
+if [ -n "$RETRAIN_EXPECTED_SESSION" ]; then
+    RETRAIN_PIN_ARGS+=(--expected-session "$RETRAIN_EXPECTED_SESSION")
+fi
+if [ -n "$RETRAIN_AS_OF" ]; then
+    RETRAIN_PIN_ARGS+=(--as-of "$RETRAIN_AS_OF")
+fi
 if ! bash scripts/daily_retrain_alpha158_fund.sh \
     --xgb-artifact-out "$STAGING_ART" \
     --calibrator-out "$STAGING_CAL" \
     --no-drop-sentiment \
-    --exclude-tickers "$RETRAIN_EXCLUDE_TICKERS"; then
+    --exclude-tickers "$RETRAIN_EXCLUDE_TICKERS" \
+    ${RETRAIN_PIN_ARGS[@]+"${RETRAIN_PIN_ARGS[@]}"}; then
     echo "Training FAILED — production artifact unchanged."
     notify "RenQuant 104 WEEKLY-FAIL" "Training failed; production model unchanged. Check $LOG"
     exit 1
