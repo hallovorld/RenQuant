@@ -539,6 +539,20 @@ def _run_once_multi_pipeline(
             _ACTIVE_PREFLIGHT_GUARD = None
 
 
+# GOAL-9 fleet callsigns (operator-chosen scheme 2026-08-04: 功能缩写 —
+# R=reversal, C=classifier, S=slow momentum, f=fast momentum; lowercase f
+# deliberate to keep the fast/slow distinction visible in caps-only fonts).
+# The PROD lane (broker "alpaca") is RS by composition; its title is not
+# prefixed here (live titles keep their existing format).
+LANE_CALLSIGNS = {
+    "alpaca_shadow_blend": "RC",
+    "alpaca_shadow_blend_mom": "RSs",
+    "alpaca_shadow_blend_mom_fast": "Rf",
+    "alpaca_shadow_blend_rb_mom": "RCS",
+    "alpaca_shadow_blend_rb_fast": "RCf",
+}
+
+
 def _readonly_label_prefix(broker_name: str) -> str:
     """Log/ntfy title prefix for readonly shadow-lane brokers.
 
@@ -557,7 +571,13 @@ def _readonly_label_prefix(broker_name: str) -> str:
     if broker_name == "alpaca_shadow":
         return "[READONLY]"
     if broker_name.startswith("alpaca_shadow"):
-        return f"[READONLY][{broker_name.upper()}]"
+        # 2026-08-04 operator directive ("简练,人话"): fleet CALLSIGNS instead
+        # of the shouting full tag. The prefix MUST keep starting with the
+        # literal "[READONLY]" — _notify_decision's is_shadow classification
+        # depends on it (a shadow message must never classify as live).
+        # Unknown future tags fall back to the full tag (never a bare
+        # "[READONLY]", which would collide with the legacy lane's contract).
+        return f"[READONLY][{LANE_CALLSIGNS.get(broker_name, broker_name.upper())}]"
     return ""
 
 
@@ -1226,7 +1246,9 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
 
     topic    = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
     if is_shadow:
-        parts.insert(0, "SHADOW/HYPOTHETICAL (no live orders)")
+        # 2026-08-04 operator directive: the boilerplate body sentence is
+        # gone — the title already carries [READONLY][<callsign>] AND the
+        # SHADOW-* tag; the body is decisions + context only.
         tag = "SHADOW-ACTION" if (has_trade or has_pending) else "SHADOW-DECISION"
         priority = "default"
     else:
