@@ -92,21 +92,36 @@ class TestSourceLevel:
         assert alert["priority"] == "urgent"
         assert alert["taxonomy"] == "ACTION_REQUIRED"
 
-    def test_daily_shadow_wrapper_suppresses_inner_preflight_ntfy(self):
-        """Shadow failures are non-fatal; daily wrapper sends one alert."""
-        src = (REPO_ROOT / "scripts" / "daily_104.sh").read_text()
-        idx_shadow = src.find("Step 4: Shadow e2e")
-        idx_suppress = src.find("RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1", idx_shadow)
-        idx_python = src.find('"$PYTHON" - <<PY', idx_shadow)
-        assert idx_shadow > 0
-        assert idx_suppress > idx_shadow
-        assert idx_python > idx_suppress
-        assert idx_python - idx_suppress < 80
+    def test_daily_shadow_wrappers_suppress_inner_preflight_ntfy(self):
+        """Shadow failures are non-fatal; each shadow leg suppresses the
+        runner's inner preflight ntfy (the daily wrapper sends one alert).
 
-    def test_live_only_wrapper_does_not_duplicate_runner_success_ntfy(self):
-        """live.runner already posts the open/preclose cycle decision."""
+        2026-08-04 re-anchor: the original anchor "Step 4: Shadow e2e"
+        rotted when Step 4 was RETIRED (2026-08-03) — this test failed for
+        the wrong reason from that day on. The maintained pattern is the
+        Step-5 family: EVERY shadow-blend leg must set
+        RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 immediately before its heredoc."""
+        src = (REPO_ROOT / "scripts" / "daily_104.sh").read_text()
+        assert "Step 4: RETIRED" in src  # the retirement is the anchor now
+        for heading in ("--- Step 5:", "--- Step 5b:", "--- Step 5c:",
+                        "--- Step 5d:", "--- Step 5e:"):
+            idx = src.find(heading)
+            assert idx > 0, heading
+            idx_suppress = src.find("RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1", idx)
+            idx_python = src.find('"$PYTHON" - <<PY', idx)
+            assert idx_suppress > idx, heading
+            assert idx_python > idx_suppress, heading
+            assert idx_python - idx_suppress < 120, heading
+
+    def test_live_only_wrapper_is_a_thin_shim_with_no_own_ntfy(self):
+        """2026-08-04 re-anchor: live_only_104.sh became a compatibility shim
+        that execs intraday_sell_104.sh — the original assertion text moved
+        out with the old body. The property that must HOLD: the shim itself
+        composes no success ntfy of its own (live.runner posts the decision),
+        and it delegates via exec (no second wrapper layer that could
+        duplicate alerts)."""
         src = (REPO_ROOT / "scripts" / "live_only_104.sh").read_text()
-        assert "Wrapper success ntfy suppressed" in src
+        assert 'exec bash "$REPO_DIR/scripts/intraday_sell_104.sh"' in src
         assert 'notify "RenQuant 104 [$TAG]" "$FULL_MSG"' not in src
         assert "t.get('signal'" not in src
 
