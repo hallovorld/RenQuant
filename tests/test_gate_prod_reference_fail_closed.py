@@ -39,12 +39,32 @@ def test_working_copy_is_not_a_candidate_reference():
             )
 
 
-def test_pinned_path_is_always_a_candidate():
+def test_pinned_path_is_the_only_candidate_in_every_mode():
+    """Round 2 (codex on #580): the sibling/multirepo path resolved through
+    renquant_subrepo_root defaults to a DEVELOPER CHECKOUT absent an assembly
+    override — a locally-edited checkout would recreate this incident. The
+    lock-aligned runtime config (.subrepo_runtime, what the daily run loads)
+    is the ONLY candidate, in every runner mode."""
     block = _finder_block()
-    cand_lines = [l for l in block.splitlines() if l.strip().startswith("candidates=(")]
+    cand_lines = [l.strip() for l in block.splitlines() if l.strip().startswith("candidates=(")]
     assert cand_lines, "no candidates array found"
     for line in cand_lines:
         assert "$pinned_path" in line, line
+        assert "$multirepo_path" not in line, (
+            f"unpinned sibling checkout must not be a candidate: {line}"
+        )
+        assert "$workingcopy_path" not in line, line
+    assert len(cand_lines) == 1, (
+        f"one unconditional candidates array expected (no mode branch that could "
+        f"reintroduce an unpinned path): {cand_lines}"
+    )
+
+
+def test_pinned_path_resolves_under_subrepo_runtime():
+    """The 'pinned' path must be the lock-aligned runtime checkout, not any
+    other tree that happens to be called pinned."""
+    block = _finder_block()
+    assert '.subrepo_runtime/repos/renquant-strategy-104/configs/' in block
 
 
 def test_no_match_fails_closed_with_the_blend_explanation_and_alert():

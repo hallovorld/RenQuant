@@ -117,15 +117,16 @@ _find_gbdt_config() {
         # The reviewed production surface is the PINNED config; a missing
         # kind match is a REAL state that must fail closed, not be papered
         # over with a stale file.
-        if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
-            candidates=("$pinned_path")
-        else
-            local multirepo_path
-            multirepo_path="$(renquant_strategy_config "$SUBREPO_ROOT" "$cfg_name" 2>/dev/null)" || multirepo_path=""
-            candidates=("$multirepo_path" "$pinned_path")
-        fi
-        # (workingcopy_path is intentionally UNUSED — kept named so the
-        # deliberate exclusion is visible at the point of decision.)
+        # Round 2 (codex on #580): the multirepo path resolved through
+        # renquant_subrepo_root defaults to the SIBLING DEVELOPER CHECKOUT
+        # when no assembly override is set — a locally-edited checkout could
+        # recreate exactly the mismatch this fix eliminates. The ONLY
+        # candidate in BOTH runner modes is now the lock-aligned runtime
+        # config under .subrepo_runtime (what the daily run actually loads).
+        candidates=("$pinned_path")
+        # (workingcopy_path and the multirepo/sibling path are intentionally
+        # EXCLUDED — named here so the exclusions are visible at the point of
+        # decision rather than silently absent.)
         : "${workingcopy_path:?}"
         for candidate in "${candidates[@]}"; do
             [ -n "$candidate" ] || continue

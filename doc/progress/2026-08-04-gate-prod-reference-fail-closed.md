@@ -27,8 +27,13 @@ Cause chain, each link read back from logs/configs:
 
 ## Change
 
-The umbrella working copy is removed from the candidate list (still NAMED at
-the point of decision so the exclusion is visible, not accidental). When no
+The umbrella working copy is removed from the candidate list — and after
+codex round 2, so is the multirepo/sibling path: `renquant_subrepo_root`
+defaults to the SIBLING DEVELOPER CHECKOUT absent an assembly override, so a
+locally-edited checkout could recreate this exact incident. The ONLY candidate
+in BOTH runner modes is now the lock-aligned `.subrepo_runtime` config — what
+the daily run actually loads. Both excluded paths stay NAMED at the point of
+decision so the exclusions are visible, not accidental. When no
 PINNED config matches the candidate kind the wrapper now FAILS CLOSED: it
 explains the blend-prod situation, names the open decision (orch#799), pages
 `WEEKLY-BLOCKED`, states that production is unchanged and RFC#210 freshness
