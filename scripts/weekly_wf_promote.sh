@@ -107,13 +107,27 @@ _find_gbdt_config() {
         local candidate pinned_path workingcopy_path
         pinned_path="$REPO_DIR/.subrepo_runtime/repos/renquant-strategy-104/configs/$cfg_name"
         workingcopy_path="$REPO_DIR/backtesting/renquant_104/$cfg_name"
-        if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
-            candidates=("$pinned_path" "$workingcopy_path")
-        else
-            local multirepo_path
-            multirepo_path="$(renquant_strategy_config "$SUBREPO_ROOT" "$cfg_name" 2>/dev/null)" || multirepo_path=""
-            candidates=("$multirepo_path" "$pinned_path" "$workingcopy_path")
-        fi
+        # 2026-08-04 (orch#799, MEASURED): the umbrella WORKING COPY must
+        # never serve as the production reference. After the full-book z-blend
+        # switch made the pinned primary kind=blend, this search fell through
+        # to backtesting/renquant_104/strategy_config.shadow.json — the A8
+        # registry's known-diverged working copy (kind=xgb, hf_patchtst-era
+        # semantics) — and the gate silently simulated a strategy nobody runs
+        # (same model, Sharpe 0.602 -> 0.052, greedy path -> joint QP).
+        # The reviewed production surface is the PINNED config; a missing
+        # kind match is a REAL state that must fail closed, not be papered
+        # over with a stale file.
+        # Round 2 (codex on #580): the multirepo path resolved through
+        # renquant_subrepo_root defaults to the SIBLING DEVELOPER CHECKOUT
+        # when no assembly override is set — a locally-edited checkout could
+        # recreate exactly the mismatch this fix eliminates. The ONLY
+        # candidate in BOTH runner modes is now the lock-aligned runtime
+        # config under .subrepo_runtime (what the daily run actually loads).
+        candidates=("$pinned_path")
+        # (workingcopy_path and the multirepo/sibling path are intentionally
+        # EXCLUDED — named here so the exclusions are visible at the point of
+        # decision rather than silently absent.)
+        : "${workingcopy_path:?}"
         for candidate in "${candidates[@]}"; do
             [ -n "$candidate" ] || continue
             [ -f "$candidate" ] || continue
@@ -132,7 +146,17 @@ print(c.get('ranking',{}).get('panel_scoring',{}).get('kind',''))
     return 1
 }
 if ! GBDT_PROD_CONFIG="$(_find_gbdt_config)"; then
-    echo "ERROR: no strategy config declares kind=xgb; cannot resolve GBDT reference"
+    echo "ERROR: no PINNED strategy config declares kind=xgb — cannot resolve a"
+    echo "       kind-matched GBDT production reference (orch#799)."
+    echo "       This is the EXPECTED state while the pinned primary is a blend:"
+    echo "       an xgb candidate has no same-kind production reference, and the"
+    echo "       umbrella working copy is NOT an acceptable substitute (A8: known"
+    echo "       diverged). The gate refuses rather than simulate a phantom config."
+    echo "       Decision needed (orch#799 item 'blend-prod reference rule'):"
+    echo "       either derive the xgb reference from the blend's component[0]"
+    echo "       semantics, or gate blend prods on a blend-kind candidate."
+    notify "RenQuant 104 WEEKLY-BLOCKED" \
+        "WF gate cannot run: no pinned kind-matched prod reference for the xgb candidate (prod is a blend). See orch#799. Production unchanged; RFC#210 freshness governance unaffected."
     exit 2
 fi
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
