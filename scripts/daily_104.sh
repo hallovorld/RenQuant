@@ -760,3 +760,72 @@ PY
 else
     echo "INFO: strategy_config.shadow_blend_momentum.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5b shadow-blend-mom skipped (rail dormant until the S1 profile lands)."
 fi
+
+# ── Step 5c: SHADOW-BLEND-MOM-FAST e2e run (GOAL-9 F2, 2026-08-04) ────────
+# F2 lane: z(prod) + z(FAST momentum), orch#794 AC2 — cloned from Step 5b
+# (the maintained pattern) with the lane's own profile/tag/log/timeout
+# names. Tag alpaca_shadow_blend_mom_fast registered AT BIRTH
+# (pipeline#265); profile landed s104#89 with a bounded
+# pending-first-artifact marker: until the first fast artifact publishes
+# (Saturday 2026-08-08), the blend loader fail-closes on the absent
+# component — that is the DESIGNED dormant daily record, non-fatal here.
+echo "--- Step 5c: Shadow-blend-mom-fast e2e run (F2 FAST momentum blend profile, no real orders) ---"
+if BLEND_MOM_FAST_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow_blend_momentum_fast.json)"; then
+    echo "shadow_blend_momentum profile found at $BLEND_MOM_FAST_STRATEGY_CONFIG"
+    SHADOW_BLEND_MOM_FAST_LOG="$LOG_DIR/${DATE}_shadow_blend_mom_fast.log"
+    SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC="${RENQUANT_SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC:-${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"
+    if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 RENQUANT_READONLY_TAG=alpaca_shadow_blend_mom_fast "$PYTHON" - <<PY > "$SHADOW_BLEND_MOM_FAST_LOG" 2>&1
+import os
+import subprocess
+import sys
+
+if os.environ.get("RQ_DAILY_RUNNER", "multirepo") == "umbrella":
+    runner = [sys.executable, "-m", "live.runner"]
+else:
+    runner = [sys.executable, "-m", "renquant_orchestrator", "live-bridge", "--repo-dir", "$REPO_DIR"]
+
+cmd = runner + [
+    "--strategy", "renquant_104",
+    "--broker", "readonly-alpaca",
+    "--once",
+    "--strategy-config-path", "$BLEND_MOM_FAST_STRATEGY_CONFIG",
+]
+try:
+    raise SystemExit(subprocess.run(
+        cmd,
+        cwd="$REPO_DIR",
+        timeout=float("$SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC"),
+    ).returncode)
+except subprocess.TimeoutExpired:
+    print("SHADOW-BLEND-MOM-FAST TIMEOUT after ${SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC}s", flush=True)
+    raise SystemExit(124)
+PY
+    then
+        echo "Shadow-blend-mom-fast run finished — see $SHADOW_BLEND_MOM_FAST_LOG"
+        grep "ntfy sent:" "$SHADOW_BLEND_MOM_FAST_LOG" | tail -1 || echo "shadow-blend-mom-fast ntfy line not found in shadow-blend-mom-fast log"
+    else
+        SHADOW_BLEND_MOM_FAST_RC=$?
+        if [ "$SHADOW_BLEND_MOM_FAST_RC" -eq 124 ]; then
+            echo "Shadow-blend-mom-fast run TIMED OUT after ${SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC}s (non-fatal) — see $SHADOW_BLEND_MOM_FAST_LOG"
+            if [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+                notify "RenQuant 104 SHADOW-BLEND-MOM-FAST-TIMEOUT" "Shadow-blend-mom-fast e2e exceeded ${SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC}s; primary already completed. See $SHADOW_BLEND_MOM_FAST_LOG."
+            else
+                echo "Shadow-blend-mom-fast timeout ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
+            fi
+        else
+            SHADOW_BLEND_MOM_FAST_BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL|P-FUND-FRESHNESS"
+            if grep -Eq "$SHADOW_BLEND_MOM_FAST_BUY_SIDE_PREFLIGHT_PATTERN" "$SHADOW_BLEND_MOM_FAST_LOG"; then
+                echo "Shadow-blend-mom-fast run blocked by expected buy-side preflight gate (non-fatal, rc=$SHADOW_BLEND_MOM_FAST_RC) — see $SHADOW_BLEND_MOM_FAST_LOG"
+                echo "Shadow-blend-mom-fast preflight-block ntfy suppressed; prod path already reported the actionable gate."
+            elif [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+                echo "Shadow-blend-mom-fast run FAILED (non-fatal, rc=$SHADOW_BLEND_MOM_FAST_RC) — see $SHADOW_BLEND_MOM_FAST_LOG"
+                notify "RenQuant 104 SHADOW-BLEND-MOM-FAST-FAIL" "Shadow-blend-mom-fast e2e failed today (rc=$SHADOW_BLEND_MOM_FAST_RC) — primary already completed. See $SHADOW_BLEND_MOM_FAST_LOG."
+            else
+                echo "Shadow-blend-mom-fast run FAILED (non-fatal, rc=$SHADOW_BLEND_MOM_FAST_RC) — see $SHADOW_BLEND_MOM_FAST_LOG"
+                echo "Shadow-blend-mom-fast failure ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
+            fi
+        fi
+    fi
+else
+    echo "INFO: strategy_config.shadow_blend_momentum_fast.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5c shadow-blend-mom skipped (rail dormant until the F2 profile lands)."
+fi
