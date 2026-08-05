@@ -956,3 +956,40 @@ PY
 else
     echo "INFO: strategy_config.shadow_blend_rb_fast.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5e shadow_blend_rb_fast skipped (rail dormant until the F3 profile lands)."
 fi
+
+# ── Step 6: FLEET LANE SENTINEL (GOAL-1, orch#801) ────────────────────────
+# The watcher for the five fleet e2e lanes (RC/RSs/Rf/RCS/RCf). It runs HERE,
+# as the daily wrapper's last step, for a measured reason: the lanes it
+# inspects are Steps 5–5e immediately above, so daily completion IS the
+# correct trigger. A clock-scheduled job would have to guess a cadence, and
+# the first attempt at guessing one (15:30 PT) was derived from a MANUAL
+# run's wall clock and would have paged MISSING on a still-running fleet
+# (codex on orch#801).
+#
+# NON-FATAL by construction: every decision above is already made and
+# executed; a watcher must never turn its own finding into a failed daily
+# run. Its alarm channel is the wrapper's own ntfy, not this exit code.
+# The wrapper logic lives in renquant-orchestrator (daily orchestration is
+# its declared role); the umbrella only calls it, with the session date
+# passed EXPLICITLY so a post-midnight finish still classifies its own
+# session.
+echo "--- Step 6: Fleet lane sentinel (GOAL-9 lanes RC/RSs/Rf/RCS/RCf) ---"
+FLEET_SENTINEL="${RQ_ORCH_RUN_DIR:-/Users/renhao/git/github/renquant-orchestrator-run}/ops/renquant104/fleet_lane_sentinel_daily.sh"
+if [ -x "$FLEET_SENTINEL" ] || [ -f "$FLEET_SENTINEL" ]; then
+    if bash "$FLEET_SENTINEL" "$DATE"; then
+        echo "Fleet lane sentinel: all lanes accounted for."
+    else
+        FLEET_SENTINEL_RC=$?
+        echo "Fleet lane sentinel reported actionable lane state(s) (non-fatal, rc=$FLEET_SENTINEL_RC) — it has already paged; see $LOG_DIR/../rq104/fleet_lane_sentinel_${DATE}.log"
+    fi
+else
+    # ABSENCE IS ACTIONABLE (codex on RQ#582). A stale or failed run-checkout
+    # deploy can REMOVE the fleet watcher, and an INFO line about it is exactly
+    # the silence this watcher exists to end: nobody else pages here, because
+    # the missing component IS the pager. This is the ONE branch in Step 6 that
+    # notifies — a sentinel FINDING is already paged by the wrapper itself and
+    # must not be double-sent.
+    echo "Fleet lane sentinel MISSING from the orchestrator run checkout ($FLEET_SENTINEL) — the fleet lanes are UNWATCHED today (non-fatal for this run; sync the run checkout to a pin carrying orch#801)."
+    notify "RenQuant 104 FLEET-SENTINEL-MISSING" \
+        "The fleet lane watcher is absent from $FLEET_SENTINEL — the five blend lanes ran UNWATCHED on $DATE. Sync the orchestrator run checkout to a pin carrying orch#801."
+fi

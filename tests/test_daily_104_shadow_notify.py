@@ -432,3 +432,66 @@ def test_every_blend_lane_success_echo_names_its_own_profile():
         assert echo in script, echo
     # and the wrong-identity form appears ONLY for the lane it belongs to
     assert script.count('echo "shadow_blend_momentum profile found') == 1
+
+
+# ── Step 6: the fleet lane sentinel call (GOAL-1, orch#801) ──────────────────
+
+def test_step6_invokes_the_sentinel_with_the_session_date():
+    """The umbrella only CALLS the watcher; the logic lives in orchestrator.
+    The session date must be explicit — a post-midnight finish has to classify
+    its own session, not 'today'."""
+    script = DAILY_104.read_text()
+    assert "--- Step 6: Fleet lane sentinel" in script
+    assert 'bash "$FLEET_SENTINEL" "$DATE"' in script
+    assert "ops/renquant104/fleet_lane_sentinel_daily.sh" in script
+    assert "RQ_ORCH_RUN_DIR" in script
+
+
+def test_step6_runs_after_every_fleet_lane_it_inspects():
+    """Daily completion is the trigger precisely because the lanes are above."""
+    script = DAILY_104.read_text()
+    idx6 = script.find("--- Step 6: Fleet lane sentinel")
+    assert idx6 > 0
+    for heading in ("--- Step 5:", "--- Step 5b:", "--- Step 5c:",
+                    "--- Step 5d:", "--- Step 5e:"):
+        assert 0 < script.find(heading) < idx6, heading
+
+
+def _step6() -> str:
+    script = DAILY_104.read_text()
+    return script[script.find("--- Step 6: Fleet lane sentinel"):]
+
+
+def test_step6_finding_is_nonfatal_and_NOT_paged_twice():
+    """A watcher must not turn its finding into a failed daily run, and a
+    FINDING is already paged by the orchestrator wrapper — Step 6 must not
+    duplicate it."""
+    section = _step6()
+    assert "non-fatal" in section
+    assert "it has already paged" in section
+    finding_branch = section[section.find("FLEET_SENTINEL_RC=$?"):
+                             section.find("# ABSENCE IS ACTIONABLE")]
+    assert "notify " not in finding_branch, (
+        "the finding branch must not send a duplicate page"
+    )
+
+
+def test_step6_ABSENCE_is_actionable_not_an_info_line(tmp_path=None):
+    """codex on RQ#582: a stale/failed run-checkout deploy can REMOVE the
+    watcher, and nobody else pages here — the missing component IS the pager.
+    Absence must use the daily alert surface."""
+    section = _step6()
+    absence = section[section.find("# ABSENCE IS ACTIONABLE"):]
+    assert "notify " in absence, "absence must page"
+    assert "FLEET-SENTINEL-MISSING" in absence
+    assert "UNWATCHED" in absence
+    assert "sync the orchestrator run checkout" in absence.lower()
+
+
+def test_step6_pages_in_exactly_one_branch():
+    """The two cases are distinct and each has exactly one channel: findings →
+    wrapper's page; absence → this page. Never both, never neither."""
+    section = _step6()
+    assert section.count("notify ") == 1, (
+        f"expected exactly one notify in Step 6, found {section.count('notify ')}"
+    )
