@@ -223,7 +223,9 @@ class TestAlwaysFiresOnCycle:
             "[READONLY]RENQUANT-104 [full] SHADOW-ACTION"
         )
         assert req.headers.get("Priority") == "default"
-        assert "SHADOW/HYPOTHETICAL (no live orders)" in body
+        # 2026-08-04: boilerplate removed; the shadow identity lives in the
+        # title ([READONLY] + SHADOW-* tag), asserted above.
+        assert "SHADOW/HYPOTHETICAL" not in body
         assert "EXIT FTNT (qp_sell)" in body
 
     def test_combines_buys_and_exits(self):
@@ -995,7 +997,7 @@ class TestTitlePrefixDisambiguation:
         # only the title token changed from [SHADOW] to [READONLY].
         assert req.headers.get("Title") == "[READONLY]RENQUANT-104 [full] SHADOW-DECISION"
         body = req.data.decode()
-        assert "SHADOW/HYPOTHETICAL (no live orders)" in body
+        assert "SHADOW/HYPOTHETICAL" not in body  # 2026-08-04 terse-body change
 
     def test_legacy_shadow_prefix_no_longer_treated_as_readonly_broker(self):
         """Documents the intentional behavior change: an old caller passing

@@ -9,7 +9,7 @@ Contract under test:
 3. Fail-closed validation — a set-but-invalid tag raises ValueError instead
    of silently writing into the legacy lane's state files.
 4. ntfy label — legacy tag keeps the literal "[READONLY]" prefix; the blend
-   tag gets "[READONLY][ALPACA_SHADOW_BLEND]"; BOTH still start with
+   tag gets "[READONLY][RC]" (fleet callsign, 2026-08-04); BOTH still start with
    "[READONLY]" so _notify_decision's is_shadow classification holds.
 """
 from __future__ import annotations
@@ -137,7 +137,7 @@ class TestNtfyLabelPrefix:
 
     def test_blend_tag_carries_full_tag(self):
         assert _readonly_label_prefix(BLEND_TAG) == (
-            "[READONLY][ALPACA_SHADOW_BLEND]"
+            "[READONLY][RC]"
         )
 
     def test_both_prefixes_keep_is_shadow_contract(self):
@@ -168,16 +168,19 @@ class TestNtfyTitleBlendLane:
         )
         with patch("urllib.request.urlopen") as m:
             _notify_decision(
-                "[READONLY][ALPACA_SHADOW_BLEND]RENQUANT-104", "full", ctx,
+                "[READONLY][RC]RENQUANT-104", "full", ctx,
             )
         m.assert_called_once()
         req = m.call_args[0][0]
         title = req.headers.get("Title")
         assert title == (
-            "[READONLY][ALPACA_SHADOW_BLEND]RENQUANT-104 [full] SHADOW-DECISION"
+            "[READONLY][RC]RENQUANT-104 [full] SHADOW-DECISION"
         )
         assert req.headers.get("Priority") == "default"
-        assert "SHADOW/HYPOTHETICAL (no live orders)" in req.data.decode()
+        # 2026-08-04: boilerplate body sentence removed (title carries the
+        # shadow identity twice); the safety property that remains load-
+        # bearing is the [READONLY] title classification, asserted above.
+        assert "SHADOW/HYPOTHETICAL" not in req.data.decode()
 
 
 def test_validate_accepts_the_s1_blend_mom_tag():
