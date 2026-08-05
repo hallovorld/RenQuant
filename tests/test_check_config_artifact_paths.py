@@ -1095,3 +1095,102 @@ def test_fast_ledger_with_marker_still_verifies_when_it_resolves(
     assert len(bad) == 1
     assert bad[0].raw == FAST_LEDGER_REL
     assert "chain verification FAILED" in bad[0].reason
+
+
+# --- GOAL-9 (RQ#574 review): PRIMARY ledger-served blend component ---------------
+#
+# The full-book z-blend puts the slow-momentum ledger at panel_scoring
+# components[1]. The gate admits it under the SAME ledger contract as the
+# shadow branch (chain + tail-artifact identity) PLUS exact recipe-fp
+# validation against the pinned pipeline's own _params_fingerprint (the
+# serving loader REQUIRES the fp on ledger components; byte pins stay
+# refused on the append-only surface).
+
+def _mom_fp(params):
+    """Import the pinned pipeline's fp recipe lazily — these tests exercise the
+    gate's fp-validation branch, which itself requires the import and fails
+    closed without it. Skipping (loudly) when the sibling pipeline checkout is
+    absent mirrors that contract instead of failing collection."""
+    mi = pytest.importorskip("renquant_pipeline.momentum_identity")
+    return mi.params_fingerprint(params)
+
+
+_FIXTURE_PARAMS = {"params_version": "v0", "window": 231, "skip": 21}
+
+
+def _config_with_primary_blend(data_root: Path, *, fp=None) -> dict:
+    config = _base_config(_good_shadow(data_root))
+    ps = config["ranking"]["panel_scoring"]
+    ps["kind"] = "blend"
+    comp1 = {"kind": "momentum_residual", "artifact_path": MOMENTUM_LEDGER_REL}
+    if fp is not None:
+        comp1["expected_config_fingerprint"] = fp
+    ps["components"] = [
+        {"artifact_path": ps["artifact_path"]},
+        comp1,
+    ]
+    return config
+
+
+def test_primary_ledger_component_with_valid_recipe_fp_passes(tmp_path: Path) -> None:
+    strategy_dir, data_root = _make_tree(tmp_path)
+    _write_momentum_publish_set(strategy_dir)
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, _config_with_primary_blend(
+        data_root, fp=_mom_fp(_FIXTURE_PARAMS)))
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    comp = next(r for r in results if "components[1]" in r.field)
+    assert comp.ok, comp.reason
+    assert comp.kind == "primary"
+    assert "chain=verified" in comp.detail
+    assert "(validated)" in comp.detail
+
+
+def test_primary_ledger_component_recipe_fp_mismatch_fails(tmp_path: Path) -> None:
+    pytest.importorskip("renquant_pipeline.momentum_identity")
+    strategy_dir, data_root = _make_tree(tmp_path)
+    _write_momentum_publish_set(strategy_dir)
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, _config_with_primary_blend(
+        data_root, fp="momentum-v0-0000000000000000"))
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    comp = next(r for r in results if "components[1]" in r.field)
+    assert not comp.ok
+    assert "recipe mismatch" in comp.reason
+
+
+def test_primary_ledger_component_byte_pin_still_refused(tmp_path: Path) -> None:
+    strategy_dir, data_root = _make_tree(tmp_path)
+    _write_momentum_publish_set(strategy_dir)
+    config = _config_with_primary_blend(data_root)
+    config["ranking"]["panel_scoring"]["components"][1][
+        "expected_content_sha256"] = "sha256:0000000000000000"
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    comp = next(r for r in results if "components[1]" in r.field)
+    assert not comp.ok
+    assert "not supported on a ledger pointer" in comp.reason
+
+
+def test_primary_ledger_component_without_declared_kind_fails(tmp_path: Path) -> None:
+    """The #550 contract still keys on the DECLARED kind: a primary component
+    pointing at the ledger without kind=momentum_residual fails closed."""
+    strategy_dir, data_root = _make_tree(tmp_path)
+    _write_momentum_publish_set(strategy_dir)
+    config = _config_with_primary_blend(data_root)
+    del config["ranking"]["panel_scoring"]["components"][1]["kind"]
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+    results = mod.check_config(
+        config_path, "strategy_config", strategy_dir, data_root, _fake_contract()
+    )
+    comp = next(r for r in results if "components[1]" in r.field)
+    assert not comp.ok
+    assert "restricted to the momentum contract" in comp.reason

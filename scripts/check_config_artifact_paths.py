@@ -428,18 +428,23 @@ def _check_ledger_pointer(
             ),
             "",
         )
-    # A config-pinned expected identity cannot apply here: the ledger file is
-    # append-only and changes on every weekly publish, so a pinned file sha
-    # would be stale by design. Refuse (fail closed) rather than silently
-    # ignore a pin someone believed was in force.
-    if expected.get("content_sha256") or expected.get("config_fingerprint"):
+    # A BYTE pin cannot apply here: the ledger file is append-only and
+    # changes on every weekly publish, so a pinned file sha would be stale by
+    # design. Refuse (fail closed) rather than silently ignore a pin someone
+    # believed was in force. 2026-08-04 (RQ#574 review): a RECIPE fingerprint
+    # (expected_config_fingerprint, "momentum-<ver>-<sha16>") is a DIFFERENT
+    # thing — it is stable across publishes, the serving blend loader
+    # REQUIRES it on ledger components, and it is validated below against
+    # the tail artifact's params via the pinned pipeline's own recipe
+    # (single source, no vendored twin).
+    if expected.get("content_sha256"):
         return PathCheck(
             config_name, field, kind, raw, "", False,
             (
-                "expected_content_sha256 / expected_config_fingerprint are "
-                "not supported on a ledger pointer (the append-only ledger "
-                "changes on every publish); the row chain + tail-artifact "
-                "content sha are the swap-detection anchors"
+                "expected_content_sha256 is not supported on a ledger "
+                "pointer (the append-only ledger changes on every publish); "
+                "the row chain + tail-artifact content sha are the byte "
+                "swap-detection anchors"
             ),
             "",
         )
@@ -547,10 +552,47 @@ def _check_ledger_pointer(
             "",
         )
 
+    fp_note = ""
+    expected_fp = expected.get("config_fingerprint")
+    if expected_fp:
+        # Mirror of the serving loader's requirement on ledger components:
+        # the recipe fp recomputes from the tail artifact's params via the
+        # PINNED pipeline's own function — imported, never vendored.
+        try:
+            # RQ#574 r3: the DEPENDENCY-LIGHT public contract (pipeline#266,
+            # stdlib-only) — importable in the pinned-path CI env, which
+            # deliberately has no pandas. The scorer aliases this same
+            # function; one implementation.
+            from renquant_pipeline.momentum_identity import (  # noqa: PLC0415
+                params_fingerprint as _params_fingerprint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return PathCheck(
+                config_name, field, kind, raw, str(ledger_path), False,
+                (
+                    f"entry pins expected_config_fingerprint {expected_fp!r} "
+                    f"but the pinned pipeline's fp recipe is unavailable "
+                    f"({exc}) — cannot validate, failing closed"
+                ),
+                "",
+            )
+        actual_fp = _params_fingerprint(doc.get("params") or {})
+        if actual_fp != expected_fp:
+            return PathCheck(
+                config_name, field, kind, raw, str(ledger_path), False,
+                (
+                    f"entry pins expected_config_fingerprint {expected_fp!r} "
+                    f"but the ledger tail artifact's params recompute to "
+                    f"{actual_fp!r} — recipe mismatch"
+                ),
+                "",
+            )
+        fp_note = f" recipe_fp={actual_fp} (validated)"
+
     detail = (
         f"source={ident.source} ledger_rows={len(rows)} chain=verified "
         f"tail_cutoff={tail['cutoff_date']} tail_artifact={artifact_path.name} "
-        f"tail_artifact_content={actual}"
+        f"tail_artifact_content={actual}{fp_note}"
     )
     return PathCheck(
         config_name, field, kind, raw, str(ledger_path), True, "", detail
@@ -565,6 +607,15 @@ def _expected(entry: dict) -> dict:
     return {
         "content_sha256": entry.get("expected_content_sha256"),
         "config_fingerprint": entry.get("expected_config_fingerprint"),
+        # 2026-08-04 (RQ#574): thread the entry's declared kind + the bounded
+        # fast-lane marker through for ledger-pointer admission — a PRIMARY
+        # blend component may be ledger-served (GOAL-9 full-book z-blend) and
+        # the #550 contract keys on the declared kind, which this helper
+        # previously dropped.
+        "model_kind": entry.get("kind"),
+        "pending_first_artifact_marker": any(
+            k.endswith("_pending_first_artifact") for k in entry
+        ),
     }
 
 
@@ -719,10 +770,17 @@ def _check_one(
             "",
         )
 
-    # (5) momentum ledger pointer (slice 4c): a shadow entry pointing at a
+    # (5) momentum ledger pointer (slice 4c): an entry pointing at a
     # ``.jsonl`` is validated by chain + tail-artifact identity — a JSONL
     # ledger cannot carry the inline scorer metadata required below.
-    if kind == "shadow" and raw.endswith(".jsonl"):
+    # 2026-08-04 (GOAL-9 AC1, RQ#574 review): PRIMARY blend components may be
+    # ledger-served too — the operator's full-book z-blend puts the slow-
+    # momentum ledger at components[1]. The ledger contract (full chain
+    # verification + tail-artifact content-sha recomputation) is the STRONGER
+    # identity check, not a waiver; it mirrors what the serving loader
+    # enforces at load time. Every other primary shape still requires inline
+    # trained_date/config_fingerprint below.
+    if kind in ("shadow", "primary") and raw.endswith(".jsonl"):
         return _check_ledger_pointer(
             config_name, field, kind, raw, expected, strategy_dir, data_root,
             contract,
