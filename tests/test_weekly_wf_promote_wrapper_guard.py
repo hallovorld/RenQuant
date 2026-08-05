@@ -374,15 +374,59 @@ class TestWeeklyWrapperRegressionGuard:
                 "candidate."
             )
         else:
-            # Both None → fall back to config_fingerprint axis
-            assert cut.get("config_fingerprint") == cand_config_fp, (
-                "config_fingerprint mismatch (recipe_fingerprint absent "
-                "on both): cuts="
-                f"{cut.get('config_fingerprint')!r}, candidate="
-                f"{cand_config_fp!r}. The cuts were trained from a "
-                "different recipe than the wrapper's scoring artifact; "
-                "WF gate's assert_consistent will fail-closed every bar."
-            )
+            # Both None → the config_fingerprint fallback is NOT a recipe
+            # comparison and must not pretend to be one.
+            #
+            # MEASURED 2026-08-04 (orch#799 follow-up): this fallback had been
+            # red on clean main. Diagnosis — `config_fingerprint_fields` on
+            # both artifacts is exactly {watchlist, sector_map}: cuts carry a
+            # 142-name watchlist, the candidate 145 (CRWV/RKLB/SPCX added
+            # later). So the fingerprints differ because the WATCHLIST GREW,
+            # not because the recipe drifted. Asserting equality here makes
+            # the guard structurally red forever after ANY watchlist addition,
+            # while saying nothing about recipe compatibility — and the real
+            # gate agrees with that reading: its manifest matching keys on the
+            # RECIPE fingerprint (`sha256:cfdd6cb8e950da0f`) and passed 43/43
+            # rows on the same artifacts this test was failing.
+            #
+            # The recipe axes that DO decide fail-closed (kind, feature_cols)
+            # are asserted above and stay binding. Here we assert only what
+            # the fallback can honestly support: the identity difference is
+            # confined to the watchlist/sector-map axis, and any OTHER field
+            # differing is a real drift that fails.
+            cut_fields = cut.get("config_fingerprint_fields") or {}
+            cand_fields = candidate.get("config_fingerprint_fields") or {}
+            if cut.get("config_fingerprint") != cand_config_fp:
+                differing = sorted(
+                    k for k in set(cut_fields) | set(cand_fields)
+                    if cut_fields.get(k) != cand_fields.get(k)
+                )
+                assert differing, (
+                    "config_fingerprint differs but no field differs — the "
+                    "fingerprint recipe itself changed; regenerate the cuts."
+                )
+                UNIVERSE_AXES = {"watchlist", "sector_map"}
+                unexpected = [k for k in differing if k not in UNIVERSE_AXES]
+                assert not unexpected, (
+                    "config_fingerprint mismatch on a RECIPE-BEARING field "
+                    f"{unexpected}: cuts={cut.get('config_fingerprint')!r}, "
+                    f"candidate={cand_config_fp!r}. Universe growth "
+                    "(watchlist/sector_map) is expected drift for a corpus "
+                    "that predates it; anything else means the cuts were "
+                    "trained from a different recipe and the gate will "
+                    "fail-closed."
+                )
+                # Universe-only drift: record the direction so a SHRINKING
+                # universe (names the corpus has that production dropped)
+                # is still visible — that direction can leave the corpus
+                # evaluating tickers the live book no longer trades.
+                cut_wl = set(cut_fields.get("watchlist") or [])
+                cand_wl = set(cand_fields.get("watchlist") or [])
+                assert not (cut_wl - cand_wl), (
+                    "the WF corpus carries tickers production has DROPPED "
+                    f"{sorted(cut_wl - cand_wl)[:8]}; regenerate the cuts so "
+                    "the evaluation universe is a subset of production's."
+                )
 
 
 if __name__ == "__main__":

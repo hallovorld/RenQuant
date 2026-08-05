@@ -61,3 +61,30 @@ instead of producing meaningless numbers.
   `14586756` vs candidate `f8fb2259`) which fails identically on clean main —
   same config-identity family as this incident and filed as follow-up on #799,
   deliberately not bundled into this fix.
+
+## Round 3: the pre-existing layer-3 red, diagnosed and re-derived
+
+The wrapper-guard failure noted above turned out to be diagnosable in one step
+and is fixed in this PR rather than deferred:
+
+`config_fingerprint_fields` on BOTH artifacts is exactly
+`{watchlist, sector_map}`. The WF cuts carry a **142-name** watchlist; the
+candidate carries **145** (CRWV / RKLB / SPCX added later). The fingerprints
+differed because the **universe grew**, not because the recipe drifted — and
+the real gate agrees: its manifest matching keys on the RECIPE fingerprint
+(`sha256:cfdd6cb8e950da0f`) and passed 43/43 rows on the very artifacts this
+test called incompatible.
+
+So the fallback was asserting an identity that includes the universe against a
+corpus that necessarily predates universe growth: structurally red forever
+after any watchlist addition, and silent about the thing it claimed to guard.
+
+Re-derived to what the fallback can honestly support:
+- the recipe-bearing axes (`kind`, `feature_cols`) stay binding, asserted above;
+- a fingerprint difference must decompose into differing FIELDS (else the
+  fingerprint recipe itself changed → regenerate);
+- differences confined to `{watchlist, sector_map}` are accepted as expected
+  universe drift; ANY other field failing is a real recipe drift;
+- **new**: the corpus's watchlist must be a SUBSET of production's — a corpus
+  carrying tickers production has DROPPED is caught, a direction the old
+  equality check conflated with benign growth.
