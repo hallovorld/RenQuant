@@ -217,3 +217,90 @@ def test_shadow_blend_mom_runs_after_clf_blend_and_is_nonfatal():
     section = script[step5b:]
     assert "exit 1" not in section
     assert "readonly-alpaca" in section
+
+
+# ── Step 5c: shadow_blend_mom_fast lane (GOAL-9 F2, 2026-08-04) ──────────────
+# Codex on RQ#575: the rail clone must carry its OWN static guards mirroring
+# the Step-5b set — the 5b tests do not touch the 5c strings.
+
+def test_shadow_blend_mom_fast_step_gated_on_pinned_profile():
+    """Step 5c must skip with an INFO line until the F2 fast-blend profile
+    exists in the PINNED strategy configs dir (landed s104#89; this guard
+    still matters for stale pins/rollbacks)."""
+    script = DAILY_104.read_text()
+
+    gate = ('if BLEND_MOM_FAST_STRATEGY_CONFIG="$(renquant_strategy_config '
+            '"$SUBREPO_ROOT" strategy_config.shadow_blend_momentum_fast.json)"; then')
+    assert gate in script
+    assert "Step 5c shadow-blend-mom-fast skipped" in script
+    assert "INFO: strategy_config.shadow_blend_momentum_fast.json not present" in script
+    assert script.find("Step 5c shadow-blend-mom-fast skipped") > script.find(gate)
+
+
+def test_shadow_blend_mom_fast_threads_readonly_tag_and_own_log():
+    """The F2 lane selects its own state lane + log file, disjoint from prod,
+    legacy shadow, clf-blend AND the slow-mom lane (tag registered at birth,
+    pipeline#265)."""
+    script = DAILY_104.read_text()
+
+    assert "RENQUANT_READONLY_TAG=alpaca_shadow_blend_mom_fast" in script
+    assert ('SHADOW_BLEND_MOM_FAST_LOG='
+            '"$LOG_DIR/${DATE}_shadow_blend_mom_fast.log"') in script
+    assert '"--strategy-config-path", "$BLEND_MOM_FAST_STRATEGY_CONFIG",' in script
+    assert (
+        "RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 "
+        'RENQUANT_READONLY_TAG=alpaca_shadow_blend_mom_fast "$PYTHON" - <<PY '
+        '> "$SHADOW_BLEND_MOM_FAST_LOG" 2>&1'
+    ) in script
+
+
+def test_shadow_blend_mom_fast_own_timeout_env():
+    """The F2 timeout is its own env var (falls back to the shared shadow
+    timeout), never the slow lane's."""
+    script = DAILY_104.read_text()
+    assert ('SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC='
+            '"${RENQUANT_SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC:-'
+            '${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"') in script
+
+
+def test_shadow_blend_mom_fast_failure_alerts_by_default():
+    """F2 FAIL/TIMEOUT page with DISTINCT titles — never the slow lane's."""
+    script = DAILY_104.read_text()
+
+    assert "RenQuant 104 SHADOW-BLEND-MOM-FAST-FAIL" in script
+    assert "RenQuant 104 SHADOW-BLEND-MOM-FAST-TIMEOUT" in script
+    idx = script.find("--- Step 5c:")
+    assert idx > 0
+    section = script[idx:]
+    assert "${RENQUANT_SHADOW_ALERT_NTFY:-1}" in section
+    assert "${RENQUANT_SHADOW_ALERT_NTFY:-0}" not in section
+
+
+def test_shadow_blend_mom_fast_buy_side_preflight_blocks_do_not_page_phone():
+    """The dormant path: until the 2026-08-08 fast genesis the blend loader
+    fail-closes and the run exits through the buy-side-preflight branch —
+    that must stay suppressed (the designed daily record), same pattern set
+    as 5b, no exception-class gates swallowed."""
+    script = DAILY_104.read_text()
+
+    assert "SHADOW_BLEND_MOM_FAST_BUY_SIDE_PREFLIGHT_PATTERN" in script
+    assert "Shadow-blend-mom-fast preflight-block ntfy suppressed" in script
+    idx = script.find("SHADOW_BLEND_MOM_FAST_BUY_SIDE_PREFLIGHT_PATTERN=")
+    pattern = script[idx: script.find("\n", idx)]
+    for gate in ("P-WF-GATE", "P-RUN-ID", "P-CORR-METADATA", "P-META-LABEL"):
+        assert gate in pattern
+    assert "P-PREFLIGHT-EXCEPTION" not in pattern
+    assert "P-PREFLIGHT-IMPORT" not in pattern
+
+
+def test_shadow_blend_mom_fast_runs_after_slow_mom_and_is_nonfatal():
+    """Step 5c comes after Step 5b; the wrapper never exits the daily on
+    failure (every branch echoes non-fatal or suppresses)."""
+    script = DAILY_104.read_text()
+
+    step5c = script.find("--- Step 5c:")
+    step5b = script.find("--- Step 5b:")
+    assert step5c > 0 and step5b > 0
+    assert step5c > step5b
+    section = script[step5c:]
+    assert "non-fatal" in section

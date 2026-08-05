@@ -827,5 +827,5 @@ PY
         fi
     fi
 else
-    echo "INFO: strategy_config.shadow_blend_momentum_fast.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5c shadow-blend-mom skipped (rail dormant until the F2 profile lands)."
+    echo "INFO: strategy_config.shadow_blend_momentum_fast.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5c shadow-blend-mom-fast skipped (rail dormant until the F2 profile lands)."
 fi
