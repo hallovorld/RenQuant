@@ -304,3 +304,113 @@ def test_shadow_blend_mom_fast_runs_after_slow_mom_and_is_nonfatal():
     assert step5c > step5b
     section = script[step5c:]
     assert "non-fatal" in section
+
+
+# ── Step 5d: shadow_blend_rb_mom lane (GOAL-9 F1, 2026-08-04) ─────────────────────
+
+def test_shadow_blend_rb_mom_step_gated_on_pinned_profile():
+    script = DAILY_104.read_text()
+    gate = ('if BLEND_RB_MOM_STRATEGY_CONFIG="$(renquant_strategy_config '
+            '"$SUBREPO_ROOT" strategy_config.shadow_blend_rb_mom.json)"; then')
+    assert gate in script
+    assert "Step 5d shadow_blend_rb_mom skipped" in script
+    assert "INFO: strategy_config.shadow_blend_rb_mom.json not present" in script
+    assert script.find("Step 5d shadow_blend_rb_mom skipped") > script.find(gate)
+
+
+def test_shadow_blend_rb_mom_threads_readonly_tag_and_own_log():
+    script = DAILY_104.read_text()
+    assert "RENQUANT_READONLY_TAG=alpaca_shadow_blend_rb_mom" in script
+    assert 'SHADOW_BLEND_RB_MOM_LOG="$LOG_DIR/${DATE}_shadow_blend_rb_mom.log"' in script
+    assert '"--strategy-config-path", "$BLEND_RB_MOM_STRATEGY_CONFIG",' in script
+
+
+def test_shadow_blend_rb_mom_own_timeout_env():
+    script = DAILY_104.read_text()
+    assert ('SHADOW_BLEND_RB_MOM_TIMEOUT_SEC='
+            '"${RENQUANT_SHADOW_BLEND_RB_MOM_TIMEOUT_SEC:-'
+            '${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"') in script
+
+
+def test_shadow_blend_rb_mom_failure_alerts_by_default():
+    script = DAILY_104.read_text()
+    assert "RenQuant 104 SHADOW-BLEND-RB-MOM-FAIL" in script
+    assert "RenQuant 104 SHADOW-BLEND-RB-MOM-TIMEOUT" in script
+    idx = script.find("--- Step 5d:")
+    assert idx > 0
+    section = script[idx:]
+    assert "${RENQUANT_SHADOW_ALERT_NTFY:-1}" in section
+
+
+def test_shadow_blend_rb_mom_preflight_blocks_do_not_page_phone():
+    script = DAILY_104.read_text()
+    assert "SHADOW_BLEND_RB_MOM_BUY_SIDE_PREFLIGHT_PATTERN" in script
+    assert "Shadow-blend-rb-mom preflight-block ntfy suppressed" in script
+    idx = script.find("SHADOW_BLEND_RB_MOM_BUY_SIDE_PREFLIGHT_PATTERN=")
+    pattern = script[idx: script.find("\n", idx)]
+    for gate in ("P-WF-GATE", "P-RUN-ID"):
+        assert gate in pattern
+    assert "P-PREFLIGHT-EXCEPTION" not in pattern
+
+
+def test_shadow_blend_rb_mom_ordering_and_nonfatal():
+    script = DAILY_104.read_text()
+    here = script.find("--- Step 5d:")
+    prev = script.find("--- Step 5c:")
+    assert here > 0 and prev > 0 and here > prev
+    assert "non-fatal" in script[here:]
+
+
+# ── Step 5e: shadow_blend_rb_fast lane (GOAL-9 F3, 2026-08-04) ─────────────────────
+
+def test_shadow_blend_rb_fast_step_gated_on_pinned_profile():
+    script = DAILY_104.read_text()
+    gate = ('if BLEND_RB_FAST_STRATEGY_CONFIG="$(renquant_strategy_config '
+            '"$SUBREPO_ROOT" strategy_config.shadow_blend_rb_fast.json)"; then')
+    assert gate in script
+    assert "Step 5e shadow_blend_rb_fast skipped" in script
+    assert "INFO: strategy_config.shadow_blend_rb_fast.json not present" in script
+    assert script.find("Step 5e shadow_blend_rb_fast skipped") > script.find(gate)
+
+
+def test_shadow_blend_rb_fast_threads_readonly_tag_and_own_log():
+    script = DAILY_104.read_text()
+    assert "RENQUANT_READONLY_TAG=alpaca_shadow_blend_rb_fast" in script
+    assert 'SHADOW_BLEND_RB_FAST_LOG="$LOG_DIR/${DATE}_shadow_blend_rb_fast.log"' in script
+    assert '"--strategy-config-path", "$BLEND_RB_FAST_STRATEGY_CONFIG",' in script
+
+
+def test_shadow_blend_rb_fast_own_timeout_env():
+    script = DAILY_104.read_text()
+    assert ('SHADOW_BLEND_RB_FAST_TIMEOUT_SEC='
+            '"${RENQUANT_SHADOW_BLEND_RB_FAST_TIMEOUT_SEC:-'
+            '${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"') in script
+
+
+def test_shadow_blend_rb_fast_failure_alerts_by_default():
+    script = DAILY_104.read_text()
+    assert "RenQuant 104 SHADOW-BLEND-RB-FAST-FAIL" in script
+    assert "RenQuant 104 SHADOW-BLEND-RB-FAST-TIMEOUT" in script
+    idx = script.find("--- Step 5e:")
+    assert idx > 0
+    section = script[idx:]
+    assert "${RENQUANT_SHADOW_ALERT_NTFY:-1}" in section
+
+
+def test_shadow_blend_rb_fast_preflight_blocks_do_not_page_phone():
+    script = DAILY_104.read_text()
+    assert "SHADOW_BLEND_RB_FAST_BUY_SIDE_PREFLIGHT_PATTERN" in script
+    assert "Shadow-blend-rb-fast preflight-block ntfy suppressed" in script
+    idx = script.find("SHADOW_BLEND_RB_FAST_BUY_SIDE_PREFLIGHT_PATTERN=")
+    pattern = script[idx: script.find("\n", idx)]
+    for gate in ("P-WF-GATE", "P-RUN-ID"):
+        assert gate in pattern
+    assert "P-PREFLIGHT-EXCEPTION" not in pattern
+
+
+def test_shadow_blend_rb_fast_ordering_and_nonfatal():
+    script = DAILY_104.read_text()
+    here = script.find("--- Step 5e:")
+    prev = script.find("--- Step 5d:")
+    assert here > 0 and prev > 0 and here > prev
+    assert "non-fatal" in script[here:]
