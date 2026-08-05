@@ -414,3 +414,21 @@ def test_shadow_blend_rb_fast_ordering_and_nonfatal():
     prev = script.find("--- Step 5d:")
     assert here > 0 and prev > 0 and here > prev
     assert "non-fatal" in script[here:]
+
+
+def test_every_blend_lane_success_echo_names_its_own_profile():
+    """Codex on RQ#576: the 'profile found' success echo must carry the
+    LANE'S OWN identity — a copied echo naming another lane's profile
+    corrupts the per-lane audit trail. Pins all five blend lanes, including
+    the latent Step-5c instance this review surfaced."""
+    script = DAILY_104.read_text()
+    for echo in (
+        'echo "shadow_blend profile found at $BLEND_STRATEGY_CONFIG"',
+        'echo "shadow_blend_momentum profile found at $BLEND_MOM_STRATEGY_CONFIG"',
+        'echo "shadow_blend_momentum_fast profile found at $BLEND_MOM_FAST_STRATEGY_CONFIG"',
+        'echo "shadow_blend_rb_mom profile found at $BLEND_RB_MOM_STRATEGY_CONFIG"',
+        'echo "shadow_blend_rb_fast profile found at $BLEND_RB_FAST_STRATEGY_CONFIG"',
+    ):
+        assert echo in script, echo
+    # and the wrong-identity form appears ONLY for the lane it belongs to
+    assert script.count('echo "shadow_blend_momentum profile found') == 1

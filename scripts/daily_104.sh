@@ -771,7 +771,7 @@ fi
 # component — that is the DESIGNED dormant daily record, non-fatal here.
 echo "--- Step 5c: Shadow-blend-mom-fast e2e run (F2 FAST momentum blend profile, no real orders) ---"
 if BLEND_MOM_FAST_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow_blend_momentum_fast.json)"; then
-    echo "shadow_blend_momentum profile found at $BLEND_MOM_FAST_STRATEGY_CONFIG"
+    echo "shadow_blend_momentum_fast profile found at $BLEND_MOM_FAST_STRATEGY_CONFIG"
     SHADOW_BLEND_MOM_FAST_LOG="$LOG_DIR/${DATE}_shadow_blend_mom_fast.log"
     SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC="${RENQUANT_SHADOW_BLEND_MOM_FAST_TIMEOUT_SEC:-${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"
     if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 RENQUANT_READONLY_TAG=alpaca_shadow_blend_mom_fast "$PYTHON" - <<PY > "$SHADOW_BLEND_MOM_FAST_LOG" 2>&1
@@ -837,7 +837,7 @@ fi
 # 2026-08-08 genesis batch.
 echo "--- Step 5d: Shadow-blend-rb-mom e2e run (F1 rev-blend+slow profile, no real orders) ---"
 if BLEND_RB_MOM_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow_blend_rb_mom.json)"; then
-    echo "shadow_blend_momentum profile found at $BLEND_RB_MOM_STRATEGY_CONFIG"
+    echo "shadow_blend_rb_mom profile found at $BLEND_RB_MOM_STRATEGY_CONFIG"
     SHADOW_BLEND_RB_MOM_LOG="$LOG_DIR/${DATE}_shadow_blend_rb_mom.log"
     SHADOW_BLEND_RB_MOM_TIMEOUT_SEC="${RENQUANT_SHADOW_BLEND_RB_MOM_TIMEOUT_SEC:-${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"
     if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 RENQUANT_READONLY_TAG=alpaca_shadow_blend_rb_mom "$PYTHON" - <<PY > "$SHADOW_BLEND_RB_MOM_LOG" 2>&1
@@ -898,7 +898,7 @@ fi
 
 echo "--- Step 5e: Shadow-blend-rb-fast e2e run (F3 rev-blend+fast profile, no real orders) ---"
 if BLEND_RB_FAST_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow_blend_rb_fast.json)"; then
-    echo "shadow_blend_momentum profile found at $BLEND_RB_FAST_STRATEGY_CONFIG"
+    echo "shadow_blend_rb_fast profile found at $BLEND_RB_FAST_STRATEGY_CONFIG"
     SHADOW_BLEND_RB_FAST_LOG="$LOG_DIR/${DATE}_shadow_blend_rb_fast.log"
     SHADOW_BLEND_RB_FAST_TIMEOUT_SEC="${RENQUANT_SHADOW_BLEND_RB_FAST_TIMEOUT_SEC:-${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"
     if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 RENQUANT_READONLY_TAG=alpaca_shadow_blend_rb_fast "$PYTHON" - <<PY > "$SHADOW_BLEND_RB_FAST_LOG" 2>&1
