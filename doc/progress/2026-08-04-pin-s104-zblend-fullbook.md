@@ -17,3 +17,34 @@ GOOG+VLO decisions, pending orders excluded).
 
 Deploy after merge = batch 5 (grants-logged): live pull + runtime s104 sync.
 Tomorrow 13:55 PT = the first full-book z-blend run.
+
+## Round 2 (codex): the candidate tree proves the ledger leg — gate learns ledger-served primary
+
+Codex correctly blocked round 1: components[1]'s momentum ledger is a
+runtime-generated surface, absent from the committed candidate tree. Fixes,
+none of them a waiver:
+
+1. **The ledger + genesis artifact are now COMMITTED** (72 KB:
+   `momentum_artifact_ledger.jsonl`, 1 chained row, + `2026-08-02/
+   momentum_residual_v0.json`) — same resolution shape as the promoted-pair
+   commit in #572; the weekly publish appends on the serving machine and each
+   Saturday batch must commit the appended row+artifact (#793 checklist).
+2. **The gate learns the ledger-served PRIMARY shape** — the ledger branch
+   (previously shadow-only) now admits `kind in ("shadow","primary")`, still
+   restricted to the #550 momentum contract (declared kind + exact path).
+   `_expected` threads the entry's declared kind through (it was dropped,
+   which is why the entry read as kind=None).
+3. **Recipe-fp validation, single-source**: `expected_config_fingerprint` on
+   a ledger component is now VALIDATED against the tail artifact's params via
+   the pinned pipeline's own `_params_fingerprint` (imported, never
+   vendored; unavailable import fails closed). Byte pins
+   (`expected_content_sha256`) stay refused on the append-only surface — the
+   round-1 refusal conflated the two; the serving loader REQUIRES the recipe
+   fp, so refusing it contradicted the load-time contract.
+
+Gate on the candidate assembly now: **8/8 OK**, components[1] =
+`chain=verified … recipe_fp=momentum-v0-fd65161a20b29314 (validated)`.
+Gate suite: 45 passed with the pipeline importable; 42 passed + 3 loud skips
+without (mirrors the gate's own guarded import). Four new regressions:
+valid-fp pass / fp-mismatch fail / byte-pin still refused / undeclared-kind
+still refused.
