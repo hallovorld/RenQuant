@@ -432,3 +432,43 @@ def test_every_blend_lane_success_echo_names_its_own_profile():
         assert echo in script, echo
     # and the wrong-identity form appears ONLY for the lane it belongs to
     assert script.count('echo "shadow_blend_momentum profile found') == 1
+
+
+# ── Step 6: the fleet lane sentinel call (GOAL-1, orch#801) ──────────────────
+
+def test_step6_invokes_the_sentinel_with_the_session_date():
+    """The umbrella only CALLS the watcher; the logic lives in orchestrator.
+    The session date must be explicit — a post-midnight finish has to classify
+    its own session, not 'today'."""
+    script = DAILY_104.read_text()
+    assert "--- Step 6: Fleet lane sentinel" in script
+    assert 'bash "$FLEET_SENTINEL" "$DATE"' in script
+    assert "ops/renquant104/fleet_lane_sentinel_daily.sh" in script
+    assert "RQ_ORCH_RUN_DIR" in script
+
+
+def test_step6_runs_after_every_fleet_lane_it_inspects():
+    """Daily completion is the trigger precisely because the lanes are above."""
+    script = DAILY_104.read_text()
+    idx6 = script.find("--- Step 6: Fleet lane sentinel")
+    assert idx6 > 0
+    for heading in ("--- Step 5:", "--- Step 5b:", "--- Step 5c:",
+                    "--- Step 5d:", "--- Step 5e:"):
+        assert 0 < script.find(heading) < idx6, heading
+
+
+def test_step6_is_nonfatal_and_does_not_page_twice():
+    """A watcher must not turn its finding into a failed daily run, and the
+    alarm belongs to the wrapper (one page, not two)."""
+    script = DAILY_104.read_text()
+    section = script[script.find("--- Step 6: Fleet lane sentinel"):]
+    assert "non-fatal" in section
+    assert "it has already paged" in section
+    assert "notify " not in section, "Step 6 must not send its own duplicate page"
+
+
+def test_step6_absent_checker_skips_loudly_with_the_remedy():
+    script = DAILY_104.read_text()
+    section = script[script.find("--- Step 6: Fleet lane sentinel"):]
+    assert "INFO: fleet lane sentinel not present" in section
+    assert "sync the run checkout" in section

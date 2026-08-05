@@ -956,3 +956,32 @@ PY
 else
     echo "INFO: strategy_config.shadow_blend_rb_fast.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5e shadow_blend_rb_fast skipped (rail dormant until the F3 profile lands)."
 fi
+
+# ── Step 6: FLEET LANE SENTINEL (GOAL-1, orch#801) ────────────────────────
+# The watcher for the five fleet e2e lanes (RC/RSs/Rf/RCS/RCf). It runs HERE,
+# as the daily wrapper's last step, for a measured reason: the lanes it
+# inspects are Steps 5–5e immediately above, so daily completion IS the
+# correct trigger. A clock-scheduled job would have to guess a cadence, and
+# the first attempt at guessing one (15:30 PT) was derived from a MANUAL
+# run's wall clock and would have paged MISSING on a still-running fleet
+# (codex on orch#801).
+#
+# NON-FATAL by construction: every decision above is already made and
+# executed; a watcher must never turn its own finding into a failed daily
+# run. Its alarm channel is the wrapper's own ntfy, not this exit code.
+# The wrapper logic lives in renquant-orchestrator (daily orchestration is
+# its declared role); the umbrella only calls it, with the session date
+# passed EXPLICITLY so a post-midnight finish still classifies its own
+# session.
+echo "--- Step 6: Fleet lane sentinel (GOAL-9 lanes RC/RSs/Rf/RCS/RCf) ---"
+FLEET_SENTINEL="${RQ_ORCH_RUN_DIR:-/Users/renhao/git/github/renquant-orchestrator-run}/ops/renquant104/fleet_lane_sentinel_daily.sh"
+if [ -x "$FLEET_SENTINEL" ] || [ -f "$FLEET_SENTINEL" ]; then
+    if bash "$FLEET_SENTINEL" "$DATE"; then
+        echo "Fleet lane sentinel: all lanes accounted for."
+    else
+        FLEET_SENTINEL_RC=$?
+        echo "Fleet lane sentinel reported actionable lane state(s) (non-fatal, rc=$FLEET_SENTINEL_RC) — it has already paged; see $LOG_DIR/../rq104/fleet_lane_sentinel_${DATE}.log"
+    fi
+else
+    echo "INFO: fleet lane sentinel not present in the orchestrator run checkout ($FLEET_SENTINEL) — Step 6 skipped (sync the run checkout to a pin carrying orch#801)."
+fi
