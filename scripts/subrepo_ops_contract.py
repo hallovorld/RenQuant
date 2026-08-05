@@ -215,12 +215,33 @@ CHECKS: tuple[Check, ...] = (
             'RQ_WF_GATE_RUNNER:-multirepo',
             "scripts/run_wf_gate.py",
             "renquant_backtesting.forensics.model_acceptance",
-            'renquant_strategy_config "$SUBREPO_ROOT" "$cfg_name"',
+            # 2026-08-04 (orch#799 / RenQuant#580): the GBDT reference search
+            # no longer consults `renquant_strategy_config "$SUBREPO_ROOT"
+            # "$cfg_name"`. That helper resolves through renquant_subrepo_root,
+            # which defaults to the SIBLING DEVELOPER CHECKOUT absent an
+            # assembly override — and the previous fallback chain (…, umbrella
+            # WORKING COPY) is what let the gate derive "production semantics"
+            # from A8's known-diverged file after the z-blend switch made the
+            # pinned primary kind=blend (measured: same booster, 3-cut Sharpe
+            # 0.6018 → 0.0524, greedy path → joint QP). The contract now
+            # asserts the SAFE behaviour: the lock-aligned runtime config is
+            # the sole candidate, and a missing kind match fails closed.
+            'candidates=("$pinned_path")',
+            'pinned_path="$REPO_DIR/.subrepo_runtime/repos/renquant-strategy-104/configs/$cfg_name"',
+            "no PINNED strategy config declares kind=xgb",
+            "WEEKLY-BLOCKED",
             '--fingerprint-config "$GBDT_PROD_CONFIG"',
             "--strict",
             "set RQ_WF_GATE_RUNNER=umbrella for explicit rollback",
         ),
-        forbidden=("RQ_ALLOW_NO_WF=1", "falling back to umbrella run_wf_gate.py"),
+        forbidden=(
+            "RQ_ALLOW_NO_WF=1",
+            "falling back to umbrella run_wf_gate.py",
+            # The two unpinned reference sources this contract now bans by
+            # name (orch#799): re-introducing either recreates the incident.
+            'candidates=("$multirepo_path"',
+            'candidates=("$pinned_path" "$workingcopy_path")',
+        ),
     ),
     Check(
         name="legacy_retrain_panel_delegates_to_weekly_wf",
