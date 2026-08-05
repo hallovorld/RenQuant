@@ -559,8 +559,12 @@ def _check_ledger_pointer(
         # the recipe fp recomputes from the tail artifact's params via the
         # PINNED pipeline's own function — imported, never vendored.
         try:
-            from renquant_pipeline.kernel.panel_pipeline.momentum_residual_scorer import (  # noqa: PLC0415
-                _params_fingerprint,
+            # RQ#574 r3: the DEPENDENCY-LIGHT public contract (pipeline#266,
+            # stdlib-only) — importable in the pinned-path CI env, which
+            # deliberately has no pandas. The scorer aliases this same
+            # function; one implementation.
+            from renquant_pipeline.momentum_identity import (  # noqa: PLC0415
+                params_fingerprint as _params_fingerprint,
             )
         except Exception as exc:  # noqa: BLE001
             return PathCheck(

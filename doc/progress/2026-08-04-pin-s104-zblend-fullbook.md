@@ -48,3 +48,14 @@ Gate suite: 45 passed with the pipeline importable; 42 passed + 3 loud skips
 without (mirrors the gate's own guarded import). Four new regressions:
 valid-fp pass / fp-mismatch fail / byte-pin still refused / undeclared-kind
 still refused.
+
+## Round 3 (codex): pinned-path CI can now validate the fp without pandas
+
+The gate imports `renquant_pipeline.momentum_identity.params_fingerprint` —
+the stdlib-only PUBLIC contract pipeline#266 created (the scorer aliases the
+same function; one implementation; the published literal
+`momentum-v0-fd65161a20b29314` is pinned by test there). The pipeline pin in
+this PR advances `5f07a4d2` → `ab5db5ab` (also carries pipeline#265's
+at-birth fleet broker tags) and the snapshot is re-rendered at that pin.
+Candidate-assembly gate at the final pin: 8/8 OK. Gate suite: 45 passed with
+the pipeline importable, 42 + 3 loud skips without.

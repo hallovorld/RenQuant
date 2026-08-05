@@ -1111,9 +1111,8 @@ def _mom_fp(params):
     gate's fp-validation branch, which itself requires the import and fails
     closed without it. Skipping (loudly) when the sibling pipeline checkout is
     absent mirrors that contract instead of failing collection."""
-    mrs = pytest.importorskip(
-        "renquant_pipeline.kernel.panel_pipeline.momentum_residual_scorer")
-    return mrs._params_fingerprint(params)
+    mi = pytest.importorskip("renquant_pipeline.momentum_identity")
+    return mi.params_fingerprint(params)
 
 
 _FIXTURE_PARAMS = {"params_version": "v0", "window": 231, "skip": 21}
@@ -1150,8 +1149,7 @@ def test_primary_ledger_component_with_valid_recipe_fp_passes(tmp_path: Path) ->
 
 
 def test_primary_ledger_component_recipe_fp_mismatch_fails(tmp_path: Path) -> None:
-    pytest.importorskip(
-        "renquant_pipeline.kernel.panel_pipeline.momentum_residual_scorer")
+    pytest.importorskip("renquant_pipeline.momentum_identity")
     strategy_dir, data_root = _make_tree(tmp_path)
     _write_momentum_publish_set(strategy_dir)
     config_path = tmp_path / "configs" / "strategy_config.json"
