@@ -983,5 +983,13 @@ if [ -x "$FLEET_SENTINEL" ] || [ -f "$FLEET_SENTINEL" ]; then
         echo "Fleet lane sentinel reported actionable lane state(s) (non-fatal, rc=$FLEET_SENTINEL_RC) — it has already paged; see $LOG_DIR/../rq104/fleet_lane_sentinel_${DATE}.log"
     fi
 else
-    echo "INFO: fleet lane sentinel not present in the orchestrator run checkout ($FLEET_SENTINEL) — Step 6 skipped (sync the run checkout to a pin carrying orch#801)."
+    # ABSENCE IS ACTIONABLE (codex on RQ#582). A stale or failed run-checkout
+    # deploy can REMOVE the fleet watcher, and an INFO line about it is exactly
+    # the silence this watcher exists to end: nobody else pages here, because
+    # the missing component IS the pager. This is the ONE branch in Step 6 that
+    # notifies — a sentinel FINDING is already paged by the wrapper itself and
+    # must not be double-sent.
+    echo "Fleet lane sentinel MISSING from the orchestrator run checkout ($FLEET_SENTINEL) — the fleet lanes are UNWATCHED today (non-fatal for this run; sync the run checkout to a pin carrying orch#801)."
+    notify "RenQuant 104 FLEET-SENTINEL-MISSING" \
+        "The fleet lane watcher is absent from $FLEET_SENTINEL — the five blend lanes ran UNWATCHED on $DATE. Sync the orchestrator run checkout to a pin carrying orch#801."
 fi
