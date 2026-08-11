@@ -1,7 +1,10 @@
 """P-BROKER-CONNECT — connect + get_account_value works."""
 from __future__ import annotations
 
-from kernel.preflight import PreflightCheck  # noqa: PLC0415 (legacy bridge)
+from kernel.preflight import (  # noqa: PLC0415 (legacy bridge)
+    PreflightCheck,
+    _attempt_broker_connect,
+)
 
 from ..base import PreflightTask
 from ..ctx import PreflightContext
@@ -10,10 +13,14 @@ from ..ctx import PreflightContext
 class BrokerConnectTask(PreflightTask):
     """P-BROKER-CONNECT — broker.connect() + broker.get_account_value() succeed.
 
-    Behavior parity with ``kernel.preflight._check_broker_connect``:
+    Behavior parity with ``kernel.preflight._check_broker_connect`` — the two
+    share the single ``_attempt_broker_connect`` body so they cannot drift:
       - ctx.broker is None → soft pass ("dry-run; skip")
-      - any exception during connect/get_account_value → HARD FAIL
-      - both succeed → HARD PASS, message includes equity
+      - connect/get_account_value are retried a BOUNDED number of times with a
+        short backoff; the first success → HARD PASS (message includes equity,
+        and the attempt count when it took more than one)
+      - only after ALL attempts fail → HARD FAIL (fail-closed; message names
+        the attempt count)
     """
 
     check_name = "P-BROKER-CONNECT"
@@ -23,15 +30,4 @@ class BrokerConnectTask(PreflightTask):
             return PreflightCheck(
                 self.check_name, "soft", True, "no broker (dry-run); skip",
             )
-        try:
-            ctx.broker.connect()
-            eq = float(ctx.broker.get_account_value())
-            return PreflightCheck(
-                self.check_name, "hard", True,
-                f"broker connected, equity=${eq:.2f}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            return PreflightCheck(
-                self.check_name, "hard", False,
-                f"broker connect failed: {exc}",
-            )
+        return _attempt_broker_connect(ctx.broker)
