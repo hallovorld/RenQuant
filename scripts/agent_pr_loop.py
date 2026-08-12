@@ -479,10 +479,19 @@ def main() -> int:
             if exec_result and exec_result.get("rc", 0) != 0:
                 cause = _exec_failure_cause(exec_result)
                 if _is_non_retryable(cause):
+                    # DEGRADED, not fatal. Raising here would abort before the
+                    # merge stages and the strict audit, so the very cycle that
+                    # discovers the cap would also lose the OTHER agent's
+                    # merges — which is the containment this exists to provide.
                     _record_quota_block(agent, cause)
-                    raise RuntimeError(
-                        f"{agent} {workflow} BLOCKED, not retryable: {cause}"
+                    step["quota_blocked"] = _quota_block_active(agent)
+                    step["degraded"] = True
+                    print(
+                        f"agent_pr_loop: {agent} {workflow} BLOCKED, not "
+                        f"retryable: {cause}",
+                        file=sys.stderr,
                     )
+                    continue
                 raise RuntimeError(
                     f"{agent} {workflow} failed: {cause}"
                     if cause
@@ -520,7 +529,11 @@ def main() -> int:
         if merge_audit["rc"] != 0:
             raise RuntimeError("merge audit failed")
 
-        blocks = _load_quota_blocks()
+        blocks = {
+            agent: block
+            for agent in _load_quota_blocks()
+            if (block := _quota_block_active(agent)) is not None
+        }
         if blocks:
             # A cycle that skipped a capped agent is NOT clean. Surface it on
             # the status object so a green ok:true can never hide the cap.

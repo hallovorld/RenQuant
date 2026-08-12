@@ -128,3 +128,145 @@ def test_review_or_fix_skips_the_spawn_while_blocked(mod, monkeypatch):
     assert step["skipped"] is True
     assert step["quota_blocked"]["cause"] == "monthly spend limit"
     assert not spawned, "a blocked agent must not be spawned again"
+
+
+# ---------------------------------------------------------------------------
+# main()-level containment. The focused tests above all passed while main()
+# still aborted the cycle on the FIRST spend-cap failure -- the claim and the
+# code disagreed and no test sat at the boundary where the claim is decided.
+# These do.
+# ---------------------------------------------------------------------------
+
+
+def _drive_main(mod, monkeypatch, *, claude_cap: bool):
+    """Run main() with every external call stubbed; report what really ran."""
+    seen = {"orch": [], "spawned": [], "merges": [], "status": []}
+
+    def _orch(args):
+        seen["orch"].append(list(args))
+        return {"cmd": args, "rc": 0, "stdout": "{}", "stdout_full": "{}", "stderr": ""}
+
+    def _orch_json(args):
+        # Non-empty queue for claude/fix only -- the incident's exact state.
+        as_agent = args[args.index("--as") + 1] if "--as" in args else ""
+        workflow = args[args.index("--workflow") + 1] if "--workflow" in args else ""
+        n = 2 if (as_agent == "claude" and workflow == "fix") else 0
+        return {"repos": [{"plan": {"queue": [{}] * n}}]}
+
+    def _run(cmd, **kw):
+        seen["spawned"].append(cmd[0])
+        if cmd[0] == "claude" and claude_cap:
+            return {
+                "cmd": cmd, "rc": 1, "stderr": "",
+                "stdout": SPEND_LIMIT_STDOUT, "stdout_full": SPEND_LIMIT_STDOUT,
+            }
+        return {"cmd": cmd, "rc": 0, "stdout": "", "stdout_full": "", "stderr": ""}
+
+    def _run_merge(agent):
+        seen["merges"].append(agent)
+        return {"agent": agent, "total_merged": 0}
+
+    monkeypatch.setattr(mod, "_require_local_clis", lambda: None)
+    monkeypatch.setattr(mod, "_bootstrap_short_term_state", lambda: {"skipped": True})
+    monkeypatch.setattr(mod, "_orch", _orch)
+    monkeypatch.setattr(mod, "_orch_json", _orch_json)
+    monkeypatch.setattr(mod, "_run", _run)
+    monkeypatch.setattr(mod, "_run_merge", _run_merge)
+    monkeypatch.setattr(mod, "_agent_gh_env", lambda agent: {})
+    monkeypatch.setattr(mod, "build_agent_prompt", lambda agent, wf: "prompt")
+    monkeypatch.setattr(mod, "_write_status", lambda p: seen["status"].append(dict(p)))
+    monkeypatch.delenv("RQ_ROADMAP_DRIVER", raising=False)
+
+    rc = mod.main()
+    return rc, seen, (seen["status"][-1] if seen["status"] else {})
+
+
+def test_spend_cap_does_not_cost_the_merges_or_the_audit(mod, monkeypatch):
+    """THE regression: the cycle that DISCOVERS the cap must still finish.
+
+    Before the fix main() recorded the block and then raised, so this very
+    cycle lost both merge stages and `repos merge-audit --strict` -- the exact
+    opposite of the containment the change claims.
+    """
+    rc, seen, status = _drive_main(mod, monkeypatch, claude_cap=True)
+
+    assert seen["merges"] == ["codex", "claude"], (
+        f"merge stages were skipped: {seen['merges']}"
+    )
+    audits = [a for a in seen["orch"] if "merge-audit" in a]
+    assert audits, "strict merge audit never ran"
+    assert "--strict" in audits[0]
+
+    assert rc == 0, "a contained, degraded cycle must not report a hard failure"
+    assert status.get("degraded") == ["claude"]
+    assert "monthly spend limit" in status["quota_blocked"]["claude"]["cause"]
+    assert status.get("ok") is True
+    assert "error" not in status, "a contained cap is not a cycle error"
+
+
+def test_second_cycle_does_not_respawn_the_capped_agent(mod, monkeypatch):
+    _drive_main(mod, monkeypatch, claude_cap=True)
+    _, seen2, status2 = _drive_main(mod, monkeypatch, claude_cap=True)
+
+    assert "claude" not in seen2["spawned"], (
+        f"capped agent was respawned: {seen2['spawned']}"
+    )
+    assert seen2["merges"] == ["codex", "claude"], "merges must keep running"
+    assert status2.get("degraded") == ["claude"]
+
+
+def test_unknown_failure_still_aborts_the_cycle(mod, monkeypatch):
+    """The default must not drift: an unrecognised failure fails loudly."""
+    def _run(cmd, **kw):
+        return {"cmd": cmd, "rc": 1, "stdout": "Traceback (most recent call last):",
+                "stdout_full": "Traceback (most recent call last):", "stderr": ""}
+
+    monkeypatch.setattr(mod, "_require_local_clis", lambda: None)
+    monkeypatch.setattr(mod, "_bootstrap_short_term_state", lambda: {"skipped": True})
+    monkeypatch.setattr(mod, "_orch", lambda a: {"rc": 0, "stdout": "{}", "stdout_full": "{}", "stderr": ""})
+    monkeypatch.setattr(mod, "_orch_json", lambda a: {"repos": [{"plan": {"queue": [{}, {}]}}]})
+    monkeypatch.setattr(mod, "_run", _run)
+    monkeypatch.setattr(mod, "_run_merge", lambda agent: {"total_merged": 0})
+    monkeypatch.setattr(mod, "_agent_gh_env", lambda agent: {})
+    monkeypatch.setattr(mod, "build_agent_prompt", lambda agent, wf: "prompt")
+    captured = []
+    monkeypatch.setattr(mod, "_write_status", lambda p: captured.append(dict(p)))
+    monkeypatch.delenv("RQ_ROADMAP_DRIVER", raising=False)
+
+    assert mod.main() == 1
+    last = captured[-1]
+    assert last["ok"] is False
+    # The cause must still be lifted into the error -- that is the other half
+    # of this PR and it applies to retryable failures too.
+    assert "Traceback" in last["error"]
+
+
+def test_expired_block_is_not_reported_as_active(mod, monkeypatch):
+    """Secondary: an expired block must drop out of the terminal view.
+
+    Otherwise a cap that lifted while the queue was empty (so no success ever
+    cleared it) is reported as an active quota condition forever.
+    """
+    mod._record_quota_block("claude", "monthly spend limit")
+    monkeypatch.setattr(mod, "QUOTA_REPROBE_SECONDS", 0)
+
+    # The queue must be EMPTY: with work to do the exec succeeds and
+    # _clear_quota_block() removes the record, which hides the defect. The
+    # reported scenario is precisely the one where nothing can clear it.
+    monkeypatch.setattr(mod, "_require_local_clis", lambda: None)
+    monkeypatch.setattr(mod, "_bootstrap_short_term_state", lambda: {"skipped": True})
+    monkeypatch.setattr(mod, "_orch", lambda a: {"rc": 0, "stdout": "{}", "stdout_full": "{}", "stderr": ""})
+    monkeypatch.setattr(mod, "_orch_json", lambda a: {"repos": [{"plan": {"queue": []}}]})
+    monkeypatch.setattr(mod, "_run", lambda *a, **k: pytest.fail("nothing should spawn"))
+    monkeypatch.setattr(mod, "_run_merge", lambda agent: {"total_merged": 0})
+    captured = []
+    monkeypatch.setattr(mod, "_write_status", lambda p: captured.append(dict(p)))
+    monkeypatch.delenv("RQ_ROADMAP_DRIVER", raising=False)
+
+    assert mod.main() == 0
+    status = captured[-1]
+    assert "degraded" not in status, f"expired block still reported: {status.get('degraded')}"
+    assert "quota_blocked" not in status
+    # The record itself survives on disk -- history is not destroyed, only the
+    # ACTIVE view is filtered.
+    assert "claude" in json.loads(mod.QUOTA_BLOCK_PATH.read_text())

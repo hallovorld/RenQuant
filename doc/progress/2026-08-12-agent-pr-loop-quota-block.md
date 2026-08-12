@@ -1,9 +1,24 @@
 # 2026-08-12 — agent-pr-loop: name the failure, stop re-running into a spend cap
 
-STATUS:   FIXED (2026-08-12). `tests/test_agent_pr_loop.py` +
-          `tests/test_agent_pr_loop_quota_block.py` -> **27 passed**
+STATUS:   FIXED (2026-08-12), round 2 after review. `tests/test_agent_pr_loop.py`
+          + `tests/test_agent_pr_loop_quota_block.py` -> **31 passed**
           `[VERIFIED — .venv/bin/python -m pytest -q tests/test_agent_pr_loop.py
-          tests/test_agent_pr_loop_quota_block.py]`.
+          tests/test_agent_pr_loop_quota_block.py]`. Re-run against the
+          PRE-FIX head `12c0fc3`: **2 failed** — the two defects review found
+          `[VERIFIED — same command with scripts/agent_pr_loop.py reverted]`.
+
+ROUND 2:  The first implementation CONTRADICTED its own containment claim.
+          `main()` recorded the block and then raised, so the cycle that first
+          discovered the cap still lost codex's merges and the strict audit;
+          only later cycles skipped. The prose said the opposite. Fixed: a
+          classified non-retryable result is a DEGRADED per-agent step and the
+          cycle continues through both merge stages and the audit. Second
+          finding, also real: expired blocks stayed in the terminal
+          `degraded`/`quota_blocked` view forever when no success could clear
+          them; the view is now filtered to ACTIVE blocks while the record
+          survives on disk. Root cause of both: I asserted the isolation
+          property in prose and had no test at the `main()` boundary where it
+          is decided — the seven focused tests all passed with the bug present.
 
 WHAT:     Two changes to `scripts/agent_pr_loop.py`, both on the running path.
           (1) `_exec_failure_cause()` lifts the SUBPROCESS's own first output
@@ -38,8 +53,16 @@ WHY/DIR:  The 2026-08-11 incident. `com.renquant.agent-pr-loop` (every 300s)
           merge audit were lost too while claude was capped.
 
 EVIDENCE:
-  artifact:      `scripts/agent_pr_loop.py` (+4 edit sites),
-                 `tests/test_agent_pr_loop_quota_block.py` (7 new tests).
+  artifact:      `scripts/agent_pr_loop.py` (+6 edit sites),
+                 `tests/test_agent_pr_loop_quota_block.py` (11 new tests, four
+                 of them at the `main()` boundary).
+  oracle:        the two review findings each have a failing test on the pre-fix
+                 head: `test_spend_cap_does_not_cost_the_merges_or_the_audit`
+                 and `test_expired_block_is_not_reported_as_active`. My first
+                 version of the latter was VACUOUS — it drove a successful
+                 cycle, which clears the block via the success path and hides
+                 the defect; rewritten to the empty-queue case, where nothing
+                 can clear it, which is the reported scenario.
   prod or exp:   prod — the automation wrapper. No strategy, model, artifact,
                  config, or order path is touched; it changes only how a
                  subprocess failure is reported and re-attempted.
