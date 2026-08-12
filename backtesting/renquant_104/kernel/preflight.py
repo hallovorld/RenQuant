@@ -48,6 +48,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1256,25 +1257,58 @@ def _check_state_file(
     )
 
 
-def _check_broker_connect(broker: Any) -> PreflightCheck:
-    """P-BROKER-CONNECT: connect + get_account_value works."""
+# P-BROKER-CONNECT bounded-retry policy. Retry a small number of transient
+# broker failures but remain fail-closed after every attempt is exhausted.
+# Requests connect/read timeouts bound no-progress stalls; they are not a
+# whole-request deadline for a peer that keeps trickling bytes.
+_BROKER_CONNECT_MAX_ATTEMPTS = 3
+_BROKER_CONNECT_BACKOFF_SECONDS = 2.0
+
+
+def _attempt_broker_connect(
+    broker: Any,
+    *,
+    max_attempts: int = _BROKER_CONNECT_MAX_ATTEMPTS,
+    backoff_seconds: float = _BROKER_CONNECT_BACKOFF_SECONDS,
+) -> PreflightCheck:
+    """Shared bounded-retry body for legacy and runtime broker checks."""
+    attempts = max(1, int(max_attempts))
+    backoff = max(0.0, float(backoff_seconds))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            broker.connect()
+            eq = float(broker.get_account_value())
+            suffix = "" if attempt == 1 else f" (after {attempt} attempts)"
+            return PreflightCheck(
+                "P-BROKER-CONNECT", "hard", True,
+                f"broker connected, equity=${eq:.2f}{suffix}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < attempts:
+                time.sleep(backoff)
+    return PreflightCheck(
+        "P-BROKER-CONNECT", "hard", False,
+        f"broker connect failed after {attempts} attempts: {last_exc}",
+    )
+
+
+def _check_broker_connect(
+    broker: Any,
+    *,
+    max_attempts: int = _BROKER_CONNECT_MAX_ATTEMPTS,
+    backoff_seconds: float = _BROKER_CONNECT_BACKOFF_SECONDS,
+) -> PreflightCheck:
+    """P-BROKER-CONNECT: connect + get_account_value works (bounded retry)."""
     if broker is None:
         return PreflightCheck(
             "P-BROKER-CONNECT", "soft", True,
             "no broker (dry-run); skip",
         )
-    try:
-        broker.connect()
-        eq = float(broker.get_account_value())
-        return PreflightCheck(
-            "P-BROKER-CONNECT", "hard", True,
-            f"broker connected, equity=${eq:.2f}",
-        )
-    except Exception as exc:
-        return PreflightCheck(
-            "P-BROKER-CONNECT", "hard", False,
-            f"broker connect failed: {exc}",
-        )
+    return _attempt_broker_connect(
+        broker, max_attempts=max_attempts, backoff_seconds=backoff_seconds,
+    )
 
 
 def _check_artifact_run_id_alignment(
