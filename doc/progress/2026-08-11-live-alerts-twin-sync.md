@@ -35,7 +35,25 @@ WHY/DIR:  A byte-identical twin that has silently diverged is worse than no
           a trap armed for whoever wires that module or adds a non-ASCII title.
 
 EVIDENCE:
-  artifact:      `live/alerts.py` (3-line delta) + this record. No other file.
+  artifact:      `live/alerts.py` (3-line delta), `tests/test_alerts_header_encoding.py`
+                 (new committed oracle), + this record.
+  oracle:        the new tests FAIL on the pre-sync copy and PASS on this head —
+                 they distinguish the bug from the fix rather than exercising the
+                 path. Swapping `origin/main`'s `live/alerts.py` into this tree:
+                 **2 failed, 1 passed, 1 skipped**, both failures
+                 `UnicodeEncodeError: 'latin-1' ... '\u2212'` at the urllib
+                 header and the curl argv. Restoring this head's copy:
+                 **3 passed, 1 skipped**
+                 `[VERIFIED — .venv/bin/python -m pytest -q tests/test_alerts_header_encoding.py,
+                 run both ways in a fresh clone of this branch]`.
+                 Related suite: `test_alerts / test_alert_lifecycle /
+                 test_runner_trade_ntfy / test_sell_ntfy_pnl /
+                 test_daily_104_shadow_notify / test_reject_notify_disposition`
+                 plus the new file -> **147 passed, 1 skipped, 1 failed**; the one
+                 failure is `test_sell_ntfy_pnl.py::test_pnl_computation_uses_current_price`,
+                 which fails IDENTICALLY with the pre-sync `live/alerts.py` in place
+                 — a drifted source-text assertion, pre-existing and unrelated
+                 `[VERIFIED — same test run against both copies]`.
   prod or exp:   prod — the live alert sender. Behaviour is unchanged for every
                  title currently produced, because `encode_header` is identity-
                  preserving for pure-ASCII input; the change is only observable
