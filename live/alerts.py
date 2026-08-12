@@ -17,6 +17,8 @@ import subprocess
 import time
 import urllib.request
 
+from renquant_common.notify import encode_header
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -192,7 +194,8 @@ def _send_ntfy(url: str, event: AlertEvent, logger: logging.Logger) -> bool:
                 url,
                 data=body_bytes,
                 method="POST",
-                headers={"Title": event.title, "Priority": event.priority},
+                headers={"Title": encode_header(event.title),
+                         "Priority": event.priority},
             )
             urllib.request.urlopen(req, timeout=timeout).read()
             logger.info("ntfy sent: %s | %s", event.title, event.body)
@@ -214,7 +217,7 @@ def _send_ntfy(url: str, event: AlertEvent, logger: logging.Logger) -> bool:
                     "curl", "-fsS",
                     "--connect-timeout", str(min(timeout, 10.0)),
                     "--max-time", str(max(timeout + 5.0, 10.0)),
-                    "-H", f"Title: {event.title}",
+                    "-H", f"Title: {encode_header(event.title)}",
                     "-H", f"Priority: {event.priority}",
                     "--data-binary", "@-",
                     url,
