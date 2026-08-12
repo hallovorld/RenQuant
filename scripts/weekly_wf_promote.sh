@@ -143,20 +143,46 @@ print(c.get('ranking',{}).get('panel_scoring',{}).get('kind',''))
             fi
         done
     done
+    # ── orch#799 option A: derive the xgb reference from the pinned blend's
+    # component[0] ──────────────────────────────────────────────────────────
+    # No top-level config declares kind=xgb. After the full-book z-blend switch
+    # the pinned primary is kind=blend and the xgb GBDT leg lives at
+    # ranking.panel_scoring.components[0]. Derive a kind=xgb PRODUCTION REFERENCE
+    # from THAT component — from the PINNED runtime config ONLY (the umbrella
+    # working copy and the sibling developer checkout are NEVER consulted; those
+    # banned sources are the orch#799 incident). The derived reference is
+    # fingerprint-identical to the pinned recipe (panel_scoring.kind/components
+    # are not model-relevant fields), so the freshly-retrained xgb candidate is
+    # still compared on the SAME walk-forward manifest discipline and every
+    # WF/sanity/parity gate is fed unchanged. scripts/derive_gbdt_wf_reference.py
+    # FAILS CLOSED (nonzero) if component[0] is not the xgb leg or its artifact
+    # is absent, so this stays fail-closed — it never papers over a phantom.
+    local pinned_primary derived_ref derived_out
+    pinned_primary="$REPO_DIR/.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json"
+    if [ -f "$pinned_primary" ]; then
+        derived_ref="$LOG_DIR/derived_gbdt_reference.${RUN_ID}.json"
+        if derived_out="$("$PYTHON" "$REPO_DIR/scripts/derive_gbdt_wf_reference.py" \
+                --pinned-config "$pinned_primary" \
+                --strategy-dir "$REPO_DIR/backtesting/renquant_104" \
+                --out "$derived_ref")"; then
+            echo "$derived_out"
+            return 0
+        fi
+    fi
     return 1
 }
 if ! GBDT_PROD_CONFIG="$(_find_gbdt_config)"; then
-    echo "ERROR: no PINNED strategy config declares kind=xgb — cannot resolve a"
-    echo "       kind-matched GBDT production reference (orch#799)."
-    echo "       This is the EXPECTED state while the pinned primary is a blend:"
-    echo "       an xgb candidate has no same-kind production reference, and the"
-    echo "       umbrella working copy is NOT an acceptable substitute (A8: known"
-    echo "       diverged). The gate refuses rather than simulate a phantom config."
-    echo "       Decision needed (orch#799 item 'blend-prod reference rule'):"
-    echo "       either derive the xgb reference from the blend's component[0]"
-    echo "       semantics, or gate blend prods on a blend-kind candidate."
+    echo "ERROR: could not resolve a kind-matched GBDT production reference (orch#799)."
+    echo "       No pinned strategy config declares kind=xgb, and the pinned blend"
+    echo "       primary's component[0] could not be used to derive one — it is not"
+    echo "       the xgb GBDT leg, or its referenced leg artifact is absent (see the"
+    echo "       derivation diagnostics above). The umbrella working copy and the"
+    echo "       sibling developer checkout are NOT acceptable substitutes (A8: known"
+    echo "       diverged). The gate fails closed rather than simulate a phantom"
+    echo "       config. Decision if this persists (orch#799 'blend-prod reference"
+    echo "       rule'): gate blend prods on a blend-kind candidate."
     notify "RenQuant 104 WEEKLY-BLOCKED" \
-        "WF gate cannot run: no pinned kind-matched prod reference for the xgb candidate (prod is a blend). See orch#799. Production unchanged; RFC#210 freshness governance unaffected."
+        "WF gate cannot run: no kind-matched GBDT prod reference — pinned primary is a blend whose component[0] did not yield a usable xgb reference (orch#799). Production unchanged; RFC#210 freshness governance unaffected."
     exit 2
 fi
 export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"

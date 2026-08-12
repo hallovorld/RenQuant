@@ -67,14 +67,36 @@ def test_pinned_path_resolves_under_subrepo_runtime():
     assert '.subrepo_runtime/repos/renquant-strategy-104/configs/' in block
 
 
+def test_blend_reference_is_derived_from_pinned_component0_only():
+    """orch#799 option A: when the pinned primary is kind=blend, the xgb
+    reference is DERIVED from component[0] — from the PINNED runtime config
+    only, never the umbrella working copy or sibling checkout."""
+    block = _finder_block()
+    # The derivation runs off the PINNED runtime primary, hardcoded here.
+    assert (
+        'pinned_primary="$REPO_DIR/.subrepo_runtime/repos/'
+        'renquant-strategy-104/configs/strategy_config.json"'
+    ) in block, "the blend derivation must read the PINNED runtime primary"
+    assert "scripts/derive_gbdt_wf_reference.py" in block, (
+        "the component[0] derivation must go through the dedicated helper"
+    )
+    assert '--pinned-config "$pinned_primary"' in block, (
+        "the helper's reference source must be the pinned primary only"
+    )
+    # The banned sources must never be the --pinned-config argument.
+    assert '--pinned-config "$workingcopy_path"' not in block
+    assert '--pinned-config "$REPO_DIR/backtesting/renquant_104' not in block
+
+
 def test_no_match_fails_closed_with_the_blend_explanation_and_alert():
-    """A missing kind match is a REAL state (prod is a blend). The wrapper
-    must exit nonzero, explain it, name the decision issue, and page — never
-    fall back to a stale file."""
+    """A missing kind match after the component[0] derivation attempt is a REAL
+    state (prod is a blend whose component[0] is not a usable xgb leg). The
+    wrapper must exit nonzero, explain it, name the decision issue, and page —
+    never fall back to a stale file."""
     src = WRAPPER.read_text()
     idx = src.index("if ! GBDT_PROD_CONFIG=")
     block = src[idx: idx + 1400]
-    assert "no PINNED strategy config declares kind=xgb" in block
+    assert "could not resolve a kind-matched GBDT production reference" in block
     assert "orch#799" in block
     assert "blend" in block
     assert "WEEKLY-BLOCKED" in block          # pages the operator

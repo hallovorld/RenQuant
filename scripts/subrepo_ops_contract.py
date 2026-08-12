@@ -225,10 +225,23 @@ CHECKS: tuple[Check, ...] = (
             # pinned primary kind=blend (measured: same booster, 3-cut Sharpe
             # 0.6018 → 0.0524, greedy path → joint QP). The contract now
             # asserts the SAFE behaviour: the lock-aligned runtime config is
-            # the sole candidate, and a missing kind match fails closed.
+            # the sole candidate for the top-level kind=xgb scan, and a missing
+            # kind match fails closed.
             'candidates=("$pinned_path")',
             'pinned_path="$REPO_DIR/.subrepo_runtime/repos/renquant-strategy-104/configs/$cfg_name"',
-            "no PINNED strategy config declares kind=xgb",
+            # 2026-08-12 (orch#799 option A): when the pinned primary is
+            # kind=blend, the xgb GBDT reference is DERIVED from
+            # ranking.panel_scoring.components[0] via
+            # scripts/derive_gbdt_wf_reference.py — resolved from the PINNED
+            # runtime config ONLY (never the umbrella working copy / sibling
+            # checkout; see the forbidden --pinned-config bans below). The
+            # derivation is fingerprint-invariant, so the candidate is compared
+            # on the SAME WF manifest recipe, and it FAILS CLOSED if
+            # component[0] is not the xgb leg or its artifact is absent.
+            'pinned_primary="$REPO_DIR/.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json"',
+            "scripts/derive_gbdt_wf_reference.py",
+            '--pinned-config "$pinned_primary"',
+            "could not resolve a kind-matched GBDT production reference (orch#799).",
             "WEEKLY-BLOCKED",
             '--fingerprint-config "$GBDT_PROD_CONFIG"',
             "--strict",
@@ -241,6 +254,11 @@ CHECKS: tuple[Check, ...] = (
             # name (orch#799): re-introducing either recreates the incident.
             'candidates=("$multirepo_path"',
             'candidates=("$pinned_path" "$workingcopy_path")',
+            # orch#799 option A must never derive the reference from the umbrella
+            # working copy or sibling checkout — the component[0] derivation is
+            # fed the PINNED runtime config only.
+            '--pinned-config "$workingcopy_path"',
+            '--pinned-config "$REPO_DIR/backtesting/renquant_104/strategy_config.json"',
         ),
     ),
     Check(
