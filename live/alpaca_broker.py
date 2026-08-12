@@ -12,12 +12,32 @@ for live trading.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from typing import Any
 
 from .broker import BaseBroker
 
 log = logging.getLogger(__name__)
+
+# P-BROKER-CONNECT bounded account read (twin of renquant-execution#41; this
+# pair is a DELIBERATE diverged_pin, so the behaviour is ported, not the file).
+#
+# The alpaca-py SDK exposes NO timeout knob -- `RESTClient.__init__` has no
+# `timeout` parameter and `_one_request` never passes one -- so every account
+# read here inherits requests' default `timeout=None` and can hang on the OS
+# TCP timeout. That is the 2026-08-11 07:00 abort that cost a ~12 min intraday
+# cycle. `live/runner.py` imports THIS module (`from .alpaca_broker import
+# AlpacaBroker`), so execution#41's fix does not reach the order path; this is
+# that fix on the stack that actually trades.
+#
+# Values: a healthy Alpaca `GET /v2/account` returns in well under a second, so
+# 5s connect / 10s read is ample slack for a transient blip without tolerating
+# an open-ended hang. This bounds NO-PROGRESS stalls -- requests' timeout is an
+# inactivity timer, not a wall-clock cap on the whole request.
+_BROKER_CONNECT_TIMEOUT_SECONDS = 5.0
+_BROKER_READ_TIMEOUT_SECONDS = 10.0
 
 
 class AlpacaBroker(BaseBroker):
@@ -59,6 +79,49 @@ class AlpacaBroker(BaseBroker):
             return self._label
         return "alpaca-paper" if self._paper else "alpaca"
 
+    @contextlib.contextmanager
+    def _bounded_account_timeout(self) -> Any:
+        """Temporarily WRAP the trading client's HTTP session so the preflight
+        account reads carry a bounded ``(connect, read)`` timeout, restoring the
+        session EXACTLY as it was on exit.
+
+        Wrap, not replace: swapping in a fresh session would silently drop the
+        SDK's seeded ``proxies`` / ``verify`` / ``cert`` / ``cookies`` /
+        ``hooks`` / ``params`` / ``auth`` and mounted adapters. Overriding just
+        the SAME object's ``request`` preserves every piece of transport state
+        by construction. **Order submission never runs inside this context**, so
+        its socket semantics are byte-for-byte unchanged.
+
+        Raises rather than degrading silently: if the client has no usable
+        session, an unbounded fallback would defeat the fast-fail contract this
+        exists to provide, so it fails loud and closed inside the caller's
+        bounded P-BROKER-CONNECT retry.
+        """
+        session = getattr(self._trading_client, "_session", None)
+        original_request = getattr(session, "request", None)
+        if session is None or not callable(original_request):
+            raise RuntimeError(
+                "AlpacaBroker cannot arm a bounded account-read timeout: the "
+                "trading client's HTTP session is missing or has no callable "
+                f"'request' (session={session!r}, type={type(session).__name__}). "
+                "Refusing to run the account read unbounded."
+            )
+        timeout = (_BROKER_CONNECT_TIMEOUT_SECONDS, _BROKER_READ_TIMEOUT_SECONDS)
+        had_own = "request" in vars(session)
+
+        def _bounded_request(*args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("timeout", timeout)  # respect a caller's own
+            return original_request(*args, **kwargs)
+
+        session.request = _bounded_request
+        try:
+            yield
+        finally:
+            if had_own:
+                session.request = original_request
+            else:
+                del session.request
+
     def connect(self) -> None:
         try:
             from alpaca.trading.client import TradingClient
@@ -81,7 +144,9 @@ class AlpacaBroker(BaseBroker):
             paper=self._paper,
         )
 
-        account = self._trading_client.get_account()
+        # Preflight read 1 of 2 — bounded so a stalled socket fails fast.
+        with self._bounded_account_timeout():
+            account = self._trading_client.get_account()
         mode = "paper" if self._paper else "LIVE"
         nmbp = getattr(account, "non_marginable_buying_power", None)
         log.info(
@@ -154,7 +219,11 @@ class AlpacaBroker(BaseBroker):
             return 0.0
 
     def get_account_value(self) -> float:
-        account = self._trading_client.get_account()
+        # Preflight read 2 of 2. Bounded HERE rather than in a shared helper so
+        # every other account reader on the order path keeps its existing,
+        # unbounded behaviour.
+        with self._bounded_account_timeout():
+            account = self._trading_client.get_account()
         return float(account.equity)
 
     def get_cash(self) -> float:
