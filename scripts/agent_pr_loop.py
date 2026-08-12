@@ -36,6 +36,91 @@ if not PYTHON.exists():
 
 LOG_DIR = REPO_ROOT / "logs" / "agent_pr_loop"
 STATUS_PATH = LOG_DIR / "status.json"
+QUOTA_BLOCK_PATH = LOG_DIR / "agent_quota_block.json"
+
+# How long a non-retryable block suppresses re-spawning that agent's CLI.
+# The loop itself fires every 300s; re-probing hourly turns 12 identical
+# failures per hour into 1.
+QUOTA_REPROBE_SECONDS = 3600
+
+# Conditions that a retry CANNOT clear because they need a human: spend caps,
+# credit exhaustion. Deliberately an ENUMERATED list with a retryable default —
+# an unrecognised failure behaves exactly as it does today, so this can only
+# reduce noise, never suppress a novel error.
+NON_RETRYABLE_MARKERS = (
+    "monthly spend limit",
+    "/usage-credits",
+    "usage limit reached",
+    "insufficient credit",
+)
+
+
+def _exec_failure_cause(exec_result: dict[str, Any]) -> str:
+    """First meaningful line the SUBPROCESS itself emitted.
+
+    The wrapper used to discard this and report only "<agent> <workflow>
+    failed", which is why 471 log lines could not distinguish a quota wall
+    from a crash. CLIs like `claude` print the actionable message on stdout
+    with an empty stderr, so stdout is consulted first.
+    """
+    for stream in ("stdout_full", "stdout", "stderr"):
+        text = (exec_result.get(stream) or "").strip()
+        if text:
+            return text.splitlines()[0].strip()[:200]
+    return ""
+
+
+def _is_non_retryable(cause: str) -> bool:
+    low = cause.lower()
+    return any(marker in low for marker in NON_RETRYABLE_MARKERS)
+
+
+def _load_quota_blocks() -> dict[str, Any]:
+    try:
+        return json.loads(QUOTA_BLOCK_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - absent or corrupt reads as "no block"
+        return {}
+
+
+def _write_quota_blocks(blocks: dict[str, Any]) -> None:
+    QUOTA_BLOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    QUOTA_BLOCK_PATH.write_text(
+        json.dumps(blocks, indent=2, sort_keys=True), encoding="utf-8",
+    )
+
+
+def _record_quota_block(agent: str, cause: str) -> None:
+    blocks = _load_quota_blocks()
+    prior = blocks.get(agent) or {}
+    blocks[agent] = {
+        "cause": cause,
+        "blocked_at": time.time(),
+        "first_seen_at": prior.get("first_seen_at", time.time()),
+        "observations": int(prior.get("observations") or 0) + 1,
+    }
+    _write_quota_blocks(blocks)
+
+
+def _clear_quota_block(agent: str) -> None:
+    blocks = _load_quota_blocks()
+    if blocks.pop(agent, None) is not None:
+        _write_quota_blocks(blocks)
+
+
+def _quota_block_active(agent: str, *, now: float | None = None) -> dict[str, Any] | None:
+    """The agent's live block, or None when absent/expired.
+
+    Expiry is what makes this a suppression window rather than a kill switch:
+    once it lapses the agent is spawned again, so a lifted spend cap is picked
+    up without anyone clearing state by hand.
+    """
+    block = _load_quota_blocks().get(agent)
+    if not isinstance(block, dict):
+        return None
+    age = (time.time() if now is None else now) - float(block.get("blocked_at") or 0)
+    if age >= QUOTA_REPROBE_SECONDS:
+        return None
+    return {**block, "age_seconds": round(age, 1)}
 MAX_MERGES = 20
 SHORT_TERM_TEMPLATE = ORCH_ROOT / "doc" / "memory" / "short-term-state.template.md"
 SHORT_TERM_LOCAL = ORCH_ROOT / "doc" / "memory" / "short-term-state.md"
@@ -254,6 +339,13 @@ def _run_review_or_fix(agent: str, workflow: str) -> dict[str, Any]:
     if queue_total == 0:
         step["skipped"] = True
         return step
+    blocked = _quota_block_active(agent)
+    if blocked is not None:
+        # Suppress the spawn, but keep the cycle alive: the other agent's
+        # merges and the merge audit still run while this one is capped.
+        step["skipped"] = True
+        step["quota_blocked"] = blocked
+        return step
     step["exec"] = _run(
         _llm_command(agent),
         cwd=REPO_ROOT,
@@ -385,7 +477,28 @@ def main() -> int:
                 did_work = True
             exec_result = step.get("exec") or {}
             if exec_result and exec_result.get("rc", 0) != 0:
-                raise RuntimeError(f"{agent} {workflow} failed")
+                cause = _exec_failure_cause(exec_result)
+                if _is_non_retryable(cause):
+                    # DEGRADED, not fatal. Raising here would abort before the
+                    # merge stages and the strict audit, so the very cycle that
+                    # discovers the cap would also lose the OTHER agent's
+                    # merges — which is the containment this exists to provide.
+                    _record_quota_block(agent, cause)
+                    step["quota_blocked"] = _quota_block_active(agent)
+                    step["degraded"] = True
+                    print(
+                        f"agent_pr_loop: {agent} {workflow} BLOCKED, not "
+                        f"retryable: {cause}",
+                        file=sys.stderr,
+                    )
+                    continue
+                raise RuntimeError(
+                    f"{agent} {workflow} failed: {cause}"
+                    if cause
+                    else f"{agent} {workflow} failed"
+                )
+            if exec_result:
+                _clear_quota_block(agent)
 
         for agent in ("codex", "claude"):
             step = _run_merge(agent)
@@ -416,6 +529,16 @@ def main() -> int:
         if merge_audit["rc"] != 0:
             raise RuntimeError("merge audit failed")
 
+        blocks = {
+            agent: block
+            for agent in _load_quota_blocks()
+            if (block := _quota_block_active(agent)) is not None
+        }
+        if blocks:
+            # A cycle that skipped a capped agent is NOT clean. Surface it on
+            # the status object so a green ok:true can never hide the cap.
+            status["quota_blocked"] = blocks
+            status["degraded"] = sorted(blocks)
         status["ok"] = True
         status["finished_at"] = _now()
         _write_status(status)
