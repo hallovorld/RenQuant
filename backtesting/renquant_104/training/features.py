@@ -9,6 +9,9 @@ LEAN / live inference uses kernel.indicators.build_feature_frame() instead
 """
 from __future__ import annotations
 
+import hashlib
+import threading
+
 import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,6 +21,67 @@ from kernel.indicators import compute_all as _compute_all
 _RATIO_FEATURES = {"rsi", "adx"}
 _DIFF_FEATURES  = {"macd_hist", "cci", "bbp", "williams_r", "obv_slope"}
 _REQUIRED_OHLCV = ("open", "high", "low", "close", "volume")
+
+
+def _spy_rets_fingerprint(spy_rets: pd.Series) -> bytes:
+    """Content fingerprint of the exact ``spy_rets`` input to ``rolling_hurst``.
+
+    Keyed on the index labels + float values so that two callers with an
+    identical ``spy_rets`` (same dates, same returns) resolve to the same
+    cache slot. Deterministic and collision-safe for this use (SHA-1 over the
+    raw bytes of both arrays). NaNs carry numpy's canonical bit pattern, so
+    equal inputs always hash equal.
+    """
+    h = hashlib.sha1()
+    idx = np.ascontiguousarray(spy_rets.index.to_numpy())
+    h.update(np.asarray(idx.shape, dtype=np.int64).tobytes())
+    h.update(idx.tobytes())
+    vals = np.ascontiguousarray(spy_rets.to_numpy(dtype="float64"))
+    h.update(vals.tobytes())
+    return h.digest()
+
+
+class SpyHurstMemo:
+    """Run-scoped memoizer for ``rolling_hurst`` on the SPY return series.
+
+    ``build_training_features`` reindexes SPY returns to each ticker's
+    ``common_idx`` and then runs a 63-day rolling Hurst — the dominant
+    per-ticker cost. Within one ``prepare_inference_panel_frames`` run SPY
+    OHLCV is a single shared frame, so every ticker that shares a
+    ``common_idx`` feeds an *identical* ``spy_rets`` into ``rolling_hurst``.
+
+    This caches the exact computation keyed by the content of that input.
+    A cache hit returns the identical Series that ``rolling_hurst`` would
+    have produced (the subsequent ``.reindex(common_idx)`` still runs per
+    ticker), so the memoized path is output-invariant by construction — the
+    only difference is that N identical computations collapse to one per
+    distinct input.
+
+    Deliberately instance-scoped (created per run, passed down) rather than a
+    module global, so nothing leaks across runs/dates. Thread-safe: the
+    per-ticker chain runs under a ThreadPoolExecutor, and double-checked
+    locking guarantees each distinct input is computed exactly once.
+    """
+
+    __slots__ = ("_cache", "_lock", "compute_calls")
+
+    def __init__(self) -> None:
+        self._cache: dict[bytes, pd.Series] = {}
+        self._lock = threading.Lock()
+        self.compute_calls = 0  # count of real rolling_hurst evaluations
+
+    def get_or_compute(self, spy_rets: pd.Series, compute) -> pd.Series:
+        key = _spy_rets_fingerprint(spy_rets)
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        with self._lock:
+            hit = self._cache.get(key)
+            if hit is None:
+                hit = compute()
+                self.compute_calls += 1
+                self._cache[key] = hit
+            return hit
 
 
 def _canonical_ohlcv_frame(rows: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -53,6 +117,7 @@ def build_training_features(
     indicator_spec: dict,
     lookahead: int,
     threshold: float,
+    hurst_cache: "SpyHurstMemo | None" = None,
 ) -> pd.DataFrame | None:
     """Build a labelled feature frame for one ticker.
 
@@ -116,7 +181,19 @@ def build_training_features(
     # for backwards-compat with downstream model artifacts'
     # `feature_columns`. Cleaner regime context = better model.
     from renquant_common.hurst import rolling_hurst as _rolling_hurst  # noqa: PLC0415
-    result["hurst_proxy"] = _rolling_hurst(spy_rets, window=63).reindex(common_idx)
+    # Perf (G-J): the 63-day rolling Hurst on SPY returns is the dominant
+    # per-ticker cost and — for a given `spy_rets` — is identical across
+    # tickers. When a run-scoped memoizer is supplied it collapses those
+    # repeated computations to one per DISTINCT `spy_rets`. Output-invariant:
+    # the cached Series is exactly what `_rolling_hurst(spy_rets, window=63)`
+    # returns, and `.reindex(common_idx)` still runs unchanged per ticker.
+    if hurst_cache is not None:
+        spy_hurst = hurst_cache.get_or_compute(
+            spy_rets, lambda: _rolling_hurst(spy_rets, window=63)
+        )
+    else:
+        spy_hurst = _rolling_hurst(spy_rets, window=63)
+    result["hurst_proxy"] = spy_hurst.reindex(common_idx)
 
     # Supervised labels: stock outperformance vs SPY over lookahead days
     stock_fwd = stock_raw["close"].pct_change(lookahead).shift(-lookahead)
