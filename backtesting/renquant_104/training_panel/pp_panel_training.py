@@ -1345,6 +1345,7 @@ class TickerPanelFeatureJob(PanelTickerJob):
                 cfg.get("indicator_spec", {}),
                 int(mp.get("lookahead", 5)),
                 float(mp.get("threshold", 0.03)),
+                hurst_cache=tc.hurst_cache,
             )
         except Exception as exc:
             log.error("  %s: TickerPanelFeatureJob failed — %s", tc.ticker, exc)

@@ -46,6 +46,18 @@ log = logging.getLogger("training_panel.pipeline")
 _INFERENCE_FRAME_CACHE_VERSION = 1
 
 
+def _new_spy_hurst_memo():
+    """Fresh run-scoped SPY-hurst memoizer (perf G-J).
+
+    Isolated behind a factory so it can be disabled in tests (monkeypatch to
+    return ``None``) to prove the memoized output is byte-identical to the
+    un-memoized baseline. Returns a new instance every call — never a module
+    global — so the cache cannot leak across runs/dates.
+    """
+    from training.features import SpyHurstMemo  # noqa: PLC0415
+    return SpyHurstMemo()
+
+
 def _json_safe(obj: Any) -> Any:
     if isinstance(obj, Path):
         return str(obj)
@@ -323,6 +335,10 @@ def prepare_inference_panel_frames(
     # T2-2 (2026-04-27): asset embeddings — same symmetry requirement.
     LoadAssetEmbeddingsTask().run(ctx)
 
+    # Perf (G-J): one memoizer shared across every per-ticker feature build so
+    # the redundant SPY rolling-Hurst recomputation collapses to one per
+    # distinct spy_rets. Run-scoped (fresh per call); output-invariant.
+    hurst_memo = _new_spy_hurst_memo()
     ticker_ctxs = [
         TickerPanelContext(
             ticker=t, ohlcv=ctx.ohlcv, sector_momentum=ctx.sector_momentum,
@@ -332,6 +348,7 @@ def prepare_inference_panel_frames(
             insider_trades=ctx.insider_trades,
             hourly_bars=ctx.hourly_bars,
             minute_bars=ctx.minute_bars,
+            hurst_cache=hurst_memo,
         )
         for t in ctx.watchlist if t in ctx.ohlcv
     ]

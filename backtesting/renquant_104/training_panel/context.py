@@ -133,6 +133,10 @@ class TickerPanelContext:
     insider_trades:     dict = field(default_factory=dict)                     # shared read-only {ticker: DataFrame}
     hourly_bars:        dict = field(default_factory=dict)                     # shared read-only {ticker: hourly OHLCV}
     minute_bars:        dict = field(default_factory=dict)                     # shared read-only {ticker: 10-min OHLCV}
+    # Perf (G-J): optional run-scoped SPY-hurst memoizer shared across the
+    # per-ticker chain. None → build_training_features computes rolling_hurst
+    # inline (unchanged behaviour). Not a data input — a compute cache.
+    hurst_cache: Any = None                                                    # shared training.features.SpyHurstMemo | None
 
     # Outputs — written by per-ticker jobs
     feature_frame: pd.DataFrame | None = None
