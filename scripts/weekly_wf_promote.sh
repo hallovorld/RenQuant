@@ -102,6 +102,43 @@ export RENQUANT_STRATEGY_CONFIG="$PROD_STRATEGY_CONFIG"
 # real daily run and the umbrella snapshot-backstop harness populate — falling
 # back to the umbrella working copy only if the pin-aligned runtime tree is
 # not present at all (e.g. pre-bootstrap).
+# orch#799: derive an xgb-shaped production reference from a kind=blend prod
+# config's component[0] (the production xgb scorer). Writes a temp config and
+# echoes its path; on ANY failure it echoes nothing and returns non-zero so the
+# caller fails closed (never fabricates a reference). The derivation and its
+# adversarial kind-check (the component artifact must DECLARE xgb) live in
+# renquant_backtesting.wf_gate.wf_config_builder.derive_xgb_reference_from_blend
+# (unit-tested there); this is only the wiring. Depends on that subrepo being
+# pinned with the function — until then the import fails and we fall through to
+# the exit-2 fail-closed, which is the pre-existing safe behaviour.
+_derive_xgb_ref_from_blend() {
+    local blend_cfg="$1" out bt_pythonpath strat_dir
+    out="$(mktemp "${TMPDIR:-/tmp}/gbdt_prod_ref_derived.XXXXXX")" || return 1
+    bt_pythonpath="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" \
+        renquant-backtesting renquant-common renquant-base-data \
+        renquant-artifacts renquant-model renquant-strategy-104 2>/dev/null)"
+    # Component artifact paths (e.g. artifacts/prod/panel-ltr.alpha158_fund.json)
+    # resolve under the umbrella strategy-104 artifact tree — where they live on
+    # disk for the adversarial kind-check to read.
+    strat_dir="$REPO_DIR/backtesting/renquant_104"
+    if PYTHONPATH="${bt_pythonpath}:${PYTHONPATH:-}" "$PYTHON" -c '
+import json, sys
+from pathlib import Path
+from renquant_backtesting.wf_gate.wf_config_builder import (
+    derive_xgb_reference_from_blend,
+)
+blend = json.load(open(sys.argv[1]))
+derived = derive_xgb_reference_from_blend(blend, strategy_dir=Path(sys.argv[3]))
+with open(sys.argv[2], "w") as fh:
+    json.dump(derived, fh)
+' "$blend_cfg" "$out" "$strat_dir" 2>/dev/null; then
+        echo "$out"
+        return 0
+    fi
+    rm -f "$out"
+    return 1
+}
+
 _find_gbdt_config() {
     for cfg_name in strategy_config.json strategy_config.shadow.json; do
         local candidate pinned_path workingcopy_path
@@ -140,6 +177,20 @@ print(c.get('ranking',{}).get('panel_scoring',{}).get('kind',''))
             if [ "$kind" = "xgb" ] || [ "$kind" = "panel_ltr_xgboost" ]; then
                 echo "$candidate"
                 return 0
+            fi
+            # orch#799: after the 2026-08-04 z-blend switch the pinned primary is
+            # kind=blend, so no top-level xgb reference exists. component[0] IS the
+            # production xgb scorer — derive an xgb-shaped reference from it so the
+            # gate compares the xgb candidate against the live xgb leg (keeping the
+            # blend), instead of fail-closing. Fail-safe: a failed derivation falls
+            # through to the exit-2 below.
+            if [ "$kind" = "blend" ]; then
+                local derived_ref
+                if derived_ref="$(_derive_xgb_ref_from_blend "$candidate")" \
+                    && [ -n "$derived_ref" ] && [ -f "$derived_ref" ]; then
+                    echo "$derived_ref"
+                    return 0
+                fi
             fi
         done
     done
