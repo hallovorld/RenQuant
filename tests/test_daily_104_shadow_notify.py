@@ -416,6 +416,88 @@ def test_shadow_blend_rb_fast_ordering_and_nonfatal():
     assert "non-fatal" in script[here:]
 
 
+# ── Step 5f: shadow_vol_window lane (orch#1004 impl PR 2, 2026-08-18) ─────────
+# The vol-window license lane (CONFIRMED vol-switch conditional, orch#1003;
+# pipeline#294 mechanism; s104#99 profile). Same guard set as 5d/5e: each rail
+# clone carries its OWN static guards (the RQ#575 lesson — the 5b tests do not
+# touch the 5f strings).
+
+def test_shadow_vol_window_step_gated_on_pinned_profile():
+    """Step 5f must skip with an INFO line until the vol-window profile
+    exists in the PINNED strategy configs dir — the rail lands before the
+    pin advance (a separate operator step), and a missing lane config must
+    NEVER hard-fail the daily."""
+    script = DAILY_104.read_text()
+    gate = ('if VOL_WINDOW_STRATEGY_CONFIG="$(renquant_strategy_config '
+            '"$SUBREPO_ROOT" strategy_config.shadow_vol_window.json)"; then')
+    assert gate in script
+    assert "Step 5f shadow_vol_window skipped" in script
+    assert "INFO: strategy_config.shadow_vol_window.json not present" in script
+    assert script.find("Step 5f shadow_vol_window skipped") > script.find(gate)
+
+
+def test_shadow_vol_window_threads_readonly_tag_and_own_log():
+    """The vol-window lane selects its own state lane + log file, disjoint
+    from prod and every other shadow lane (tag alpaca_shadow_vol_window,
+    named by the s104#99 profile's never-submit posture)."""
+    script = DAILY_104.read_text()
+    assert "RENQUANT_READONLY_TAG=alpaca_shadow_vol_window" in script
+    assert 'SHADOW_VOL_WINDOW_LOG="$LOG_DIR/${DATE}_shadow_vol_window.log"' in script
+    assert '"--strategy-config-path", "$VOL_WINDOW_STRATEGY_CONFIG",' in script
+    assert (
+        "RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 "
+        'RENQUANT_READONLY_TAG=alpaca_shadow_vol_window "$PYTHON" - <<PY '
+        '> "$SHADOW_VOL_WINDOW_LOG" 2>&1'
+    ) in script
+
+
+def test_shadow_vol_window_own_timeout_env():
+    script = DAILY_104.read_text()
+    assert ('SHADOW_VOL_WINDOW_TIMEOUT_SEC='
+            '"${RENQUANT_SHADOW_VOL_WINDOW_TIMEOUT_SEC:-'
+            '${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"') in script
+
+
+def test_shadow_vol_window_failure_alerts_by_default():
+    script = DAILY_104.read_text()
+    assert "RenQuant 104 SHADOW-VOL-WINDOW-FAIL" in script
+    assert "RenQuant 104 SHADOW-VOL-WINDOW-TIMEOUT" in script
+    idx = script.find("--- Step 5f:")
+    assert idx > 0
+    section = script[idx:]
+    assert "${RENQUANT_SHADOW_ALERT_NTFY:-1}" in section
+    assert "${RENQUANT_SHADOW_ALERT_NTFY:-0}" not in section
+
+
+def test_shadow_vol_window_preflight_blocks_do_not_page_phone():
+    script = DAILY_104.read_text()
+    assert "SHADOW_VOL_WINDOW_BUY_SIDE_PREFLIGHT_PATTERN" in script
+    assert "Shadow-vol-window preflight-block ntfy suppressed" in script
+    idx = script.find("SHADOW_VOL_WINDOW_BUY_SIDE_PREFLIGHT_PATTERN=")
+    pattern = script[idx: script.find("\n", idx)]
+    for gate in ("P-WF-GATE", "P-RUN-ID", "P-CORR-METADATA", "P-META-LABEL"):
+        assert gate in pattern
+    assert "P-PREFLIGHT-EXCEPTION" not in pattern
+    assert "P-PREFLIGHT-IMPORT" not in pattern
+
+
+def test_shadow_vol_window_ordering_and_nonfatal():
+    """Step 5f comes after Step 5e and before Step 6 (the fleet sentinel's
+    watch set stays Steps 5–5e; the vol-window lane's session accounting is
+    the orchestrator readout's parity alarm); the wrapper never exits the
+    daily on a 5f failure."""
+    script = DAILY_104.read_text()
+    here = script.find("--- Step 5f:")
+    prev = script.find("--- Step 5e:")
+    step6 = script.find("--- Step 6: Fleet lane sentinel")
+    assert here > 0 and prev > 0 and step6 > 0
+    assert prev < here < step6
+    section = script[here:step6]
+    assert "non-fatal" in section
+    assert "exit 1" not in section
+    assert "readonly-alpaca" in section
+
+
 def test_every_blend_lane_success_echo_names_its_own_profile():
     """Codex on RQ#576: the 'profile found' success echo must carry the
     LANE'S OWN identity — a copied echo naming another lane's profile
@@ -428,6 +510,9 @@ def test_every_blend_lane_success_echo_names_its_own_profile():
         'echo "shadow_blend_momentum_fast profile found at $BLEND_MOM_FAST_STRATEGY_CONFIG"',
         'echo "shadow_blend_rb_mom profile found at $BLEND_RB_MOM_STRATEGY_CONFIG"',
         'echo "shadow_blend_rb_fast profile found at $BLEND_RB_FAST_STRATEGY_CONFIG"',
+        # Step 5f (vol-window) is not a blend lane, but the identity rule is
+        # the same: the success echo must carry the lane's OWN profile.
+        'echo "shadow_vol_window profile found at $VOL_WINDOW_STRATEGY_CONFIG"',
     ):
         assert echo in script, echo
     # and the wrong-identity form appears ONLY for the lane it belongs to

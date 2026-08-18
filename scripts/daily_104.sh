@@ -957,11 +957,93 @@ else
     echo "INFO: strategy_config.shadow_blend_rb_fast.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5e shadow_blend_rb_fast skipped (rail dormant until the F3 profile lands)."
 fi
 
+# ── Step 5f: SHADOW-VOL-WINDOW e2e run (orch#1004 impl PR 2, 2026-08-18) ──
+# The vol-window license lane: the CONFIRMED vol-switch conditional
+# (orch#1003, frozen prereg orch#1001, approved design orch#1004) running
+# shadow-first. Cloned from Step 5e (Step 5 is the maintained pattern) with
+# the lane's own profile/tag/log/timeout names. The lane's config
+# (strategy_config.shadow_vol_window.json, s104#99) pins the CERTIFIED
+# solo-xgb scorer, re-arms regime_admission, and enables the pipeline#294
+# vol_window_license flag — inside ON ∧ ¬BEAR the top-decile keeps buy
+# admissibility, and the lane's per-session ledger row
+# (logs/vol_window_license.jsonl) accrues the activation evidence the
+# orchestrator readout counts (design AC3). Never submits: readonly-alpaca
+# + RENQUANT_READONLY_TAG=alpaca_shadow_vol_window, state sinks disjoint
+# from prod and every other lane. Dormant until the pinned s104 checkout
+# carries the profile (the pin advance is a separate operator step); at
+# current calm vol the lane may idle ON-less for weeks — correct behavior,
+# not a defect (design §4). Kill switch: RENQUANT_VOL_WINDOW_LICENSE_DISABLE
+# (lane-scoped, pipeline#294 AC4) — export it into this wrapper's env to
+# force the license inactive while the session row still records it.
+echo "--- Step 5f: Shadow-vol-window e2e run (vol-window license lane, no real orders) ---"
+if VOL_WINDOW_STRATEGY_CONFIG="$(renquant_strategy_config "$SUBREPO_ROOT" strategy_config.shadow_vol_window.json)"; then
+    echo "shadow_vol_window profile found at $VOL_WINDOW_STRATEGY_CONFIG"
+    SHADOW_VOL_WINDOW_LOG="$LOG_DIR/${DATE}_shadow_vol_window.log"
+    SHADOW_VOL_WINDOW_TIMEOUT_SEC="${RENQUANT_SHADOW_VOL_WINDOW_TIMEOUT_SEC:-${RENQUANT_SHADOW_TIMEOUT_SEC:-1800}}"
+    if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 RENQUANT_READONLY_TAG=alpaca_shadow_vol_window "$PYTHON" - <<PY > "$SHADOW_VOL_WINDOW_LOG" 2>&1
+import os
+import subprocess
+import sys
+
+if os.environ.get("RQ_DAILY_RUNNER", "multirepo") == "umbrella":
+    runner = [sys.executable, "-m", "live.runner"]
+else:
+    runner = [sys.executable, "-m", "renquant_orchestrator", "live-bridge", "--repo-dir", "$REPO_DIR"]
+
+cmd = runner + [
+    "--strategy", "renquant_104",
+    "--broker", "readonly-alpaca",
+    "--once",
+    "--strategy-config-path", "$VOL_WINDOW_STRATEGY_CONFIG",
+]
+try:
+    raise SystemExit(subprocess.run(
+        cmd,
+        cwd="$REPO_DIR",
+        timeout=float("$SHADOW_VOL_WINDOW_TIMEOUT_SEC"),
+    ).returncode)
+except subprocess.TimeoutExpired:
+    print("SHADOW-VOL-WINDOW TIMEOUT after ${SHADOW_VOL_WINDOW_TIMEOUT_SEC}s", flush=True)
+    raise SystemExit(124)
+PY
+    then
+        echo "Shadow-vol-window run finished — see $SHADOW_VOL_WINDOW_LOG"
+        grep "ntfy sent:" "$SHADOW_VOL_WINDOW_LOG" | tail -1 || echo "shadow_vol_window ntfy line not found in shadow_vol_window log"
+    else
+        SHADOW_VOL_WINDOW_RC=$?
+        if [ "$SHADOW_VOL_WINDOW_RC" -eq 124 ]; then
+            echo "Shadow-vol-window run TIMED OUT after ${SHADOW_VOL_WINDOW_TIMEOUT_SEC}s (non-fatal) — see $SHADOW_VOL_WINDOW_LOG"
+            if [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+                notify "RenQuant 104 SHADOW-VOL-WINDOW-TIMEOUT" "Shadow-vol-window e2e exceeded ${SHADOW_VOL_WINDOW_TIMEOUT_SEC}s; primary already completed. See $SHADOW_VOL_WINDOW_LOG."
+            else
+                echo "Shadow-vol-window timeout ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
+            fi
+        else
+            SHADOW_VOL_WINDOW_BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-CORR-METADATA|P-BEST-ITER|P-RUN-ID|P-META-LABEL|P-FUND-FRESHNESS"
+            if grep -Eq "$SHADOW_VOL_WINDOW_BUY_SIDE_PREFLIGHT_PATTERN" "$SHADOW_VOL_WINDOW_LOG"; then
+                echo "Shadow-vol-window run blocked by expected buy-side preflight gate (non-fatal, rc=$SHADOW_VOL_WINDOW_RC) — see $SHADOW_VOL_WINDOW_LOG"
+                echo "Shadow-vol-window preflight-block ntfy suppressed; prod path already reported the actionable gate."
+            elif [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+                echo "Shadow-vol-window run FAILED (non-fatal, rc=$SHADOW_VOL_WINDOW_RC) — see $SHADOW_VOL_WINDOW_LOG"
+                notify "RenQuant 104 SHADOW-VOL-WINDOW-FAIL" "Shadow-vol-window e2e failed today (rc=$SHADOW_VOL_WINDOW_RC) — primary already completed. See $SHADOW_VOL_WINDOW_LOG."
+            else
+                echo "Shadow-vol-window run FAILED (non-fatal, rc=$SHADOW_VOL_WINDOW_RC) — see $SHADOW_VOL_WINDOW_LOG"
+                echo "Shadow-vol-window failure ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
+            fi
+        fi
+    fi
+else
+    echo "INFO: strategy_config.shadow_vol_window.json not present in pinned strategy configs ($SUBREPO_ROOT/renquant-strategy-104/configs) — Step 5f shadow_vol_window skipped (rail dormant until the vol-window profile lands)."
+fi
+
 # ── Step 6: FLEET LANE SENTINEL (GOAL-1, orch#801) ────────────────────────
 # The watcher for the five fleet e2e lanes (RC/RSs/Rf/RCS/RCf). It runs HERE,
 # as the daily wrapper's last step, for a measured reason: the lanes it
-# inspects are Steps 5–5e immediately above, so daily completion IS the
-# correct trigger. A clock-scheduled job would have to guess a cadence, and
+# inspects are Steps 5–5e above, so daily completion IS the correct trigger.
+# (Step 5f, the vol-window lane, is NOT in this watch set — its session
+# accounting is the orchestrator vol-window readout's parity alarm, which
+# cross-checks the lane's license ledger against its runs DB per session.)
+# A clock-scheduled job would have to guess a cadence, and
 # the first attempt at guessing one (15:30 PT) was derived from a MANUAL
 # run's wall clock and would have paged MISSING on a still-running fleet
 # (codex on orch#801).
