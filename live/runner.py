@@ -1357,6 +1357,11 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     _headline = _action_headline(
         orders, exits, orders_pending, exits_pending, exits_failed
     )
+    # Don't say it twice: on a failed-exit-only cycle the tag is already
+    # FAILED-EXIT, so the headline's leading "FAILED-EXIT AAPL" would render
+    # as "FAILED-EXIT: FAILED-EXIT AAPL".
+    if _headline.startswith(f"{tag} "):
+        _headline = _headline[len(tag) + 1:]
     title    = f"{label} [{run_mode}] {tag}" + (f": {_headline}" if _headline else "")
     body     = _truncate_ntfy_body(" | ".join(parts))
     url      = f"https://ntfy.sh/{topic}"
