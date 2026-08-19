@@ -1320,9 +1320,26 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
 
     topic    = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
     if is_shadow:
-        # 2026-08-04 operator directive: the boilerplate body sentence is
-        # gone — the title already carries [READONLY][<callsign>] AND the
-        # SHADOW-* tag; the body is decisions + context only.
+        # 2026-08-04 (93adb20) removed the body sentence "SHADOW/HYPOTHETICAL
+        # (no live orders)" on the operator's "简练,人话" directive, reasoning
+        # that "the title already carries [READONLY][<callsign>] AND the
+        # SHADOW-* tag; the body is decisions + context only."
+        #
+        # RESTORED TERSELY 2026-08-19, because that reasoning assumed the
+        # reader always sees the title. They do not. The operator received
+        #     BUY NVDA x5 @ $217.56 | BUY VLO x4 @ $346.30 | regime=BULL_CALM …
+        # and asked whether it was real money. It was a shadow lane. A phone
+        # notification collapses the body and a copied body carries no title
+        # at all, so for 15 days (2026-08-05 .. 2026-08-19, zero disclaimers
+        # across all six shadow lanes) every shadow alert read like a fill.
+        #
+        # The directive was terseness, not the removal of the one token that
+        # says "this is not real" — so this is 17 bytes instead of the old 33
+        # and stays at parts[0], where it survives both truncation and a
+        # body-only copy. Making a shadow alert indistinguishable from a live
+        # one is the mirror of the 2026-08-05 conftest incident (a test paged
+        # the operator for real): either way the pager stops meaning anything.
+        parts.insert(0, "SHADOW — not real")
         tag = "SHADOW-ACTION" if (has_trade or has_pending) else "SHADOW-DECISION"
         priority = "default"
     else:
