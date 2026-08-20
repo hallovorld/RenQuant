@@ -908,6 +908,16 @@ def _post_ntfy_with_retries(
     return post_ntfy_alert(url, event, logger=log)
 
 
+#: Buy-leg reasons that count as a POST-SCORING signal decline, mirroring
+#: `renquant_pipeline.kernel.pipeline.signal_direction`. Literals rather than an
+#: import: this is the umbrella notification surface and must not reach across
+#: the repo boundary into pipeline internals.
+_ROTATION_SIGNAL_DECLINE_REASONS = frozenset({
+    "nonpositive_expected_return_no_long",
+    "negative_raw_signal_no_long",
+})
+
+
 def _no_trade_reason(ctx) -> str:
     """Pure rollup of "why no trade" for a decision cycle.
 
@@ -921,21 +931,58 @@ def _no_trade_reason(ctx) -> str:
     candidates survived the vol gate and were blocked downstream by
     admission + QP infeasibility.
     """
-    def _rotation_economic_blocks(c) -> int:
-        """Rotations the pipeline WANTED and the model priced at/below zero.
+    def _rotation_signal_block(c) -> "tuple[str, int] | None":
+        """The DOMINANT buy-leg signal block, named exactly, with its own count.
 
-        A binding, POST-scoring reason: the candidates survived every gate,
-        were scored, and the model declined them on economics. It therefore
-        outranks the pre-scoring vol drop below.
+        These are binding POST-scoring reasons: the candidates survived every
+        gate, were scored, and a signal declined them. So they outrank the
+        pre-scoring vol drop below.
+
+        NAMED, NOT POOLED (2026-08-20, second pass). The first version of this
+        helper returned one total and labelled it
+        `rotation_nonpositive_expected_return(60)`. On that day's real payload
+        only 13 of the 60 were nonpositive-expected-return; the other 47 were
+        `negative_raw_signal` — a DIFFERENT gate, and 25 of those names had a
+        POSITIVE expected return and were declined on panel score alone. A
+        pooled label would have reproduced, one layer finer, the exact defect
+        this function was being fixed for: a message naming a cause that is not
+        the cause.
+
+        Ties resolve by the FULL reason string, not its first character. The
+        first version wrote `-ord(kv[0][0])`, which compares one character —
+        and both current reasons start with "n", so equal counts fell back to
+        dict insertion order and reversing `rotations_blocked` could change the
+        notification. The PR claimed determinism it did not have
+        [codex on RenQuant#599].
+
+        EXACT ALLOWLIST, NOT SUBSTRING MATCHING [same review]. The first
+        version tested `"expected_return" in reason`, which would classify a
+        future `missing_expected_return` as an economic decline.
+
+        This IS an enumerated allowlist, and those go stale — but the polarity
+        is the safe one here, unlike orch#1013's admit predicate. There, an
+        unlisted order type was silently DROPPED from a collection, so the
+        default had to be "include". Here an unlisted reason merely fails to be
+        ELEVATED above the vol-gate fall-through, so the default is "do not
+        claim this is the cause" — which is what this function exists to
+        guarantee. A genuinely new signal-decline reason must be added here as
+        well as in `signal_direction.py`: a documented maintenance point, not a
+        silent misclassification.
         """
-        out = 0
+        counts: dict[str, int] = {}
         for rb in (getattr(c, "rotations_blocked", []) or []):
             if not isinstance(rb, dict):
                 continue
             reason = str(rb.get("reason", ""))
-            if ("expected_return" in reason) or ("negative_raw_signal" in reason):
-                out += 1
-        return out
+            if reason in _ROTATION_SIGNAL_DECLINE_REASONS:
+                counts[reason] = counts.get(reason, 0) + 1
+        if not counts:
+            return None
+        # Highest count wins; ties resolve by the FULL reason string, so the
+        # output cannot depend on the order of `rotations_blocked`.
+        top = max(counts.values())
+        reason = min(r for r, n in counts.items() if n == top)
+        return f"rotation_{reason}", top
 
     if getattr(ctx, "bear_only", False):
         return "bear_only"
@@ -968,12 +1015,16 @@ def _no_trade_reason(ctx) -> str:
         # given a counter, so the loop fell through to the last entry and
         # blamed the vol gate again. The operator read that message and moved
         # to loosen a live risk limit for a reason that was not the cause.
-        ("_rotation_economic", "rotation_nonpositive_expected_return"),
+        ("_rotation_signal", None),   # label comes from the helper, see above
         ("risk_gate_vol_dropped", "risk_gate_vol_dropped"),
     )
     for key, label in specific_blocks:
-        n = (_rotation_economic_blocks(ctx) if key == "_rotation_economic"
-             else int(counters.get(key, 0) or 0))
+        if key == "_rotation_signal":
+            hit = _rotation_signal_block(ctx)
+            if hit:
+                return f"{hit[0]}({hit[1]})"
+            continue
+        n = int(counters.get(key, 0) or 0)
         if n > 0:
             return f"{label}({n})"
     if counters.get("qp_blocked_buys", 0):
