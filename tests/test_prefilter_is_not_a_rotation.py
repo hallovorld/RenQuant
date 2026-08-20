@@ -14,8 +14,14 @@ sell leg is chosen, and the producer writes `sell=None` together with
 `stage="prefilter"` on purpose — its own comment reads "no pair exists yet ...
 so monitors can tell the stages apart"
 [renquant-pipeline kernel/pipeline/task_rotation.py, VERIFIED in the running
-tree at RenQuant/.subrepo_runtime/repos/]. All 61 entries that day were
-prefilter; zero were pairs.
+tree at RenQuant/.subrepo_runtime/repos/].
+
+AND THE INVERSE, WHICH IS WORSE. Of the 61 entries that day, 60 were prefilter
+and exactly ONE was a genuine blocked rotation: `SPG→CRWD reason=correlation_
+guard`, recorded by `ValidatePairsTask` AFTER all 60 prefilter appends
+[VERIFIED — log line 550 at 13:57:10,492 vs the prefilter block at ,491]. So it
+sat at position 61, inside the "+58 more". The renderer showed the operator
+three rotations that never existed and hid the only one that did.
 
 So the producer was correct and self-describing, and the DEFECT WAS PURELY IN
 THIS RENDERER: it ignored `stage`, and `rb.get("sell", "?")` could never fire
@@ -206,3 +212,39 @@ class TestTheSampleTickersFollowCANDIDATERANK:
         body = _body(_ctx(rotations_blocked=[_prefilter(t) for t in ranked_order]))
         assert "APH, WELL, CVS +21 more" in body, body
         assert "ROST" not in body, "the 4th-ranked name is inside the +N, not shown"
+
+
+class TestTheONERealRotationThatDayIsNoLongerHidden:
+    """The inverse of the headline bug, and the more damaging half.
+
+    2026-08-20 had 61 entries: 60 prefilter declines, then ONE genuine blocked
+    rotation — `SPG→CRWD reason=correlation_guard` from `ValidatePairsTask`,
+    appended last [VERIFIED — logs/daily_104/2026-08-20.log:550]. Under the old
+    single flat list the visible slots went to the first three, all prefilter,
+    and the real rotation block sat at position 61 inside "+58 more".
+
+    So the message did not merely mislabel: it spent the operator's three
+    visible slots on rotations that never existed while concealing the one that
+    actually happened. Splitting the kinds fixes both directions at once.
+    """
+
+    def _the_real_payload(self):
+        names = ["APH", "WELL", "CVS", "ROST"] + [f"T{i}" for i in range(56)]
+        return _ctx(counters={"risk_gate_vol_dropped": 30}, rotations_blocked=(
+            [_prefilter(t) for t in names]
+            + [{"sell": "SPG", "buy": "CRWD", "reason": "correlation_guard"}]))
+
+    def test_the_real_block_surfaces_as_its_own_segment(self):
+        body = _body(self._the_real_payload())
+        assert "BLOCKED-ROTATION SPG→CRWD (correlation_guard)" in body, body
+
+    def test_it_is_not_buried_behind_the_sixty(self):
+        """It must not be summarised away: one paired block is under the cap,
+        so there is no `+N more` for the paired list at all."""
+        body = _body(self._the_real_payload())
+        assert "BLOCKED-ROTATION +" not in body, body
+
+    def test_the_sixty_are_still_counted_separately(self):
+        body = _body(self._the_real_payload())
+        assert "DECLINED-BUY x60" in body, body
+        assert "x61" not in body, "60 declines + 1 rotation is not 61 of either"
