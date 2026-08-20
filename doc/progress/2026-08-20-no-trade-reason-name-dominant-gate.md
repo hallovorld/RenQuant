@@ -1,6 +1,7 @@
 # My own no-trade fix pooled two different gates — naming the dominant one
 
-STATUS:   delivered. `_no_trade_reason` + updated/extended tests (89 passed).
+STATUS:   delivered. `_no_trade_reason` + updated/extended tests
+          (71 + 10 passed; the rotation file was 6 before review).
           Notification composition only — no order path, no gate, no config.
 
 WHAT:     RenQuant#598 (merged, deployed) made a post-scoring rotation decline
@@ -19,8 +20,26 @@ WHAT:     RenQuant#598 (merged, deployed) made a post-scoring rotation decline
 
           FIX: `_rotation_signal_block` now counts per reason and returns the
           DOMINANT one with its own name and count —
-          `rotation_negative_raw_signal_no_long(47)` on that payload. Ties break
-          deterministically. Mirrors the `qp_counts` max() convention already
+          `rotation_negative_raw_signal_no_long(47)` on that payload.
+
+          TWO REVIEW CORRECTIONS, both of which I had gotten wrong [codex on
+          RenQuant#599]. (1) This doc previously said "ties break
+          deterministically" — they did NOT. `-ord(kv[0][0])` compares ONE
+          character and both reasons start with "n", so equal counts fell back
+          to dict insertion order and reversing the payload changed the
+          notification. Now max-count then `min()` over the tied FULL strings.
+          (2) `"expected_return" in reason` would classify a future
+          `missing_expected_return` — a plumbing fault — as an economic
+          decline; replaced by an exact frozenset of the two reason constants.
+
+          On (2): an enumerated allowlist is the shape I called a defect in
+          orch#1013, so the difference is worth stating. There, an unlisted
+          order type was silently DROPPED, so the default had to be "include".
+          Here an unlisted reason merely fails to be ELEVATED above the
+          vol-gate fall-through, so the default is "do not claim this is the
+          cause" — what this function exists to guarantee.
+
+          Mirrors the `qp_counts` max() convention already
           used below it for the same multi-reason situation.
 
 WHY/DIR:  G-F. I caught this by exercising my own merged fix against the real
