@@ -32,10 +32,30 @@ WHAT:     The 2026-08-18 vol-window deploy advanced three subrepo pins using
 WHY/DIR:  CLAUDE.md's containment protocol: "if the change is meant to persist,
           the reviewed surface [is] updated in the same batch … otherwise the
           daily run-surface drift scan alarming on it is the DESIGNED reminder
-          to lift or legitimize it." That reminder has been firing —
-          `run-surface-drift` last exit 1 — and it is correct. This is the
-          "legitimize" branch of that choice, and it is the same ritual
-          `fdc5933` performed for the previous batch.
+          to lift or legitimize it." This is the "legitimize" branch of that
+          choice, and the same ritual `fdc5933` performed for the previous
+          batch.
+
+          CORRECTION (2026-08-20, before merge): an earlier draft of this doc
+          claimed the reminder "has been firing — `run-surface-drift` last exit
+          1 — and it is correct", i.e. that the drift scan was the alarm
+          pointing here. **That was false and is withdrawn.** I ran the scanner
+          instead of continuing to assert it; it never mentions the pins. Its
+          actual findings are the two uncommitted working-tree files
+          (`renquant-model README.md`, `orchestrator-run
+          run_session_scheduler.sh`), three import-resolution lines already
+          diagnosed as a scanner-environment artifact, and five rq105 jobs
+          resolving `renquant-common` by filesystem fallback (filed as
+          renquant-orchestrator#1016).
+
+          What actually surfaced this was `verify-pinned-declaration` failing
+          on the pin bump — a gate doing its job — plus reading the lock
+          against the runtime while investigating something else. The
+          containment-protocol reasoning stands on its own: a reviewed surface
+          that disagrees with what runs is worth fixing whether or not a
+          scanner happens to say so. Recorded rather than quietly amended,
+          because a PR whose whole point is that reviewed surfaces should state
+          the truth cannot ship a false one.
 
           The concrete risk is not theoretical: a `git checkout` or
           `reset --hard` on the umbrella would silently revert production to
@@ -64,9 +84,16 @@ EVIDENCE:
   scope:        the lock file. Deliberately does NOT touch
                 `ops/launchd_manifest.json` or any job definition.
 
-NEXT:      Watch `run-surface-drift` on its next firing; if it stays exit 1
-           after this merges, the drift it reports is broader than these three
-           pins and needs its own investigation rather than another
-           legitimization. Same for `shadow-ab-daily` (exit 3), whose ack names
-           "run-checkout pins synced to the run manifest" as its clear
-           condition.
+NEXT:      Do NOT expect `run-surface-drift` to clear after this merges — per
+           the correction above, it was never reporting these pins, and an
+           earlier draft of this section told operators to watch exactly that.
+           It will keep reporting the two uncommitted working-tree files and
+           the rq105 fallback until those are dealt with on their own terms
+           (renquant-orchestrator#1016).
+
+           `shadow-ab-daily` (exit 3) IS worth watching: its expired ack names
+           "run-checkout pins synced to the run manifest (orch#747 item 5) and
+           the 14:35 two-arm run passes PRECHECK" as its clear condition, and
+           its PRECHECK reads the pins. If it still refuses after this merges,
+           the remaining blocker is the dirty `renquant-model` working tree
+           (`M README.md`), which its ack also names — not the pins.
