@@ -408,3 +408,63 @@ def test_verify_pinned_declaration_matches_and_catches_flips(tmp_path):
 def test_selftest_passes():
     mod = _load_module()
     assert mod.run_selftest() == 0
+
+
+def test_verify_catches_a_stale_NON_strategy_pin_row(tmp_path):
+    """RenQuant#596: the verifier compared ONE field — `strategy_104_pin` from
+    the machine block — so a bump to any OTHER subrepo regenerated nothing and
+    failed nothing. #596 shipped a snapshot whose rendered table still said
+    renquant-pipeline f9f488d59759 / renquant-backtesting 8c2c44564957 while
+    the lock in the same commit pinned 3d9c7fb17c75 / e5f9bae3b1e2, and the
+    check passed it GREEN.
+
+    The contract this pins: a declaration that renders the lock is verified
+    against the WHOLE lock, not against the one row someone thought of.
+    """
+    mod = _load_module()
+    root = _fixture_root(mod, tmp_path)
+    out = tmp_path / "snapshot.md"
+    assert mod.main(["--repo-root", str(root), "--output", str(out)]) == 0
+
+    configs_dir = root / mod.PINNED_CONFIGS_REL
+    lock_path = root / mod.LOCK_FILE_REL
+    assert mod.verify_pinned_declaration(
+        snapshot_path=out, configs_dir=configs_dir, lock_path=lock_path) == []
+
+    # Advance a NON-strategy pin (renquant-common) and do NOT regenerate —
+    # exactly the shape that slipped through on #596.
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert lock["subrepos"][1]["name"] != mod.PINNED_SUBREPO_NAME, (
+        "this test is only meaningful against a non-strategy subrepo")
+    lock["subrepos"][1]["commit"] = "b" * 40
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    problems = mod.verify_pinned_declaration(
+        snapshot_path=out, configs_dir=configs_dir, lock_path=lock_path)
+    assert any("renquant-common" in p and "b" * 12 in p for p in problems), problems
+
+    # And prove the catch comes from the NEW check, not the pre-existing one:
+    # strategy-104 is untouched, so the old single-field comparison is still
+    # satisfied and would have reported nothing.
+    block = mod.parse_machine_block(out.read_text(encoding="utf-8"))
+    assert block["strategy_104_pin"] == lock["subrepos"][0]["commit"]
+    assert not any("strategy-104 pin" in p for p in problems), problems
+
+
+def test_verify_catches_a_pin_row_missing_from_the_table(tmp_path):
+    """The other direction: the lock pins something the declaration omits."""
+    mod = _load_module()
+    root = _fixture_root(mod, tmp_path)
+    out = tmp_path / "snapshot.md"
+    assert mod.main(["--repo-root", str(root), "--output", str(out)]) == 0
+    configs_dir = root / mod.PINNED_CONFIGS_REL
+    lock_path = root / mod.LOCK_FILE_REL
+
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["subrepos"].append({"name": "renquant-newcomer", "branch": "main",
+                             "commit": "d" * 40, "status": "bootstrapped"})
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    problems = mod.verify_pinned_declaration(
+        snapshot_path=out, configs_dir=configs_dir, lock_path=lock_path)
+    assert any("renquant-newcomer" in p and "missing" in p for p in problems), problems
