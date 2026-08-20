@@ -24,7 +24,7 @@
       "local_path": "/Users/renhao/git/github/renquant-strategy-104",
       "remote": "https://github.com/hallovorld/renquant-strategy-104",
       "branch": "main",
-      "commit": "e00d9356ac620426df031e0c08ce66301c50c22e",
+      "commit": "8a395e49639a34acb2c8bd85e148b044a1135714",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -44,7 +44,7 @@
       "local_path": "/Users/renhao/git/github/renquant-pipeline",
       "remote": "https://github.com/hallovorld/renquant-pipeline",
       "branch": "main",
-      "commit": "4aec0e35e8200c623c5353c74bd175a0871d3a9d",
+      "commit": "3d9c7fb17c7504b910cf785c51106c5e6855c4b5",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -64,7 +64,7 @@
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
-      "commit": "8c2c445649570a79b292c22fd988a7becae0e612",
+      "commit": "e5f9bae3b1e2a2013fc365e6f2a736fb4eec2cd9",
       "test_command": "make test",
       "status": "bootstrapped"
     },
