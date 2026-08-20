@@ -908,6 +908,16 @@ def _post_ntfy_with_retries(
     return post_ntfy_alert(url, event, logger=log)
 
 
+#: Buy-leg reasons that count as a POST-SCORING signal decline, mirroring
+#: `renquant_pipeline.kernel.pipeline.signal_direction`. Literals rather than an
+#: import: this is the umbrella notification surface and must not reach across
+#: the repo boundary into pipeline internals.
+_ROTATION_SIGNAL_DECLINE_REASONS = frozenset({
+    "nonpositive_expected_return_no_long",
+    "negative_raw_signal_no_long",
+})
+
+
 def _no_trade_reason(ctx) -> str:
     """Pure rollup of "why no trade" for a decision cycle.
 
@@ -938,21 +948,41 @@ def _no_trade_reason(ctx) -> str:
         this function was being fixed for: a message naming a cause that is not
         the cause.
 
-        Ties break toward the alphabetically-first reason so the output is
-        deterministic. Mirrors the `qp_counts` max() convention already used
-        below for the same multi-reason situation.
+        Ties resolve by the FULL reason string, not its first character. The
+        first version wrote `-ord(kv[0][0])`, which compares one character —
+        and both current reasons start with "n", so equal counts fell back to
+        dict insertion order and reversing `rotations_blocked` could change the
+        notification. The PR claimed determinism it did not have
+        [codex on RenQuant#599].
+
+        EXACT ALLOWLIST, NOT SUBSTRING MATCHING [same review]. The first
+        version tested `"expected_return" in reason`, which would classify a
+        future `missing_expected_return` as an economic decline.
+
+        This IS an enumerated allowlist, and those go stale — but the polarity
+        is the safe one here, unlike orch#1013's admit predicate. There, an
+        unlisted order type was silently DROPPED from a collection, so the
+        default had to be "include". Here an unlisted reason merely fails to be
+        ELEVATED above the vol-gate fall-through, so the default is "do not
+        claim this is the cause" — which is what this function exists to
+        guarantee. A genuinely new signal-decline reason must be added here as
+        well as in `signal_direction.py`: a documented maintenance point, not a
+        silent misclassification.
         """
         counts: dict[str, int] = {}
         for rb in (getattr(c, "rotations_blocked", []) or []):
             if not isinstance(rb, dict):
                 continue
             reason = str(rb.get("reason", ""))
-            if ("expected_return" in reason) or ("negative_raw_signal" in reason):
+            if reason in _ROTATION_SIGNAL_DECLINE_REASONS:
                 counts[reason] = counts.get(reason, 0) + 1
         if not counts:
             return None
-        reason, n = max(counts.items(), key=lambda kv: (kv[1], -ord(kv[0][0])))
-        return f"rotation_{reason}", n
+        # Highest count wins; ties resolve by the FULL reason string, so the
+        # output cannot depend on the order of `rotations_blocked`.
+        top = max(counts.values())
+        reason = min(r for r, n in counts.items() if n == top)
+        return f"rotation_{reason}", top
 
     if getattr(ctx, "bear_only", False):
         return "bear_only"
