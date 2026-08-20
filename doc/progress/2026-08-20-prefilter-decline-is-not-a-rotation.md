@@ -1,6 +1,6 @@
 # `None→APH` was not a broken rotation — it was never a rotation
 
-STATUS:   delivered. Renderer split + 13 tests (11 of which fail against main).
+STATUS:   delivered. Renderer split + 16 tests (14 of which fail against main).
 
 WHAT:     The live 2026-08-20 DECISION message opened with
 
@@ -17,8 +17,20 @@ WHAT:     The live 2026-08-20 DECISION message opened with
           before any sell leg is chosen (#289, 2026-08-17) and the producer
           writes `sell=None` together with `stage="prefilter"` deliberately —
           its own comment reads "no pair exists yet ... so monitors can tell
-          the stages apart". All 61 entries that day were prefilter; zero were
-          pairs.
+          the stages apart".
+
+          CORRECTION TO MY OWN FIRST READING — and it makes this worse, not
+          milder. I wrote that all 61 entries were prefilter. Re-derived from
+          the log rather than from the notification: 60 were prefilter and
+          exactly ONE was a genuine blocked rotation, SPG→CRWD on
+          correlation_guard, appended by ValidatePairsTask AFTER all 60
+          prefilter appends. It therefore sat at position 61, inside the
+          "+58 more".
+
+          So the message spent all three visible slots on rotations that never
+          existed and concealed the only rotation actually blocked that day.
+          The operator asked "why is every rotation failing" while looking at a
+          message that had hidden the single real failure.
 
           So the producer was correct and self-describing. The defect was
           entirely in this umbrella renderer, which ignored `stage` and
@@ -70,7 +82,10 @@ EVIDENCE:
                    ctx.ranked if ...]` [VERIFIED — task_rotation.py:250], and
                    the log's panel scores descend to the decimal (APH 2.434,
                    WELL 2.210, CVS 2.209, ROST 1.934)
-                 - 11 of 13 new tests fail against main; the 2 that pass are
+                 - 60 prefilter + 1 real pair = 61 [VERIFIED — log:454-514
+                   parsed, plus ROTATION_REJECT swap=SPG→CRWD at :550;
+                   record_rotation_block called at task_rotation.py:815]
+                 - 14 of 16 new tests fail against main; the 2 that pass are
                    the preservation tests, which is the correct polarity
                    [VERIFIED — mutation run]
   best-known?:   yes. The alternative — printing the sell leg as "?" — keeps
