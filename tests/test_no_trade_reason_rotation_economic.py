@@ -54,7 +54,7 @@ def test_the_2026_08_20_session_does_not_blame_the_vol_gate():
                            for i in range(61)],
     )
     reason = _no_trade_reason(ctx)
-    assert reason == "rotation_nonpositive_expected_return(61)", reason
+    assert reason == "rotation_nonpositive_expected_return_no_long(61)", reason
     assert "risk_gate_vol_dropped" not in reason
 
 
@@ -62,7 +62,30 @@ def test_negative_raw_signal_counts_too():
     """The sibling rotation reason from the same live message."""
     ctx = _ctx(counters={"risk_gate_vol_dropped": 9},
                rotations_blocked=[{"buy": "X", "reason": "negative_raw_signal_no_long"}])
-    assert _no_trade_reason(ctx) == "rotation_nonpositive_expected_return(1)"
+    assert _no_trade_reason(ctx) == "rotation_negative_raw_signal_no_long(1)"
+
+
+def test_the_dominant_reason_is_named_never_pooled():
+    """The real 2026-08-20 payload was MIXED: 13 nonpositive-expected-return
+    and 47 negative-raw-signal. A pooled total labelled with one of the two
+    names would repeat, one layer finer, the very defect this file exists for.
+
+    It matters materially: of those 47, twenty-five had a POSITIVE expected
+    return (AFRM +34%, META +19%, SOFI +9%) and were declined on panel score
+    alone. Calling that 'nonpositive expected return' would be false.
+    """
+    ctx = _ctx(
+        counters={"risk_gate_vol_dropped": 30},
+        rotations_blocked=(
+            [{"buy": f"E{i}", "reason": "nonpositive_expected_return_no_long"}
+             for i in range(13)]
+            + [{"buy": f"S{i}", "reason": "negative_raw_signal_no_long"}
+               for i in range(47)]
+        ),
+    )
+    reason = _no_trade_reason(ctx)
+    assert reason == "rotation_negative_raw_signal_no_long(47)", reason
+    assert "(60)" not in reason, "the two gates must not be pooled into one total"
 
 
 def test_the_vol_gate_is_still_named_when_it_IS_the_cause():
