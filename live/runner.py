@@ -921,21 +921,38 @@ def _no_trade_reason(ctx) -> str:
     candidates survived the vol gate and were blocked downstream by
     admission + QP infeasibility.
     """
-    def _rotation_economic_blocks(c) -> int:
-        """Rotations the pipeline WANTED and the model priced at/below zero.
+    def _rotation_signal_block(c) -> "tuple[str, int] | None":
+        """The DOMINANT buy-leg signal block, named exactly, with its own count.
 
-        A binding, POST-scoring reason: the candidates survived every gate,
-        were scored, and the model declined them on economics. It therefore
-        outranks the pre-scoring vol drop below.
+        These are binding POST-scoring reasons: the candidates survived every
+        gate, were scored, and a signal declined them. So they outrank the
+        pre-scoring vol drop below.
+
+        NAMED, NOT POOLED (2026-08-20, second pass). The first version of this
+        helper returned one total and labelled it
+        `rotation_nonpositive_expected_return(60)`. On that day's real payload
+        only 13 of the 60 were nonpositive-expected-return; the other 47 were
+        `negative_raw_signal` — a DIFFERENT gate, and 25 of those names had a
+        POSITIVE expected return and were declined on panel score alone. A
+        pooled label would have reproduced, one layer finer, the exact defect
+        this function was being fixed for: a message naming a cause that is not
+        the cause.
+
+        Ties break toward the alphabetically-first reason so the output is
+        deterministic. Mirrors the `qp_counts` max() convention already used
+        below for the same multi-reason situation.
         """
-        out = 0
+        counts: dict[str, int] = {}
         for rb in (getattr(c, "rotations_blocked", []) or []):
             if not isinstance(rb, dict):
                 continue
             reason = str(rb.get("reason", ""))
             if ("expected_return" in reason) or ("negative_raw_signal" in reason):
-                out += 1
-        return out
+                counts[reason] = counts.get(reason, 0) + 1
+        if not counts:
+            return None
+        reason, n = max(counts.items(), key=lambda kv: (kv[1], -ord(kv[0][0])))
+        return f"rotation_{reason}", n
 
     if getattr(ctx, "bear_only", False):
         return "bear_only"
@@ -968,12 +985,16 @@ def _no_trade_reason(ctx) -> str:
         # given a counter, so the loop fell through to the last entry and
         # blamed the vol gate again. The operator read that message and moved
         # to loosen a live risk limit for a reason that was not the cause.
-        ("_rotation_economic", "rotation_nonpositive_expected_return"),
+        ("_rotation_signal", None),   # label comes from the helper, see above
         ("risk_gate_vol_dropped", "risk_gate_vol_dropped"),
     )
     for key, label in specific_blocks:
-        n = (_rotation_economic_blocks(ctx) if key == "_rotation_economic"
-             else int(counters.get(key, 0) or 0))
+        if key == "_rotation_signal":
+            hit = _rotation_signal_block(ctx)
+            if hit:
+                return f"{hit[0]}({hit[1]})"
+            continue
+        n = int(counters.get(key, 0) or 0)
         if n > 0:
             return f"{label}({n})"
     if counters.get("qp_blocked_buys", 0):
