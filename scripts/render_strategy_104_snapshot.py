@@ -925,6 +925,35 @@ def parse_machine_block(text: str) -> Optional[dict[str, Any]]:
 # CI semantic verification (no live tree required)
 # --------------------------------------------------------------------------
 
+#: One rendered row of the "## Subrepo pins (subrepos.lock.json)" table, in the
+#: exact shape ``render``/``_fmt`` emits: ``| name | branch | `sha12` | status |``.
+_PIN_ROW_RE = re.compile(
+    r"^\|\s*(?P<name>[^|]+?)\s*\|\s*(?P<branch>[^|]+?)\s*\|\s*`(?P<commit>[^`]*)`\s*\|"
+)
+
+
+def parse_rendered_pin_rows(text: str) -> dict[str, str]:
+    """The `{subrepo: short_commit}` a reader of the committed snapshot sees.
+
+    Parsed from the RENDERED table rather than the machine block, because the
+    rendered table is the thing an operator actually reads — and it is the
+    thing that went stale (see `verify_pinned_declaration`).
+    """
+    rows: dict[str, str] = {}
+    in_section = False
+    for line in text.splitlines():
+        if line.startswith("## Subrepo pins"):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("## "):
+                break
+            m = _PIN_ROW_RE.match(line)
+            if m and m.group("name") not in {"Subrepo", "---"}:
+                rows[m.group("name")] = m.group("commit")
+    return rows
+
+
 def verify_pinned_declaration(
     *, snapshot_path: Path, configs_dir: Path, lock_path: Path,
 ) -> list[str]:
@@ -957,6 +986,44 @@ def verify_pinned_declaration(
             f"snapshot was generated from strategy-104 pin "
             f"{block.get('strategy_104_pin')} but subrepos.lock.json pins {lock_pin} "
             "— regenerate the snapshot (make snapshot) as part of this pin bump"
+        )
+
+    # EVERY rendered pin row, not just strategy-104's [codex on RenQuant#596].
+    # The check above reads one field of the machine block, so a bump to any
+    # OTHER subrepo regenerated nothing and failed nothing: RenQuant#596 shipped
+    # a snapshot whose table still said renquant-pipeline f9f488d59759 and
+    # renquant-backtesting 8c2c44564957 while the lock in the same commit
+    # pinned 3d9c7fb17c75 and e5f9bae3b1e2, and this verifier passed it green.
+    # A declaration that renders the lock must be checked against the whole
+    # lock, or it certifies only the row someone happened to think of.
+    rendered = parse_rendered_pin_rows(text)
+    expected = {
+        str(p["name"]): str(p["commit"])[:12]
+        for p in _lock_pins(lock)
+        if p.get("name") and p.get("commit")
+    }
+    if expected and not rendered:
+        problems.append(
+            "snapshot renders no subrepo-pin rows while the lock declares "
+            f"{len(expected)} — regenerate the snapshot (make snapshot)"
+        )
+    for name, want in sorted(expected.items()):
+        got = rendered.get(name)
+        if got is None:
+            problems.append(
+                f"snapshot's subrepo-pin table is missing {name}, which the lock "
+                "pins — regenerate the snapshot (make snapshot)"
+            )
+        elif got != want:
+            problems.append(
+                f"snapshot declares {name} at {got} but subrepos.lock.json pins "
+                f"{want} — regenerate the snapshot (make snapshot) as part of "
+                "this pin bump"
+            )
+    for name in sorted(set(rendered) - set(expected)):
+        problems.append(
+            f"snapshot declares a subrepo pin for {name}, which the lock does not "
+            "contain — regenerate the snapshot (make snapshot)"
         )
 
     config = _load_json(configs_dir / ACTIVE_CONFIG_NAME)
