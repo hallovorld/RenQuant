@@ -921,6 +921,22 @@ def _no_trade_reason(ctx) -> str:
     candidates survived the vol gate and were blocked downstream by
     admission + QP infeasibility.
     """
+    def _rotation_economic_blocks(c) -> int:
+        """Rotations the pipeline WANTED and the model priced at/below zero.
+
+        A binding, POST-scoring reason: the candidates survived every gate,
+        were scored, and the model declined them on economics. It therefore
+        outranks the pre-scoring vol drop below.
+        """
+        out = 0
+        for rb in (getattr(c, "rotations_blocked", []) or []):
+            if not isinstance(rb, dict):
+                continue
+            reason = str(rb.get("reason", ""))
+            if ("expected_return" in reason) or ("negative_raw_signal" in reason):
+                out += 1
+        return out
+
     if getattr(ctx, "bear_only", False):
         return "bear_only"
     rs = getattr(ctx, "regime_state", None)
@@ -938,11 +954,26 @@ def _no_trade_reason(ctx) -> str:
         ("qp_missing_solution", "qp_missing_solution"),
         ("qp_optimal_no_signal", "qp_optimal_no_signal"),
         ("qp_other_nonoptimal", "qp_other_nonoptimal"),
-        # Pre-scoring drop — only the cause when nothing later applied
+        # Pre-scoring drop — only the cause when nothing later applied.
+        #
+        # 2026-08-20: it applied anyway, through a hole. On that session the
+        # message read `no trade (risk_gate_vol_dropped(30))` while the run's
+        # own funnel said `verdict=ECONOMIC_NO_TRADE structural=False
+        # candidates_final=84 buys=0` and 61 rotations were blocked
+        # `nonpositive_expected_return_no_long`. 84 candidates WERE scored and
+        # the model wanted none of them — the vol gate was not binding.
+        #
+        # The 2026-06-01 rewrite (see the docstring) fixed the ORDERING for
+        # exactly this failure, but the rotation-side economic block was never
+        # given a counter, so the loop fell through to the last entry and
+        # blamed the vol gate again. The operator read that message and moved
+        # to loosen a live risk limit for a reason that was not the cause.
+        ("_rotation_economic", "rotation_nonpositive_expected_return"),
         ("risk_gate_vol_dropped", "risk_gate_vol_dropped"),
     )
     for key, label in specific_blocks:
-        n = int(counters.get(key, 0) or 0)
+        n = (_rotation_economic_blocks(ctx) if key == "_rotation_economic"
+             else int(counters.get(key, 0) or 0))
         if n > 0:
             return f"{label}({n})"
     if counters.get("qp_blocked_buys", 0):
