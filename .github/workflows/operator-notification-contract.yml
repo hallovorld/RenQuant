@@ -65,8 +65,21 @@ jobs:
           # / subrepo-pin-ci-green.yml / strategy-104-snapshot-fresh.yml.
           token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
 
-      - name: Install test tools
-        run: python3 -m pip install pytest numpy pandas
+      - name: Install test tools + the pinned renquant-common
+        # INSTALL the pinned checkout rather than putting its src/ on
+        # PYTHONPATH. The first version did the latter and failed on
+        # `ModuleNotFoundError: No module named 'pydantic'`: importing
+        # `renquant_common.notify` runs the package __init__, which reaches
+        # contracts -> schemas -> pydantic. Hand-listing that today's chain
+        # happens to need (arch, pandas_market_calendars, pyarrow, pydantic,
+        # scipy, statsmodels, …) would silently rot the next time
+        # renquant-common adds a dependency — the failure mode this repo keeps
+        # paying for. `pip install` resolves what the package DECLARES, so the
+        # job tracks the pin instead of a guess.
+        run: |
+          set -euo pipefail
+          python3 -m pip install pytest
+          python3 -m pip install ./pinned-common
 
       - name: Operator notification contract (live/runner.py ntfy composition)
         env:
@@ -77,6 +90,7 @@ jobs:
           RENQUANT_NO_NOTIFY: "1"
         run: |
           set -euo pipefail
-          export PYTHONPATH="${GITHUB_WORKSPACE}/pinned-common/src:${PYTHONPATH:-}"
+          # Fail loudly HERE if the contract dependency is unusable, rather
+          # than as a confusing pytest collection error.
           python3 -c "import renquant_common.notify as n; print('renquant_common OK:', n.__file__)"
           python3 -m pytest -q -o addopts='' tests/test_runner_trade_ntfy.py
