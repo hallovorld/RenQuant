@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -786,6 +786,65 @@ def _run_once_multi_pipeline_inner(
 # leaves headroom under 4096 for title + ntfy's own framing overhead.
 _NTFY_BODY_MAX_BYTES = 3800
 
+#: How many BLOCKED-ROTATION pairs may reach the ntfy BODY. See the block that
+#: uses it for why an unbounded list evicted the decision it was annotating.
+_ROT_BLOCKED_NTFY_MAX = 3
+
+#: How many action tokens may reach the ntfy TITLE before it summarises.
+_TITLE_ACTION_MAX = 3
+
+
+def _action_headline(
+    orders: Iterable[Any],
+    exits: Iterable[Any],
+    orders_pending: Iterable[Any],
+    exits_pending: Iterable[Any],
+    exits_failed: Iterable[Any],
+    *,
+    max_items: int = _TITLE_ACTION_MAX,
+) -> str:
+    """Terse "what did it actually do" summary for the ntfy TITLE.
+
+    WHY THE TITLE (2026-08-19). The title is the only part of a push
+    notification that reliably survives on a phone lock screen; the body is
+    collapsed. Prod titles were ``RENQUANT-104 [full] PENDING`` — a status
+    word carrying no content — while the SHADOW lanes' titles said
+    ``SHADOW-ACTION`` and their bodies were short enough to read whole. The
+    operator could therefore read the shadow lanes and NOT read production,
+    and asked, reasonably, whether prod was broken. It was not: the decision
+    was in the body, behind ~3.3 KB of BLOCKED-ROTATION segments.
+
+    Sizes are included because "BUY PANW" and "BUY PANW x300" are different
+    events. Prices are NOT — they are in the body, and the title's budget is
+    better spent on more tickers than on cents.
+    """
+    toks: list[str] = []
+    for o in orders:
+        tkr = o.get("ticker") if isinstance(o, dict) else getattr(o, "ticker", "?")
+        sh = o.get("shares") if isinstance(o, dict) else getattr(o, "shares", "?")
+        toks.append(f"BUY {tkr} x{sh}")
+    for e in exits:
+        tkr = e[0] if isinstance(e, tuple) and len(e) == 2 else getattr(e, "ticker", "?")
+        toks.append(f"EXIT {tkr}")
+    for o in orders_pending:
+        if isinstance(o, dict):
+            toks.append(f"BUY {o.get('ticker', '?')} x{o.get('shares', '?')}")
+    for e in exits_pending:
+        if isinstance(e, dict):
+            toks.append(f"EXIT {e.get('ticker', '?')} x{e.get('qty', '?')}")
+    # Failed exits go FIRST: a rejected sell is the one thing that may need a
+    # human at the broker, so it must not be the token that gets summarised away.
+    failed = [
+        f"FAILED-EXIT {fe.get('ticker', '?')}" for fe in exits_failed if isinstance(fe, dict)
+    ]
+    toks = failed + toks
+    if not toks:
+        return ""
+    head = ", ".join(toks[:max_items])
+    if len(toks) > max_items:
+        head += f" +{len(toks) - max_items}"
+    return head
+
 
 def _truncate_ntfy_body(body: str, max_bytes: int = _NTFY_BODY_MAX_BYTES) -> str:
     """Truncate ``body`` to a UTF-8-safe byte budget, appending a marker.
@@ -1049,13 +1108,28 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     # saw the resulting buys/exits, so they could not tell whether the
     # system had ALSO wanted to swap (and what blocked the swap). Each
     # blocked entry is `{sell, buy, reason}`.
+    #
+    # CAPPED 2026-08-19. Bug L's fix was right and stays; what changed is the
+    # VOLUME. On 2026-08-19 the live run emitted 60 BLOCKED-ROTATION segments
+    # (~3.3 KB) against 2 real order segments, so the body hit
+    # _NTFY_BODY_MAX_BYTES and the "…[truncated]" cut fell INSIDE the blocked
+    # list — the trailing regime/equity context never reached the operator at
+    # all. A diagnostic that evicts the decision it annotates is worse than no
+    # diagnostic: the operator reported being unable to see what prod did.
+    # The count is what carries the signal here, not each pair; the full list
+    # stays in the run log, which is where a 60-item enumeration belongs.
     rot_blocked = list(getattr(ctx, "rotations_blocked", []) or [])
-    for rb in rot_blocked:
+    for rb in rot_blocked[:_ROT_BLOCKED_NTFY_MAX]:
         if isinstance(rb, dict):
             sell_t = rb.get("sell", "?")
             buy_t  = rb.get("buy",  "?")
             reason = rb.get("reason", "?")
             parts.append(f"BLOCKED-ROTATION {sell_t}→{buy_t} ({reason})")
+    if len(rot_blocked) > _ROT_BLOCKED_NTFY_MAX:
+        parts.append(
+            f"BLOCKED-ROTATION +{len(rot_blocked) - _ROT_BLOCKED_NTFY_MAX} more "
+            f"({len(rot_blocked)} total — see run log)"
+        )
 
     has_trade = bool(orders or exits)
     has_pending = bool(orders_pending or exits_pending)
@@ -1246,9 +1320,26 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
 
     topic    = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
     if is_shadow:
-        # 2026-08-04 operator directive: the boilerplate body sentence is
-        # gone — the title already carries [READONLY][<callsign>] AND the
-        # SHADOW-* tag; the body is decisions + context only.
+        # 2026-08-04 (93adb20) removed the body sentence "SHADOW/HYPOTHETICAL
+        # (no live orders)" on the operator's "简练,人话" directive, reasoning
+        # that "the title already carries [READONLY][<callsign>] AND the
+        # SHADOW-* tag; the body is decisions + context only."
+        #
+        # RESTORED TERSELY 2026-08-19, because that reasoning assumed the
+        # reader always sees the title. They do not. The operator received
+        #     BUY NVDA x5 @ $217.56 | BUY VLO x4 @ $346.30 | regime=BULL_CALM …
+        # and asked whether it was real money. It was a shadow lane. A phone
+        # notification collapses the body and a copied body carries no title
+        # at all, so for 15 days (2026-08-05 .. 2026-08-19, zero disclaimers
+        # across all six shadow lanes) every shadow alert read like a fill.
+        #
+        # The directive was terseness, not the removal of the one token that
+        # says "this is not real" — so this is 17 bytes instead of the old 33
+        # and stays at parts[0], where it survives both truncation and a
+        # body-only copy. Making a shadow alert indistinguishable from a live
+        # one is the mirror of the 2026-08-05 conftest incident (a test paged
+        # the operator for real): either way the pager stops meaning anything.
+        parts.insert(0, "SHADOW — not real")
         tag = "SHADOW-ACTION" if (has_trade or has_pending) else "SHADOW-DECISION"
         priority = "default"
     else:
@@ -1263,7 +1354,15 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         priority = "urgent" if exits_failed else (
             "high" if (has_trade or has_pending) else "default"
         )
-    title    = f"{label} [{run_mode}] {tag}"
+    _headline = _action_headline(
+        orders, exits, orders_pending, exits_pending, exits_failed
+    )
+    # Don't say it twice: on a failed-exit-only cycle the tag is already
+    # FAILED-EXIT, so the headline's leading "FAILED-EXIT AAPL" would render
+    # as "FAILED-EXIT: FAILED-EXIT AAPL".
+    if _headline.startswith(f"{tag} "):
+        _headline = _headline[len(tag) + 1:]
+    title    = f"{label} [{run_mode}] {tag}" + (f": {_headline}" if _headline else "")
     body     = _truncate_ntfy_body(" | ".join(parts))
     url      = f"https://ntfy.sh/{topic}"
     actionable = bool(

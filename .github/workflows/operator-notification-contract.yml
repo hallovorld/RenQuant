@@ -1,0 +1,96 @@
+name: operator-notification-contract
+
+# The ntfy composition in live/runner.py is the operator's primary interface to
+# a live book, and until 2026-08-19 NOTHING in CI exercised it. The umbrella's
+# workflows run test_kernel_parity.py, test_check_config_artifact_paths.py and
+# the strategy-104 / pin jobs — tests/test_runner_trade_ntfy.py is in none of
+# them, so its 71 assertions were green on a developer's machine and absent
+# from every merge decision.
+#
+# What that cost, all three found on 2026-08-19 and none caught by a test:
+#   * the prod TITLE said only "PENDING" — the action was in the body, which a
+#     phone collapses, so the operator could not tell what production had done;
+#   * 59 BLOCKED-ROTATION segments pushed the body past _NTFY_BODY_MAX_BYTES,
+#     so the truncation fell inside the diagnostic and the trailing regime /
+#     equity context never arrived;
+#   * the shadow bodies' "not real orders" marker was deleted on 2026-08-04 and
+#     stayed gone for 15 days across all six shadow lanes — a regression that
+#     was actively LOCKED IN by an assertion that the marker must be absent.
+#
+# Adding regression tests without running them would leave the same hole one
+# layer deeper, so this workflow exists to make that suite a merge gate.
+#
+# WHY IT NEEDS ONE PINNED SUBREPO. live/runner.py's `kernel.*` and
+# `adapters.*` imports are all function-level (marked `# noqa: PLC0415`), so a
+# bare checkout imports the module fine. The single module-level subrepo
+# dependency is live/alerts.py's `from renquant_common.notify import
+# encode_header`. So this clones renquant-common ONLY, at the lock pin, using
+# the same token fallback chain as the other pinned jobs — CI and live agree on
+# the header encoder rather than stubbing it.
+#
+# Runs on EVERY pull request, not only on lock changes: the point is that an
+# edit to the notification path cannot merge unexercised, and such edits touch
+# live/runner.py, not subrepos.lock.json.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  notification-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read renquant-common pin from subrepos.lock.json
+        id: pin
+        run: |
+          set -euo pipefail
+          COMMON="$(python3 -c "import json; print(next(e['commit'] for e in json.load(open('subrepos.lock.json'))['subrepos'] if e.get('name') == 'renquant-common'))")"
+          test -n "${COMMON}"
+          echo "common=${COMMON}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out renquant-common at the lock pin
+        uses: actions/checkout@v4
+        with:
+          repository: hallovorld/renquant-common
+          ref: ${{ steps.pin.outputs.common }}
+          path: pinned-common
+          # Private subrepo: same fallback chain as config-artifact-path-gate.yml
+          # / subrepo-pin-ci-green.yml / strategy-104-snapshot-fresh.yml.
+          token: ${{ secrets.SUBREPO_CI_READ_TOKEN || secrets.AGENT_GIT_PUSH_TOKEN || github.token }}
+
+      - name: Install test tools + the pinned renquant-common
+        # INSTALL the pinned checkout rather than putting its src/ on
+        # PYTHONPATH. The first version did the latter and failed on
+        # `ModuleNotFoundError: No module named 'pydantic'`: importing
+        # `renquant_common.notify` runs the package __init__, which reaches
+        # contracts -> schemas -> pydantic. Hand-listing that today's chain
+        # happens to need (arch, pandas_market_calendars, pyarrow, pydantic,
+        # scipy, statsmodels, …) would silently rot the next time
+        # renquant-common adds a dependency — the failure mode this repo keeps
+        # paying for. `pip install` resolves what the package DECLARES, so the
+        # job tracks the pin instead of a guess.
+        run: |
+          set -euo pipefail
+          python3 -m pip install pytest
+          python3 -m pip install ./pinned-common
+
+      - name: Operator notification contract (live/runner.py ntfy composition)
+        env:
+          # The suite mocks urllib.request.urlopen, and the repo conftest also
+          # hard-blocks the transport, so no notification can leave CI. Set
+          # explicitly anyway — defence in depth for the 2026-08-05 incident
+          # where a test paged the operator's real phone.
+          RENQUANT_NO_NOTIFY: "1"
+        run: |
+          set -euo pipefail
+          # Fail loudly HERE if the contract dependency is unusable, rather
+          # than as a confusing pytest collection error.
+          python3 -c "import renquant_common.notify as n; print('renquant_common OK:', n.__file__)"
+          python3 -m pytest -q -o addopts='' tests/test_runner_trade_ntfy.py

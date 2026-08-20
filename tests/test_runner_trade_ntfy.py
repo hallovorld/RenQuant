@@ -178,7 +178,10 @@ class TestAlwaysFiresOnCycle:
         m.assert_called_once()
         req = m.call_args[0][0]
         assert "BUY TSM x6" in req.data.decode()
-        assert req.headers.get("Title") == "RENQUANT-104 [full] TRADE"
+        assert req.headers.get("Title").startswith("RENQUANT-104 [full] TRADE"), (
+            "the tag contract is the title PREFIX; 2026-08-19 appends the action")
+        assert "BUY TSM x6" in req.headers.get("Title"), (
+            "the action must reach the TITLE — the body is collapsed on a phone")
         assert req.headers.get("Priority") == "high"
 
     def test_skipped_order_reports_skip_not_buy(self):
@@ -219,7 +222,7 @@ class TestAlwaysFiresOnCycle:
         m.assert_called_once()
         req = m.call_args[0][0]
         assert "EXIT XLU (trailing_stop)" in req.data.decode()
-        assert req.headers.get("Title") == "RENQUANT-104 [sell-only] TRADE"
+        assert req.headers.get("Title").startswith("RENQUANT-104 [sell-only] TRADE")
 
     def test_shadow_exit_is_marked_hypothetical_not_live_trade(self):
         """2026-07-01: title prefix renamed [SHADOW] -> [READONLY] so the
@@ -234,13 +237,26 @@ class TestAlwaysFiresOnCycle:
             notify("[READONLY]RENQUANT-104", "full", ctx)
         req = m.call_args[0][0]
         body = req.data.decode()
-        assert req.headers.get("Title") == (
+        assert req.headers.get("Title").startswith(
             "[READONLY]RENQUANT-104 [full] SHADOW-ACTION"
         )
         assert req.headers.get("Priority") == "default"
-        # 2026-08-04: boilerplate removed; the shadow identity lives in the
-        # title ([READONLY] + SHADOW-* tag), asserted above.
-        assert "SHADOW/HYPOTHETICAL" not in body
+        # 2026-08-04 asserted `"SHADOW/HYPOTHETICAL" not in body`, on the
+        # reasoning that "the shadow identity lives in the title". INVERTED
+        # 2026-08-19: that assertion is what let the marker's removal stand
+        # for 15 days (2026-08-05..2026-08-19, zero disclaimers across all six
+        # shadow lanes) until the operator received a shadow body and asked
+        # whether it was real money.
+        #
+        # The title is not what the reader always gets: a phone collapses the
+        # body, and a body copied out of the app carries NO title. So the body
+        # must be self-identifying, and it must be so at parts[0] where
+        # truncation cannot reach it. Terse (the 2026-08-04 直 directive
+        # stands) but present.
+        assert body.startswith("SHADOW — not real"), (
+            "a shadow body must say so as its FIRST token — the title is not "
+            "guaranteed to reach the reader", body[:120],
+        )
         assert "EXIT FTNT (qp_sell)" in body
 
     def test_combines_buys_and_exits(self):
@@ -473,7 +489,7 @@ class TestSilentIntradayNoOp:
         with patch("urllib.request.urlopen") as m:
             notify("RENQUANT-104", "sell-only (intraday)", ctx, silent_if_quiet=True)
         m.assert_called_once()
-        assert m.call_args[0][0].headers.get("Title").endswith("TRADE")
+        assert "] TRADE" in m.call_args[0][0].headers.get("Title")
 
     def test_loud_on_exit_even_when_silent_flag(self):
         notify = self._import()
@@ -498,7 +514,7 @@ class TestSilentIntradayNoOp:
         body = m.call_args[0][0].data.decode()
         assert "FAILED-EXIT AAPL" in body
         assert "no trade" not in body
-        assert m.call_args[0][0].headers.get("Title").endswith("FAILED-EXIT")
+        assert "] FAILED-EXIT" in m.call_args[0][0].headers.get("Title")
         assert m.call_args[0][0].headers.get("Priority") == "urgent"
 
     def test_loud_on_pending_order_even_when_silent_flag(self):
@@ -516,7 +532,7 @@ class TestSilentIntradayNoOp:
         body = req.data.decode()
         assert "PENDING-BUY AAPL" in body
         assert "no trade" not in body
-        assert req.headers.get("Title").endswith("PENDING")
+        assert "] PENDING" in req.headers.get("Title")
         assert req.headers.get("Priority") == "high"
 
     def test_loud_on_unmanaged_even_when_silent_flag(self):
@@ -1050,3 +1066,110 @@ class TestTitlePrefixDisambiguation:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestOperatorCanActuallyReadIt:
+    """2026-08-19 regression guards for the readability contract.
+
+    All three defects fixed that day were the same failure — the message did
+    not carry the fact the reader needs at the place the reader looks — and
+    NONE of them was caught by a test. The shadow marker's removal was in fact
+    LOCKED IN by an assertion that it must be absent
+    (`test_shadow_exit_is_marked_hypothetical_not_live_trade`, inverted above).
+    These tests exist so the next edit to this surface has to argue with CI.
+    """
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    # --- title carries the action -------------------------------------
+    def test_failed_exits_sort_first_in_the_title(self):
+        """A rejected sell may need a human at the broker, so it must never be
+        the token that `+N` summarises away."""
+        from live.runner import _action_headline
+        head = _action_headline(
+            [{"ticker": "AAA", "shares": 1}], [], [], [],
+            [{"ticker": "ZZZ", "exit_type": "sell"}],
+        )
+        assert head.startswith("FAILED-EXIT ZZZ"), head
+
+    def test_title_summarises_beyond_the_cap(self):
+        from live.runner import _action_headline, _TITLE_ACTION_MAX
+        orders = [{"ticker": f"T{i}", "shares": i} for i in range(_TITLE_ACTION_MAX + 3)]
+        head = _action_headline(orders, [], [], [], [])
+        assert head.count(",") == _TITLE_ACTION_MAX - 1, head
+        assert head.endswith("+3"), head
+
+    def test_no_action_leaves_the_title_byte_identical(self):
+        """Quiet cycles must not grow a trailing separator — existing
+        title-matching consumers depend on the exact no-action form."""
+        from live.runner import _action_headline
+        assert _action_headline([], [], [], [], []) == ""
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        assert m.call_args[0][0].headers.get("Title") == "RENQUANT-104 [full] DECISION"
+
+    def test_tag_is_not_repeated_when_the_headline_leads_with_it(self):
+        notify = self._import()
+        ctx = _stub_ctx(exits_failed=[{"ticker": "AAPL", "exit_type": "sell",
+                                       "error": "rejected"}])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        title = m.call_args[0][0].headers.get("Title")
+        assert title.count("FAILED-EXIT") == 1, title
+        assert "AAPL" in title, title
+
+    # --- the body keeps room for the decision --------------------------
+    def test_blocked_rotations_are_capped_with_an_honest_remainder(self):
+        """2026-08-19: 59 BLOCKED-ROTATION segments pushed the body to 3830 B
+        against a 3800 B cap, so the truncation fell INSIDE the diagnostic and
+        the trailing regime/equity context never arrived. The count carries the
+        signal; the full list stays in the run log."""
+        from live.runner import _ROT_BLOCKED_NTFY_MAX
+        notify = self._import()
+        blocked = [{"sell": None, "buy": f"B{i}", "reason": "nonpositive_expected_return"}
+                   for i in range(59)]
+        ctx = _stub_ctx(rotations_blocked=blocked,
+                        orders_placed=[{"ticker": "PANW", "shares": 3, "price": 1.0}])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert body.count("→B") == _ROT_BLOCKED_NTFY_MAX, body[:200]
+        assert f"+{59 - _ROT_BLOCKED_NTFY_MAX} more (59 total" in body, body[:400]
+        assert "BUY PANW x3" in body, "the decision must survive its own diagnostic"
+
+    def test_the_decision_survives_a_flood_of_blocked_rotations(self):
+        """The property that actually failed in production: with the cap, a
+        pathological blocked list can no longer evict the context that follows
+        it."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            rotations_blocked=[{"sell": None, "buy": f"TICKER{i:04d}",
+                                "reason": "nonpositive_expected_return_no_long"}
+                               for i in range(400)],
+            orders_placed=[{"ticker": "PANW", "shares": 3, "price": 1.0}],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "…[truncated]" not in body, "the cap should make truncation unnecessary"
+        assert "regime=" in body, "trailing context must still arrive"
+
+    # --- shadow bodies are self-identifying ----------------------------
+    def test_shadow_marker_is_the_first_token_of_the_body(self):
+        notify = self._import()
+        ctx = _stub_ctx(orders_placed=[{"ticker": "NVDA", "shares": 5, "price": 217.56}])
+        with patch("urllib.request.urlopen") as m:
+            notify("[READONLY][ALPACA_SHADOW_VOL_WINDOW]RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert body.startswith("SHADOW — not real"), body[:120]
+
+    def test_live_bodies_carry_no_shadow_marker(self):
+        notify = self._import()
+        ctx = _stub_ctx(orders_placed=[{"ticker": "NVDA", "shares": 5, "price": 217.56}])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        assert "SHADOW" not in m.call_args[0][0].data.decode()
