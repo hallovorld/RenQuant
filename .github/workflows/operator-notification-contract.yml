@@ -88,9 +88,27 @@ jobs:
           # explicitly anyway — defence in depth for the 2026-08-05 incident
           # where a test paged the operator's real phone.
           RENQUANT_NO_NOTIFY: "1"
+          # kernel.state_paths lives under backtesting/renquant_104/ and is
+          # imported by test_broker_readonly_tag.py. MEASURED: it needs only
+          # pathlib, and kernel/__init__.py only pkgutil — no heavy deps — so
+          # one path entry lets the fifth contract file run here rather than
+          # be excused with a reason.
+          PYTHONPATH: "backtesting/renquant_104"
         run: |
           set -euo pipefail
           # Fail loudly HERE if the contract dependency is unusable, rather
           # than as a confusing pytest collection error.
           python3 -c "import renquant_common.notify as n; print('renquant_common OK:', n.__file__)"
-          python3 -m pytest -q -o addopts='' tests/test_runner_trade_ntfy.py
+          # EVERY test file that asserts on notification CONTENT runs here.
+          # tests/test_prefilter_is_not_a_rotation.py was merged in #600 while
+          # named by NO workflow, so its 16 tests never executed in CI at all
+          # — and in the real repo they could not even have passed, because
+          # pytest.ini sets RENQUANT_NO_NOTIFY=1 and that file lacked the
+          # opt-out fixture. `test_the_workflow_runs_every_notification_test`
+          # in test_runner_trade_ntfy.py now fails if this list falls behind.
+          python3 -m pytest -q -o addopts='' \
+            tests/test_runner_trade_ntfy.py \
+            tests/test_no_trade_reason_rotation_economic.py \
+            tests/test_prefilter_is_not_a_rotation.py \
+            tests/test_no_trade_priority.py \
+            tests/test_broker_readonly_tag.py

@@ -21,6 +21,17 @@ from unittest.mock import patch
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+#: This file IS the operator-notification contract: it calls the composition
+#: helpers and asserts on what the operator would read. The marker — not a
+#: substring scan over the source — is what
+#: `TestTheCONTRACTWorkflowActuallyRunsTheseTests` and the
+#: operator-notification-contract workflow agree on
+#: [codex on RenQuant#601: "a substring scan cannot encode that semantic
+#: boundary"]. Files that merely mention or monkeypatch a helper away must NOT
+#: carry it.
+pytestmark = pytest.mark.notification_contract
+
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -1181,3 +1192,90 @@ class TestOperatorCanActuallyReadIt:
         with patch("urllib.request.urlopen") as m:
             notify("RENQUANT-104", "full", ctx)
         assert "SHADOW" not in m.call_args[0][0].data.decode()
+
+
+class TestTheCONTRACTWorkflowActuallyRunsTheseTests:
+    """The workflow and the marker must name the same set of files.
+
+    2026-08-20: `tests/test_prefilter_is_not_a_rotation.py` was merged (#600)
+    with "5/5 checks pass" cited as evidence. Every workflow here runs a
+    specific NAMED test file and that one was named by none, so its 16 tests
+    never executed in CI — and could not have passed anyway, since `pytest.ini`
+    sets `RENQUANT_NO_NOTIFY=1` and the file lacked the opt-out fixture.
+
+    MY FIRST GUARD WAS NOT A CLASSIFIER [codex on #601]. It treated any
+    source-text mention of `_notify_decision` / `_no_trade_reason` as a
+    contract test, and CI produced the false positives immediately:
+    `test_runner_preflight_fail_closed.py` only monkeypatches the helper AWAY,
+    and `test_audit_2026_04_24_fixes.py` merely mimics a branch. A substring
+    scan cannot encode "asserts on what the operator reads", and it would drag
+    an unrelated suite in whenever a helper name appeared in a comment.
+
+    So membership is now an explicit, reviewable **marker** the author applies
+    deliberately, and this class asserts the workflow and the marker agree in
+    BOTH directions — a marked file the job does not run is uncovered, and a
+    file the job runs without the marker means the source of truth has drifted
+    from the invocation.
+
+    It lives in a file the workflow itself runs, so it cannot go uncovered.
+    """
+
+    WORKFLOW = REPO_ROOT / ".github" / "workflows" / "operator-notification-contract.yml"
+    MARKER = "pytest.mark.notification_contract"
+
+    def _marked_files(self) -> set[str]:
+        out = set()
+        for p in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+            try:
+                src = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if f"pytestmark = {self.MARKER}" in src:
+                out.add(p.name)
+        return out
+
+    def _pytest_invocation(self) -> str:
+        """ONLY the `python3 -m pytest ...` command, continuations included.
+
+        Searching the whole YAML would be the wrong object: this workflow's own
+        comment names test files, so a substring test over the file passes on
+        the comment alone. Verified by mutation.
+        """
+        lines = self.WORKFLOW.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if "-m pytest" not in line or line.lstrip().startswith("#"):
+                continue
+            cmd = [line]
+            while cmd[-1].rstrip().endswith("\\") and i + len(cmd) < len(lines):
+                cmd.append(lines[i + len(cmd)])
+            return "\n".join(cmd)
+        return ""
+
+    def _invoked_files(self) -> set[str]:
+        return {tok.strip().split("/")[-1]
+                for tok in self._pytest_invocation().replace("\\", " ").split()
+                if tok.strip().startswith("tests/") and tok.strip().endswith(".py")}
+
+    def test_neither_side_is_empty(self):
+        """Either set going empty would make both directions below vacuous."""
+        marked, invoked = self._marked_files(), self._invoked_files()
+        assert marked, "no file carries the marker — the source of truth is gone"
+        assert invoked, "could not parse any test file out of the pytest command"
+        assert "test_runner_trade_ntfy.py" in marked & invoked
+
+    def test_every_marked_file_is_run_by_the_workflow(self):
+        missing = sorted(self._marked_files() - self._invoked_files())
+        assert not missing, (
+            f"marked as notification_contract but not run by "
+            f"{self.WORKFLOW.name}: {missing}. A file the workflow does not "
+            f"name does not run in CI, and a green check then says nothing "
+            f"about it."
+        )
+
+    def test_every_file_the_workflow_runs_is_marked(self):
+        stray = sorted(self._invoked_files() - self._marked_files())
+        assert not stray, (
+            f"run by {self.WORKFLOW.name} but not marked "
+            f"{self.MARKER}: {stray}. The marker is the source of truth; an "
+            f"invocation that has drifted from it will drift again."
+        )
