@@ -73,19 +73,26 @@ def _prefilter(ticker: str, reason: str = "nonpositive_expected_return_no_long")
 class TestTheOperatorsTwoQuestions:
     """Both premises of "why did rotation fail, and why NULL" must disappear."""
 
-    def _real_payload(self):
-        """2026-08-20 as it actually was: 61 prefilter entries, no pairs."""
-        names = ["APH", "WELL", "CVS", "ROST"] + [f"T{i}" for i in range(57)]
+    def _prefilter_only_payload(self):
+        """The 60 prefilter declines of 2026-08-20 IN ISOLATION.
+
+        Deliberately not the whole day: the paired `SPG→CRWD` block that also
+        occurred is exercised in `TestTheONERealRotationThatDayIsNoLongerHidden`
+        below. Isolating them is what lets this class assert the strong form —
+        that the string "BLOCKED-ROTATION" appears nowhere at all — which would
+        be false on the full payload for the correct reason.
+        """
+        names = ["APH", "WELL", "CVS", "ROST"] + [f"T{i}" for i in range(56)]
         return _ctx(counters={"risk_gate_vol_dropped": 30},
                     rotations_blocked=[_prefilter(t) for t in names])
 
     def test_the_word_None_never_reaches_the_operator(self):
-        body = _body(self._real_payload())
+        body = _body(self._prefilter_only_payload())
         assert "None→" not in body, body
         assert "None" not in body, "a null internal value must never be rendered"
 
     def test_a_prefilter_decline_is_not_called_a_rotation(self):
-        body = _body(self._real_payload())
+        body = _body(self._prefilter_only_payload())
         assert "BLOCKED-ROTATION" not in body, (
             "no rotation was attempted for any of these names — calling it one "
             "is what made the operator ask why rotation was broken"
@@ -94,9 +101,9 @@ class TestTheOperatorsTwoQuestions:
     def test_the_count_and_the_reason_still_reach_the_operator(self):
         """Renaming must not cost information. The 61 and the reason are the
         diagnostic; only the false framing goes away."""
-        body = _body(self._real_payload())
-        assert "DECLINED-BUY x61" in body, body
-        assert "nonpositive_expected_return_no_long 61" in body, body
+        body = _body(self._prefilter_only_payload())
+        assert "DECLINED-BUY x60" in body, body
+        assert "nonpositive_expected_return_no_long 60" in body, body
         assert "APH" in body
 
 
