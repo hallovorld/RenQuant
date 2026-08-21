@@ -11,7 +11,11 @@
 
 set -uo pipefail
 
-REPO_DIR="/Users/renhao/git/github/RenQuant"
+# Overridable ONLY so the promote-outcome classification below can be tested
+# against a stub child. Production passes nothing and gets the same literal
+# path it always had. A fix whose only evidence is "I read it carefully" is
+# the kind that shipped the bug it is fixing.
+REPO_DIR="${RQ_CONDITIONAL_REPO_DIR:-/Users/renhao/git/github/RenQuant}"
 GITHUB_DIR="$(cd "$REPO_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 source "$REPO_DIR/scripts/subrepo_env.sh"
@@ -29,6 +33,13 @@ LOG="$LOG_DIR/$DATE.log"
 
 notify() {
     local title="$1" body="$2"
+    # Same testing seam weekly_wf_promote.sh already uses: when a log path is
+    # set, record instead of paging, so a test can assert on WHAT the operator
+    # would have been told.
+    if [ -n "${RQ_CONDITIONAL_NOTIFY_LOG:-}" ]; then
+        printf '%s: %s\n' "$title" "$body" >> "$RQ_CONDITIONAL_NOTIFY_LOG"
+        return 0
+    fi
     curl -s -H "Title: $title" -d "$body" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
 }
 
@@ -101,11 +112,51 @@ fi
 echo "=== Firing gated weekly promote chain: trigger=$TRIGGER ==="
 notify "RenQuant 104 WF promote fired" "Trigger: $TRIGGER"
 
-if RENQUANT_WEEKLY_TRIGGER="$TRIGGER" bash scripts/weekly_wf_promote.sh; then
-    echo "=== Gated WF promote chain complete ($TRIGGER) at $(date) ==="
-    notify "RenQuant 104 WF promote OK" "Anomaly-gated chain done: $TRIGGER"
-else
-    echo "=== Gated WF promote chain FAILED ($TRIGGER) at $(date) ==="
-    notify "RenQuant 104 WF promote ERROR" "Anomaly-gated chain failed: $TRIGGER"
+# EXIT CODE IS NOT THE OUTCOME (2026-08-21). This branched on the child's exit
+# status alone, and `weekly_wf_promote.sh` exits 0 on a REFUSAL as well as on a
+# promotion — deliberately: "Reject disposition: prod FRESH ... governance
+# nominal, calm notify, exit 0" (weekly_wf_promote.sh:517). So on 2026-08-19
+# and 2026-08-20 this wrapper printed "chain complete" and paged the operator
+# "WF promote OK" while NOTHING had been promoted. The run-health scan caught
+# it: "2 of them CLAIMED SUCCESS while weekly-wf-promote's own log for that
+# date shows no promotion".
+#
+# A promotion is now established POSITIVELY, from the child's own terminal
+# marker, of which it emits exactly two:
+#     === weekly_wf_promote PASSED at ... ===
+#     === weekly_wf_promote FALLBACK-PROMOTED (rfc210) at ... ===
+# Anything else on a clean exit is "ran, decided not to promote" — a real and
+# common outcome that deserves its own name, not silence and not "OK".
+#
+# The polarity matters more than the parsing: an outcome this wrapper cannot
+# establish must NEVER read as success. If the markers are ever renamed, this
+# reports UNVERIFIED and the operator finds out, instead of inheriting a
+# permanent false OK.
+CHAIN_OUT=$(mktemp "${TMPDIR:-/tmp}/rq104_wf_chain.XXXXXX")
+RENQUANT_WEEKLY_TRIGGER="$TRIGGER" bash scripts/weekly_wf_promote.sh 2>&1 | tee "$CHAIN_OUT"
+CHAIN_RC=${PIPESTATUS[0]}
+
+if [ "$CHAIN_RC" -ne 0 ]; then
+    echo "=== Gated WF promote chain FAILED ($TRIGGER) at $(date) — rc=$CHAIN_RC ==="
+    notify "RenQuant 104 WF promote ERROR" "Anomaly-gated chain failed: $TRIGGER (rc=$CHAIN_RC)"
+    rm -f "$CHAIN_OUT"
     exit 1
 fi
+
+if grep -qE "=== weekly_wf_promote (PASSED|FALLBACK-PROMOTED)" "$CHAIN_OUT"; then
+    CHAIN_MARKER=$(grep -oE "=== weekly_wf_promote (PASSED|FALLBACK-PROMOTED)[^=]*" "$CHAIN_OUT" | head -1)
+    echo "=== Gated WF promote chain PROMOTED ($TRIGGER) at $(date) ==="
+    notify "RenQuant 104 WF promote PROMOTED" "$TRIGGER — $CHAIN_MARKER"
+elif grep -qE "REFUSE|Reject disposition|VERDICT: FAIL|promote-staged REFUSED" "$CHAIN_OUT"; then
+    CHAIN_WHY=$(grep -oE "Reject disposition: [^.]*|RFC#210 fallback verdict: [A-Z]+|VERDICT: FAIL" "$CHAIN_OUT" | head -1)
+    echo "=== Gated WF promote chain RAN, NOTHING PROMOTED ($TRIGGER) at $(date) — ${CHAIN_WHY:-refused} ==="
+    # Deliberately NOT an alarm: a gate declining is the gate working. It is
+    # also deliberately not "OK" — the operator must be able to tell a
+    # promotion from a refusal without opening the child's log.
+    notify "RenQuant 104 WF promote: no change" "$TRIGGER — ${CHAIN_WHY:-gate declined; production unchanged}"
+else
+    echo "=== Gated WF promote chain OUTCOME UNVERIFIED ($TRIGGER) at $(date) ==="
+    notify "RenQuant 104 WF promote UNVERIFIED" \
+        "$TRIGGER — exited 0 but emitted neither a promotion marker nor a refusal. Check logs/weekly_wf_promote."
+fi
+rm -f "$CHAIN_OUT"
