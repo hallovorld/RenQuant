@@ -247,11 +247,11 @@ class DataFetchJob(TrainingJob):
         return False
 
     def run(self, ctx: TrainingContext) -> None:
-        from kernel.data import fetch_ohlcv, resolve_sample_end
+        from kernel.data import fetch_ohlcv
 
         cfg = ctx.config
         start = cfg["sample_start"]
-        end   = resolve_sample_end(cfg)
+        end   = cfg["sample_end"]
         sector_etf = cfg.get("sector_etf_map", {})
         all_tickers = sorted(
             set(ctx.watchlist) | set(sector_etf.values()) | {"SPY"}
