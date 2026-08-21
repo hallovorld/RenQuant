@@ -103,4 +103,6 @@ jobs:
           python3 -m pytest -q -o addopts='' \
             tests/test_runner_trade_ntfy.py \
             tests/test_no_trade_reason_rotation_economic.py \
-            tests/test_prefilter_is_not_a_rotation.py
+            tests/test_prefilter_is_not_a_rotation.py \
+            tests/test_no_trade_priority.py \
+            tests/test_runner_preflight_fail_closed.py
