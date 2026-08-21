@@ -1181,3 +1181,79 @@ class TestOperatorCanActuallyReadIt:
         with patch("urllib.request.urlopen") as m:
             notify("RENQUANT-104", "full", ctx)
         assert "SHADOW" not in m.call_args[0][0].data.decode()
+
+
+class TestTheCONTRACTWorkflowActuallyRunsTheseTests:
+    """A test file nobody runs is a document.
+
+    2026-08-20: `tests/test_prefilter_is_not_a_rotation.py` was reviewed and
+    merged (#600) with "5/5 checks pass" cited as evidence. Every workflow in
+    this repo runs a specific NAMED test file, and that one was named by none
+    of them — so its 16 tests never executed in CI. In the real repo they could
+    not have passed either: `pytest.ini` sets `RENQUANT_NO_NOTIFY=1` for every
+    test and the file lacked the opt-out fixture, so `_notify_decision`
+    short-circuited and every assertion was vacuous. Both facts were invisible
+    behind a green check.
+
+    This test is in the file the workflow already runs, so it cannot itself go
+    uncovered — the same reason the contract workflow exists at all.
+    """
+
+    WORKFLOW = REPO_ROOT / ".github" / "workflows" / "operator-notification-contract.yml"
+
+    def _notification_test_files(self) -> set[str]:
+        """Every tests/ file that asserts on notification composition."""
+        found = set()
+        for p in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+            try:
+                src = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if "_notify_decision" in src or "_no_trade_reason" in src:
+                found.add(p.name)
+        return found
+
+    def test_the_workflow_file_exists(self):
+        assert self.WORKFLOW.is_file(), (
+            f"{self.WORKFLOW} missing — the notification contract has no gate")
+
+    def _pytest_invocation(self) -> str:
+        """ONLY the actual `python3 -m pytest ...` command, continuations included.
+
+        Searching the whole YAML would be the wrong object: this workflow's own
+        explanatory comment NAMES `tests/test_prefilter_is_not_a_rotation.py`,
+        so a substring test over the file passes on the comment alone. Verified
+        by mutation — deleting the file from the invocation left the check
+        green until this was narrowed.
+        """
+        lines = self.WORKFLOW.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if "-m pytest" not in line or line.lstrip().startswith("#"):
+                continue
+            cmd = [line]
+            while cmd[-1].rstrip().endswith("\\") and i + len(cmd) < len(lines):
+                cmd.append(lines[i + len(cmd)])
+            return "\n".join(cmd)
+        return ""
+
+    def test_the_invocation_is_actually_found(self):
+        """If the parse ever returns "", every membership test below passes."""
+        inv = self._pytest_invocation()
+        assert "-m pytest" in inv, "could not locate the pytest command in the workflow"
+        assert "test_runner_trade_ntfy.py" in inv, inv
+
+    def test_the_workflow_runs_every_notification_test(self):
+        wf = self._pytest_invocation()
+        missing = sorted(f for f in self._notification_test_files() if f not in wf)
+        assert not missing, (
+            "notification test file(s) not named in "
+            f"{self.WORKFLOW.name}: {missing}. A file the workflow does not "
+            "name does not run in CI, and a green check then says nothing "
+            "about it. Add it to the pytest invocation."
+        )
+
+    def test_the_scan_is_not_vacuous(self):
+        """If the glob ever finds nothing, the check above passes forever."""
+        found = self._notification_test_files()
+        assert len(found) >= 2, found
+        assert "test_runner_trade_ntfy.py" in found
