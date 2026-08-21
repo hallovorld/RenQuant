@@ -40,9 +40,30 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+
+@pytest.fixture(autouse=True)
+def _allow_mocked_ntfy(monkeypatch):
+    """`pytest.ini` sets `RENQUANT_NO_NOTIFY=1` for EVERY test so no suite can
+    send a live notification. That is right, and it also means a test asserting
+    on notification CONTENT must opt out — with `urlopen` mocked there is
+    nothing live to protect against.
+
+    Without this, every test in this file was **vacuous**: `_notify_decision`
+    short-circuited, `urlopen` was never called, and the assertions never ran.
+    They passed only in a scratch harness that had no `pytest.ini`
+    [see _body's `m.called` assertion, which is what makes the failure legible
+    instead of a bare `NoneType` subscript error].
+
+    `tests/test_runner_trade_ntfy.py` carries the identical fixture; this file
+    was written without noticing it was load-bearing.
+    """
+    monkeypatch.delenv("RENQUANT_NO_NOTIFY", raising=False)
 
 
 def _ctx(**kw) -> SimpleNamespace:
@@ -62,6 +83,11 @@ def _body(ctx) -> str:
     from live.runner import _notify_decision
     with patch("urllib.request.urlopen") as m:
         _notify_decision("RENQUANT-104", "full", ctx)
+    assert m.called, (
+        "no notification was composed at all — every assertion downstream of "
+        "this would be VACUOUS. Most likely RENQUANT_NO_NOTIFY is set (pytest.ini "
+        "sets it for every test) and the autouse fixture above did not run."
+    )
     return m.call_args[0][0].data.decode()
 
 
