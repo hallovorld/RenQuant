@@ -1213,7 +1213,15 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     # "no pair exists yet ... so monitors can tell the stages apart"
     # [renquant-pipeline kernel/pipeline/task_rotation.py]. The data was
     # correct and self-describing; this renderer ignored `stage` and invented a
-    # rotation that never existed. All 61 entries that day were prefilter.
+    # rotation that never existed.
+    #
+    # The split that day was 60 prefilter + exactly ONE genuine paired block
+    # (SPG→CRWD, correlation_guard, appended by ValidatePairsTask after all 60).
+    # That one sat at position 61, inside the "+58 more" — so the flat list
+    # spent all three visible slots on rotations that never happened while
+    # hiding the only rotation that did. Splitting the kinds fixes both
+    # directions, which is why `paired` keeps its own cap rather than sharing
+    # one with the declines.
     #
     # Note `rb.get("sell", "?")` could never produce its own default: the key
     # is PRESENT with value None, so `.get` returns None and the "?" is dead
