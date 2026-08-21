@@ -21,6 +21,17 @@ from unittest.mock import patch
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+#: This file IS the operator-notification contract: it calls the composition
+#: helpers and asserts on what the operator would read. The marker — not a
+#: substring scan over the source — is what
+#: `TestTheCONTRACTWorkflowActuallyRunsTheseTests` and the
+#: operator-notification-contract workflow agree on
+#: [codex on RenQuant#601: "a substring scan cannot encode that semantic
+#: boundary"]. Files that merely mention or monkeypatch a helper away must NOT
+#: carry it.
+pytestmark = pytest.mark.notification_contract
+
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -1184,72 +1195,51 @@ class TestOperatorCanActuallyReadIt:
 
 
 class TestTheCONTRACTWorkflowActuallyRunsTheseTests:
-    """A test file nobody runs is a document.
+    """The workflow and the marker must name the same set of files.
 
-    2026-08-20: `tests/test_prefilter_is_not_a_rotation.py` was reviewed and
-    merged (#600) with "5/5 checks pass" cited as evidence. Every workflow in
-    this repo runs a specific NAMED test file, and that one was named by none
-    of them — so its 16 tests never executed in CI. In the real repo they could
-    not have passed either: `pytest.ini` sets `RENQUANT_NO_NOTIFY=1` for every
-    test and the file lacked the opt-out fixture, so `_notify_decision`
-    short-circuited and every assertion was vacuous. Both facts were invisible
-    behind a green check.
+    2026-08-20: `tests/test_prefilter_is_not_a_rotation.py` was merged (#600)
+    with "5/5 checks pass" cited as evidence. Every workflow here runs a
+    specific NAMED test file and that one was named by none, so its 16 tests
+    never executed in CI — and could not have passed anyway, since `pytest.ini`
+    sets `RENQUANT_NO_NOTIFY=1` and the file lacked the opt-out fixture.
 
-    This test is in the file the workflow already runs, so it cannot itself go
-    uncovered — the same reason the contract workflow exists at all.
+    MY FIRST GUARD WAS NOT A CLASSIFIER [codex on #601]. It treated any
+    source-text mention of `_notify_decision` / `_no_trade_reason` as a
+    contract test, and CI produced the false positives immediately:
+    `test_runner_preflight_fail_closed.py` only monkeypatches the helper AWAY,
+    and `test_audit_2026_04_24_fixes.py` merely mimics a branch. A substring
+    scan cannot encode "asserts on what the operator reads", and it would drag
+    an unrelated suite in whenever a helper name appeared in a comment.
+
+    So membership is now an explicit, reviewable **marker** the author applies
+    deliberately, and this class asserts the workflow and the marker agree in
+    BOTH directions — a marked file the job does not run is uncovered, and a
+    file the job runs without the marker means the source of truth has drifted
+    from the invocation.
+
+    It lives in a file the workflow itself runs, so it cannot go uncovered.
     """
 
     WORKFLOW = REPO_ROOT / ".github" / "workflows" / "operator-notification-contract.yml"
+    MARKER = "pytest.mark.notification_contract"
 
-    #: Files that touch the notification path but are NOT gated here, each with
-    #: a reason. Modelled on the tournament's `non_trainable` map: a thing is
-    #: either covered, or excluded WITH A JUSTIFICATION — never absent by
-    #: accident. An empty reason fails `test_every_exclusion_carries_a_reason`.
-    #:
-    #: Both entries below carry pre-existing failures that this branch did not
-    #: introduce and does not fix. Gating on them would make the contract red
-    #: on arrival for unrelated reasons, and a gate that is red for unrelated
-    #: reasons is one the next person learns to ignore.
-    UNGATED: dict[str, str] = {
-        "test_audit_2026_04_24_fixes.py":
-            "3 pre-existing failures, all SOURCE-TEXT assertions (e.g. "
-            "`'if not is_partial:' in inspect.getsource(...)`) that rotted when "
-            "the code moved into the pipeline subrepo — orch#1022",
-        "test_round3_audit_fixes_2026_04_25.py":
-            "1 pre-existing failure, same class: asserts `'.json.tmp'` appears "
-            "in RunnerAdapter.commit's source — orch#1022",
-        "test_broker_readonly_tag.py":
-            "imports `kernel`, which lives under backtesting/renquant_104/ and "
-            "is not on this workflow's minimal path (pytest + renquant-common "
-            "only) — MEASURED: collection fails with ModuleNotFoundError in a "
-            "mirror of that environment, while it passes 30/30 in the full "
-            "tree. Gating it needs the kernel path wired into the job first",
-    }
-
-    def _notification_test_files(self) -> set[str]:
-        """Every tests/ file that asserts on notification composition."""
-        found = set()
+    def _marked_files(self) -> set[str]:
+        out = set()
         for p in sorted((REPO_ROOT / "tests").glob("test_*.py")):
             try:
                 src = p.read_text(encoding="utf-8")
             except OSError:
                 continue
-            if "_notify_decision" in src or "_no_trade_reason" in src:
-                found.add(p.name)
-        return found
-
-    def test_the_workflow_file_exists(self):
-        assert self.WORKFLOW.is_file(), (
-            f"{self.WORKFLOW} missing — the notification contract has no gate")
+            if f"pytestmark = {self.MARKER}" in src:
+                out.add(p.name)
+        return out
 
     def _pytest_invocation(self) -> str:
-        """ONLY the actual `python3 -m pytest ...` command, continuations included.
+        """ONLY the `python3 -m pytest ...` command, continuations included.
 
         Searching the whole YAML would be the wrong object: this workflow's own
-        explanatory comment NAMES `tests/test_prefilter_is_not_a_rotation.py`,
-        so a substring test over the file passes on the comment alone. Verified
-        by mutation — deleting the file from the invocation left the check
-        green until this was narrowed.
+        comment names test files, so a substring test over the file passes on
+        the comment alone. Verified by mutation.
         """
         lines = self.WORKFLOW.read_text(encoding="utf-8").splitlines()
         for i, line in enumerate(lines):
@@ -1261,46 +1251,31 @@ class TestTheCONTRACTWorkflowActuallyRunsTheseTests:
             return "\n".join(cmd)
         return ""
 
-    def test_the_invocation_is_actually_found(self):
-        """If the parse ever returns "", every membership test below passes."""
-        inv = self._pytest_invocation()
-        assert "-m pytest" in inv, "could not locate the pytest command in the workflow"
-        assert "test_runner_trade_ntfy.py" in inv, inv
+    def _invoked_files(self) -> set[str]:
+        return {tok.strip().split("/")[-1]
+                for tok in self._pytest_invocation().replace("\\", " ").split()
+                if tok.strip().startswith("tests/") and tok.strip().endswith(".py")}
 
-    def test_the_workflow_runs_every_notification_test(self):
-        wf = self._pytest_invocation()
-        missing = sorted(f for f in self._notification_test_files()
-                         if f not in wf and f not in self.UNGATED)
+    def test_neither_side_is_empty(self):
+        """Either set going empty would make both directions below vacuous."""
+        marked, invoked = self._marked_files(), self._invoked_files()
+        assert marked, "no file carries the marker — the source of truth is gone"
+        assert invoked, "could not parse any test file out of the pytest command"
+        assert "test_runner_trade_ntfy.py" in marked & invoked
+
+    def test_every_marked_file_is_run_by_the_workflow(self):
+        missing = sorted(self._marked_files() - self._invoked_files())
         assert not missing, (
-            "notification test file(s) not named in "
+            f"marked as notification_contract but not run by "
             f"{self.WORKFLOW.name}: {missing}. A file the workflow does not "
-            "name does not run in CI, and a green check then says nothing "
-            "about it. Add it to the pytest invocation, or to UNGATED with a "
-            "reason if it cannot run here yet."
+            f"name does not run in CI, and a green check then says nothing "
+            f"about it."
         )
 
-    def test_every_exclusion_carries_a_reason(self):
-        """An exclusion map whose entries may be blank is just a skip list."""
-        blank = sorted(f for f, why in self.UNGATED.items() if not (why or "").strip())
-        assert not blank, f"UNGATED entries with no justification: {blank}"
-
-    def test_no_exclusion_outlives_the_file_it_names(self):
-        """A stale exclusion silently un-gates a file that was later fixed or
-        renamed — the same silent-drift shape this whole class exists for."""
-        gone = sorted(f for f in self.UNGATED if not (REPO_ROOT / "tests" / f).is_file())
-        assert not gone, f"UNGATED names files that no longer exist: {gone}"
-
-    def test_an_exclusion_must_still_be_a_notification_file(self):
-        """If a file stops touching the notification path, its exclusion is
-        dead weight that will outlive anyone's memory of why it is there."""
-        found = self._notification_test_files()
-        stray = sorted(f for f in self.UNGATED if f not in found)
+    def test_every_file_the_workflow_runs_is_marked(self):
+        stray = sorted(self._invoked_files() - self._marked_files())
         assert not stray, (
-            f"UNGATED names files that no longer touch the notification path: "
-            f"{stray} — drop the entry")
-
-    def test_the_scan_is_not_vacuous(self):
-        """If the glob ever finds nothing, the check above passes forever."""
-        found = self._notification_test_files()
-        assert len(found) >= 2, found
-        assert "test_runner_trade_ntfy.py" in found
+            f"run by {self.WORKFLOW.name} but not marked "
+            f"{self.MARKER}: {stray}. The marker is the source of truth; an "
+            f"invocation that has drifted from it will drift again."
+        )
