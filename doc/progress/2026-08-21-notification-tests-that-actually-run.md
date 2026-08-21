@@ -47,6 +47,37 @@ WHAT:     #600 merged with "5/5 checks pass" cited as evidence for
           the parse returns something, since `""` would make every membership
           test pass.
 
+THE GAP WAS 6 FILES, NOT 1. The guard failed on its first CI run naming five
+          MORE test files that touch the notification path and that no workflow
+          runs. My scratch harness held three test files total, so it could not
+          have seen them; the real `tests/` holds 613. Resolution, measured
+          against a faithful mirror of the job's minimal environment rather
+          than guessed:
+          - gated: test_no_trade_priority.py, test_runner_preflight_fail_closed.py
+          - excluded, `kernel` not on this job's path (ModuleNotFoundError at
+            collection in the mirror; passes 30/30 in the full tree):
+            test_broker_readonly_tag.py
+          - excluded, pre-existing failures: test_audit_2026_04_24_fixes.py (3)
+            and test_round3_audit_fixes_2026_04_25.py (1), all source-TEXT
+            assertions that rotted when the code moved into the pipeline
+            subrepo — orch#1022. Four tests had been failing with nobody
+            watching, which is the same defect one layer over.
+
+          The exclusion map is modelled on the tournament's `non_trainable`
+          map, the one mechanism in this system that handles "deliberately not
+          covered" well: a thing is either covered or excluded WITH A REASON,
+          never absent by accident. Three tests keep it honest — every entry
+          needs a non-empty reason, must name a file that still exists, and
+          must still touch the notification path.
+
+          THE MIRROR IS THE OTHER LESSON. I validated twice against harnesses
+          that were not the repo: first without `pytest.ini` (which is what
+          created the vacuity), then with only 3 of 613 test files and no
+          `scripts/` (which produced two more phantom failures). The harness
+          that finally answered correctly is a copy of the real `tests/`,
+          `live/`, `scripts/`, `pytest.ini` and `.github/workflows/`, run with
+          the job's exact pytest invocation: **119 passed**.
+
 WHY/DIR:  Production behaviour was never wrong — `live/runner.py` is correct
           and independently verified by replaying the real 2026-08-20 payload
           through the deployed tree. What was wrong is that the safety net
@@ -66,7 +97,8 @@ EVIDENCE:
                    [VERIFIED — read]
                  - no workflow names the file [VERIFIED — grep of every
                    `.github/workflows/*.yml` pytest line]
-                 - 101 passed with the fixture, under the REAL `pytest.ini`
+                 - 119 passed under the job's exact invocation against a
+                   faithful mirror (real tests/ + live/ + scripts/ + pytest.ini)
                    [VERIFIED]
                  - every guard mutation-checked: removing the fixture, and
                    removing the file from the invocation, each turn the
