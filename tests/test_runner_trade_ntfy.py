@@ -1201,6 +1201,31 @@ class TestTheCONTRACTWorkflowActuallyRunsTheseTests:
 
     WORKFLOW = REPO_ROOT / ".github" / "workflows" / "operator-notification-contract.yml"
 
+    #: Files that touch the notification path but are NOT gated here, each with
+    #: a reason. Modelled on the tournament's `non_trainable` map: a thing is
+    #: either covered, or excluded WITH A JUSTIFICATION — never absent by
+    #: accident. An empty reason fails `test_every_exclusion_carries_a_reason`.
+    #:
+    #: Both entries below carry pre-existing failures that this branch did not
+    #: introduce and does not fix. Gating on them would make the contract red
+    #: on arrival for unrelated reasons, and a gate that is red for unrelated
+    #: reasons is one the next person learns to ignore.
+    UNGATED: dict[str, str] = {
+        "test_audit_2026_04_24_fixes.py":
+            "3 pre-existing failures, all SOURCE-TEXT assertions (e.g. "
+            "`'if not is_partial:' in inspect.getsource(...)`) that rotted when "
+            "the code moved into the pipeline subrepo — orch#1022",
+        "test_round3_audit_fixes_2026_04_25.py":
+            "1 pre-existing failure, same class: asserts `'.json.tmp'` appears "
+            "in RunnerAdapter.commit's source — orch#1022",
+        "test_broker_readonly_tag.py":
+            "imports `kernel`, which lives under backtesting/renquant_104/ and "
+            "is not on this workflow's minimal path (pytest + renquant-common "
+            "only) — MEASURED: collection fails with ModuleNotFoundError in a "
+            "mirror of that environment, while it passes 30/30 in the full "
+            "tree. Gating it needs the kernel path wired into the job first",
+    }
+
     def _notification_test_files(self) -> set[str]:
         """Every tests/ file that asserts on notification composition."""
         found = set()
@@ -1244,13 +1269,35 @@ class TestTheCONTRACTWorkflowActuallyRunsTheseTests:
 
     def test_the_workflow_runs_every_notification_test(self):
         wf = self._pytest_invocation()
-        missing = sorted(f for f in self._notification_test_files() if f not in wf)
+        missing = sorted(f for f in self._notification_test_files()
+                         if f not in wf and f not in self.UNGATED)
         assert not missing, (
             "notification test file(s) not named in "
             f"{self.WORKFLOW.name}: {missing}. A file the workflow does not "
             "name does not run in CI, and a green check then says nothing "
-            "about it. Add it to the pytest invocation."
+            "about it. Add it to the pytest invocation, or to UNGATED with a "
+            "reason if it cannot run here yet."
         )
+
+    def test_every_exclusion_carries_a_reason(self):
+        """An exclusion map whose entries may be blank is just a skip list."""
+        blank = sorted(f for f, why in self.UNGATED.items() if not (why or "").strip())
+        assert not blank, f"UNGATED entries with no justification: {blank}"
+
+    def test_no_exclusion_outlives_the_file_it_names(self):
+        """A stale exclusion silently un-gates a file that was later fixed or
+        renamed — the same silent-drift shape this whole class exists for."""
+        gone = sorted(f for f in self.UNGATED if not (REPO_ROOT / "tests" / f).is_file())
+        assert not gone, f"UNGATED names files that no longer exist: {gone}"
+
+    def test_an_exclusion_must_still_be_a_notification_file(self):
+        """If a file stops touching the notification path, its exclusion is
+        dead weight that will outlive anyone's memory of why it is there."""
+        found = self._notification_test_files()
+        stray = sorted(f for f in self.UNGATED if f not in found)
+        assert not stray, (
+            f"UNGATED names files that no longer touch the notification path: "
+            f"{stray} — drop the entry")
 
     def test_the_scan_is_not_vacuous(self):
         """If the glob ever finds nothing, the check above passes forever."""
