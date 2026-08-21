@@ -1,7 +1,7 @@
 # The 16 tests I shipped in #600 never ran, and could not have passed
 
-STATUS:   delivered. Opt-out fixture + an explicit non-vacuity assertion + the
-          workflow actually running the file + a self-enforcing coverage guard.
+STATUS:   delivered. Opt-out fixture + an explicit non-vacuity assertion +
+          a marker-based contract set the workflow and the guard share.
 
 WHAT:     #600 merged with "5/5 checks pass" cited as evidence for
           `tests/test_prefilter_is_not_a_rotation.py`. Two independent facts,
@@ -47,36 +47,53 @@ WHAT:     #600 merged with "5/5 checks pass" cited as evidence for
           the parse returns something, since `""` would make every membership
           test pass.
 
-THE GAP WAS 6 FILES, NOT 1. The guard failed on its first CI run naming five
-          MORE test files that touch the notification path and that no workflow
-          runs. My scratch harness held three test files total, so it could not
-          have seen them; the real `tests/` holds 613. Resolution, measured
-          against a faithful mirror of the job's minimal environment rather
-          than guessed:
-          - gated: test_no_trade_priority.py, test_runner_preflight_fail_closed.py
-          - excluded, `kernel` not on this job's path (ModuleNotFoundError at
-            collection in the mirror; passes 30/30 in the full tree):
-            test_broker_readonly_tag.py
-          - excluded, pre-existing failures: test_audit_2026_04_24_fixes.py (3)
-            and test_round3_audit_fixes_2026_04_25.py (1), all source-TEXT
-            assertions that rotted when the code moved into the pipeline
-            subrepo — orch#1022. Four tests had been failing with nobody
-            watching, which is the same defect one layer over.
+THE DISCOVERY GUARD WAS NOT A CLASSIFIER [codex on #601]. My first version
+          treated any source-text mention of `_notify_decision` /
+          `_no_trade_reason` as a notification contract, and CI produced the
+          false positives immediately: `test_runner_preflight_fail_closed.py`
+          only monkeypatches the helper AWAY (its single mention is
+          `monkeypatch.setattr`), and `test_audit_2026_04_24_fixes.py` merely
+          mimics a branch. A substring scan cannot encode "asserts on what the
+          operator reads", and it would drag an unrelated suite in whenever a
+          helper name appeared in a comment.
 
-          The exclusion map is modelled on the tournament's `non_trainable`
-          map, the one mechanism in this system that handles "deliberately not
-          covered" well: a thing is either covered or excluded WITH A REASON,
-          never absent by accident. Three tests keep it honest — every entry
-          needs a non-empty reason, must name a file that still exists, and
-          must still touch the notification path.
+          I had then started absorbing those false positives into an exclusion
+          map — which would have grown into a list of files that were never
+          contracts at all, i.e. noise wearing the costume of justification.
 
-          THE MIRROR IS THE OTHER LESSON. I validated twice against harnesses
-          that were not the repo: first without `pytest.ini` (which is what
-          created the vacuity), then with only 3 of 613 test files and no
-          `scripts/` (which produced two more phantom failures). The harness
-          that finally answered correctly is a copy of the real `tests/`,
-          `live/`, `scripts/`, `pytest.ini` and `.github/workflows/`, run with
-          the job's exact pytest invocation: **119 passed**.
+          MEMBERSHIP IS NOW AN EXPLICIT MARKER: `pytestmark =
+          pytest.mark.notification_contract`, registered in `pytest.ini` and
+          applied deliberately by the author. The workflow runs exactly the
+          marked files, and the guard asserts both directions — a marked file
+          the job does not run is uncovered; a file the job runs without the
+          marker means the invocation has drifted from the source of truth.
+          Both directions mutation-verified.
+
+          THE EXCLUSION MAP IS GONE, and the reason is worth recording: the
+          fifth genuine contract file (`test_broker_readonly_tag.py`, which
+          does call `_notify_decision` and assert on `call_args`) needed
+          nothing but ONE `PYTHONPATH` entry. `kernel.state_paths` imports
+          `pathlib`; `kernel/__init__.py` imports `pkgutil`; no heavy deps.
+          Measuring what it actually needed beat excusing it with a reason.
+
+          Final membership, decided by what each file DOES:
+          - marked + gated: test_runner_trade_ntfy, test_no_trade_reason_
+            rotation_economic, test_prefilter_is_not_a_rotation,
+            test_no_trade_priority (12 real `_no_trade_reason(` calls),
+            test_broker_readonly_tag
+          - not marked: test_runner_preflight_fail_closed (patches it away),
+            test_audit_2026_04_24_fixes, test_round3_audit_fixes_2026_04_25
+          The four long-red source-text assertions in the last two are real and
+          stay filed as orch#1022; they are simply not this contract.
+
+          THE MIRROR IS THE OTHER LESSON. I validated three times against
+          harnesses that were not the repo: no `pytest.ini` (which created the
+          vacuity), then 3 of 613 test files and no `scripts/` (two phantom
+          failures), then no `backtesting/renquant_104/` (a phantom import
+          error). The harness that answers correctly copies real `tests/`,
+          `live/`, `scripts/`, `backtesting/renquant_104/kernel/`,
+          `pytest.ini` and `.github/workflows/`, and runs the job's exact
+          invocation: **142 passed**.
 
 WHY/DIR:  Production behaviour was never wrong — `live/runner.py` is correct
           and independently verified by replaying the real 2026-08-20 payload
@@ -97,9 +114,11 @@ EVIDENCE:
                    [VERIFIED — read]
                  - no workflow names the file [VERIFIED — grep of every
                    `.github/workflows/*.yml` pytest line]
-                 - 119 passed under the job's exact invocation against a
-                   faithful mirror (real tests/ + live/ + scripts/ + pytest.ini)
-                   [VERIFIED]
+                 - 142 passed under the job's exact invocation against a
+                   faithful mirror [VERIFIED]
+                 - the marker guard fails in BOTH directions under mutation:
+                   drop a marked file from the invocation, or add an unmarked
+                   one [VERIFIED]
                  - every guard mutation-checked: removing the fixture, and
                    removing the file from the invocation, each turn the
                    corresponding test red [VERIFIED]
