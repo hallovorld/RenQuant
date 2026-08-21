@@ -228,6 +228,57 @@ class LocalStore:
 _default_store = LocalStore()
 
 
+def resolve_sample_end(cfg: dict, *, today: str | None = None) -> str:
+    """The upper bound of the training fetch window, resolved at RUN time.
+
+    WHY THIS EXISTS (orch#1015). `sample_end` in the tournament's config was
+    the literal `"2026-06-30"`, set once at bootstrap on 2026-05-25 — 36 days
+    in the FUTURE at the time — and never changed since; the only later commits
+    to that line are whitespace reflows, and it carries no `_reason` note in a
+    config that documents every deliberate choice. It was headroom, not policy.
+    `kernel/tournament_acceptance.py` says as much in passing: "sample_end is
+    bumped manually".
+
+    The calendar overran it on 2026-06-30 and the wall stopped moving. Measured
+    on the 2026-08-16 tournament run:
+
+        DataFetchJob: fetching 146 tickers 2016-01-01 -> 2026-06-30
+          AAPL: 2637 rows        (the on-disk store held 2672)
+
+    35 fresh trading days per ticker, fetched away, every week. With the
+    tournament's 5-day label lookahead the feature frame ends 2026-06-23, so
+    `today - frame_end` grows 7 days a week; it crossed the acceptance gate's
+    45-day cap on 2026-08-09 and **all 142 per-ticker candidates have been
+    rejected every week since, incumbents kept**. Nothing was broken: the gate
+    was right, the data was fine, and a hand-set bound had become a wall.
+
+    So an EXPLICIT date still pins the window — reproducible backtests are
+    unchanged — and `null` / absent / empty now means "follow the calendar".
+
+    WHY A DATE AND NOT `None`. Two reasons, and NOT the one an earlier draft of
+    this change gave. That draft argued `ParquetStore.has_range` skips its
+    staleness check when `end` is falsy, so `None` would fix the wall by
+    disabling a freshness guard. **That is false in this copy**: the
+    2026-05-03 P0 fix removed the `end=None` short-circuit, and `has_range`
+    now derives `ref = _market_timestamp(end)` and enforces NYSE-aware
+    staleness against the wall clock when `end` is None. The claim was true of
+    `backtesting/renquant_103/`, which is not the copy the tournament runs —
+    verified by resolving `kernel.data` under the tournament's own PYTHONPATH.
+
+    The real reasons are smaller and true: `pp_training.py` reads
+    `cfg["sample_end"]` as a hard subscript, so an absent key is a KeyError;
+    and a concrete date keeps the fetch window legible in the run log and the
+    run bundle instead of printing `None`.
+    """
+    declared = cfg.get("sample_end")
+    if declared:
+        return str(declared)
+    if today is not None:
+        return today
+    import datetime as _dt
+    return _dt.date.today().isoformat()
+
+
 def fetch_ohlcv(
     symbol: str,
     start: str | None = None,

@@ -493,11 +493,13 @@ class FetchOHLCVTask(PanelTask):
         if ctx.ohlcv:
             log.info("FetchOHLCVTask: ohlcv already populated — skipping")
             return
-        from kernel.data import fetch_ohlcv
+        from kernel.data import fetch_ohlcv, resolve_sample_end
 
         cfg = ctx.config
         start = cfg.get("sample_start")
-        end   = cfg.get("sample_end")
+        # orch#1015 — same resolution as the tournament path, from one shared
+        # definition, so the two cannot drift.
+        end   = resolve_sample_end(cfg)
         benchmark = cfg.get("benchmark", "SPY")
         sector_etf_map = cfg.get("sector_etf_map", {})
 

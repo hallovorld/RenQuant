@@ -483,11 +483,13 @@ class DataFetchJob(TrainingJob):
         return False
 
     def run(self, ctx: TrainingContext) -> None:
-        from kernel.data import fetch_ohlcv
+        from kernel.data import fetch_ohlcv, resolve_sample_end
 
         cfg = ctx.config
         start = cfg["sample_start"]
-        end   = cfg["sample_end"]
+        # orch#1015: an unpinned window must follow the calendar. A literal
+        # date still pins it; null/absent now means "today".
+        end   = resolve_sample_end(cfg)
         sector_etf = cfg.get("sector_etf_map", {})
         # Audit #46: previously hardcoded "SPY" while pp_training_full
         # honoured config.benchmark — the two pipelines disagreed when
