@@ -742,7 +742,8 @@
   ]
  },
  "sample_start": "2016-01-01",
- "sample_end": "2026-06-30",
+ "_sample_end_reason": "UNPINNED 2026-08-21 (orch#1015). This was the literal \"2026-06-30\", set once at bootstrap on 2026-05-25 when it was 36 days in the FUTURE, never changed, and carrying no reason note. The calendar overran it on 2026-06-30 and it became a wall: DataFetchJob discarded 35 fresh trading days per ticker every week, the feature frame froze at 2026-06-23, and from 2026-08-09 all 142 per-ticker candidates were rejected weekly on the acceptance gate's 45-day staleness cap. null now means 'follow the calendar'; set an explicit date ONLY to pin a reproducible backtest window.",
+ "sample_end": null,
  "backtest_start": "2024-01-01",
  "backtest_end": "2026-03-26",
  "indicator_spec": {
