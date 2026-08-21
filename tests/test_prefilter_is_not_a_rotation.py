@@ -99,8 +99,8 @@ class TestTheOperatorsTwoQuestions:
         )
 
     def test_the_count_and_the_reason_still_reach_the_operator(self):
-        """Renaming must not cost information. The 61 and the reason are the
-        diagnostic; only the false framing goes away."""
+        """Renaming must not cost information. The count and the reason are
+        the diagnostic; only the false framing goes away."""
         body = _body(self._prefilter_only_payload())
         assert "DECLINED-BUY x60" in body, body
         assert "nonpositive_expected_return_no_long 60" in body, body
