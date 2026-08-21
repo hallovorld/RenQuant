@@ -149,11 +149,11 @@ class FetchOHLCVTask(PanelTask):
         if ctx.ohlcv:
             log.info("FetchOHLCVTask: ohlcv already populated — skipping")
             return
-        from kernel.data import fetch_ohlcv, resolve_sample_end
+        from kernel.data import fetch_ohlcv
 
         cfg = ctx.config
         start = cfg.get("sample_start")
-        end   = resolve_sample_end(cfg)
+        end   = cfg.get("sample_end")
         benchmark = cfg.get("benchmark", "SPY")
         sector_etf_map = cfg.get("sector_etf_map", {})
 
