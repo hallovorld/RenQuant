@@ -46,6 +46,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+#: This file IS the operator-notification contract: it calls the composition
+#: helpers and asserts on what the operator would read. Membership is this
+#: MARKER, deliberately applied, not a substring scan over the source — a scan
+#: cannot tell a contract from a file that merely monkeypatches a helper away
+#: [codex on RenQuant#601]. The workflow runs exactly the marked files, and
+#: TestTheCONTRACTWorkflowActuallyRunsTheseTests asserts both directions.
+pytestmark = pytest.mark.notification_contract
+
 
 @pytest.fixture(autouse=True)
 def _allow_mocked_ntfy(monkeypatch):
