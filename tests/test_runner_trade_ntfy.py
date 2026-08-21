@@ -1127,10 +1127,18 @@ class TestOperatorCanActuallyReadIt:
         """2026-08-19: 59 BLOCKED-ROTATION segments pushed the body to 3830 B
         against a 3800 B cap, so the truncation fell INSIDE the diagnostic and
         the trailing regime/equity context never arrived. The count carries the
-        signal; the full list stays in the run log."""
+        signal; the full list stays in the run log.
+
+        FIXTURE CORRECTED 2026-08-20. I wrote this test with `"sell": None`
+        while asserting the paired `S→B` rendering — a payload shape that never
+        produces a paired rotation at all, since a null sell leg IS the
+        pre-pairing prefilter marker. The assertion happened to pass only
+        because the renderer was printing `None→B` for it, i.e. the test was
+        pinned to the very defect fixed in the same change. Real sell legs
+        now."""
         from live.runner import _ROT_BLOCKED_NTFY_MAX
         notify = self._import()
-        blocked = [{"sell": None, "buy": f"B{i}", "reason": "nonpositive_expected_return"}
+        blocked = [{"sell": f"H{i}", "buy": f"B{i}", "reason": "insufficient_cash"}
                    for i in range(59)]
         ctx = _stub_ctx(rotations_blocked=blocked,
                         orders_placed=[{"ticker": "PANW", "shares": 3, "price": 1.0}])
@@ -1147,8 +1155,8 @@ class TestOperatorCanActuallyReadIt:
         it."""
         notify = self._import()
         ctx = _stub_ctx(
-            rotations_blocked=[{"sell": None, "buy": f"TICKER{i:04d}",
-                                "reason": "nonpositive_expected_return_no_long"}
+            rotations_blocked=[{"sell": f"HELD{i:04d}", "buy": f"TICKER{i:04d}",
+                                "reason": "insufficient_cash"}
                                for i in range(400)],
             orders_placed=[{"ticker": "PANW", "shares": 3, "price": 1.0}],
         )

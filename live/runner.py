@@ -1200,18 +1200,70 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     # diagnostic: the operator reported being unable to see what prod did.
     # The count is what carries the signal here, not each pair; the full list
     # stays in the run log, which is where a 60-item enumeration belongs.
-    rot_blocked = list(getattr(ctx, "rotations_blocked", []) or [])
-    for rb in rot_blocked[:_ROT_BLOCKED_NTFY_MAX]:
-        if isinstance(rb, dict):
-            sell_t = rb.get("sell", "?")
-            buy_t  = rb.get("buy",  "?")
-            reason = rb.get("reason", "?")
-            parts.append(f"BLOCKED-ROTATION {sell_t}→{buy_t} ({reason})")
-    if len(rot_blocked) > _ROT_BLOCKED_NTFY_MAX:
+    #
+    # A PREFILTER ENTRY IS NOT A BLOCKED ROTATION (2026-08-20). The operator
+    # read the day's message and asked, reasonably, why every rotation was
+    # failing and why the sell leg was NULL:
+    #
+    #   BLOCKED-ROTATION None→APH (nonpositive_expected_return_no_long)
+    #
+    # Nothing about rotation had failed. `BuildPairsTask` declines a buy
+    # CANDIDATE before any sell leg is chosen, and the producer writes
+    # `sell=None` with `stage="prefilter"` deliberately — its own comment says
+    # "no pair exists yet ... so monitors can tell the stages apart"
+    # [renquant-pipeline kernel/pipeline/task_rotation.py]. The data was
+    # correct and self-describing; this renderer ignored `stage` and invented a
+    # rotation that never existed.
+    #
+    # The split that day was 60 prefilter + exactly ONE genuine paired block
+    # (SPG→CRWD, correlation_guard, appended by ValidatePairsTask after all 60).
+    # That one sat at position 61, inside the "+58 more" — so the flat list
+    # spent all three visible slots on rotations that never happened while
+    # hiding the only rotation that did. Splitting the kinds fixes both
+    # directions, which is why `paired` keeps its own cap rather than sharing
+    # one with the declines.
+    #
+    # Note `rb.get("sell", "?")` could never produce its own default: the key
+    # is PRESENT with value None, so `.get` returns None and the "?" is dead
+    # code. A default only fires on a missing key, never on a null value.
+    rot_blocked = [rb for rb in (getattr(ctx, "rotations_blocked", []) or [])
+                   if isinstance(rb, dict)]
+    paired: list[dict] = []
+    prefiltered: list[dict] = []
+    for rb in rot_blocked:
+        pre = (rb.get("stage") == "prefilter") or not rb.get("sell")
+        (prefiltered if pre else paired).append(rb)
+
+    for rb in paired[:_ROT_BLOCKED_NTFY_MAX]:
         parts.append(
-            f"BLOCKED-ROTATION +{len(rot_blocked) - _ROT_BLOCKED_NTFY_MAX} more "
-            f"({len(rot_blocked)} total — see run log)"
+            f"BLOCKED-ROTATION {rb.get('sell') or '?'}→{rb.get('buy') or '?'} "
+            f"({rb.get('reason') or '?'})"
         )
+    if len(paired) > _ROT_BLOCKED_NTFY_MAX:
+        parts.append(
+            f"BLOCKED-ROTATION +{len(paired) - _ROT_BLOCKED_NTFY_MAX} more "
+            f"({len(paired)} total — see run log)"
+        )
+
+    if prefiltered:
+        # ONE segment, not N. These are single tickers, so the count and the
+        # per-reason split carry the signal; the enumeration belongs in the run
+        # log. This also shrinks the body rather than growing it, which matters
+        # — the 61-entry version blew past _NTFY_BODY_MAX_BYTES and truncated
+        # away the regime/equity tail the operator actually reads.
+        pf_counts: dict[str, int] = {}
+        for rb in prefiltered:
+            r = str(rb.get("reason") or "?")
+            pf_counts[r] = pf_counts.get(r, 0) + 1
+        # Count desc, then the FULL reason string asc — the same determinism
+        # lesson as #599; sorting by count alone would let the payload order
+        # decide what the operator sees.
+        why = ", ".join(f"{r} {n}" for r, n in
+                        sorted(pf_counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        names = [str(rb.get("buy") or "?") for rb in prefiltered[:_ROT_BLOCKED_NTFY_MAX]]
+        more = len(prefiltered) - len(names)
+        shown = ", ".join(names) + (f" +{more} more" if more > 0 else "")
+        parts.append(f"DECLINED-BUY x{len(prefiltered)} ({why}) — {shown}")
 
     has_trade = bool(orders or exits)
     has_pending = bool(orders_pending or exits_pending)
