@@ -112,8 +112,9 @@ export RENQUANT_STRATEGY_CONFIG="$PROD_STRATEGY_CONFIG"
 # pinned with the function — until then the import fails and we fall through to
 # the exit-2 fail-closed, which is the pre-existing safe behaviour.
 _derive_xgb_ref_from_blend() {
-    local blend_cfg="$1" out bt_pythonpath strat_dir
+    local blend_cfg="$1" out err bt_pythonpath strat_dir
     out="$(mktemp "${TMPDIR:-/tmp}/gbdt_prod_ref_derived.XXXXXX")" || return 1
+    err="$(mktemp "${TMPDIR:-/tmp}/gbdt_prod_ref_err.XXXXXX")" || { rm -f "$out"; return 1; }
     bt_pythonpath="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" \
         renquant-backtesting renquant-common renquant-base-data \
         renquant-artifacts renquant-model renquant-strategy-104 2>/dev/null)"
@@ -131,11 +132,20 @@ blend = json.load(open(sys.argv[1]))
 derived = derive_xgb_reference_from_blend(blend, strategy_dir=Path(sys.argv[3]))
 with open(sys.argv[2], "w") as fh:
     json.dump(derived, fh)
-' "$blend_cfg" "$out" "$strat_dir" 2>/dev/null; then
+'  "$blend_cfg" "$out" "$strat_dir" 2>"$err"; then
         echo "$out"
+        rm -f "$err"
         return 0
     fi
-    rm -f "$out"
+    # DO NOT SWALLOW THIS (2026-08-21). The derivation used to run under
+    # `2>/dev/null`, so on the one path where it matters — it failed — the
+    # reason was destroyed and the caller printed a generic "no kind-matched
+    # reference" that says nothing about WHY. Diagnosing the 2026-08-16 failure
+    # required re-running the call by hand to see the traceback. Surface it on
+    # stderr so the next reader has it in the log.
+    echo "derive_xgb_reference_from_blend FAILED for $blend_cfg:" >&2
+    sed 's/^/    /' "$err" >&2 2>/dev/null || true
+    rm -f "$err" "$out"
     return 1
 }
 
@@ -203,9 +213,14 @@ if ! GBDT_PROD_CONFIG="$(_find_gbdt_config)"; then
     echo "       an xgb candidate has no same-kind production reference, and the"
     echo "       umbrella working copy is NOT an acceptable substitute (A8: known"
     echo "       diverged). The gate refuses rather than simulate a phantom config."
-    echo "       Decision needed (orch#799 item 'blend-prod reference rule'):"
-    echo "       either derive the xgb reference from the blend's component[0]"
-    echo "       semantics, or gate blend prods on a blend-kind candidate."
+    echo "       NOT a pending decision (corrected 2026-08-21). The orch#799"
+    echo "       'blend-prod reference rule' WAS decided and implemented:"
+    echo "       _derive_xgb_ref_from_blend (this script, 2f85e0d 2026-08-16) +"
+    echo "       derive_xgb_reference_from_blend (renquant-backtesting #112,"
+    echo "       2026-08-17). It works — verified by hand and by the 2026-08-20"
+    echo "       run, which used a derived reference and reached a verdict."
+    echo "       Reaching THIS line therefore means the derivation was tried and"
+    echo "       FAILED; its stderr is printed above. Read that, not this."
     notify "RenQuant 104 WEEKLY-BLOCKED" \
         "WF gate cannot run: no pinned kind-matched prod reference for the xgb candidate (prod is a blend). See orch#799. Production unchanged; RFC#210 freshness governance unaffected."
     exit 2
