@@ -112,13 +112,21 @@ def main() -> int:
     b_flat = _walk(baseline)
     l_flat = _walk(live)
 
-    # Default ignore list — fields auto-written by recalibrate_scores.py /
-    # panel trainer / ngboost trainer. These shift daily and aren't real
-    # configuration drift.
+    # Default ignore list — fields historically auto-written into the config by
+    # recalibrate_scores.py / panel trainer / ngboost trainer, which shift on
+    # their own and are not real configuration drift.
+    #
+    # LEGACY as of 2026-08-24 (#1024): recalibrate_scores.py no longer writes
+    # ANY of these — its telemetry goes to a gitignored runtime sidecar, because
+    # a git-tracked reviewed input must not double as a runtime output. The
+    # entries stay for now only because the live umbrella tree still carries the
+    # historical modification on that path; once that is reconciled they should
+    # be DROPPED, so a difference here starts reading as the real drift it would
+    # then be. Do not add new entries here to silence a writer — move the writer.
     DEFAULT_IGNORES = {
-        "ranking.blend_n_symbols",       # recalibrate_scores.py (symbol count)
-        "ranking.blend_weights.rank",    # recalibrate_scores.py (weight fit)
-        "ranking.blend_weights.rs",      # recalibrate_scores.py (weight fit)
+        "ranking.blend_n_symbols",       # legacy: recalibrate_scores.py, pre-#1024
+        "ranking.blend_weights.rank",    # legacy: recalibrate_scores.py, pre-#1024
+        "ranking.blend_weights.rs",      # legacy: recalibrate_scores.py, pre-#1024
     }
     ignored = set(args.ignore_path)
     if not args.no_default_ignores:

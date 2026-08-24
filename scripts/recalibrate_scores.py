@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import logging
 import sys
 from datetime import date
@@ -139,6 +140,71 @@ def _compute_blend_weights(symbol_data: list[dict]) -> tuple[float, float]:
         n_symbols, len(X),
     )
     return w_rank, w_rs
+
+
+#: Runtime sidecar for the two telemetry keys this script owns. Under logs/,
+#: which .gitignore already covers and which holds this strategy's other runtime
+#: outputs, so writing here can never dirty a tracked path.
+BLEND_STATE_RELPATH = pathlib.PurePath("logs") / "blend_calibration_state.json"
+
+#: The sidecar's state fields. `previous` carries THESE and nothing else, so the
+#: document has a constant schema and constant depth however many times it is
+#: written — see the nesting note in _write_blend_state.
+STATE_FIELDS = ("blend_updated", "blend_n_symbols")
+
+
+def _write_blend_state(strategy_dir, config_path, n_symbols: int) -> dict:
+    """Write blend telemetry to the sidecar. Never touches the config.
+
+    Seeds from `strategy_config.json` on first run so the migration is LOSSLESS:
+    until this has run once, the only copy of the live values is the untracked
+    modification in the config, and an operator clearing that dirt would destroy
+    them. After the first run the sidecar is authoritative and the config can be
+    restored to its committed state safely.
+    """
+    out = strategy_dir / BLEND_STATE_RELPATH
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    prior: dict = {}
+    if out.exists():
+        try:
+            prior = json.loads(out.read_text())
+        except (ValueError, OSError):
+            prior = {}
+
+    if prior:
+        # ONLY the prior run's state fields, never the prior PAYLOAD. Nesting the
+        # whole payload made `previous` contain its own `previous`, so depth grew
+        # by one every run — 51 levels and ~10KB of duplicated `note` after a
+        # year of weekly calibrations. The first version of this file did exactly
+        # that, and the test I wrote for it only checked the second run's
+        # top-level value, so it never saw the growth (codex on #606).
+        previous = {k: prior[k] for k in STATE_FIELDS if k in prior}
+        if previous:
+            previous["source"] = "prior-run"
+    else:
+        # First run: carry over whatever the config currently holds rather than
+        # letting the untracked config modification be the only record of it.
+        try:
+            cfg_ranking = json.loads(config_path.read_text()).get("ranking", {})
+        except (ValueError, OSError):
+            cfg_ranking = {}
+        previous = {k: cfg_ranking[k] for k in STATE_FIELDS if k in cfg_ranking}
+        if previous:
+            previous["source"] = "config-seed"
+
+    payload = {
+        "blend_updated": str(date.today()),
+        "blend_n_symbols": n_symbols,
+        "previous": previous or None,
+        "note": (
+            "Runtime telemetry. Formerly stamped into strategy_config.json, "
+            "which is a git-tracked reviewed input (#1024). Nothing reads these "
+            "keys to make a decision."
+        ),
+    }
+    out.write_text(json.dumps(payload, indent=2) + "\n")
+    return {"path": str(out), **payload}
 
 
 def recalibrate(strategy: str, dry_run: bool = False) -> None:
@@ -273,21 +339,42 @@ def recalibrate(strategy: str, dry_run: bool = False) -> None:
     # on save. The defensive_tickers / confidence_veto fixes landed in
     # commit 3c366b6 disappeared this way.
     #
-    # Fix: re-read the config file immediately before writing and merge
-    # only the two keys this script actually owns — blend_updated and
-    # blend_n_symbols. Everything else is preserved as-is. Also drop any
-    # stale blend_weights (same as before, but now scoped to the re-read).
+    # Fix (2026-04-22): re-read the config file immediately before writing and
+    # merge only the two keys this script actually owns. That fix also dropped a
+    # stale `ranking.blend_weights` on the way past.
+    #
+    # THAT CLEANUP IS GONE (2026-08-24, #1024) and its removal is deliberate.
+    # `blend_weights` is a DECISION INPUT — legacy and zero-weighted at the
+    # current 104 seam, but an input all the same — and the whole point of this
+    # change is that runtime calibration does not edit the reviewed config. A
+    # rule with one silent exception is not a rule. If the key should go, that is
+    # a reviewed config change, not something a calibration run does on the side.
+    # `test_an_existing_blend_weights_is_left_alone` pins it.
+    # 2026-08-24 (#1024): these two keys are TELEMETRY, and they used to be
+    # stamped into strategy_config.json — a git-TRACKED, reviewed input. That
+    # made the live umbrella tree permanently dirty on that path, with two
+    # possible outcomes and no third:
+    #
+    #   * every deploy touching the file aborts (`git merge --ff-only` refuses),
+    #     which is exactly what happened deploying #602 — the change that
+    #     unfreezes the tournament; or
+    #   * somebody clears it with `git checkout --` / `reset --hard` and the
+    #     recorded blend state is gone with no trace.
+    #
+    # Nothing reads either key to make a decision. The only consumer anywhere is
+    # renquant-strategy-104's `config_drift.DEFAULT_IGNORES`, which lists
+    # `ranking.blend_n_symbols` precisely so the drift check IGNORES it
+    # [VERIFIED — repo-wide sweep 2026-08-24]. So they move to a runtime sidecar
+    # under logs/, which is already gitignored and is where this strategy's other
+    # runtime outputs live. The config becomes input-only again.
     if not dry_run:
-        latest = json.loads(config_path.read_text())
-        latest.setdefault("ranking", {})
-        latest["ranking"]["blend_updated"]   = str(date.today())
-        latest["ranking"]["blend_n_symbols"] = len(symbol_data)
-        latest["ranking"].pop("blend_weights", None)
-        config_path.write_text(json.dumps(latest, indent=2))
-        log.info("Updated strategy_config.json: ranking.blend_updated=%s (rs blend removed)",
-                 latest["ranking"]["blend_updated"])
+        state = _write_blend_state(strategy_dir, config_path, len(symbol_data))
+        log.info("Updated %s: blend_updated=%s blend_n_symbols=%d "
+                 "(strategy_config.json is NOT written — #1024)",
+                 state["path"], state["blend_updated"], state["blend_n_symbols"])
     else:
-        log.info("[dry-run] Would refresh ranking.blend_updated (rs blend removed)")
+        log.info("[dry-run] Would refresh blend telemetry in the runtime sidecar "
+                 "(strategy_config.json is never written)")
 
 
 def main() -> None:
