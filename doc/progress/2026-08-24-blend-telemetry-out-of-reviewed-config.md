@@ -68,8 +68,33 @@ VERIFICATION:
   Migration is LOSSLESS by test. Until the first post-deploy run, the only copy
   of the live values (`2026-08-16` / `141`) is the untracked modification in the
   config; an operator clearing that dirt first would destroy them. So the first
-  run SEEDS the sidecar from the config and stamps `seeded_from_config`, and a
+  run SEEDS the sidecar from the config and marks `source: config-seed`, and a
   second run must not re-seed — both pinned.
+
+  TWO DEFECTS FOUND IN REVIEW (codex on #606), both mine, both real:
+
+  1. **Unbounded recursive history.** `previous` was the entire prior PAYLOAD,
+     which contains its own `previous`. Depth grew by one every run: measured
+     51 levels and ~10KB of duplicated `note` after a year of weekly
+     calibrations. `previous` now carries the prior run's STATE_FIELDS and a
+     one-word `source` marker — constant schema, constant depth, bounded size.
+
+     Worth naming why it survived my own testing: my second-run test checked a
+     top-level VALUE and never the SHAPE. So the replacement asserts the shape
+     over eight runs — key set, nesting depth, and size — which is the only form
+     of the assertion that can see accumulation at all.
+
+  2. **A stale contract in the comment I kept.** The retained 2026-04-22 text
+     still said "Also drop any stale blend_weights", which this change no longer
+     does. Not doing it is CORRECT — `blend_weights` is a decision input, legacy
+     and zero-weighted at the current 104 seam but an input, and a rule that
+     runtime must not edit the reviewed config cannot have one silent exception.
+     The comment now says so, and a test asserts an existing `blend_weights`
+     survives a run. Removing the key is a reviewed config change, not a side
+     effect of calibrating.
+
+  Both are mutation-verified: re-nesting the payload turns 2 tests red;
+  re-adding the `blend_weights` deletion turns 1 red. 7 pass with the fixes.
 
   Wider scope (every config/drift/calibration test file): 434 passed, 10 failed.
   The same 10 fail identically on pristine origin/main here (431 passed, 10

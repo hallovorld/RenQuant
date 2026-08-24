@@ -186,7 +186,7 @@ class TestRecalibrateScoresConcurrentEdit:
             "first run must SEED from the config — otherwise the migration loses "
             "the only copy of the live values"
         )
-        assert state["previous"]["seeded_from_config"] is True
+        assert state["previous"]["source"] == "config-seed"
 
     def test_the_config_is_byte_identical_across_a_run(self, tmp_path: Path, monkeypatch):
         """The actual #1024 requirement, stated directly.
@@ -224,8 +224,68 @@ class TestRecalibrateScoresConcurrentEdit:
         rs.recalibrate("renquant_test", dry_run=False)
         rs.recalibrate("renquant_test", dry_run=False)
         state = json.loads((strategy_dir / rs.BLEND_STATE_RELPATH).read_text())
-        assert state["previous"].get("seeded_from_config") is not True, state
+        assert state["previous"]["source"] == "prior-run", state
         assert state["previous"]["blend_updated"] == str(date.today())
+
+    def test_the_sidecar_does_not_grow_or_nest_across_many_runs(self, tmp_path: Path, monkeypatch):
+        """The first version of this file nested the whole prior PAYLOAD into
+        `previous`, so `previous` contained its own `previous` and depth grew by
+        one every run — 51 levels and ~10KB of duplicated `note` after a year of
+        weekly calibrations (codex on #606).
+
+        It survived review because the second-run test above checked a top-level
+        VALUE and never the SHAPE. So this asserts the shape directly, over
+        enough runs that any per-run growth is unmistakable.
+        """
+        strategy_dir, config_path, rs = _prepare(tmp_path, monkeypatch)
+        sidecar = strategy_dir / rs.BLEND_STATE_RELPATH
+
+        def depth(obj, d: int = 0) -> int:
+            nxt = obj.get("previous") if isinstance(obj, dict) else None
+            return depth(nxt, d + 1) if isinstance(nxt, dict) else d
+
+        shapes, depths, sizes = set(), set(), []
+        for _ in range(8):
+            rs.recalibrate("renquant_test", dry_run=False)
+            raw = sidecar.read_text()
+            doc = json.loads(raw)
+            shapes.add(tuple(sorted(doc)))
+            depths.add(depth(doc))
+            sizes.append(len(raw))
+
+        assert len(shapes) == 1, f"the document's key set changed across runs: {shapes}"
+        assert depths == {1}, f"`previous` nested beyond one level: {depths}"
+        # Run 1's `previous` is the config seed, which here carries one fewer
+        # field than a prior-run record, so size legitimately changes ONCE. From
+        # run 2 on it must be constant — that is the difference between a
+        # one-time transition and accumulation.
+        assert len(set(sizes[1:])) == 1, (
+            f"the sidecar kept changing size across runs with identical inputs — "
+            f"something accumulates: {sizes}"
+        )
+        assert max(sizes) < 2 * min(sizes), f"size is not bounded: {sizes}"
+        # And `previous` itself must stay flat, not just shallow.
+        doc = json.loads(sidecar.read_text())
+        assert set(doc["previous"]) <= set(rs.STATE_FIELDS) | {"source"}, doc["previous"]
+        assert not any(isinstance(v, (dict, list)) for v in doc["previous"].values())
+
+    def test_an_existing_blend_weights_is_left_alone(self, tmp_path: Path, monkeypatch):
+        """`blend_weights` is a DECISION INPUT — legacy and zero-weighted at the
+        current 104 seam, but an input. The 2026-04-22 write path deleted it in
+        passing; under the input-only rule a calibration run must not, because a
+        rule with one silent exception is not a rule. Removing the key is a
+        reviewed config change, not a side effect."""
+        strategy_dir, config_path, rs = _prepare(tmp_path, monkeypatch)
+        cfg = json.loads(config_path.read_text())
+        cfg["ranking"]["blend_weights"] = {"rank": 0.7, "rs": 0.3}
+        config_path.write_text(json.dumps(cfg, indent=2))
+
+        rs.recalibrate("renquant_test", dry_run=False)
+
+        after = json.loads(config_path.read_text())
+        assert after["ranking"]["blend_weights"] == {"rank": 0.7, "rs": 0.3}, (
+            "runtime calibration silently edited a decision input"
+        )
 
     def test_dry_run_never_writes(self, tmp_path: Path, monkeypatch):
         repo_root = tmp_path

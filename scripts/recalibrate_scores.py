@@ -147,6 +147,11 @@ def _compute_blend_weights(symbol_data: list[dict]) -> tuple[float, float]:
 #: outputs, so writing here can never dirty a tracked path.
 BLEND_STATE_RELPATH = pathlib.PurePath("logs") / "blend_calibration_state.json"
 
+#: The sidecar's state fields. `previous` carries THESE and nothing else, so the
+#: document has a constant schema and constant depth however many times it is
+#: written — see the nesting note in _write_blend_state.
+STATE_FIELDS = ("blend_updated", "blend_n_symbols")
+
 
 def _write_blend_state(strategy_dir, config_path, n_symbols: int) -> dict:
     """Write blend telemetry to the sidecar. Never touches the config.
@@ -160,26 +165,33 @@ def _write_blend_state(strategy_dir, config_path, n_symbols: int) -> dict:
     out = strategy_dir / BLEND_STATE_RELPATH
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    previous: dict = {}
+    prior: dict = {}
     if out.exists():
         try:
-            previous = json.loads(out.read_text())
+            prior = json.loads(out.read_text())
         except (ValueError, OSError):
-            previous = {}
-    if not previous:
+            prior = {}
+
+    if prior:
+        # ONLY the prior run's state fields, never the prior PAYLOAD. Nesting the
+        # whole payload made `previous` contain its own `previous`, so depth grew
+        # by one every run — 51 levels and ~10KB of duplicated `note` after a
+        # year of weekly calibrations. The first version of this file did exactly
+        # that, and the test I wrote for it only checked the second run's
+        # top-level value, so it never saw the growth (codex on #606).
+        previous = {k: prior[k] for k in STATE_FIELDS if k in prior}
+        if previous:
+            previous["source"] = "prior-run"
+    else:
         # First run: carry over whatever the config currently holds rather than
-        # letting it be the only record.
+        # letting the untracked config modification be the only record of it.
         try:
             cfg_ranking = json.loads(config_path.read_text()).get("ranking", {})
         except (ValueError, OSError):
             cfg_ranking = {}
-        previous = {
-            k: cfg_ranking[k]
-            for k in ("blend_updated", "blend_n_symbols")
-            if k in cfg_ranking
-        }
+        previous = {k: cfg_ranking[k] for k in STATE_FIELDS if k in cfg_ranking}
         if previous:
-            previous["seeded_from_config"] = True
+            previous["source"] = "config-seed"
 
     payload = {
         "blend_updated": str(date.today()),
@@ -327,10 +339,17 @@ def recalibrate(strategy: str, dry_run: bool = False) -> None:
     # on save. The defensive_tickers / confidence_veto fixes landed in
     # commit 3c366b6 disappeared this way.
     #
-    # Fix: re-read the config file immediately before writing and merge
-    # only the two keys this script actually owns — blend_updated and
-    # blend_n_symbols. Everything else is preserved as-is. Also drop any
-    # stale blend_weights (same as before, but now scoped to the re-read).
+    # Fix (2026-04-22): re-read the config file immediately before writing and
+    # merge only the two keys this script actually owns. That fix also dropped a
+    # stale `ranking.blend_weights` on the way past.
+    #
+    # THAT CLEANUP IS GONE (2026-08-24, #1024) and its removal is deliberate.
+    # `blend_weights` is a DECISION INPUT — legacy and zero-weighted at the
+    # current 104 seam, but an input all the same — and the whole point of this
+    # change is that runtime calibration does not edit the reviewed config. A
+    # rule with one silent exception is not a rule. If the key should go, that is
+    # a reviewed config change, not something a calibration run does on the side.
+    # `test_an_existing_blend_weights_is_left_alone` pins it.
     # 2026-08-24 (#1024): these two keys are TELEMETRY, and they used to be
     # stamped into strategy_config.json — a git-TRACKED, reviewed input. That
     # made the live umbrella tree permanently dirty on that path, with two
