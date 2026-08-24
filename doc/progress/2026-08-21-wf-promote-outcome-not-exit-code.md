@@ -47,9 +47,44 @@ WHY/DIR:  Fourth instance this week of the same class (RenQuant#598/#599/#600):
           worst of them, because the false report is POSITIVE and arrives by
           push notification.
 
+SECOND WRAPPER, MEASURED LIVE ON 2026-08-23. `retrain_panel.sh` carried the
+          identical defect and fired while this PR was in review: it logged
+          "delegated weekly_wf_promote PASS" for a chain whose own verdict was
+          `VERDICT: FAIL` — genuine_ic=+0.0000, with aligned_real_ic and
+          placebo_ic equal to four decimals (+0.0434) — and which promoted
+          nothing. That log line is also what the run-health scan reads to
+          decide whether the job "acted", so the false PASS corrupted the scan
+          as well as the reader.
+
+          Both wrappers now share ONE classifier
+          (`scripts/lib/wf_promote_outcome.sh`). Two copies of this rule would
+          drift, and that is precisely how the second wrapper kept the bug for
+          two days after the first one's fix was written.
+
+TESTS REWRITTEN FROM SCRATCH [codex on #603]. The first suite read
+          `logs/weekly_wf_promote/*.log` and re-applied the wrapper's regex in
+          Python. In a clean checkout that was **8 passed, 3 skipped** — the
+          three incident cases, which are the entire point, silently did not
+          run, because those logs are workstation state. And re-applying the
+          regex verifies neither the shell branch, nor the notification title
+          and body, nor the exit code, nor the seams it added. It measured a
+          proxy and called it coverage.
+
+          Now: a hermetic fake repo (stub `python`, stub `subrepo_env.sh`, stub
+          child), the REAL wrappers and the REAL classifier, driven end to end,
+          asserting on what the operator would actually receive. 11 tests, four
+          outcomes each where applicable — promoted (both marker forms), calm
+          refusal, nonzero child, zero-exit/unclassifiable. **10 of 11 fail
+          against main.** Gated by a new required workflow, because the file
+          this replaces was named by no workflow at all — the same gap #601
+          fixed for the notification contract, repeated four days later in a
+          new file.
+
 EVIDENCE:
-  artifact:      `scripts/conditional_retrain_104.sh`,
-                 `tests/test_wf_promote_outcome_claim.py` (11 tests).
+  artifact:      `scripts/lib/wf_promote_outcome.sh` (new, shared),
+                 `scripts/conditional_retrain_104.sh`, `scripts/retrain_panel.sh`,
+                 `tests/conftest_harness.py`, `tests/test_wf_promote_outcome_claim.py`,
+                 `.github/workflows/job-outcome-contract.yml`.
   prod or exp:   **exp** — scratch copies pushed via the contents API; the live
                  tree was not written.
   existing data: measured, not assumed —
@@ -61,8 +96,14 @@ EVIDENCE:
                    grep of weekly_wf_promote.sh: lines 362, 695, 699]
                  - 5 fallback_verdict.json files exist, ALL `REFUSE`; no
                    promotion appears anywhere in the recent record [VERIFIED]
-                 - 11 tests pass against REAL recorded child logs; 9 of them
-                   fail against the pre-fix script [VERIFIED — mutation]
+                 - 11 hermetic tests pass; 10 fail against main's wrappers
+                   [VERIFIED — mutation, both scripts swapped back]
+                 - the shared classifier labels the three real incident logs
+                   (08-19, 08-20, 08-23) NOTHING_PROMOTED [VERIFIED — smoke run
+                   against the actual files, separately from the hermetic suite]
+                 - today's retrain_panel PASSED the orch#799 stage for the
+                   first time in 11 weeks, then the gate declined on merit
+                   [VERIFIED — logs/retrain_panel/2026-08-23.log]
   best-known?:   yes. Parsing the child's log is less robust than a distinct
                  exit code, but changing the child's exit contract touches the
                  promotion path itself; this is the smaller change and it fails
