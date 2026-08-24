@@ -1,14 +1,13 @@
 # Four assertions rotted four different ways, and nothing was running them
 
-STATUS:   delivered. Four assertions repaired (none deleted), one shared
-          structural probe, one workflow. Test-and-CI only; no production code
-          touched, nothing deployed.
+STATUS:   delivered IN PART, deliberately. Four assertions repaired (none
+          deleted) + one shared structural probe. **No workflow** — see
+          "The workflow I withdrew". Tests only; no production code touched.
 
 WHAT:     `tests/test_audit_2026_04_24_fixes.py` (3) and
           `tests/test_round3_audit_fixes_2026_04_25.py` (1) had been failing
           unnoticed. All four now assert structure or behaviour via
-          `tests/_source_probe.py`, and a new `audit-regression-suites`
-          workflow runs both files.
+          `tests/_source_probe.py`.
 
 WHY/DIR:  orch#1022. **None of the four was a regression** — every property is
           intact in production. Each was a stale LOCATOR, and naming the four
@@ -28,8 +27,7 @@ WHY/DIR:  orch#1022. **None of the four was a regression** — every property is
           says "the code moved" instead of failing an assertion about nothing.
 
 EVIDENCE:
-  artifact:      tests/_source_probe.py (new), the two suites,
-                 .github/workflows/audit-regression-suites.yml (new).
+  artifact:      tests/_source_probe.py (new) and the two suites.
   prod or exp:   neither — tests and CI only.
   existing data: the four failures reproduce on main today [VERIFIED
                  2026-08-24], and each property was confirmed intact by
@@ -51,8 +49,11 @@ EVIDENCE:
 
 VERIFICATION:
   174 passed across both suites (was 4 failed / 169 passed).
-  Hermeticity checked under `env -i` — a stripped environment — so the suites
-  cannot quietly start depending on a developer's PYTHONPATH: 174 passed.
+  RUN IN THE REAL RUNTIME. An earlier draft of this doc claimed hermeticity on
+  the strength of an `env -i` run — which used the LIVE VENV, so it proved
+  independence from PYTHONPATH and nothing at all about installed packages. In a
+  genuinely clean venv the suites need scipy, sklearn, xgboost and
+  renquant_common; see below.
 
   Mutation-verified against REAL behavioural regressions, not just moved text:
     remove the `if not is_partial` guard so a PARTIAL sell stamps the
@@ -64,6 +65,31 @@ VERIFICATION:
 
   The workflow's own steps were run locally exactly as written, including the
   anti-vacuity step that requires the probe to RAISE on a missing target.
+
+## The workflow I withdrew
+
+This PR originally added `audit-regression-suites.yml` — the "and actually run
+them" half. It failed on its first CI run (`No module named 'numpy'`), and
+chasing that produced the finding that matters:
+
+    pytest only                  -> 2 collection errors
+    + numpy + pandas             -> 40 failed, 134 passed
+    still missing: scipy, sklearn, xgboost, **renquant_common**
+
+So these suites are not hermetic. They need the SUBREPO RUNTIME — precisely what
+this repo's CI pattern deliberately does not assemble (bare checkout,
+`pip install pytest`, named files). One of the four repaired tests
+(`test_ema50_gate_handles_missing_spy`) is itself among the lean-environment
+failures.
+
+Wiring them in is therefore the runtime decision itself, not a step on the way
+to it, so the workflow is withdrawn rather than made to pass by quietly turning
+this repo's CI into something heavier. **orch#1022 is half-closed by this PR:
+the assertions are repaired; "nothing runs them" is not.**
+
+My own verification error is the reason this took a CI run to surface: `env -i`
+with the live venv proves independence from PYTHONPATH, NOT from site-packages.
+A clean venv reproduces the CI failure exactly, and is what I should have used.
 
 NEXT:     **The measurement that reframes this issue.** `tests/` holds 609 test
           files; workflows name 20. **589 are run by nothing** [VERIFIED
