@@ -163,5 +163,12 @@ case "$CHAIN_OUTCOME" in
         echo "=== Gated WF promote chain OUTCOME UNVERIFIED ($TRIGGER) at $(date) ==="
         notify "RenQuant 104 WF promote UNVERIFIED" \
             "$TRIGGER — exited 0 but emitted neither a promotion marker nor a refusal. Check logs/weekly_wf_promote."
+        # Exit 2, NOT a fall-through to 0. The notification alone is not enough:
+        # the job's exit status is what launchd and the run-health scan read,
+        # and an unestablished outcome presenting as a successful job is the
+        # same false-OK this file exists to remove. 2 rather than 1 so
+        # automation can tell "the child failed" (1) from "the child's contract
+        # drifted and we cannot say what it did" (2) — different repairs.
+        exit 2
         ;;
 esac

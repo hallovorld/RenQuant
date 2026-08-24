@@ -105,8 +105,16 @@ case "$RP_OUTCOME" in
         exit 1
         ;;
     *)
+        # Exit 2, NOT 0. An outcome we cannot establish must never present to
+        # launchd as a successful job — that is the whole point of this file.
+        # This wrapper emits no notification, so exit status is the ONLY signal
+        # that leaves the process: a renamed terminal marker would otherwise
+        # produce a log line nobody reads and a green job. 2 rather than 1 so
+        # automation can tell "the child failed" (1) from "the child's contract
+        # drifted and we cannot say what it did" (2) — different repairs.
         echo "=== retrain_panel delegated weekly_wf_promote OUTCOME UNVERIFIED at $(date) ==="
         echo "Child exited 0 but emitted neither a promotion marker nor a refusal."
-        exit 0
+        echo "Failing the job (exit 2): an unestablished outcome is not success."
+        exit 2
         ;;
 esac

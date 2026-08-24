@@ -108,8 +108,30 @@ EVIDENCE:
                  exit code, but changing the child's exit contract touches the
                  promotion path itself; this is the smaller change and it fails
                  LOUD (UNVERIFIED) if the markers ever move.
-  scope:        the wrapper's outcome reporting and two test seams. No change
-                to what is promoted, to any gate, or to the child.
+  scope:        the wrapper's outcome reporting, its EXIT CONTRACT, and two
+                test seams. No change to what is promoted, to any gate, or to
+                the child.
+
+  EXIT CONTRACT (revised 2026-08-24, codex review — the fix's last hole):
+                An earlier revision classified UNVERIFIED correctly and then
+                exited 0, which handed launchd a SUCCESSFUL job for an outcome
+                nobody could establish — the same false OK this file exists to
+                remove, relocated from the text to the exit status. It was
+                worst in `retrain_panel.sh`, which emits no notification at
+                all: a renamed terminal marker would have produced one log line
+                and a green process.
+                  PROMOTED         -> 0
+                  NOTHING_PROMOTED -> 0   (a gate declining is the gate working)
+                  FAILED           -> 1
+                  UNVERIFIED       -> 2   (NOT 0)
+                2 rather than 1 so automation can separate "the child failed"
+                (repair the child) from "the child's contract drifted and we
+                cannot say what it did" (repair the markers or this classifier)
+                — different faults, different repairs. No consumer branches on
+                a specific nonzero code [VERIFIED — grepped every caller of
+                both scripts; launchd records status only].
+                Load-bearing [VERIFIED — mutation: reverting both to exit 0
+                gives 2 failed / 9 passed; restored gives 11 passed].
 
   NOT FIXED:    orch#799 (needs a decision) and the gate's own verdict (it is
                 correct). Neither is in scope here and neither should be

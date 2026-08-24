@@ -116,9 +116,16 @@ class TestConditionalRetrainReportsWhatActuallyHappened:
 
     def test_zero_exit_with_no_recognisable_outcome_is_UNVERIFIED(self, tmp_path):
         """The polarity that matters: if the child's markers are ever renamed,
-        this must surface instead of inheriting a permanent false OK."""
+        this must surface instead of inheriting a permanent false OK.
+
+        And it must surface in the EXIT STATUS, not only in the text. An
+        earlier revision exited 0 here, which handed launchd a successful job
+        for an outcome nobody could establish -- the same false OK in a new
+        place. 2, not 1, so automation can separate "the child failed" from
+        "the child's contract drifted" (codex review, 2026-08-24).
+        """
         rc, log, notes = _run_conditional(tmp_path, SILENT_ZERO_OUTPUT)
-        assert rc == 0
+        assert rc == 2, "an unestablished outcome must not present as success"
         assert "UNVERIFIED" in log, log[-800:]
         assert "UNVERIFIED" in notes, notes
         assert "OK" not in notes.replace("UNVERIFIED", ""), notes
@@ -158,8 +165,12 @@ class TestRetrainPanelReportsWhatActuallyHappened:
         assert "FAILED" in log
 
     def test_silent_zero_is_UNVERIFIED(self, tmp_path):
+        """This wrapper emits NO notification, so the exit status is the only
+        signal that leaves the process. Exiting 0 on an unestablished outcome
+        would make a renamed marker produce a log line nobody reads and a green
+        job -- strictly more silent than the bug this file removes."""
         rc, log, _ = _run_panel(tmp_path, SILENT_ZERO_OUTPUT)
-        assert rc == 0
+        assert rc == 2, "an unestablished outcome must not present as success"
         assert "UNVERIFIED" in log, log[-800:]
 
 
