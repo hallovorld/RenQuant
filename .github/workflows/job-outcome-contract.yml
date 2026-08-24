@@ -1,0 +1,55 @@
+name: job-outcome-contract
+
+# A scheduled job must not report an outcome it did not have.
+#
+# `weekly_wf_promote.sh` exits 0 on a REFUSAL deliberately — "Reject
+# disposition: prod FRESH ... governance nominal, calm notify, exit 0" —
+# because a gate declining is the gate working. Both wrappers around it
+# branched on that exit code alone, so:
+#
+#   * conditional_retrain_104 on 2026-08-19 and 2026-08-20 printed "chain
+#     complete" and PUSHED "RenQuant 104 WF promote OK" to the operator while
+#     production was untouched — a positive report for a non-event, so there
+#     was no reason to go look;
+#   * retrain_panel on 2026-08-23 logged "delegated weekly_wf_promote PASS" for
+#     a chain whose own verdict was `VERDICT: FAIL` (genuine_ic=+0.0000) and
+#     which promoted nothing. That log line is also what the run-health scan
+#     reads to decide whether the job "acted".
+#
+# The tests are HERMETIC by construction: a fake repo with a stub `python`, a
+# stub `subrepo_env.sh` and a stub child, running the REAL wrappers and the REAL
+# shared classifier end to end. An earlier version read
+# `logs/weekly_wf_promote/*.log` and reported `8 passed, 3 skipped` in a clean
+# checkout — the three incident cases, the entire point, silently did not run
+# [codex on RenQuant#603]. Nothing here touches the filesystem outside tmp_path,
+# the network, or any pinned checkout.
+#
+# This workflow exists because a test file no job runs is a document: the file
+# it gates was, at the time it was written, named by no workflow at all.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  job-outcome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test tools
+        run: python3 -m pip install pytest
+      - name: Wrappers must report what actually happened (hermetic)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_wf_promote_outcome_claim.py
+      - name: The shared classifier and both wrappers must parse
+        run: |
+          set -euo pipefail
+          bash -n scripts/lib/wf_promote_outcome.sh
+          bash -n scripts/conditional_retrain_104.sh
+          bash -n scripts/retrain_panel.sh

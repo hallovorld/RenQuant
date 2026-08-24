@@ -17,10 +17,14 @@
 #   bash scripts/retrain_panel.sh --strategy renquant_104
 set -uo pipefail
 
-REPO_DIR="/Users/renhao/git/github/RenQuant"
+# Overridable ONLY so the outcome classification can be driven by a hermetic
+# test against a stub child; production passes nothing and gets the same path.
+REPO_DIR="${RQ_RETRAIN_PANEL_REPO_DIR:-/Users/renhao/git/github/RenQuant}"
 # 2026-05-11 audit M-env: switched conda → .venv per feedback_python_env.md
-VENV_DIR="/Users/renhao/git/github/RenQuant/.venv"
+VENV_DIR="$REPO_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
+# Shared with conditional_retrain_104.sh; two copies of this rule would drift.
+source "$REPO_DIR/scripts/lib/wf_promote_outcome.sh"
 LOG_DIR="$REPO_DIR/logs/retrain_panel"
 NTFY_TOPIC="renquant"
 mkdir -p "$LOG_DIR"
@@ -40,7 +44,7 @@ exec >> "$LOG" 2>&1
 echo "=== retrain_panel started at $(date) ==="
 
 # ── Lock file — prevent concurrent invocations ────────────────────────────────
-LOCK_FILE="/tmp/renquant_104_retrain_panel.lock"
+LOCK_FILE="${RQ_RETRAIN_PANEL_LOCK_FILE:-/tmp/renquant_104_retrain_panel.lock}"
 if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
     EXISTING_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "?")
     echo "Another retrain_panel run is active (PID=$EXISTING_PID) — skipping."
@@ -68,11 +72,49 @@ fi
 
 echo "weekly_wf_promote has not run today; delegating to the strict trust boundary."
 echo "No retrain_panel wrapper ntfy will be emitted; weekly_wf_promote owns alerts."
-if bash scripts/weekly_wf_promote.sh; then
-    echo "=== retrain_panel delegated weekly_wf_promote PASS at $(date) ==="
-    exit 0
-else
-    echo "=== retrain_panel delegated weekly_wf_promote FAIL at $(date) ==="
-    echo "Production preserved by weekly_wf_promote; check logs/weekly_wf_promote/$DATE.log."
-    exit 1
-fi
+# EXIT CODE IS NOT THE OUTCOME (2026-08-23). This printed "PASS" whenever the
+# child exited 0 — and a REFUSAL exits 0 deliberately. Measured today: the
+# 2026-08-23 run logged "delegated weekly_wf_promote PASS" for a chain whose own
+# verdict was `VERDICT: FAIL` (genuine_ic=+0.0000, aligned_real_ic == placebo_ic
+# to four decimals) and which promoted nothing. That log line is also what the
+# run-health scan reads to decide whether this job "acted", so the false PASS
+# corrupted the scan as well as the reader.
+#
+# This wrapper still emits NO ntfy by design — weekly_wf_promote owns alerts.
+# Only the log line is corrected.
+RP_OUT=$(mktemp "${TMPDIR:-/tmp}/retrain_panel_chain.XXXXXX")
+bash scripts/weekly_wf_promote.sh 2>&1 | tee "$RP_OUT"
+RP_RC=${PIPESTATUS[0]}
+RP_OUTCOME="$(classify_wf_promote_outcome "$RP_OUT" "$RP_RC")"
+RP_WHY="$(describe_wf_promote_outcome "$RP_OUT")"
+rm -f "$RP_OUT"
+
+case "$RP_OUTCOME" in
+    PROMOTED)
+        echo "=== retrain_panel delegated weekly_wf_promote PROMOTED at $(date) — ${RP_WHY} ==="
+        exit 0
+        ;;
+    NOTHING_PROMOTED)
+        echo "=== retrain_panel delegated weekly_wf_promote RAN, NOTHING PROMOTED at $(date) — ${RP_WHY:-refused} ==="
+        echo "Production preserved by weekly_wf_promote; check logs/weekly_wf_promote/$DATE.log."
+        exit 0
+        ;;
+    FAILED)
+        echo "=== retrain_panel delegated weekly_wf_promote FAILED at $(date) — rc=$RP_RC ==="
+        echo "Production preserved by weekly_wf_promote; check logs/weekly_wf_promote/$DATE.log."
+        exit 1
+        ;;
+    *)
+        # Exit 2, NOT 0. An outcome we cannot establish must never present to
+        # launchd as a successful job — that is the whole point of this file.
+        # This wrapper emits no notification, so exit status is the ONLY signal
+        # that leaves the process: a renamed terminal marker would otherwise
+        # produce a log line nobody reads and a green job. 2 rather than 1 so
+        # automation can tell "the child failed" (1) from "the child's contract
+        # drifted and we cannot say what it did" (2) — different repairs.
+        echo "=== retrain_panel delegated weekly_wf_promote OUTCOME UNVERIFIED at $(date) ==="
+        echo "Child exited 0 but emitted neither a promotion marker nor a refusal."
+        echo "Failing the job (exit 2): an unestablished outcome is not success."
+        exit 2
+        ;;
+esac
