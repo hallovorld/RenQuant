@@ -17,6 +17,17 @@ import pandas as pd
 import pytest
 
 _STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+
+import sys as _sys  # noqa: E402
+if str(Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _source_probe import (  # noqa: E402
+    assigns_to,
+    find_def,
+    find_def_in_package,
+    guarded_by,
+    parse,
+)
 if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 
@@ -193,13 +204,40 @@ class TestGateChainNoEarlyShortCircuit:
         silently disabling the macro filter. Pre-fix returned None;
         post-fix returns False (chain short-circuit) + sets buy_blocked.
         """
+        from kernel.pipeline.job_gates import BuyGatesJob
         from kernel.pipeline.task_gates import EMA50GateTask
         ctx = SimpleNamespace(regime="BULL_CALM", buy_blocked=False,
                                counters={}, ohlcv={}, config={})
+
+        # The TASK latches; the JOB applies. Errata C moved the flag to the job
+        # boundary so it lands from EITHER the gate registry's aggregate OR the
+        # plain latch — a pin regression that breaks the registry import can
+        # therefore never silently disable the gates. Asserting on the task
+        # alone (as this test did until orch#1022) reports "buys not blocked"
+        # for a pipeline that blocks them correctly.
         result = EMA50GateTask().run(ctx)
-        # Post-Issue-06 fail-SAFE: missing SPY blocks buys.
-        assert ctx.buy_blocked is True
-        assert result is False
+        assert result is False, "the gate must short-circuit the chain"
+        assert getattr(ctx, "_gate_block_pending", False) is True, \
+            "the degrade-safe latch was not set"
+
+        # And the guarantee itself, at the layer that owns it. The chain is
+        # narrowed to the gate under test ON PURPOSE: BuyGatesJob runs nine
+        # gates, and driving all of them here would couple this test to eight
+        # unrelated ctx contracts — it would then break for reasons that have
+        # nothing to do with EMA50, which is how a test stops being read. The
+        # BOUNDARY LOGIC under test is inherited unchanged: `run` is not
+        # overridden, only the task list.
+        class _EMA50Only(BuyGatesJob):
+            @property
+            def tasks(self):
+                return [EMA50GateTask()]
+
+        ctx2 = SimpleNamespace(regime="BULL_CALM", buy_blocked=False,
+                               counters={}, ohlcv={}, config={})
+        _EMA50Only().run(ctx2)
+        assert ctx2.buy_blocked is True, (
+            "missing SPY must FAIL-SAFE block buys once the job boundary "
+            "applies the latch")
 
 
 # ── #1 — should_skip dead code now wired into pp_inference ───────────────────
@@ -263,18 +301,30 @@ class TestSimAdapterDuplicateExits:
 # ── #54 mirror — SimAdapter doesn't stamp wash-sale on partial sells ─────
 
 class TestSimAdapterPartialNoWashSale:
+    """A PARTIAL sell must not stamp the wash-sale date; a full one must.
+
+    2026-08-24 (orch#1022): this used to search for the literal
+    ``"if not is_partial:"`` inside a hand-tuned BYTE WINDOW of
+    ``_apply_sell`` — 4k, then 8k, then 10k across three previous repairs as
+    the function grew. It grew again, the window stopped reaching the guard,
+    and the test failed while the behaviour was completely intact.
+
+    The window is gone. This asserts the STRUCTURE: every assignment to
+    ``self._last_sell_date[ticker]`` inside ``_apply_sell`` sits under
+    ``if not is_partial``. That survives the function growing or moving, and
+    a missing ``_apply_sell`` now raises TargetNotFound — "the code moved"
+    instead of a silent mismatch.
+    """
+
     def test_sim_partial_skips_last_sell_date(self):
-        src = (_STRATEGY_DIR / "adapters" / "sim.py").read_text()
-        # Sentinel: post-fix logic gates wash-sale stamp on `if not is_partial`
-        # in _apply_sell.
-        idx = src.find("def _apply_sell")
-        # _apply_sell grew to >4k chars after 2026-05-06 bug-fix sprint
-        # (NaN handling + earnings + Davis-Norman). Bumped to 8000.
-        # 2026-05-10 (Batch A execution model): added slippage + sell-fee
-        # + T+2 settlement branches — needs ~10k window now.
-        body = src[idx:idx + 10_000]
-        assert "if not is_partial:" in body
-        assert "_last_sell_date[ticker]" in body
+        fn = find_def(parse(_STRATEGY_DIR / "adapters" / "sim.py"),
+                      "_apply_sell", where="adapters/sim.py")
+        writes = assigns_to(fn, "self._last_sell_date[ticker]")
+        assert writes, "the wash-sale stamp is gone from _apply_sell entirely"
+        assert guarded_by(fn, assignment="self._last_sell_date[ticker]",
+                          condition="not is_partial"), (
+            "a partial sell can stamp the wash-sale date — every write to "
+            "_last_sell_date must sit under `if not is_partial`")
 
 
 # ── #18 — exits.py LT threshold uses config not hardcoded 365 ──────────────
@@ -503,14 +553,24 @@ class TestBuildFeatureMatrixNonFatal:
 # ── #40 — ApplyNGBoost holdings get rank_score override too ──────────────
 
 class TestApplyNGBoostHoldingsRankScore:
+    """Holdings must get ``rank_score`` in mu_minus_lambda_sigma mode (#40).
+
+    2026-08-24 (orch#1022): the class MOVED from job_panel_scoring.py to
+    ngboost_tasks.py. ``src.find("class ApplyNGBoostTask")`` returned **-1**,
+    so ``src[idx:]`` became ``src[-1:]`` — the assertion then ran against a
+    haystack of ONE CHARACTER. It could only ever fail, and it could never say
+    why. That silent -1 is the defect; the behaviour was never broken.
+
+    Now the class is located across the whole package, so a file-level move
+    cannot rot this again, and a genuinely missing class raises TargetNotFound.
+    """
+
     def test_holdings_rank_score_set_in_override_mode(self):
-        src = (_STRATEGY_DIR / "kernel" / "panel_pipeline" / "job_panel_scoring.py").read_text()
-        idx = src.find("class ApplyNGBoostTask")
-        body = src[idx:]
-        # Holdings must get hs.rank_score updated when override_mode active
-        # (previously only hs.panel_score was set)
-        assert "hs.rank_score" in body, \
-            "Holdings must get rank_score in mu_minus_lambda_sigma mode (#40)"
+        node, path = find_def_in_package(
+            _STRATEGY_DIR / "kernel" / "panel_pipeline", "ApplyNGBoostTask")
+        assert assigns_to(node, "hs.rank_score"), (
+            f"ApplyNGBoostTask ({path.name}) no longer sets hs.rank_score — "
+            f"holdings would keep a stale rank in mu_minus_lambda_sigma mode (#40)")
 
 
 # ── #43 — VetoWeakBuysTask always populates the counter ─────────────────

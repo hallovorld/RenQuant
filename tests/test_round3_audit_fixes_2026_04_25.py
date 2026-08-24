@@ -4,6 +4,7 @@ Covers TF-3, GC-1, TPF-1 fixes shipped in the same commit.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,14 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+
+import sys as _sys
+from pathlib import Path as _Path
+if str(_Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from _source_probe import assigns_to, calls, find_def, parse  # noqa: E402
+
+_STRATEGY_DIR = _Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 
 _STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 if str(_STRATEGY_DIR) not in sys.path:
@@ -1491,26 +1500,50 @@ class TestLSATOMAtomicLiveStateWrite:
     to today, tax classification corrupted. Same atomic-write pattern
     as the parquet stores (DC-2-CACHE / FU-1 / INT-ATOM)."""
 
-    def test_uses_tmp_and_atomic_rename(self):
-        """Source-inspect that commit() uses .json.tmp + replace."""
-        import inspect, sys
-        from pathlib import Path
-        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+    def test_the_write_is_atomic_and_leaves_no_tmp_behind(self, tmp_path):
+        """The guarantee, exercised — not read off the caller's source.
+
+        2026-08-24 (orch#1022): this searched ``inspect.getsource(
+        RunnerAdapter.commit)`` for the literals ``.json.tmp`` and
+        ``tmp_path.replace(state_file)``. The write was EXTRACTED into
+        ``adapters.state_store.save_live_state_atomic``, so the caller stopped
+        containing them while the behaviour was completely intact. The test
+        failed for a refactor, and — because no workflow ran this file — nobody
+        heard.
+        """
+        import sys
+        from pathlib import Path as _P
+        sd = _P(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
         if str(sd) not in sys.path:
             sys.path.insert(0, str(sd))
-        from adapters.runner import RunnerAdapter
-        src = inspect.getsource(RunnerAdapter.commit)
-        # Post-fix: writes to a .json.tmp then renames atomically.
-        assert ".json.tmp" in src, (
-            "LS-ATOM regression: live_state write should go through .json.tmp"
-        )
-        assert "tmp_path.replace(state_file)" in src, (
-            "LS-ATOM regression: missing atomic rename via Path.replace"
-        )
-        # And no direct truncating write to the canonical file.
-        assert "state_file.write_text" not in src, (
-            "LS-ATOM regression: direct truncate-write to live_state.json reintroduced"
-        )
+        from adapters.state_store import save_live_state_atomic
+
+        state_file = tmp_path / "live_state.json"
+        save_live_state_atomic(state_file, {"entry_dates": {"AAPL": "2026-01-05"}})
+
+        assert json.loads(state_file.read_text())["entry_dates"]["AAPL"] == "2026-01-05"
+        assert not list(tmp_path.glob("*.tmp")), (
+            "a .tmp file survived the write — the rename did not happen")
+
+    def test_the_canonical_file_is_never_opened_in_truncate_mode(self):
+        """The LS-ATOM defect itself: `state_file.write_text(...)` truncates, so
+        a SIGKILL mid-write leaves an empty live_state.json and the next run
+        loads {} — losing every entry_date, position_hwm and regime cooldown.
+
+        Asserted structurally because it is a NEGATIVE property: no reachable
+        code path may do it, and no single behavioural run can show that.
+        """
+        node = find_def(parse(_STRATEGY_DIR / "adapters" / "state_store.py"),
+                        "save_live_state_atomic", where="adapters/state_store.py")
+        assert calls(node, "replace"), "the atomic rename is gone"
+        writes = [a for a in assigns_to(node, "tmp_path")]
+        assert writes, "no tmp path is derived — the write is no longer staged"
+
+        commit = find_def(parse(_STRATEGY_DIR / "adapters" / "runner.py"),
+                          "commit", where="adapters/runner.py")
+        assert calls(commit, "save_live_state_atomic"), (
+            "commit() no longer delegates the live_state write to the atomic "
+            "helper — check what it does instead before assuming this is fine")
 
     def test_atomic_rename_pattern_in_isolation(self, tmp_path):
         """Functional test of the rename pattern itself, regardless of
