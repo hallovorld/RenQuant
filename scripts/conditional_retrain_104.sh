@@ -19,6 +19,9 @@ REPO_DIR="${RQ_CONDITIONAL_REPO_DIR:-/Users/renhao/git/github/RenQuant}"
 GITHUB_DIR="$(cd "$REPO_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 source "$REPO_DIR/scripts/subrepo_env.sh"
+# One definition of "what did the promote chain actually do", shared with
+# retrain_panel.sh so the two wrappers cannot drift apart.
+source "$REPO_DIR/scripts/lib/wf_promote_outcome.sh"
 renquant_load_subrepo_env "$REPO_DIR"
 SUBREPO_ROOT="$(renquant_subrepo_root "$REPO_DIR" "$GITHUB_DIR")"
 export RENQUANT_SUBREPO_ROOT="$SUBREPO_ROOT"
@@ -135,28 +138,30 @@ notify "RenQuant 104 WF promote fired" "Trigger: $TRIGGER"
 CHAIN_OUT=$(mktemp "${TMPDIR:-/tmp}/rq104_wf_chain.XXXXXX")
 RENQUANT_WEEKLY_TRIGGER="$TRIGGER" bash scripts/weekly_wf_promote.sh 2>&1 | tee "$CHAIN_OUT"
 CHAIN_RC=${PIPESTATUS[0]}
-
-if [ "$CHAIN_RC" -ne 0 ]; then
-    echo "=== Gated WF promote chain FAILED ($TRIGGER) at $(date) — rc=$CHAIN_RC ==="
-    notify "RenQuant 104 WF promote ERROR" "Anomaly-gated chain failed: $TRIGGER (rc=$CHAIN_RC)"
-    rm -f "$CHAIN_OUT"
-    exit 1
-fi
-
-if grep -qE "=== weekly_wf_promote (PASSED|FALLBACK-PROMOTED)" "$CHAIN_OUT"; then
-    CHAIN_MARKER=$(grep -oE "=== weekly_wf_promote (PASSED|FALLBACK-PROMOTED)[^=]*" "$CHAIN_OUT" | head -1)
-    echo "=== Gated WF promote chain PROMOTED ($TRIGGER) at $(date) ==="
-    notify "RenQuant 104 WF promote PROMOTED" "$TRIGGER — $CHAIN_MARKER"
-elif grep -qE "REFUSE|Reject disposition|VERDICT: FAIL|promote-staged REFUSED" "$CHAIN_OUT"; then
-    CHAIN_WHY=$(grep -oE "Reject disposition: [^.]*|RFC#210 fallback verdict: [A-Z]+|VERDICT: FAIL" "$CHAIN_OUT" | head -1)
-    echo "=== Gated WF promote chain RAN, NOTHING PROMOTED ($TRIGGER) at $(date) — ${CHAIN_WHY:-refused} ==="
-    # Deliberately NOT an alarm: a gate declining is the gate working. It is
-    # also deliberately not "OK" — the operator must be able to tell a
-    # promotion from a refusal without opening the child's log.
-    notify "RenQuant 104 WF promote: no change" "$TRIGGER — ${CHAIN_WHY:-gate declined; production unchanged}"
-else
-    echo "=== Gated WF promote chain OUTCOME UNVERIFIED ($TRIGGER) at $(date) ==="
-    notify "RenQuant 104 WF promote UNVERIFIED" \
-        "$TRIGGER — exited 0 but emitted neither a promotion marker nor a refusal. Check logs/weekly_wf_promote."
-fi
+CHAIN_OUTCOME="$(classify_wf_promote_outcome "$CHAIN_OUT" "$CHAIN_RC")"
+CHAIN_WHY="$(describe_wf_promote_outcome "$CHAIN_OUT")"
 rm -f "$CHAIN_OUT"
+
+case "$CHAIN_OUTCOME" in
+    PROMOTED)
+        echo "=== Gated WF promote chain PROMOTED ($TRIGGER) at $(date) — ${CHAIN_WHY} ==="
+        notify "RenQuant 104 WF promote PROMOTED" "$TRIGGER — ${CHAIN_WHY}"
+        ;;
+    NOTHING_PROMOTED)
+        echo "=== Gated WF promote chain RAN, NOTHING PROMOTED ($TRIGGER) at $(date) — ${CHAIN_WHY:-refused} ==="
+        # Deliberately not an alarm: a gate declining is the gate working. Also
+        # deliberately not "OK" — the operator must be able to tell a promotion
+        # from a refusal without opening the child's log.
+        notify "RenQuant 104 WF promote: no change" "$TRIGGER — ${CHAIN_WHY:-gate declined; production unchanged}"
+        ;;
+    FAILED)
+        echo "=== Gated WF promote chain FAILED ($TRIGGER) at $(date) — rc=$CHAIN_RC ==="
+        notify "RenQuant 104 WF promote ERROR" "Anomaly-gated chain failed: $TRIGGER (rc=$CHAIN_RC)"
+        exit 1
+        ;;
+    *)
+        echo "=== Gated WF promote chain OUTCOME UNVERIFIED ($TRIGGER) at $(date) ==="
+        notify "RenQuant 104 WF promote UNVERIFIED" \
+            "$TRIGGER — exited 0 but emitted neither a promotion marker nor a refusal. Check logs/weekly_wf_promote."
+        ;;
+esac
