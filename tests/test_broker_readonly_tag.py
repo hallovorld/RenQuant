@@ -14,6 +14,7 @@ Contract under test:
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,7 +36,7 @@ from live.broker_readonly import (  # noqa: E402
     resolve_readonly_tag,
     validate_readonly_tag,
 )
-from live.runner import _readonly_label_prefix  # noqa: E402
+from live.runner import LANE_CALLSIGNS, _readonly_label_prefix  # noqa: E402
 from kernel.state_paths import (  # noqa: E402
     ALLOWED_BROKERS,
     live_state_path,
@@ -148,6 +149,82 @@ class TestNtfyLabelPrefix:
     def test_non_shadow_brokers_get_no_prefix(self):
         for name in ("alpaca", "paper", "alpaca-paper", "ibkr", ""):
             assert _readonly_label_prefix(name) == ""
+
+
+class TestCallsignCoverage:
+    """Every lane the daily script LAUNCHES must have a callsign.
+
+    `_readonly_label_prefix` ends in `LANE_CALLSIGNS.get(tag, tag.upper())`.
+    A permissive default means adding a lane cannot fail — it degrades, and
+    the degraded form is the worst one for the only surface that matters:
+    "[READONLY][ALPACA_SHADOW_VOL_WINDOW]" is 36 characters of title, so on a
+    phone the reader sees the lane marker and nothing else, or the marker gets
+    truncated away and the body reads like a live fill. That is the same harm
+    as orch#1014 (the dropped SHADOW disclaimer), reached by a different route.
+
+    So this asserts coverage against the AUTHORITY on what runs — the
+    RENQUANT_READONLY_TAG assignments in scripts/daily_104.sh — not against a
+    second hand-maintained list, which would rot in exactly the same way.
+    """
+
+    LAUNCH_TAG_RE = re.compile(r"RENQUANT_READONLY_TAG=([a-z0-9_]+)")
+
+    def _launched_tags(self) -> set[str]:
+        script = Path(__file__).resolve().parents[1] / "scripts" / "daily_104.sh"
+        assert script.is_file(), f"daily_104.sh not found at {script}"
+        tags = set(self.LAUNCH_TAG_RE.findall(script.read_text()))
+        # Guard the guard: if the launch idiom is ever refactored away, this
+        # test must fail loudly rather than pass over an empty set.
+        assert tags, (
+            "no RENQUANT_READONLY_TAG=... assignments found in daily_104.sh — "
+            "the launch idiom changed and this coverage check is now vacuous"
+        )
+        return tags
+
+    def test_every_running_shadow_lane_has_a_callsign(self):
+        missing = sorted(
+            t for t in self._launched_tags()
+            if t != "alpaca_shadow" and t not in LANE_CALLSIGNS
+        )
+        assert not missing, (
+            f"shadow lanes launched by daily_104.sh with no entry in "
+            f"LANE_CALLSIGNS: {missing}. Each falls back to its tag in caps, "
+            f"e.g. [READONLY][{missing[0].upper()}] — add a callsign in "
+            f"live/runner.py."
+        )
+
+    def test_the_vol_window_lane_specifically(self):
+        """The lane that was missing for six days. Regression pin."""
+        assert _readonly_label_prefix("alpaca_shadow_vol_window") == "[READONLY][V]"
+
+    def test_callsigns_stay_short_enough_to_leave_room_for_a_decision(self):
+        """Terseness is the point (operator directive 2026-08-04 简练).
+
+        A prefix is pure overhead on a notification title; the budget below is
+        deliberately loose — it exists to catch a tag-shaped value landing in
+        the map, not to police the operator's naming.
+        """
+        for tag, sign in LANE_CALLSIGNS.items():
+            assert 0 < len(sign) <= 4, f"{tag} → {sign!r} is not a terse callsign"
+            assert sign.isalnum(), f"{tag} → {sign!r} should be alphanumeric"
+
+    def test_callsigns_are_unique(self):
+        """Two lanes sharing a marker is worse than no marker: the reader is
+        confidently told the wrong lane."""
+        signs = list(LANE_CALLSIGNS.values())
+        assert len(signs) == len(set(signs)), f"duplicate callsigns: {signs}"
+
+    def test_coverage_holds_for_the_prefix_function_not_just_the_map(self):
+        """The map is the mechanism; the prefix is the contract. Assert on the
+        rendered title, so a future refactor that stops consulting the map is
+        caught here too."""
+        for tag in self._launched_tags():
+            prefix = _readonly_label_prefix(tag)
+            assert prefix.startswith("[READONLY]"), tag
+            assert tag.upper() not in prefix, (
+                f"{tag} renders as {prefix} — the shouted-tag fallback, "
+                f"meaning it has no callsign"
+            )
 
 
 class TestNtfyTitleBlendLane:

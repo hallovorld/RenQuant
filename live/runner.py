@@ -550,6 +550,13 @@ LANE_CALLSIGNS = {
     "alpaca_shadow_blend_mom_fast": "Rf",
     "alpaca_shadow_blend_rb_mom": "RCS",
     "alpaca_shadow_blend_rb_fast": "RCf",
+    # 2026-08-18 vol-window lane. The letters above name a SCORING
+    # composition; this lane's scoring is the prod blend and what it varies is
+    # the volatility gate (vol_window_license: inside ON ∧ ¬BEAR the
+    # top-decile keeps buy admission), so it gets its own letter rather than a
+    # composition string. Rename freely — nothing keys off the value, only off
+    # a lane HAVING one (test_every_running_shadow_lane_has_a_callsign).
+    "alpaca_shadow_vol_window": "V",
 }
 
 
@@ -577,6 +584,14 @@ def _readonly_label_prefix(broker_name: str) -> str:
         # depends on it (a shadow message must never classify as live).
         # Unknown future tags fall back to the full tag (never a bare
         # "[READONLY]", which would collide with the legacy lane's contract).
+        # The fallback is the tag SHOUTED, e.g. "[READONLY][ALPACA_SHADOW_VOL_WINDOW]"
+        # — 30 characters of title before the reader reaches a single decision.
+        # It ran that way from 2026-08-18 to 2026-08-24 because adding a lane
+        # silently degrades here instead of failing: `.get` with a permissive
+        # default is invisible. Kept (a title must never be MISSING a lane
+        # marker) but no longer relied upon — the callsign map is now asserted
+        # to cover every lane daily_104.sh actually launches, so the fallback
+        # is a backstop rather than the de-facto path for new lanes.
         return f"[READONLY][{LANE_CALLSIGNS.get(broker_name, broker_name.upper())}]"
     return ""
 
