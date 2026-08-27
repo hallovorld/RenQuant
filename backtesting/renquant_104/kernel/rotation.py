@@ -24,8 +24,11 @@ so that `task_rotation.py` can emit a structured decision-tree log.
 from __future__ import annotations
 
 import datetime
+import logging
 import math
 from dataclasses import dataclass
+
+log = logging.getLogger("kernel.rotation")
 
 
 @dataclass
@@ -434,12 +437,37 @@ def find_rotation_pairs(
     tax_cfg:        dict,
     panel_buy_floor:  "float | None" = None,    # candidate rank_score >= this
     panel_sell_floor: "float | None" = None,    # held rank_score <= this
+    buy_leg_admissible=None,  # Callable[[str, str | None], tuple[bool, str]] | None
+    on_buy_leg_blocked=None,  # Callable[[str, str], None] | None — candidate exhausted
 ) -> list[RotationPair]:
     """Greedy pairing using expected-return decision rule.
 
     Walks ranked candidates; for each, picks the held with the lowest
     expected-return whose net_advantage clears `min_expected_advantage_pct`.
     Each ticker (held or candidate) appears in at most one pair.
+
+    ``buy_leg_admissible`` (2026-08-25, the LLY→CRWD incident): a candidate
+    that can never be BOUGHT (wash-sale / sector cap / correlation guard)
+    must not consume the pairing — pre-fix, greedy pairing preceded the
+    tradeability guards, so the day's single rotation died with its first
+    blocked candidate and the engine never tried the next one. The callback
+    is ``(buy, sell|None, accepted=<tuple of RotationPair>) -> (ok, reason)``:
+    ``accepted`` carries the pairs tentatively selected so far, so the caller
+    can evaluate against the validator's *stateful* virtual holdings
+    (held − accepted sells − this sell + accepted buys), not just the bar's
+    opening book. An inadmissible leg is SKIPPED (logged, and recorded by the
+    caller once the candidate is exhausted) and the walk continues.
+
+    Order equivalence (review r2): ValidatePairsTask consumes the RETURNED
+    list, which is margin-sorted, while pairs are ACCEPTED in candidate-rank
+    order — with 2+ pairs the two orders can differ, and a pair admissible
+    against walk-order state can still be dropped by the validator seeing it
+    earlier/later in its own order. So after sorting, the final list is
+    re-checked with the validator's exact stateful loop in the validator's
+    exact order; any offender is vetoed and the walk RE-RUNS without that
+    (sell, buy) combination — retry, never give-up. The returned list
+    therefore passes the simulated validator argument-for-argument in
+    validator order. ValidatePairsTask remains the authoritative final check.
     """
     if not rotation_cfg.get("enabled", False):
         return []
@@ -523,87 +551,170 @@ def find_rotation_pairs(
     if not eligible or not candidates:
         return []
 
-    used_holds: set[str] = set()
-    pairs: list[RotationPair] = []
+    def _walk(vetoed: "dict[tuple[str, str], str]"):
+        """One greedy pairing pass. ``vetoed`` holds (sell, buy) combinations
+        the validator-order simulation below has refused, with the guard
+        reason — the walk treats them as inadmissible so the retry tries the
+        next sell leg / next candidate instead of re-emitting the offender.
 
-    for c in candidates:
-        if len(pairs) >= max_per_bar:
-            break
-        cand_ticker = c.ticker
-        if cand_ticker in held_scores:
-            continue
-        # 2026-05-04 audit Issue 33 fix: NaN rank_score slipped past the
-        # `cand_score < float(panel_buy_floor)` check (NaN < X is False)
-        # → candidate proceeded as if it crossed the buy floor. Same
-        # NaN-slip class as Issues 6/7/18/19/22. Reject NaN here.
-        cand_score = float(c.rank_score) if c.rank_score is not None else float("nan")
-        if not math.isfinite(cand_score):
-            continue
-        # Phase 1 (2026-04-25): panel_buy_floor — candidate strong enough.
-        if panel_buy_floor is not None and cand_score < float(panel_buy_floor):
-            continue
-        cand_er    = float(getattr(c, "expected_return", 0.0) or 0.0)
-        if not math.isfinite(cand_er):
-            continue
+        Returns (pairs in ACCEPTANCE order, blocked-candidate records) —
+        records are collected, not fired, so retries can't double-record.
+        """
+        used_holds: set[str] = set()
+        pairs: list[RotationPair] = []
+        blocked_records: list[tuple[str, str]] = []
 
-        # Pick weakest-ER eligible held that this candidate beats by ≥ threshold
-        # after costs.  "Weakest" = lowest E[R_horizon] — since the candidate's
-        # ER is fixed in this loop iteration, picking the held with the smallest
-        # ER maximizes raw_advantage and (for ties on raw_advantage) leaves
-        # higher-ER holds available for later, stronger candidates.
-        best_match: str | None = None
-        best_er: float = math.inf
-        for held_ticker, info in eligible.items():
-            if held_ticker in used_holds:
+        for c in candidates:
+            if len(pairs) >= max_per_bar:
+                break
+            cand_ticker = c.ticker
+            if cand_ticker in held_scores:
                 continue
-            raw_adv = cand_er - info["er"]
-            # V1 gate 1: raw_advantage depth
-            if min_raw_adv > 0.0 and raw_adv < min_raw_adv:
+            # 2026-05-04 audit Issue 33 fix: NaN rank_score slipped past the
+            # `cand_score < float(panel_buy_floor)` check (NaN < X is False)
+            # → candidate proceeded as if it crossed the buy floor. Same
+            # NaN-slip class as Issues 6/7/18/19/22. Reject NaN here.
+            cand_score = float(c.rank_score) if c.rank_score is not None else float("nan")
+            if not math.isfinite(cand_score):
                 continue
-            net_adv = raw_adv - info["tax_drag"] - txn_cost
-            if net_adv < threshold:
+            # Phase 1 (2026-04-25): panel_buy_floor — candidate strong enough.
+            if panel_buy_floor is not None and cand_score < float(panel_buy_floor):
                 continue
-            if info["er"] < best_er:
+            cand_er    = float(getattr(c, "expected_return", 0.0) or 0.0)
+            if not math.isfinite(cand_er):
+                continue
+
+            if buy_leg_admissible is not None:
+                # Sell-independent checks first (wash-sale): if the candidate can
+                # never be bought regardless of which name is sold, skip to the
+                # next candidate without consuming any pairing.
+                ok, why = buy_leg_admissible(cand_ticker, None,
+                                             accepted=tuple(pairs))
+                if not ok:
+                    log.info("ROTATION_CAND_SKIP  cand=%s  reason=%s  "
+                             "(untradeable buy leg — trying next candidate)",
+                             cand_ticker, why)
+                    blocked_records.append((cand_ticker, why))
+                    continue
+
+            # Pick weakest-ER eligible held that this candidate beats by ≥ threshold
+            # after costs.  "Weakest" = lowest E[R_horizon] — since the candidate's
+            # ER is fixed in this loop iteration, picking the held with the smallest
+            # ER maximizes raw_advantage and (for ties on raw_advantage) leaves
+            # higher-ER holds available for later, stronger candidates.
+            # Walk helds weakest-ER-first and take the FIRST pair whose buy leg
+            # is admissible against holdings-minus-that-sell (2026-08-25, the
+            # LLY→CRWD incident): pre-fix a single best_match was chosen and, if
+            # the validator later dropped the pair, no alternative sell leg and
+            # no next candidate were ever tried.
+            viable = sorted(
+                (
+                    (held_ticker, info)
+                    for held_ticker, info in eligible.items()
+                    if held_ticker not in used_holds
+                    and not (min_raw_adv > 0.0
+                             and (cand_er - info["er"]) < min_raw_adv)
+                    and (cand_er - info["er"] - info["tax_drag"] - txn_cost)
+                        >= threshold
+                ),
+                key=lambda kv: kv[1]["er"],
+            )
+            best_match: str | None = None
+            last_block_reason: "str | None" = None
+            for held_ticker, _info in viable:
+                veto_reason = vetoed.get((held_ticker, cand_ticker))
+                if veto_reason is not None:
+                    last_block_reason = veto_reason
+                    continue
+                if buy_leg_admissible is not None:
+                    ok, why = buy_leg_admissible(cand_ticker, held_ticker,
+                                                 accepted=tuple(pairs))
+                    if not ok:
+                        log.info("ROTATION_PAIR_SKIP  swap=%s→%s  reason=%s  "
+                                 "(trying next sell leg)",
+                                 held_ticker, cand_ticker, why)
+                        last_block_reason = why
+                        continue
                 best_match = held_ticker
-                best_er    = info["er"]
+                break
 
-        if best_match is None:
-            continue
-
-        # V1 gate 2: persistence — the same pair must have appeared on
-        # the prior `persistence` bars. When fewer than N bars of history
-        # have accumulated, we require all history to contain the pair
-        # (fail-closed on cold start so the gate can't be bypassed by
-        # restarting the sim).
-        if persistence > 0:
-            required = min(persistence, len(prior_proposals))
-            if required < persistence:
-                # Not enough history accumulated yet — skip
-                continue
-            relevant = prior_proposals[-required:]
-            pair_key = (best_match, cand_ticker)
-            if not all(pair_key in bar for bar in relevant):
+            if best_match is None:
+                # Recorded ONLY when admissibility (not the advantage gates)
+                # exhausted every viable sell — a candidate that simply cleared
+                # no threshold is not "blocked".
+                if last_block_reason is not None:
+                    blocked_records.append((cand_ticker, last_block_reason))
                 continue
 
-        info    = eligible[best_match]
-        raw_adv = cand_er - info["er"]
-        net_adv = raw_adv - info["tax_drag"] - txn_cost
-        pairs.append(RotationPair(
-            sell_ticker      = best_match,
-            buy_ticker       = cand_ticker,
-            sell_score       = info["score"],
-            buy_score        = cand_score,
-            sell_er          = info["er"],
-            buy_er           = cand_er,
-            horizon_days     = horizon,
-            raw_advantage    = raw_adv,
-            tax_drag         = info["tax_drag"],
-            transaction_cost = txn_cost,
-            net_advantage    = net_adv,
-            threshold        = threshold,
-            margin_realized  = net_adv - threshold,
-        ))
-        used_holds.add(best_match)
+            # V1 gate 2: persistence — the same pair must have appeared on
+            # the prior `persistence` bars. When fewer than N bars of history
+            # have accumulated, we require all history to contain the pair
+            # (fail-closed on cold start so the gate can't be bypassed by
+            # restarting the sim).
+            if persistence > 0:
+                required = min(persistence, len(prior_proposals))
+                if required < persistence:
+                    # Not enough history accumulated yet — skip
+                    continue
+                relevant = prior_proposals[-required:]
+                pair_key = (best_match, cand_ticker)
+                if not all(pair_key in bar for bar in relevant):
+                    continue
 
-    pairs.sort(key=lambda p: p.margin_realized, reverse=True)
+            info    = eligible[best_match]
+            raw_adv = cand_er - info["er"]
+            net_adv = raw_adv - info["tax_drag"] - txn_cost
+            pairs.append(RotationPair(
+                sell_ticker      = best_match,
+                buy_ticker       = cand_ticker,
+                sell_score       = info["score"],
+                buy_score        = cand_score,
+                sell_er          = info["er"],
+                buy_er           = cand_er,
+                horizon_days     = horizon,
+                raw_advantage    = raw_adv,
+                tax_drag         = info["tax_drag"],
+                transaction_cost = txn_cost,
+                net_advantage    = net_adv,
+                threshold        = threshold,
+                margin_realized  = net_adv - threshold,
+            ))
+            used_holds.add(best_match)
+
+        return pairs, blocked_records
+
+    # Validator-order equivalence loop (review r2). ValidatePairsTask walks
+    # the margin-sorted list with stateful virtual holdings; acceptance order
+    # can differ from that order once there are 2+ pairs. Simulate the
+    # validator's exact loop on the exact list it will receive; a pair it
+    # would drop is vetoed and the whole walk re-runs without that (sell, buy)
+    # combination — the retry the give-up bug was missing. Terminates: every
+    # iteration permanently vetoes one combination out of a finite set.
+    vetoed: "dict[tuple[str, str], str]" = {}
+    while True:
+        pairs, blocked_records = _walk(vetoed)
+        pairs.sort(key=lambda p: p.margin_realized, reverse=True)
+        if buy_leg_admissible is None:
+            break
+        offender = None
+        offender_reason = ""
+        sim_accepted: list[RotationPair] = []
+        for p in pairs:
+            ok, why = buy_leg_admissible(p.buy_ticker, p.sell_ticker,
+                                         accepted=tuple(sim_accepted))
+            if not ok:
+                offender, offender_reason = p, why
+                break
+            sim_accepted.append(p)
+        if offender is None:
+            break
+        log.info("ROTATION_ORDER_VETO  swap=%s→%s  reason=%s  (fails in "
+                 "validator order — re-pairing without this combination)",
+                 offender.sell_ticker, offender.buy_ticker, offender_reason)
+        vetoed[(offender.sell_ticker, offender.buy_ticker)] = offender_reason
+
+    # Blocked-candidate records fire once, from the walk actually returned.
+    if on_buy_leg_blocked is not None:
+        for ticker, reason in blocked_records:
+            on_buy_leg_blocked(ticker, reason)
     return pairs
