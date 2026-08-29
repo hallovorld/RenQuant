@@ -55,6 +55,7 @@ from adapters.runner_prep import (  # noqa: F401,E402
 # ── Live sell tax-lot accounting — EXTRACTED to runner_tax_lots.py ──────
 # (eng plan S2 item 5 decomposition slice 6, 2026-06-13.)
 from adapters.runner_tax_lots import (  # noqa: F401,E402
+    adopt_live_tax_lots,
     apply_live_sell_lot_accounting,
     reconstruct_live_tax_lots_from_fills,
     sell_event_price,
@@ -623,20 +624,16 @@ class RunnerAdapter:
             # field cannot TypeError in this hot path; pipeline reads it
             # getattr-safe (default 0).
             holdings[ticker].protection_breaches = int(protection_breaches.get(ticker, 0) or 0)
-            lots = live_tax_lots.get(ticker)
-            if lots:
-                lot_qty = sum(float(getattr(L, "shares", 0.0) or 0.0) for L in lots)
-                if abs(lot_qty - qty_held) <= max(0.01, abs(qty_held) * 1e-4):
-                    holdings[ticker].lots = lots
-                    holdings[ticker].entry_price = (
-                        holdings[ticker].weighted_avg_entry_price()
-                    )
-                else:
-                    log.warning(
-                        "LIVE-TAX-LOTS: %s reconstructed lot qty %.4f != broker "
-                        "qty %.4f; using broker avg_entry_price fallback",
-                        ticker, lot_qty, qty_held,
-                    )
+            # RQ#618 class C: adoption + the hydration invariant live in
+            # runner_tax_lots.adopt_live_tax_lots — a lot-qty mismatch is
+            # logged with the signed delta and the replay's degraded-fill
+            # counts for this ticker (price-less fills are now applied and
+            # flagged instead of silently dropped).
+            adopt_live_tax_lots(
+                holdings[ticker], ticker, live_tax_lots.get(ticker),
+                qty_held, avg_cost,
+                stats=getattr(live_tax_lots, "stats", None),
+            )
             holdings[ticker].model_type = model_type_from_artifact(
                 self._models.get(ticker)
             )

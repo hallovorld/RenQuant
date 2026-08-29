@@ -727,11 +727,19 @@ class AlpacaBroker(BaseBroker):
         """
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
-        from datetime import datetime, timezone
+        from datetime import datetime, timedelta, timezone
 
         page_size = 500
         max_pages = 10  # 5000-order cap — covers ≥1y of weekly trading
         all_orders: list = []
+        # RQ#618 class C (2026-08-29): the boundary order of every full page
+        # was re-fetched by the next page (the cursor was assigned `oldest`
+        # unchanged despite the "minus 1µs" comment) and so appeared twice
+        # in the fill list — a duplicated BUY doubles a reconstructed tax
+        # lot. Now: the cursor is oldest − 1µs AND orders are deduplicated
+        # by ``id`` across pages, so an inclusive `until` on the server side
+        # can never duplicate a fill either.
+        seen_ids: set[str] = set()
         until_cursor: "datetime | None" = None
         after_dt: "datetime | None" = (
             datetime.fromisoformat(after).replace(tzinfo=timezone.utc)
@@ -748,7 +756,13 @@ class AlpacaBroker(BaseBroker):
             page = self._trading_client.get_orders(filter=params)
             if not page:
                 break
-            all_orders.extend(page)
+            for o in page:
+                oid = str(getattr(o, "id", "") or "")
+                if oid:
+                    if oid in seen_ids:
+                        continue
+                    seen_ids.add(oid)
+                all_orders.append(o)
             if len(page) < page_size:
                 break
             # Cursor for next page: walk backward in time. Use the OLDEST
@@ -762,7 +776,15 @@ class AlpacaBroker(BaseBroker):
                 oldest = None
             if oldest is None:
                 break
-            until_cursor = oldest
+            try:
+                next_cursor = oldest - timedelta(microseconds=1)
+            except TypeError:
+                # Non-datetime submitted_at (SDK drift): keep the inclusive
+                # cursor; the id dedupe above still prevents duplicates.
+                next_cursor = oldest
+            if until_cursor is not None and next_cursor >= until_cursor:
+                break  # cursor did not move backward — never loop in place
+            until_cursor = next_cursor
         orders = all_orders
         result = []
         # Audit fix ALPACA-STATUS (Round 2 deep audit, 2026-04-25):
