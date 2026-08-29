@@ -40,6 +40,12 @@ _BROKER_CONNECT_TIMEOUT_SECONDS = 5.0
 _BROKER_READ_TIMEOUT_SECONDS = 10.0
 
 
+class _FractionableLookupError(RuntimeError):
+    """Asset fractionability could not be determined (lookup failed or the
+    trading client is not connected). Raised — never cached — so a transient
+    error is never remembered as an authoritative "not fractionable"."""
+
+
 class AlpacaBroker(BaseBroker):
     """Execute orders via Alpaca Markets API.
 
@@ -72,6 +78,9 @@ class AlpacaBroker(BaseBroker):
         self._trading_client = None
         self._data_client = None
         self._order_counter = 0
+        # symbol (upper) -> confirmed fractionable verdict. Only CONFIRMED
+        # lookups are stored (see _lookup_fractionable).
+        self._fractionable_cache: dict[str, bool] = {}
 
     @property
     def broker_name(self) -> str:  # state-file isolation tag (see kernel.state_paths)
@@ -406,6 +415,62 @@ class AlpacaBroker(BaseBroker):
             "quantity":  int(quantity),
             "stop_price": float(stop_price),
         }
+
+    # ── Fractional capability contract (S-FRAC gate leg (a)) ─────────────────
+    # Ported semantics of renquant-execution ``AlpacaBroker._lookup_fractionable``
+    # / ``is_fractionable`` (src/renquant_execution/alpaca_broker.py, pin
+    # 91c7bf88). ``live/runner.py`` imports THIS module, so the execution
+    # repo's implementation does not reach the order path (deliberate
+    # diverged_pin — same situation as the bounded-timeout port above).
+    #
+    # These methods are capability PROBES + a cached asset lookup. Nothing in
+    # this module's order-submission path calls them; ``place_order`` /
+    # ``place_stop_order`` are byte-identical to the pre-port module. The
+    # commit-path gate only reads them when
+    # ``execution.fractional_shares.enabled`` is true.
+
+    def _lookup_fractionable(self, symbol: str) -> bool:
+        """Return whether ``symbol`` is fractionable, caching only CONFIRMED
+        lookups. Raises ``_FractionableLookupError`` when the client is not
+        connected or the asset lookup fails, so a transient error is never
+        cached as an authoritative verdict."""
+        key = str(symbol).upper()
+        # Lazy init: tests (and any caller) may construct via
+        # ``AlpacaBroker.__new__`` without running ``__init__``.
+        cache = self.__dict__.setdefault("_fractionable_cache", {})
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        client = getattr(self, "_trading_client", None)
+        if client is None:
+            raise _FractionableLookupError(
+                f"trading client not connected; cannot look up asset {symbol!r}"
+            )
+        try:
+            asset = client.get_asset(symbol)
+        except Exception as exc:  # noqa: BLE001 — surface as a fail-closed signal
+            raise _FractionableLookupError(repr(exc)) from exc
+        fractionable = bool(getattr(asset, "fractionable", False))
+        cache[key] = fractionable
+        return fractionable
+
+    def is_fractionable(self, symbol: str) -> bool:
+        """Whether ``symbol`` supports fractional Alpaca orders (cached).
+
+        Returns ``False`` on lookup failure (safe default) but, unlike a
+        confirmed lookup, does NOT cache that failure — so a later call
+        retries rather than treating a transient error as a permanent
+        verdict. Callers that must distinguish "confirmed non-fractionable"
+        from "lookup failed" use ``_lookup_fractionable`` directly.
+        """
+        try:
+            return self._lookup_fractionable(symbol)
+        except _FractionableLookupError as exc:
+            log.warning(
+                "is_fractionable(%s): lookup failed, answering False "
+                "(not cached; will retry): %s", symbol, exc,
+            )
+            return False
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a pending order. Returns False on already-filled / unknown id."""
