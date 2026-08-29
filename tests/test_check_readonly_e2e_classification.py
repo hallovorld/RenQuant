@@ -14,7 +14,9 @@ Contract under test (script header):
       `STRUCTURAL_BLOCK — engineering condition` alert;
   0 = committed decision (unchanged);
   1 = crash / no-decision WITHOUT the structural markers (unchanged);
-  2 = the shadow config itself is unreadable (setup).
+  2 = the shadow config itself is unreadable, OR the pinned pipeline's
+      artifact resolver cannot be imported / raises (setup; never green,
+      no funnel — there is no local fallback resolver).
 """
 from __future__ import annotations
 
@@ -48,6 +50,38 @@ LOAD_FAILED_LINE = (
 # The stub runner: prints the lines in FAKE_RUNNER_LINES (JSON list), touches
 # FAKE_RUNNER_SENTINEL so a test can prove the funnel was (not) invoked, and
 # exits FAKE_RUNNER_RC.
+# The stub PINNED resolver: a faithful copy of kernel.artifact_resolver.
+# locate_artifact's precedence (absolute → strategy_dir → repo_root =
+# strategy_dir/../..) that also touches FAKE_RESOLVER_SENTINEL so a test can
+# prove the script took the import path rather than its fallback.
+STUB_RESOLVER = '''
+import os
+from pathlib import Path
+def _candidates(ref, strategy_dir, repo_root):
+    p = Path(ref)
+    if p.is_absolute():
+        return [(p, "absolute")]
+    root = repo_root if repo_root is not None else Path(strategy_dir).parent.parent
+    return [(Path(strategy_dir) / p, "strategy_dir"), (root / p, "repo_root")]
+def locate_artifact(ref, *, strategy_dir, repo_root=None):
+    Path(os.environ["FAKE_RESOLVER_SENTINEL"]).write_text(str(ref))
+    cands = _candidates(ref, strategy_dir, repo_root)
+    for cand, _src in cands:
+        if cand.exists():
+            return cand
+    return cands[0][0]
+'''
+BROKEN_RESOLVER = 'raise ImportError("stub: pinned resolver unavailable")\n'
+RAISING_RESOLVER = '''
+import os
+from pathlib import Path
+def locate_artifact(ref, *, strategy_dir, repo_root=None):
+    Path(os.environ["FAKE_RESOLVER_SENTINEL"]).write_text(str(ref))
+    raise RuntimeError("stub: resolver exploded on " + str(ref))
+'''
+RESOLVER_MODULE = "renquant_pipeline.kernel.artifact_resolver"
+PINNED_RESOLVER_LINE = f"preflight resolver: pinned {RESOLVER_MODULE}.locate_artifact"
+
 STUB_MAIN = '''
 import json, os, sys
 from pathlib import Path
@@ -65,12 +99,13 @@ def _panel_scoring(kind: str = "hf_patchtst", **extra) -> dict:
 
 
 class Harness:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, resolver: str = STUB_RESOLVER) -> None:
         self.repo = tmp_path / "umbrella"
         self.subrepos = tmp_path / "subrepos"
         self.strategy_dir = self.repo / "backtesting" / "renquant_104"
         self.config_dir = self.subrepos / "renquant-strategy-104" / "configs"
         self.sentinel = tmp_path / "runner.invoked"
+        self.resolver_sentinel = tmp_path / "resolver.invoked"
         self.log = tmp_path / "e2e.log"
         self.strategy_dir.mkdir(parents=True)
         self.config_dir.mkdir(parents=True)
@@ -80,6 +115,14 @@ class Harness:
         pkg.mkdir(parents=True)
         (pkg / "__init__.py").write_text("")
         (pkg / "__main__.py").write_text(STUB_MAIN)
+        # the "pinned pipeline" on the script's PYTHONPATH: only the resolver
+        # module exists; shadows any site-packages install because PYTHONPATH
+        # precedes it.
+        kernel = self.subrepos / "renquant-pipeline" / "src" / "renquant_pipeline" / "kernel"
+        kernel.mkdir(parents=True)
+        (kernel.parent / "__init__.py").write_text("")
+        (kernel / "__init__.py").write_text("")
+        (kernel / "artifact_resolver.py").write_text(resolver)
 
     # -- fixtures -------------------------------------------------------
     def write_config(self, panel_scoring: dict | None) -> Path:
@@ -109,6 +152,7 @@ class Harness:
             "RENQUANT_E2E_LOG": str(self.log),
             "RENQUANT_E2E_TIMEOUT_SEC": "60",
             "FAKE_RUNNER_SENTINEL": str(self.sentinel),
+            "FAKE_RESOLVER_SENTINEL": str(self.resolver_sentinel),
             "FAKE_RUNNER_LINES": json.dumps(list(lines)),
             "FAKE_RUNNER_RC": str(rc),
         })
@@ -121,10 +165,26 @@ class Harness:
     def runner_invoked(self) -> bool:
         return self.sentinel.exists()
 
+    @property
+    def resolver_invoked(self) -> bool:
+        return self.resolver_sentinel.exists()
+
 
 @pytest.fixture
 def harness(tmp_path: Path) -> Harness:
     return Harness(tmp_path)
+
+
+@pytest.fixture
+def harness_no_resolver(tmp_path: Path) -> Harness:
+    """Pinned resolver import FAILS → setup error, never green."""
+    return Harness(tmp_path, resolver=BROKEN_RESOLVER)
+
+
+@pytest.fixture
+def harness_raising_resolver(tmp_path: Path) -> Harness:
+    """Pinned resolver imports but RAISES on call → setup error, never green."""
+    return Harness(tmp_path, resolver=RAISING_RESOLVER)
 
 
 # ── 3: dead leg ──────────────────────────────────────────────────────────────
@@ -134,9 +194,11 @@ def test_missing_primary_artifact_exits_3_names_path_and_skips_funnel(harness):
     # the artifact exists NOWHERE (the 2026-08-25 measurement)
     res = harness.run(lines=[DECISION_LINE], rc=0)
     assert res.returncode == 3, res.stdout + res.stderr
-    expected_path = str(harness.strategy_dir / ARTIFACT_REF)
-    assert expected_path in res.stdout
+    assert str(harness.strategy_dir / ARTIFACT_REF) in res.stdout
+    assert str(harness.repo / ARTIFACT_REF) in res.stdout
     assert "ranking.panel_scoring.artifact_path (kind=hf_patchtst)" in res.stdout
+    assert PINNED_RESOLVER_LINE in res.stdout
+    assert harness.resolver_invoked, "the verdict must come from the pinned resolver"
     assert (f"DEAD_LEG detected before the funnel in {cfg}; attribute by "
             "comparing against the previous pinned assembly "
             "(scripts/promote_pin.py keeps the backup lock) — see orch#1066") in res.stdout
@@ -146,17 +208,53 @@ def test_missing_primary_artifact_exits_3_names_path_and_skips_funnel(harness):
     assert not harness.runner_invoked, "the funnel must not run on a dead leg"
 
 
-def test_primary_artifact_only_at_repo_root_is_still_dead(harness):
-    """LoadScorerTask joins the ref onto _strategy_dir ONLY — a copy under the
-    umbrella root does not rescue the primary leg (that is the live layout on
-    2026-08-25: RenQuant/artifacts/patchtst_shadow exists, the strategy-dir
-    twin does not)."""
+def test_primary_artifact_only_at_repo_root_resolves_via_pinned_resolver(harness):
+    """renquant-pipeline#301: the primary loader resolves through
+    kernel.artifact_resolver.locate_artifact (strategy_dir → repo_root), so a
+    copy under the umbrella root IS a live leg — the live layout since the
+    pin (RenQuant/artifacts/patchtst_shadow exists, the strategy-dir twin does
+    not). A preflight that still mirrored the old strategy_dir-only join
+    reported a FALSE dead leg here."""
     harness.write_config(_panel_scoring())
     harness.create_artifact(under_repo_root=True)
     res = harness.run(lines=[DECISION_LINE], rc=0)
-    assert res.returncode == 3, res.stdout + res.stderr
-    assert str(harness.strategy_dir / ARTIFACT_REF) in res.stdout
-    assert not harness.runner_invoked
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "DEAD_LEG" not in res.stdout
+    assert PINNED_RESOLVER_LINE in res.stdout
+    assert harness.resolver_invoked
+    assert f"-> {harness.repo / ARTIFACT_REF}" in res.stdout
+    assert harness.runner_invoked
+
+
+@pytest.mark.parametrize("artifact_present", [True, False], ids=["file-present", "file-absent"])
+def test_resolver_import_failure_exits_2_never_green(harness_no_resolver, artifact_present):
+    """No local fallback: even with the file on disk the verify must not go
+    green on a verdict the pinned loader did not produce."""
+    h = harness_no_resolver
+    h.write_config(_panel_scoring())
+    if artifact_present:
+        h.create_artifact()
+    res = h.run(lines=[DECISION_LINE], rc=0)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert f"SETUP: cannot import the pinned resolver {RESOLVER_MODULE}" in res.stdout
+    assert "stub: pinned resolver unavailable" in res.stdout
+    assert "DEAD_LEG" not in res.stdout
+    assert "READONLY_E2E: OK" not in res.stdout
+    assert not h.resolver_invoked
+    assert not h.runner_invoked
+
+
+def test_resolver_call_failure_exits_2_with_error_text(harness_raising_resolver):
+    h = harness_raising_resolver
+    h.write_config(_panel_scoring())
+    h.create_artifact()
+    res = h.run(lines=[DECISION_LINE], rc=0)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert f"SETUP: pinned resolver {RESOLVER_MODULE}.locate_artifact raised" in res.stdout
+    assert f"stub: resolver exploded on {ARTIFACT_REF}" in res.stdout
+    assert h.resolver_invoked, "the pinned resolver was the one consulted"
+    assert "DEAD_LEG" not in res.stdout
+    assert not h.runner_invoked
 
 
 def test_blend_component_resolves_via_repo_root_fallback(harness):
@@ -200,6 +298,18 @@ def test_enabled_global_calibration_artifact_is_checked(harness):
     assert res.returncode == 3, res.stdout + res.stderr
     assert "global_calibration.artifact_path" in res.stdout
     assert str(harness.strategy_dir / "artifacts/shadow/calib.json") in res.stdout
+
+
+def test_enabled_global_calibration_at_repo_root_resolves(harness):
+    harness.write_config(_panel_scoring(
+        global_calibration={"enabled": True,
+                            "artifact_path": "artifacts/shadow/calib.json"},
+    ))
+    harness.create_artifact()
+    harness.create_artifact("artifacts/shadow/calib.json", under_repo_root=True)
+    res = harness.run(lines=[DECISION_LINE], rc=0)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"global_calibration.artifact_path -> {harness.repo / 'artifacts/shadow/calib.json'}" in res.stdout
 
 
 def test_disabled_global_calibration_artifact_is_ignored(harness):
