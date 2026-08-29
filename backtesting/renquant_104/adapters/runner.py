@@ -226,21 +226,16 @@ class RunnerAdapter:
         # created). A registry that fails to construct is NOT armed —
         # fail-closed, fractional entries stay blocked by the stage-0
         # capability gate.
-        try:
-            # 2026-07-04: relocated to renquant_pipeline.software_stops
-            # (renquant-pipeline#167) -- new capability logic belongs in
-            # an owning repo, not the umbrella (RenQuant#440 review).
-            from renquant_pipeline.software_stops import SoftwareStopRegistry  # noqa: PLC0415
-            self._software_stops = SoftwareStopRegistry.from_config(
-                config, broker_name=self._broker_name,
-            )
-        except Exception as exc:
-            log.error(
-                "software-stop registry construction FAILED: %s — layer "
-                "NOT armed; fractional entries remain fail-closed by the "
-                "stage-0 capability gate.", exc,
-            )
-            self._software_stops = None
+        # 2026-08-29 (orch#1078 follow-up): the registry is resolved under
+        # the NEUTRAL runtime-state root (~/.renquant/runtime/software-stops,
+        # the liveness checker's --data-root) via the orchestrator LOCATION
+        # contract — never against the process cwd. If that contract is not
+        # importable the layer stays None (fail closed, one ERROR line).
+        # See adapters/software_stops_wiring.py.
+        from adapters.software_stops_wiring import build_software_stop_registry  # noqa: PLC0415
+        self._software_stops = build_software_stop_registry(
+            config, self._broker_name,
+        )
 
         # Mutate config.persistence.db_path to broker-specific BEFORE
         # constructing the DB connection (kernel.persistence reads it).

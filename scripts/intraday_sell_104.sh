@@ -106,6 +106,39 @@ else
     RUNNER_ARGS=(-m renquant_orchestrator live-bridge --repo-dir "$REPO_DIR")
 fi
 
+# ── Software-stop registry BOOTSTRAP (seed) — unconditional, never blocking ──
+# orch#1078 follow-up (2026-08-29). Creates, once and only if absent, an
+# empty schema-valid software-stop registry at EXACTLY the path the liveness
+# pager (renquant_execution.software_stops_liveness --data-root
+# ~/.renquant/runtime/software-stops) and the runner (adapters/
+# software_stops_wiring.py, same neutral root) resolve, so the registry is
+# LOCATABLE. It runs on the pinned PYTHONPATH set above (orchestrator +
+# pipeline) and MUST use the same --broker the runner receives below (the
+# registry file is broker-tagged: software_stops.<broker>.json).
+#
+# A seed is bootstrap plumbing, NOT readiness (readiness = a real writer
+# heartbeat, `... readiness --broker alpaca`), and it is NOT a trading
+# precondition: this loop is the live book's EXIT path, so a failed seed is
+# logged loudly (and paged) and the sell pass CONTINUES. There is no `exit`
+# in this block by design; `set -e` is not in effect (see `set -uo pipefail`).
+# Exit codes (orchestrator contract): 0 SEEDED/EXISTS; 1 usage; 2 an existing
+# file is CORRUPT (left untouched — operator decision); 3 pipeline module not
+# importable. A pinned orchestrator that predates the seeder (< orch#1078)
+# exits 0 WITHOUT a verdict line — flagged as a WARNING, not silently green.
+SEED_MODULE="renquant_orchestrator.software_stops_registry_contract"
+SEED_OUT=$("$PYTHON" -m "$SEED_MODULE" seed --broker alpaca 2>&1)
+SEED_RC=$?
+if [ "$SEED_RC" -eq 0 ]; then
+    if printf '%s\n' "$SEED_OUT" | grep -qE '^(SEEDED|EXISTS): '; then
+        echo "software-stops registry seed OK: $(printf '%s\n' "$SEED_OUT" | grep -E '^(SEEDED|EXISTS): ')"
+    else
+        echo "WARNING: software-stops registry seed exited 0 WITHOUT a SEEDED/EXISTS verdict (pinned orchestrator predates the seeder, orch#1078?) — registry NOT confirmed locatable; continuing with the sell pass. Output: ${SEED_OUT:-<none>}"
+    fi
+else
+    echo "ERROR: software-stops registry seed FAILED (exit $SEED_RC) — continuing with the sell pass (the seed is bootstrap plumbing and never blocks the exit path). Output: ${SEED_OUT:-<none>}"
+    notify "RenQuant 104 software-stops SEED FAILED" "exit $SEED_RC (1 usage / 2 CORRUPT registry left untouched / 3 pipeline import) — sell pass continued; check $LOG"
+fi
+
 if "$PYTHON" "${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once \
         --sell-only --intraday; then
     echo "=== intraday_sell finished at $(date) ==="
