@@ -123,12 +123,16 @@ class TestEntryDateFromFills:
     def test_seeds_from_broker_fills(self):
         assert "first_fill_map" in RUNNER_SOURCE
         assert "broker.get_filled_orders" in RUNNER_SOURCE
-        # Earliest BUY fill kept per symbol
-        assert 'f.get("action") != "BUY"' in RUNNER_SOURCE
+        # RenQuant#618 class B: the map is the CURRENT TRIP start from the
+        # qty-only fill replay — never the oldest BUY ever per symbol.
+        assert "first_fill_map = trip_start_map(trip_states)" in RUNNER_SOURCE
+        assert "replay_trip_lifecycle(" in RUNNER_SOURCE
+        assert 'f.get("action") != "BUY"' not in RUNNER_SOURCE
 
     def test_sentinel_fallback_when_no_fills(self):
-        # Sentinel = today - 31 days (past min_hold_days=30 default)
-        assert "datetime.timedelta(days=31)" in RUNNER_SOURCE
+        # Sentinel = today - 31 days (past min_hold_days=30 default);
+        # the arithmetic lives in runner_trip_lifecycle.resolve_entry_date.
+        assert "sentinel_days=31" in RUNNER_SOURCE
         assert "ENTRY-DATE-SEED" in RUNNER_SOURCE
 
 
@@ -139,8 +143,11 @@ class TestEntryDateBackfill:
         assert "ENTRY-DATE-BACKFILL" in RUNNER_SOURCE
 
     def test_only_overrides_when_older(self):
-        # Logic: broker_first < cur_entry → override; else keep state
-        assert "broker_first < cur_entry" in RUNNER_SOURCE
+        # Logic lives in adapters/runner_trip_lifecycle.resolve_entry_date:
+        # trip start older than state → backfill; state older than the
+        # trip start → RESEED (previous trip); equal → keep.
+        assert "resolve_entry_date(" in RUNNER_SOURCE
+        assert "ENTRY-DATE-RESEED" in RUNNER_SOURCE
 
 
 class TestEntryDateFillsPagination:
