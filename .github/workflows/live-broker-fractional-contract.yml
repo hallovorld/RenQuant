@@ -7,6 +7,13 @@ name: live-broker-fractional-contract
 # names its test files explicitly; an unnamed new file is a green check that
 # covered nothing). No network, no credentials: the alpaca SDK is imported
 # lazily inside methods and the tests stub the asset lookup.
+#
+# Step 2 of the fractional chain adds tests/test_live_broker_no_silent_truncation.py:
+# the live order paths never truncate a quantity (whole-share payloads
+# byte-identical; fractional intents refused or submitted exactly). Same job,
+# same lean environment — the SDK request/enum modules are stubbed, so the
+# runner end-to-end cases (which need the strategy deps) skip HERE and run in
+# the full local suite; the static pins of the runner handling sites run here.
 
 on:
   pull_request:
@@ -14,6 +21,7 @@ on:
       - "live/**"
       - "backtesting/renquant_104/adapters/commit_contract.py"
       - "tests/test_live_broker_fractional_contract.py"
+      - "tests/test_live_broker_no_silent_truncation.py"
       - ".github/workflows/live-broker-fractional-contract.yml"
   push:
     branches: [main]
@@ -21,6 +29,7 @@ on:
       - "live/**"
       - "backtesting/renquant_104/adapters/commit_contract.py"
       - "tests/test_live_broker_fractional_contract.py"
+      - "tests/test_live_broker_no_silent_truncation.py"
 
 jobs:
   contract:
@@ -37,3 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pytest -q -o addopts='' tests/test_live_broker_fractional_contract.py -v
+      - name: Live broker never silently truncates a quantity (step 2)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_live_broker_no_silent_truncation.py -v

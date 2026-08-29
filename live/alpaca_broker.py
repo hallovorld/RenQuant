@@ -14,10 +14,23 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
-from typing import Any
+from typing import Any, NoReturn
 
-from .broker import BaseBroker
+from .broker import (
+    BELOW_MIN_NOTIONAL_STATUS,
+    FRACTIONABLE_LOOKUP_FAILED_STATUS,
+    FRACTIONAL_ORDER_TYPE,
+    FRACTIONAL_TIME_IN_FORCE,
+    INVALID_FRACTIONAL_ORDER_STATUS,
+    MIN_FRACTIONAL_NOTIONAL_USD,
+    NON_FRACTIONABLE_STATUS,
+    BaseBroker,
+    FractionalOrderRefused,
+    is_whole_share,
+    snap_qty_to_broker_grid,
+)
 
 log = logging.getLogger(__name__)
 
@@ -287,6 +300,19 @@ class AlpacaBroker(BaseBroker):
             # visible in the run log (no silent-continue, eng plan §IV.1).
             log.warning("G2: last price unavailable for %s (%s) — "
                         "count-only accounting for this order", symbol, exc)
+
+        # S-FRAC chain step 2 — whole-share snap / fail-closed fractional
+        # discipline (see live/broker.py). Runs BEFORE the breaker admit and
+        # the account read: a refused fractional intent is a NO-SUBMIT
+        # outcome and must consume neither a G2 daily slot nor an API call.
+        # Whole-share quantities take the pure eps-integral snap and reach
+        # the request below with the same ``int`` the legacy cast produced.
+        submit_qty = self._resolve_submit_qty(
+            symbol, action, quantity,
+            order_type=FRACTIONAL_ORDER_TYPE,
+            time_in_force=FRACTIONAL_TIME_IN_FORCE,
+            notional=notional,
+        )
         self._g2_breaker.admit(symbol=symbol, notional=notional)
 
         # Audit fix ALPACA-ACCT-STATUS (Round 2 deep audit, 2026-04-25):
@@ -315,9 +341,12 @@ class AlpacaBroker(BaseBroker):
 
         side = OrderSide.BUY if action.upper() == "BUY" else OrderSide.SELL
 
+        # ``submit_qty`` is the legacy ``int`` for a whole-share quantity and
+        # the exact 9dp-snapped ``float`` for a confirmed-fractionable
+        # fractional intent; a refused intent never reaches this line.
         request = MarketOrderRequest(
             symbol=symbol,
-            qty=int(quantity),
+            qty=submit_qty,
             side=side,
             time_in_force=TimeInForce.DAY,
         )
@@ -325,22 +354,132 @@ class AlpacaBroker(BaseBroker):
         order = self._trading_client.submit_order(request)
         self._order_counter += 1
 
+        # ``%s`` of an ``int`` renders exactly as the legacy ``%d`` did, so
+        # the whole-share log line is byte-identical; a fractional qty
+        # prints its full float instead of being truncated in the log.
         log.info(
-            "Order %s: %s %s %d shares — status=%s",
-            order.id, action, symbol, int(quantity), order.status,
+            "Order %s: %s %s %s shares — status=%s",
+            order.id, action, symbol, submit_qty, order.status,
         )
 
-        return {
+        result = {
             "order_id": str(order.id),
             "status": str(order.status),
             "action": action,
             "symbol": symbol,
-            "quantity": int(quantity),
+            "quantity": submit_qty,
             "filled_qty": float(getattr(order, "filled_qty", 0) or 0),
             "filled_avg_price": float(getattr(order, "filled_avg_price", 0) or 0),
             "submitted_at": str(getattr(order, "submitted_at", "") or ""),
             "filled_at": str(getattr(order, "filled_at", "") or ""),
         }
+        if not isinstance(submit_qty, int):
+            # Fractional path only (the whole-share dict stays key-for-key
+            # identical): preserve the requested intent next to the
+            # 9dp-snapped submitted qty for the audit trail.
+            result["requested_quantity"] = float(quantity)
+        return result
+
+    def _resolve_submit_qty(
+        self,
+        symbol: str,
+        action: str,
+        quantity: Any,
+        *,
+        order_type: str,
+        time_in_force: str,
+        notional: float | None = None,
+    ) -> int | float:
+        """Whole-share snap / fail-closed fractional preflight (S-FRAC step 2).
+
+        Returns the quantity to hand to the SDK request:
+
+          * eps-integral ``quantity`` → ``int(round(q))`` — the ONE
+            sanctioned whole-share branch. For every exact-integer input
+            (all of today's flag-off sizing) this equals the legacy
+            ``int(quantity)`` cast, so the submitted payload is unchanged.
+          * otherwise → the intent is FRACTIONAL and is never truncated.
+            Rule preflight mirrors renquant-execution ``validate_fractional_
+            order`` + ``place_order`` (pin 91c7bf88): MARKET + DAY only;
+            finite and positive; snapped DOWN to the 9dp grid; known
+            notional ≥ $1; asset CONFIRMED fractionable (a lookup failure
+            is its own refusal and is never cached as a verdict). Any
+            violation raises :class:`FractionalOrderRefused` after exactly
+            one WARNING — nothing is submitted.
+
+        ``order_type``/``time_in_force`` are passed by the caller so the
+        stop path (``stop``/``gtc``) refuses every fractional qty through
+        the same rule (Alpaca fractional orders are DAY-only; broker-side
+        GTC stops are whole-share only — software stops are stage 3).
+        """
+        if is_whole_share(quantity):
+            return int(round(float(quantity)))
+
+        action_u = str(action).upper()
+
+        def _refuse(reason: str, *, status: str) -> NoReturn:
+            log.warning(
+                "FRACTIONAL ORDER REFUSED (no submit): %s %s qty=%r — %s "
+                "[status=%s]", action_u, symbol, quantity, reason, status,
+            )
+            raise FractionalOrderRefused(symbol, quantity, reason, status=status)
+
+        try:
+            q = float(quantity)
+        except (TypeError, ValueError):
+            q = float("nan")
+        if not math.isfinite(q) or q <= 0.0:
+            _refuse(
+                f"quantity must be finite and positive, got {quantity!r}",
+                status=INVALID_FRACTIONAL_ORDER_STATUS,
+            )
+        type_n = str(order_type or "").strip().lower()
+        tif_n = str(time_in_force or "").strip().lower()
+        if type_n != FRACTIONAL_ORDER_TYPE or tif_n != FRACTIONAL_TIME_IN_FORCE:
+            detail = (
+                "broker-side GTC stops are whole-share only; a fractional "
+                "position needs the software-stop layer (S-FRAC stage 3)"
+                if type_n == "stop" else
+                "fractional orders are MARKET + TIF=DAY only at Alpaca"
+            )
+            _refuse(
+                f"{detail} (got order_type={order_type!r}, "
+                f"time_in_force={time_in_force!r})",
+                status=INVALID_FRACTIONAL_ORDER_STATUS,
+            )
+        snapped = snap_qty_to_broker_grid(q)
+        if snapped <= 0.0:
+            # Defensive: every finite value within 1e-9 of zero is already
+            # whole-share above, so a non-integral qty floors to >= 1e-9.
+            _refuse(
+                f"quantity {q!r} rounds down to zero on the broker's 9dp grid",
+                status=INVALID_FRACTIONAL_ORDER_STATUS,
+            )
+        if (
+            notional is not None
+            and math.isfinite(float(notional))
+            and abs(float(notional)) < MIN_FRACTIONAL_NOTIONAL_USD
+        ):
+            _refuse(
+                f"notional ${abs(float(notional)):.4f} is below the broker "
+                f"minimum ${MIN_FRACTIONAL_NOTIONAL_USD:.2f}",
+                status=BELOW_MIN_NOTIONAL_STATUS,
+            )
+        try:
+            fractionable = self._lookup_fractionable(symbol)
+        except _FractionableLookupError as exc:
+            _refuse(
+                f"asset fractionability could not be confirmed ({exc}); "
+                "failing closed (not cached — will retry)",
+                status=FRACTIONABLE_LOOKUP_FAILED_STATUS,
+            )
+        if not fractionable:
+            _refuse(
+                f"{symbol} is not fractionable at the broker; fractional "
+                f"qty {q!r} is refused, NOT floored",
+                status=NON_FRACTIONABLE_STATUS,
+            )
+        return snapped
 
     # ── Broker-side stop orders (Z9, 2026-04-28) ────────────────────────────
     # Invariant: stops live broker-side. NVTS post-mortem: 30-min cron
@@ -351,8 +490,9 @@ class AlpacaBroker(BaseBroker):
         self, symbol: str | None = None, qty: float | None = None,
     ) -> bool:
         # S-FRAC stage 0 (§2.2.2): qty-aware capability. This adapter's
-        # stop path submits WHOLE-SHARE GTC stops (place_stop_order casts
-        # qty to int; Alpaca fractional orders are TIF=DAY only — no GTC),
+        # stop path submits WHOLE-SHARE GTC stops (place_stop_order REFUSES
+        # a fractional qty since chain step 2 — it used to cast to int;
+        # Alpaca fractional orders are TIF=DAY only — no GTC),
         # so a fractional quantity is NOT protectable here. Fail closed:
         # the Z9 router will route it to the software-stop layer (stage 3)
         # or refuse the entry. No-arg / integral-qty answers are unchanged.
@@ -380,6 +520,18 @@ class AlpacaBroker(BaseBroker):
         if stop_price <= 0:
             raise ValueError(f"place_stop_order: stop_price must be positive (got {stop_price})")
 
+        # S-FRAC chain step 2: a whole-share qty snaps to the legacy ``int``;
+        # a fractional qty is REFUSED here (before any API call) — this path
+        # is a GTC stop and Alpaca fractional orders are DAY-only, so a
+        # broker-side stop can never cover a fractional position. The old
+        # ``int(quantity)`` cast would have armed a stop for FEWER shares
+        # than held. ``supports_broker_side_stops(symbol, qty)`` already
+        # answers False for such a qty, so the Z9 router routes it to the
+        # software-stop layer; this is the defence-in-depth behind it.
+        submit_qty = self._resolve_submit_qty(
+            symbol, "SELL", quantity, order_type="stop", time_in_force="gtc",
+        )
+
         # Account-status check (mirrors place_order — see ALPACA-ACCT-STATUS).
         try:
             account = self._trading_client.get_account()
@@ -398,7 +550,7 @@ class AlpacaBroker(BaseBroker):
         # we want the stop active until either it triggers or we cancel).
         request = StopOrderRequest(
             symbol=symbol,
-            qty=int(quantity),
+            qty=submit_qty,
             side=OrderSide.SELL,
             stop_price=round(float(stop_price), 2),
             time_in_force=TimeInForce.GTC,
@@ -406,13 +558,13 @@ class AlpacaBroker(BaseBroker):
         order = self._trading_client.submit_order(request)
         log.info(
             "Stop order %s: SELL %s %d @ stop=$%.2f — status=%s",
-            order.id, symbol, int(quantity), stop_price, order.status,
+            order.id, symbol, submit_qty, stop_price, order.status,
         )
         return {
             "order_id":  str(order.id),
             "status":    str(order.status),
             "symbol":    symbol,
-            "quantity":  int(quantity),
+            "quantity":  submit_qty,
             "stop_price": float(stop_price),
         }
 
@@ -423,11 +575,12 @@ class AlpacaBroker(BaseBroker):
     # repo's implementation does not reach the order path (deliberate
     # diverged_pin — same situation as the bounded-timeout port above).
     #
-    # These methods are capability PROBES + a cached asset lookup. Nothing in
-    # this module's order-submission path calls them; ``place_order`` /
-    # ``place_stop_order`` are byte-identical to the pre-port module. The
-    # commit-path gate only reads them when
-    # ``execution.fractional_shares.enabled`` is true.
+    # These methods are capability PROBES + a cached asset lookup. The
+    # commit-path gate reads them only when
+    # ``execution.fractional_shares.enabled`` is true. Since S-FRAC chain
+    # step 2, ``_resolve_submit_qty`` ALSO consults ``_lookup_fractionable``
+    # — but only on the fractional branch: a whole-share ``place_order`` /
+    # ``place_stop_order`` never performs an asset lookup.
 
     def _lookup_fractionable(self, symbol: str) -> bool:
         """Return whether ``symbol`` is fractionable, caching only CONFIRMED
