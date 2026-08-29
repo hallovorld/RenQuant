@@ -12,12 +12,21 @@ renquant-execution pin 91c7bf88 ``broker.py::is_whole_share`` /
      dict, the log line and the client I/O are BYTE-IDENTICAL to the legacy
      path — pinned against a verbatim legacy oracle
      (``TestIntegralPathByteIdentical``).
-  2. Fractional quantities are never truncated: refused with
-     ``FractionalOrderRefused`` (no submit, one WARNING, no G2 slot, no
-     account read) unless the asset is CONFIRMED fractionable and the order
-     is MARKET + DAY, in which case the exact qty (9dp grid, rounded DOWN)
-     is submitted (``TestFractionalRefusals``, ``TestFractionalSubmission``).
-  3. Broker-side stops refuse every fractional qty (``TestStopPath``).
+  2. Every quantity must be finite and strictly positive BEFORE the
+     whole-share / fractional split; 0, near-zero (``5e-10`` snaps to 0),
+     negative, NaN and inf raise ``InvalidOrderQuantity`` before ANY I/O —
+     no price read, no asset lookup, no account read, no breaker slot, no
+     submission (``TestInvalidQuantity``).
+  3. Fractional quantities are never truncated: refused with
+     ``FractionalOrderRefused`` — one WARNING, no account read, no G2 slot,
+     no submission (the price read and the ``get_asset`` lookup are
+     metadata I/O and may occur) — unless the asset is CONFIRMED
+     fractionable and the order is MARKET + DAY, in which case the exact qty
+     (9dp grid, rounded DOWN) is submitted (``TestFractionalRefusals``,
+     ``TestFractionalSubmission``).
+  3b. Broker-side stops refuse every fractional qty, there before any I/O
+     (no price read on that path; type/TIF fires before the asset lookup)
+     (``TestStopPath``).
   4. The runner absorbs the refusal as a no-submit outcome on its existing
      surfaces — BUY → ``ctx.orders_skipped``, SELL → ``ctx.exits_failed``,
      Z9 → warning + no stop — and the run continues
@@ -58,9 +67,11 @@ from live.broker import (  # noqa: E402
     INVALID_FRACTIONAL_ORDER_STATUS,
     NON_FRACTIONABLE_STATUS,
     FractionalOrderRefused,
+    InvalidOrderQuantity,
     is_no_submit_status,
     is_whole_share,
     snap_qty_to_broker_grid,
+    validate_order_quantity,
 )
 
 FRACTIONAL_QTY = 0.435578  # the design's E2E audit quantity
@@ -144,12 +155,14 @@ def _broker(client, tmp_path, price=PRICE) -> AlpacaBroker:
     # The G2 daily notional cap is not under test here (test_agent_breaker.py
     # owns it); lift it so 2500 × $100 admits.
     b._g2_breaker.max_notional = 1e12
-    if isinstance(price, Exception):
-        def _boom(symbol):
+    b.price_calls = []  # every get_last_price read, recorded
+
+    def _price(symbol):
+        b.price_calls.append(symbol)
+        if isinstance(price, Exception):
             raise price
-        b.get_last_price = _boom
-    else:
-        b.get_last_price = lambda symbol: price
+        return price
+    b.get_last_price = _price
     return b
 
 
@@ -265,8 +278,9 @@ class TestIntegralPathByteIdentical:
             _legacy_market_log(_ORDER, action, SYMBOL, qty),
         ]
         assert _warnings(caplog) == []
-        # I/O unchanged: one pre-trade account read, NO asset lookup, one
-        # G2 slot consumed.
+        # I/O unchanged: one G2 price read, one pre-trade account read, NO
+        # asset lookup, one G2 slot consumed.
+        assert b.price_calls == [SYMBOL]
         assert client.account_calls == 1
         assert client.asset_calls == []
         assert b._g2_breaker._orders == 1
@@ -350,6 +364,11 @@ def _assert_one_refusal_warning(caplog, *, symbol, quantity, status):
 
 
 class TestFractionalRefusals:
+    """Invariant for every fractional refusal: no order submission, no
+    account read, no G2 breaker slot. The G2 price read and (past the rule
+    preflight) the ``get_asset`` lookup are metadata I/O and DO occur —
+    they are asserted explicitly, never claimed absent."""
+
     @pytest.mark.parametrize("action", ["BUY", "SELL"])
     def test_not_fractionable_is_refused_nothing_submitted(
         self, sdk, tmp_path, caplog, action,
@@ -367,11 +386,13 @@ class TestFractionalRefusals:
                                     quantity=FRACTIONAL_QTY,
                                     status=NON_FRACTIONABLE_STATUS)
         assert _infos(caplog) == []
-        # No submit, no account read, no G2 slot burnt; the (confirmed)
-        # verdict was looked up exactly once and cached.
+        # No submit, no account read, no G2 slot burnt. The price read and
+        # the asset lookup DID happen (metadata I/O); the confirmed verdict
+        # was looked up exactly once and cached.
         assert client.submitted == []
         assert client.account_calls == 0
         assert b._g2_breaker._orders == 0
+        assert b.price_calls == [SYMBOL]
         assert client.asset_calls == [SYMBOL]
         assert b._fractionable_cache == {SYMBOL: False}
 
@@ -465,7 +486,7 @@ class TestFractionalRefusals:
         _assert_one_refusal_warning(caplog, symbol=SYMBOL,
                                     quantity=FRACTIONAL_QTY,
                                     status=INVALID_FRACTIONAL_ORDER_STATUS)
-        assert client.asset_calls == []  # refused before any I/O
+        assert client.asset_calls == []  # type/TIF fires before the lookup
         assert client.submitted == []
 
     def test_market_day_is_the_only_accepted_shape(self, sdk, tmp_path):
@@ -479,43 +500,121 @@ class TestFractionalRefusals:
     @pytest.mark.parametrize("bad", [
         -0.5, float("nan"), float("inf"), -float("inf"), "abc", None,
     ])
-    def test_non_positive_or_non_finite_fractional_is_refused(
+    def test_non_positive_or_non_finite_is_invalid_via_the_helper(
         self, sdk, tmp_path, caplog, bad,
     ):
+        """Basic validation precedes the whole/fractional split, so these
+        are InvalidOrderQuantity (not a fractional refusal) and no lookup
+        happens. The place_order-level proof is TestInvalidQuantity."""
         client = _Client(fractionable=True)
         b = _broker(client, tmp_path)
         with caplog.at_level(logging.WARNING, logger="live.alpaca_broker"):
-            with pytest.raises(FractionalOrderRefused) as ei:
+            with pytest.raises(InvalidOrderQuantity):
                 b._resolve_submit_qty(
                     SYMBOL, "BUY", bad, order_type="market", time_in_force="day",
                 )
-        assert ei.value.status == INVALID_FRACTIONAL_ORDER_STATUS
-        assert "finite and positive" in ei.value.reason
         assert client.asset_calls == [] and client.submitted == []
-
-    def test_nan_through_place_order_is_refused_not_submitted(
-        self, sdk, tmp_path,
-    ):
-        client = _Client(fractionable=True)
-        b = _broker(client, tmp_path)
-        with pytest.raises(FractionalOrderRefused):
-            b.place_order(SYMBOL, "BUY", float("nan"))
-        assert client.submitted == [] and client.account_calls == 0
 
     def test_smallest_non_integral_qty_snaps_onto_the_grid_not_to_zero(
         self, sdk, tmp_path,
     ):
         """Every value within 1e-9 of an integer is whole-share (the legacy
         branch), so the smallest fractional value is > 1e-9 and floors onto
-        the 1e-9 grid — the "rounds to zero" refusal in the preflight is a
-        defensive guard that this pins as unreachable for finite input."""
+        the 1e-9 grid — the "rounds to zero" refusal in the fractional
+        preflight is a defensive guard that this pins as unreachable for
+        finite input. (Values within 1e-9 of ZERO are whole-share snaps to
+        0 and are refused as InvalidOrderQuantity — TestInvalidQuantity.)"""
         client = _Client(fractionable=True)
         b = _broker(client, tmp_path)
-        assert is_whole_share(5e-10) and not is_whole_share(1.5e-9)
+        assert not is_whole_share(1.5e-9)
         assert b._resolve_submit_qty(
             SYMBOL, "BUY", 1.5e-9, order_type="market", time_in_force="day",
             notional=1e3,
         ) == 1e-9
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 2b. Invalid quantities: refused before ANY I/O (Codex #612 r1)
+# ═════════════════════════════════════════════════════════════════════════════
+
+INVALID_QTYS = (0, 0.0, 5e-10, -3, -0.5, float("nan"), float("inf"), -float("inf"))
+
+
+class TestInvalidQuantity:
+    """0, near-zero, negative (integer or not), NaN and inf never reach the
+    price read, the asset lookup, the breaker, the account read or a
+    request. ``5e-10`` is the review's case: eps-integral to ZERO, so the
+    pre-fix code snapped it to ``qty=0`` and proceeded."""
+
+    @pytest.mark.parametrize("action", ["BUY", "SELL"])
+    @pytest.mark.parametrize("qty", INVALID_QTYS)
+    def test_place_order_refuses_before_any_io(
+        self, sdk, tmp_path, caplog, action, qty,
+    ):
+        client = _Client(fractionable=True)
+        b = _broker(client, tmp_path)
+        with caplog.at_level(logging.INFO, logger="live.alpaca_broker"):
+            with pytest.raises(InvalidOrderQuantity) as ei:
+                b.place_order(SYMBOL, action, qty)
+        exc = ei.value
+        assert isinstance(exc, ValueError)
+        assert exc.symbol == SYMBOL
+        assert exc.quantity is qty or exc.quantity == qty
+        assert SYMBOL in str(exc) and repr(qty) in str(exc)
+        # Before ANY I/O: no price read, no asset lookup, no account read,
+        # no breaker slot, no submission.
+        assert b.price_calls == []
+        assert client.asset_calls == []
+        assert client.account_calls == 0
+        assert b._g2_breaker._orders == 0
+        assert client.submitted == []
+        warns = _warnings(caplog)
+        assert len(warns) == 1, [w.getMessage() for w in warns]
+        assert "INVALID ORDER QUANTITY (no submit)" in warns[0].getMessage()
+        assert SYMBOL in warns[0].getMessage()
+        assert _infos(caplog) == []
+
+    def test_near_zero_snaps_to_zero_and_is_refused_not_submitted(
+        self, sdk, tmp_path,
+    ):
+        """The exact regression: 5e-10 is eps-integral (is_whole_share is
+        True) and int(round(5e-10)) == 0. Validation refuses it before the
+        price read rather than letting the whole-share branch submit qty=0
+        (the branch keeps a defensive guard as well)."""
+        assert is_whole_share(5e-10) and int(round(5e-10)) == 0
+        client = _Client(fractionable=True)
+        b = _broker(client, tmp_path)
+        with pytest.raises(InvalidOrderQuantity) as ei:
+            b.place_order(SYMBOL, "BUY", 5e-10)
+        assert "snaps to zero" in ei.value.reason
+        assert client.submitted == [] and b.price_calls == []
+
+    @pytest.mark.parametrize("qty", [-3, -1, -7.0])
+    def test_negative_whole_numbers_never_become_a_negative_int_qty(
+        self, sdk, tmp_path, qty,
+    ):
+        """Pre-fix, ``int(round(-3.0))`` was handed to the SDK. Now refused."""
+        client = _Client(fractionable=True)
+        b = _broker(client, tmp_path)
+        with pytest.raises(InvalidOrderQuantity):
+            b.place_order(SYMBOL, "SELL", qty)
+        with pytest.raises(InvalidOrderQuantity):
+            b._resolve_submit_qty(
+                SYMBOL, "SELL", qty, order_type="market", time_in_force="day")
+        assert client.submitted == [] and b.price_calls == []
+
+    def test_stop_path_refuses_nan_and_snap_to_zero(self, sdk, tmp_path):
+        client = _Client(fractionable=True)
+        b = _broker(client, tmp_path)
+        # 5e-10 passes the legacy ``quantity <= 0`` guard; validation's
+        # snap-to-zero rule must catch it before the account read.
+        with pytest.raises(InvalidOrderQuantity):
+            b.place_stop_order(SYMBOL, 5e-10, 90.0)
+        # NaN passes ``<= 0`` (comparisons are False); validation catches it.
+        with pytest.raises(InvalidOrderQuantity):
+            b.place_stop_order(SYMBOL, float("nan"), 90.0)
+        assert client.account_calls == 0 and client.submitted == []
+        assert b.price_calls == []
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -603,6 +702,9 @@ class TestStopPath:
     def test_fractional_stop_is_refused_before_any_io(
         self, sdk, tmp_path, caplog, qty,
     ):
+        """Genuinely before ANY I/O on this path: place_stop_order performs
+        no price read, and the type/TIF rule (stop/gtc) refuses before the
+        asset lookup — asserted on price, account, asset and submit."""
         client = _Client(fractionable=True)  # fractionable does NOT help
         b = _broker(client, tmp_path)
         with caplog.at_level(logging.INFO, logger="live.alpaca_broker"):
@@ -618,6 +720,7 @@ class TestStopPath:
         assert client.submitted == []
         assert client.account_calls == 0
         assert client.asset_calls == []
+        assert b.price_calls == []
 
     def test_capability_probe_and_stop_path_agree(self, sdk, tmp_path):
         """supports_broker_side_stops(symbol, qty) already answers False for
@@ -641,19 +744,43 @@ class TestStopPath:
 
 class TestHelpers:
     @pytest.mark.parametrize("q,expected", [
-        (5, True), (5.0, True), (0, True), (3.0000000004, True),
-        (2.9999999996, True), (5e-10, True), (0.999999999, True),
+        (5, True), (5.0, True), (3.0000000004, True),
+        (2.9999999996, True), (0.999999999, True),
         (FRACTIONAL_QTY, False), (7.5, False), (1.5e-9, False),
         (0.99999999, False), (float("nan"), False), (float("inf"), False),
         ("abc", False), (None, False),
     ])
     def test_is_whole_share(self, q, expected):
+        """``is_whole_share`` is the owner's pure eps-integral predicate
+        (owner parity pinned below). It is NOT a validity check: zero and
+        zero-adjacent values are the caller's refusal (validate_order_
+        quantity / the snap-to-zero guard), proven at order level in
+        TestInvalidQuantity — never asserted here as "whole-share OK"."""
         assert is_whole_share(q) is expected
+
+    @pytest.mark.parametrize("bad", [0, 0.0, 5e-10, -3, -0.5, float("nan"),
+                                     float("inf"), -float("inf"), "abc", None])
+    def test_validate_order_quantity_refuses(self, bad):
+        with pytest.raises(InvalidOrderQuantity) as ei:
+            validate_order_quantity(SYMBOL, bad)
+        assert isinstance(ei.value, ValueError)
+        assert ei.value.symbol == SYMBOL and SYMBOL in str(ei.value)
+
+    @pytest.mark.parametrize("ok", [1, 5.0, 1.5e-9, FRACTIONAL_QTY, 1e9])
+    def test_validate_order_quantity_accepts_finite_positive(self, ok):
+        assert validate_order_quantity(SYMBOL, ok) == float(ok)
+
+    @pytest.mark.parametrize("near_zero", [5e-10, 1e-10, 9.9e-10])
+    def test_validate_order_quantity_refuses_snap_to_zero(self, near_zero):
+        # Positive, but eps-integral to ZERO: the whole-share snap would be
+        # qty=0, so validation (before any I/O) refuses it.
+        with pytest.raises(InvalidOrderQuantity, match="snaps to zero"):
+            validate_order_quantity(SYMBOL, near_zero)
 
     @pytest.mark.parametrize("q,expected", [
         (0.435578, 0.435578), (0.1234567891234, 0.123456789),
         (0.9999999999, 0.999999999), (1.0000000019, 1.000000001),
-        (7.5, 7.5), (1e-05, 1e-05), (1.5e-9, 1e-9), (5e-10, 0.0),
+        (7.5, 7.5), (1e-05, 1e-05), (1.5e-9, 1e-9), (2.5e-9, 2e-9),
     ])
     def test_snap_rounds_down_on_the_9dp_grid(self, q, expected):
         s = snap_qty_to_broker_grid(q)
@@ -675,6 +802,16 @@ class TestHelpers:
             "[status=rejected_non_fractionable]"
         )
         assert FractionalOrderRefused("X", 0.5, "r").status == INVALID_FRACTIONAL_ORDER_STATUS
+
+    def test_invalid_quantity_exception_shape(self):
+        exc = InvalidOrderQuantity("MSFT", 0, "quantity must be strictly positive, got 0")
+        assert isinstance(exc, ValueError)
+        assert (exc.symbol, exc.quantity, exc.reason) == (
+            "MSFT", 0, "quantity must be strictly positive, got 0")
+        assert str(exc) == (
+            "invalid order quantity (no submit) for MSFT qty=0: "
+            "quantity must be strictly positive, got 0"
+        )
 
     def test_every_refusal_status_is_no_submit_vocabulary(self):
         for status in (NON_FRACTIONABLE_STATUS, FRACTIONABLE_LOOKUP_FAILED_STATUS,
@@ -739,6 +876,10 @@ class TestRunnerMappingStatic:
         assert "ctx.exits_failed.append" in block
         assert re.search(r'"error":\s+str\(exc\)', block)
         assert "continue" in block
+
+    def test_both_refusals_are_value_errors_for_the_same_handlers(self):
+        assert issubclass(FractionalOrderRefused, ValueError)
+        assert issubclass(InvalidOrderQuantity, ValueError)
 
     def test_z9_site_routes_exceptions_to_warning_and_no_stop(self):
         i = Z9_SRC.index("result = broker.place_stop_order(ticker, qty, target)")

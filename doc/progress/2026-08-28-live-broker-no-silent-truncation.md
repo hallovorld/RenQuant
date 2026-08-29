@@ -7,7 +7,9 @@ payload, result dict, log line and client I/O that are byte-identical to
 before (pinned against a verbatim legacy oracle); a fractional quantity is
 NEVER truncated — it is either submitted exactly (confirmed-fractionable
 asset, MARKET + DAY, 9dp grid rounded down) or refused with
-`FractionalOrderRefused` before any broker call. No flag is flipped; every
+`FractionalOrderRefused` before the account read, the breaker admit and the
+submission. Every quantity is first validated finite and strictly positive
+(`InvalidOrderQuantity`, before any I/O — review round 1). No flag is flipped; every
 config in the repo still has `execution.fractional_shares.enabled` absent or
 false, and on that path today's sizing emits exact integers, so production
 behaviour is unchanged. This is **step 2 of 8** of the fractional dependency
@@ -26,9 +28,10 @@ step could be allowed to produce a fractional intent.
 
 | Rule | Where |
 |---|---|
-| Eps-integral `quantity` (within `QTY_INTEGRAL_EPS = 1e-9` of an integer) → whole-share branch: submit `int(round(q))`; the request kwargs, the returned dict (`"quantity": int`), the INFO line and the I/O (one pre-trade account read, **no** asset lookup, one G2 slot) are unchanged. | `live/alpaca_broker.py:415-416` (`_resolve_submit_qty`), `:346-380` (`place_order` request/log/result), `:550-566` (`place_stop_order`) |
-| Non-integral `quantity` → fractional preflight, in order: finite & positive; `order_type == "market"` and `time_in_force == "day"`; snap DOWN to the 9dp grid (never past the intent); known notional ≥ $1; asset CONFIRMED fractionable via `_lookup_fractionable` (a lookup failure is its own refusal, never cached as a verdict). Any violation → exactly one WARNING + `FractionalOrderRefused(symbol, quantity, reason, status=<no-submit status>)`. | `live/alpaca_broker.py:383-482` |
-| The preflight runs BEFORE the G2 breaker admit and the account-status read, so a refusal consumes no daily order slot and touches no API. | `live/alpaca_broker.py:303-316` |
+| **Basic validation first, before ANY I/O** (review round 1): every `quantity` must be finite and strictly positive — and not eps-integral to zero (`5e-10` would snap to `qty=0`) — else `InvalidOrderQuantity` (one WARNING). `place_order` runs it ahead of the G2 price read; `_resolve_submit_qty` runs it again (pure, idempotent) so the stop path is covered too. | `live/broker.py` `validate_order_quantity` / `InvalidOrderQuantity`; `live/alpaca_broker.py` `_require_valid_quantity`, `place_order` (call precedes `get_last_price`) |
+| Eps-integral `quantity` (within `QTY_INTEGRAL_EPS = 1e-9` of an integer) → whole-share branch: submit `int(round(q))`; the request kwargs, the returned dict (`"quantity": int`), the INFO line and the I/O (one G2 price read, one pre-trade account read, **no** asset lookup, one G2 slot) are unchanged. A snap to **zero** (`5e-10` is eps-integral to 0) is refused with `InvalidOrderQuantity` by the validation above, before the price read (the branch keeps a defensive guard) — `qty=0` is never submitted. `is_whole_share` itself stays the owner's pure eps-integral predicate (0 is integral); validity is the caller's job. | `live/alpaca_broker.py` `_resolve_submit_qty` whole-share branch, `place_order` request/log/result, `place_stop_order` |
+| Non-integral `quantity` → fractional preflight, in order: `order_type == "market"` and `time_in_force == "day"`; snap DOWN to the 9dp grid (never past the intent); known notional ≥ $1; asset CONFIRMED fractionable via `_lookup_fractionable` → `get_asset` (a lookup failure is its own refusal, never cached as a verdict). Any violation → exactly one WARNING + `FractionalOrderRefused(symbol, quantity, reason, status=<no-submit status>)`. | `live/alpaca_broker.py` `_resolve_submit_qty` |
+| **What a refusal does and does not touch (precise):** `InvalidOrderQuantity` fires before ANY I/O — no price read, no asset lookup, no account read, no breaker slot, no submission. `FractionalOrderRefused` fires before the account read, the breaker admit and the submission — but the G2 price read (`get_last_price`) has already happened in `place_order`, and past the type/TIF rule the `get_asset` lookup happens; both are metadata I/O. On the stop path (no price read; type/TIF fires before the lookup) a fractional refusal is before any I/O. | `live/alpaca_broker.py` `place_order` preflight comment, `_resolve_submit_qty` docstring |
 | `place_stop_order` routes through the same helper with `order_type="stop", time_in_force="gtc"` → every fractional qty is refused there (Alpaca fractional orders are DAY-only; broker-side GTC stops are whole-share only; the software-stop layer is stage 3). Whole-share stops unchanged. | `live/alpaca_broker.py:522-533` |
 | Fractional submission result carries `"quantity": <float, 9dp>` plus `"requested_quantity"` (fractional path only — the whole-share dict stays key-for-key identical). | `live/alpaca_broker.py:378-381` |
 | Vocabulary + helpers: `QTY_INTEGRAL_EPS`, `MAX_ORDER_DECIMAL_PLACES = 9`, `MIN_FRACTIONAL_NOTIONAL_USD = 1.0`, `FRACTIONAL_ORDER_TYPE/TIME_IN_FORCE`, the four `rejected_*` statuses (all members of `NO_SUBMIT_STATUSES`), `is_whole_share`, `snap_qty_to_broker_grid` (Decimal `ROUND_DOWN` on `repr(q)`), `FractionalOrderRefused(ValueError)`. | `live/broker.py:88-160` |
@@ -100,25 +103,37 @@ later step can classify it explicitly if the audit wants that distinction.
 SDK request/enum modules stubbed via `sys.modules`, client stubbed on an
 `AlpacaBroker.__new__` instance):
 
-* `TestIntegralPathByteIdentical` — payload/result/log/I/O vs the legacy
-  oracle (market BUY/SELL × 7 inputs, stop × 4), the explicit eps-noise
-  deviation, legacy stop guards untouched, and the source no longer contains
-  the truncating casts.
+* `TestIntegralPathByteIdentical` — payload/result/log/I/O (one price read,
+  one account read, no asset lookup, one G2 slot) vs the legacy oracle
+  (market BUY/SELL × 7 inputs, stop × 4), the explicit eps-noise deviation,
+  legacy stop guards untouched, and the source no longer contains the
+  truncating casts.
+* `TestInvalidQuantity` (review round 1) — `0, 0.0, 5e-10, -3, -0.5, NaN,
+  inf, -inf` × BUY/SELL at `place_order` level: `InvalidOrderQuantity`, with
+  **no price read, no asset lookup, no account read, no breaker slot, no
+  submission**, exactly one WARNING; the `5e-10` snap-to-zero regression;
+  negative whole numbers never become a negative int qty; the stop path
+  refuses NaN and `5e-10` before the account read.
 * `TestFractionalRefusals` — not fractionable / lookup failed (not cached) /
   not connected / known notional < $1 (refused before the lookup) /
-  limit, GTC, IOC, stop, stop_limit / non-positive & non-finite: nothing
-  submitted, no account read, no G2 slot, exactly one WARNING, `.status` in
-  the no-submit vocabulary. Unknown notional (price feed down) does not block
-  a fractionable order (mirrors the owner; the broker keeps that rejection).
+  limit, GTC, IOC, stop, stop_limit: nothing submitted, no account read, no
+  G2 slot, exactly one WARNING, `.status` in the no-submit vocabulary; the
+  price read and (where reached) the asset lookup are asserted as having
+  happened. Unknown notional (price feed down) does not block a
+  fractionable order (mirrors the owner; the broker keeps that rejection).
 * `TestFractionalSubmission` — exact float qty on MARKET + DAY,
   `requested_quantity`, cached verdict, 9dp floor never past the intent,
   and the real alpaca-py request model accepts a float qty (skips where the
   SDK is absent).
-* `TestStopPath` — fractional stops refused before any I/O; the capability
-  probe and the stop path agree on every quantity.
-* `TestHelpers` — `is_whole_share`, the snap, the exception shape, and a
-  drift tripwire equating every replicated constant / `is_whole_share`
-  verdict with the pinned renquant-execution checkout.
+* `TestStopPath` — fractional stops refused before any I/O (no price read
+  on that path; type/TIF fires before the lookup — price, asset, account and
+  submit all asserted empty); the capability probe and the stop path agree
+  on every quantity.
+* `TestHelpers` — `is_whole_share` (as the pure predicate; zero-adjacent
+  values deliberately NOT asserted as whole-share OK), `validate_order_
+  quantity`, the snap, both exception shapes, and a drift tripwire equating
+  every replicated constant / `is_whole_share` verdict with the pinned
+  renquant-execution checkout.
 * `TestRunnerMappingStatic` (runs everywhere) + `TestRunnerMapping`
   (end-to-end through the REAL `RunnerAdapter.commit` using the stage-0
   harness; needs the strategy deps): BUY refusal → `orders_skipped`, SELL
@@ -190,11 +205,32 @@ Runs (all `[VERIFIED]` on this branch, 2026-08-28):
    G2 accounting, unchanged) and the broker remains the authority — same as
    the owner's qty-order preflight, which validates notional only when it is
    given.
-4. `is_whole_share` answers False for non-numeric / non-finite input, so
-   such garbage now surfaces as `FractionalOrderRefused` (a `ValueError`)
-   instead of the legacy `int()` `ValueError`/`OverflowError` after the
-   account read. Not an integral quantity, so outside the byte-identical
-   guarantee.
+4. Non-numeric / non-finite / zero / negative quantities surface as
+   `InvalidOrderQuantity` (a `ValueError`) before any I/O, instead of the
+   legacy `int()` `ValueError`/`OverflowError` after the account read (or,
+   for 0 / negative integers, a submitted `qty=0` / negative qty the broker
+   would bounce). Not valid integral quantities, so outside the
+   byte-identical guarantee; the runner mapping is identical (same
+   `except Exception` sites, `skip_reason="broker_error:InvalidOrderQuantity"`).
+
+## Review round 1 (Codex, PR #612)
+
+1. **Correctness hole fixed:** `is_whole_share` treats values within 1e-9
+   of ZERO as integral, so `5e-10`, `0` and negative exact integers entered
+   the whole-share branch and `_resolve_submit_qty` could return `0` or a
+   negative `int` that `place_order` then submitted. Now: finite AND
+   strictly positive is validated for every quantity ahead of the
+   whole/fractional split and ahead of the price read
+   (`live/broker.py::validate_order_quantity`,
+   `live/alpaca_broker.py::_require_valid_quantity`), and a whole-share snap
+   must be > 0. The test that asserted `is_whole_share(5e-10) is True` was
+   removed; `TestInvalidQuantity` proves 0 / 5e-10 / −3 / −0.5 / NaN / inf
+   are refused before breaker admission, before any price/account read and
+   before submission. The byte-identical oracle class is unchanged and green.
+2. **No-I/O claim corrected everywhere** (code comments, this doc, test
+   names/docstrings): a fractional refusal is "no account read, no breaker
+   slot, no submission" — the price read and the asset lookup may occur.
+   Invalid-quantity refusals are the ones that happen before ANY I/O.
 
 ## Place in the fractional dependency chain
 
