@@ -14,22 +14,44 @@ name: live-broker-fractional-contract
 # same lean environment — the SDK request/enum modules are stubbed, so the
 # runner end-to-end cases (which need the strategy deps) skip HERE and run in
 # the full local suite; the static pins of the runner handling sites run here.
+#
+# Step 3 (orch#1078 follow-up) adds tests/test_software_stops_neutral_root.py:
+# with execution.software_stops disabled/absent the wiring returns None before
+# importing, resolving, logging or touching anything (the pipeline-owned gate
+# is read first); when enabled the registry is resolved under the NEUTRAL
+# runtime-state root (adapters/software_stops_wiring.py; fail-closed when the
+# orchestrator LOCATION contract is unimportable — never the cwd) and
+# scripts/intraday_sell_104.sh seeds that registry unconditionally BEFORE the
+# runner without ever exiting on a seed failure. The wiring module has no
+# heavy imports and the sibling modules are stubbed when absent, so the
+# gate/inertness/fail-closed/wrapper cases run here; the RunnerAdapter.__init__
+# end-to-end cases and the assembly-level pinned-seeder cases (they need the
+# strategy deps / the runtime assembly) skip here WITH a reason and run in the
+# full local suite beside the pinned checkouts.
 
 on:
   pull_request:
     paths:
       - "live/**"
       - "backtesting/renquant_104/adapters/commit_contract.py"
+      - "backtesting/renquant_104/adapters/runner.py"
+      - "backtesting/renquant_104/adapters/software_stops_wiring.py"
+      - "scripts/intraday_sell_104.sh"
       - "tests/test_live_broker_fractional_contract.py"
       - "tests/test_live_broker_no_silent_truncation.py"
+      - "tests/test_software_stops_neutral_root.py"
       - ".github/workflows/live-broker-fractional-contract.yml"
   push:
     branches: [main]
     paths:
       - "live/**"
       - "backtesting/renquant_104/adapters/commit_contract.py"
+      - "backtesting/renquant_104/adapters/runner.py"
+      - "backtesting/renquant_104/adapters/software_stops_wiring.py"
+      - "scripts/intraday_sell_104.sh"
       - "tests/test_live_broker_fractional_contract.py"
       - "tests/test_live_broker_no_silent_truncation.py"
+      - "tests/test_software_stops_neutral_root.py"
 
 jobs:
   contract:
@@ -50,3 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pytest -q -o addopts='' tests/test_live_broker_no_silent_truncation.py -v
+      - name: Software-stop registry at the neutral root; sell wrapper seeds before the runner (step 3)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_software_stops_neutral_root.py -v
