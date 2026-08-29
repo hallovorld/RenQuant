@@ -1,0 +1,50 @@
+name: readonly-e2e-classification
+
+# Guards the exit-code classification of scripts/check_readonly_e2e.sh — the
+# gold-standard deploy verify. orch#1066 (2026-08-25): a panel-scoring
+# artifact missing from the shadow config made the verify exit the generic
+# 1, which reads as "the pin bump broke something" even when the breakage
+# predates the bump. The script now exits 3 (dead leg, funnel not run) and 4
+# (structural block in the scorer chain) so a red verify is attributable.
+# tests/test_check_readonly_e2e_classification.py drives the script as a
+# subprocess against a throwaway repo + a stub runner; nothing from the
+# pipeline is imported, so a bare runner with pytest is enough. A workflow
+# that names the file explicitly is what stops it from being a green check
+# that covered nothing (RenQuant 2026-08-20 lesson).
+
+on:
+  pull_request:
+    paths:
+      - scripts/check_readonly_e2e.sh
+      - scripts/subrepo_env.sh
+      - tests/test_check_readonly_e2e_classification.py
+      - .github/workflows/readonly-e2e-classification.yml
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/check_readonly_e2e.sh
+      - scripts/subrepo_env.sh
+      - tests/test_check_readonly_e2e_classification.py
+      - .github/workflows/readonly-e2e-classification.yml
+
+permissions:
+  contents: read
+
+jobs:
+  classification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out umbrella
+        uses: actions/checkout@v4
+
+      - name: Install test tools
+        run: python3 -m pip install pytest
+
+      - name: Shell syntax
+        run: bash -n scripts/check_readonly_e2e.sh
+
+      - name: Exit-code classification (3 dead leg / 4 structural / 0 / 1 / 2)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_check_readonly_e2e_classification.py -v
