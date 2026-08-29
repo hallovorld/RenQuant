@@ -442,37 +442,60 @@ class RunnerAdapter:
         # stamped to TODAY (line ~191). Result: a position bought 60 days
         # ago was treated as fresh → min_hold_days=30 lockout started NOW
         # → user's old position couldn't be sold by the model for another
-        # 30 days. Now: query broker fill history once per cycle, build a
-        # ticker → earliest-BUY-fill-date map; use it as the seed for
-        # missing entry_dates so hold tenure reflects actual cost-basis
-        # tenure, not "first time the runner saw this position".
+        # 30 days. Now: query broker fill history once per cycle and use
+        # it as the seed for missing entry_dates so hold tenure reflects
+        # actual cost-basis tenure, not "first time the runner saw this
+        # position".
+        #
+        # RenQuant#618 class B (2026-08-29): the map is the start of the
+        # CURRENT TRIP — the first BUY fill after the last time the running
+        # position quantity reached zero — NOT the oldest BUY ever. The
+        # oldest-buy semantics re-seeded a re-entered name from its
+        # PREVIOUS trip (`ENTRY-DATE-SEED NVDA ← 2026-04-17` on 2026-08-25,
+        # hold=130d one session after the buy), bypassing min_hold_days and
+        # every hold-days-keyed guard. Replay lives in
+        # adapters/runner_trip_lifecycle.py (qty-only, order_id-deduped,
+        # broker-anchored when the history is inconsistent).
+        from adapters.runner_trip_lifecycle import (  # noqa: PLC0415
+            replay_trip_lifecycle,
+            resolve_entry_date,
+            trip_start_map,
+        )
         first_fill_map: dict[str, datetime.date] = {}
+        trip_states: dict[str, Any] = {}
         broker_fills: list[dict[str, Any]] = []
         try:
             fills = broker.get_filled_orders()
             broker_fills = list(fills or [])
-            for f in fills or []:
-                sym = f.get("symbol")
-                if not sym or f.get("action") != "BUY":
-                    continue
-                fa = f.get("filled_at")
-                if not fa:
-                    continue
+            _current_qty: dict[str, float] = {}
+            for _sym, _pos in positions_cache.items():
                 try:
-                    d = datetime.date.fromisoformat(str(fa)[:10])
-                except (ValueError, TypeError):
+                    _current_qty[str(_sym)] = float(_pos.get("qty", 0) or 0.0)
+                except (TypeError, ValueError):
                     continue
-                # Earliest BUY for this symbol — only updated when no
-                # SELL has happened in between (we don't currently track
-                # the trip-lifecycle here; conservative: take the OLDEST
-                # buy date so min_hold gives the position max benefit of
-                # the doubt).
-                if sym not in first_fill_map or d < first_fill_map[sym]:
-                    first_fill_map[sym] = d
+            trip_states, _n_dropped = replay_trip_lifecycle(
+                broker_fills, current_qty=_current_qty,
+            )
+            first_fill_map = trip_start_map(trip_states)
+            if _n_dropped:
+                log.info("ENTRY-DATE-FROM-FILLS: %d fill row(s) unusable for the "
+                         "trip replay (no symbol/side/qty/date, or duplicate "
+                         "order_id)", _n_dropped)
+            for _sym, _st in trip_states.items():
+                if not _st.consistent:
+                    log.warning(
+                        "ENTRY-DATE-TRIP %s: fill replay qty %.4f != broker qty "
+                        "%.4f — history inconsistent (RQ#618 class C); trip "
+                        "start %s (broker-anchored)",
+                        _sym, _st.replay_qty, _st.broker_qty,
+                        _st.trip_start.isoformat() if _st.trip_start else "UNKNOWN",
+                    )
         except (AttributeError, NotImplementedError, Exception) as exc:
             log.info("ENTRY-DATE-FROM-FILLS: broker.get_filled_orders unavailable "
                      "(%s) — will fall back to sentinel for missing entry dates",
                      type(exc).__name__)
+        # Consumed by commit(): the re-entry cooldown reads last_exit here.
+        self._trip_states = trip_states
         live_tax_lots = reconstruct_live_tax_lots_from_fills(
             broker_fills,
             config=config,
@@ -526,43 +549,45 @@ class RunnerAdapter:
             # min_hold_days / rotation gates). Ideally seed from Alpaca's
             # fill timestamp on migration; today is the least-bad fallback.
             # Audit fix ENTRY-DATE-FROM-FILLS / ENTRY-DATE-BACKFILL
-            # (Bug C extended, 2026-04-25): the broker's first BUY-fill
-            # date is the AUTHORITATIVE entry date (cost-basis tenure
-            # from Alpaca). Three cases:
-            #   1. State has no entry_date → seed from broker fill if
-            #      available, else use sentinel (31d ago).
-            #   2. State has entry_date but broker shows OLDER first
-            #      BUY → broker is correct (state was wrongly stamped
-            #      "today" by a prior runner that didn't have ENTRY-DATE-
-            #      FROM-FILLS). Override state with broker's earlier date.
-            #      This unlocks min_hold_days / rotation tenure that the
-            #      stale state was artificially extending.
-            #   3. State has entry_date and it matches/predates broker →
-            #      preserve (handles top-ups + cost-basis-fifo cases).
+            # (Bug C extended, 2026-04-25) + RenQuant#618 class B
+            # (2026-08-29): the broker's first BUY fill OF THE CURRENT TRIP
+            # is the AUTHORITATIVE entry date (cost-basis tenure from
+            # Alpaca, bounded by the last flat point). Cases:
+            #   1. State has no entry_date → seed from the trip start if
+            #      known, else use sentinel (31d ago).
+            #   2. State has entry_date INSIDE the trip (>= trip start) but
+            #      the trip's first fill is OLDER → state was stamped late
+            #      (e.g. "today" by a prior runner). Backfill to the trip
+            #      start; equal → preserve (top-ups keep the trip start).
+            #   3. State has entry_date OLDER than the trip start → it
+            #      belongs to a PREVIOUS trip (full exit + re-entry; the
+            #      VLO 2026-08-05 / NVDA 2026-04-17 incident). Replace with
+            #      the trip start and log ENTRY-DATE-RESEED. The old
+            #      "state predates broker → preserve" rule is kept ONLY
+            #      inside the current trip.
+            # Decision table: adapters/runner_trip_lifecycle.resolve_entry_date
+            # (pure; unit-tested). Sentinel = today - 31d (past the default
+            # min_hold_days=30) when the broker has no fill history at all.
             broker_first = first_fill_map.get(ticker)
-            if ticker not in entry_dates:
-                if broker_first is not None:
-                    entry_dates[ticker] = broker_first.isoformat()
-                    log.info("ENTRY-DATE-SEED %s ← %s (broker fill history)",
-                             ticker, broker_first.isoformat())
-                else:
-                    sentinel = today - datetime.timedelta(days=31)
-                    entry_dates[ticker] = sentinel.isoformat()
-                    log.warning("ENTRY-DATE-SEED %s ← %s (sentinel — broker had no "
-                                "fill history; manual fix recommended)",
-                                ticker, sentinel.isoformat())
-            else:
-                # Backfill: broker authority overrides stale state when older.
-                if broker_first is not None:
-                    try:
-                        cur_entry = datetime.date.fromisoformat(entry_dates[ticker])
-                    except (ValueError, TypeError):
-                        cur_entry = today
-                    if broker_first < cur_entry:
-                        log.info("ENTRY-DATE-BACKFILL %s: state=%s → broker=%s "
-                                 "(broker fill is older — stale state corrected)",
-                                 ticker, entry_dates[ticker], broker_first.isoformat())
-                        entry_dates[ticker] = broker_first.isoformat()
+            _prev_entry = entry_dates.get(ticker)
+            _new_entry, _entry_action = resolve_entry_date(
+                _prev_entry, broker_first, today, sentinel_days=31,
+            )
+            entry_dates[ticker] = _new_entry
+            if _entry_action == "seed":
+                log.info("ENTRY-DATE-SEED %s ← %s (current trip start, "
+                         "broker fill history)", ticker, _new_entry)
+            elif _entry_action == "sentinel":
+                log.warning("ENTRY-DATE-SEED %s ← %s (sentinel — broker had no "
+                            "fill history; manual fix recommended)",
+                            ticker, _new_entry)
+            elif _entry_action == "backfill":
+                log.info("ENTRY-DATE-BACKFILL %s: state=%s → broker=%s "
+                         "(trip's first fill is older — stale state corrected)",
+                         ticker, _prev_entry, _new_entry)
+            elif _entry_action == "reseed":
+                log.warning("ENTRY-DATE-RESEED %s %s → %s (trip start)",
+                            ticker, _prev_entry, _new_entry)
             entry_str = entry_dates[ticker]
             try:
                 entry_dt = datetime.date.fromisoformat(entry_str)
@@ -998,6 +1023,38 @@ class RunnerAdapter:
         from adapters.runner_ext_sell import normalize_fill_record  # noqa: PLC0415
         return normalize_fill_record(f)
 
+    def _reentry_cooldown(self, ctx, ticker: str) -> "tuple[bool, int | None, datetime.date | None]":  # noqa: ANN001
+        """RenQuant#618 class B: ``min_reentry_days`` for a fresh BUY.
+
+        Mirrors the QP churn leg (``_compute_qp_wash_mask``): blocked when
+        ``0 <= days_since_last_full_exit < min_reentry_days``. Applies only
+        to names NOT held at bar start (a top-up is not a re-entry). The
+        last full exit is the LATER of the persisted ``last_sell_dates``
+        entry (runner sells this bar stamp it before the BUY loop runs;
+        STATE-EXT-SELL stamps it from the broker fill date) and the fill
+        replay's last flat point (``adapters/runner_trip_lifecycle``).
+        """
+        from adapters.runner_trip_lifecycle import reentry_blocked  # noqa: PLC0415
+        min_reentry = int((self._config or {}).get("min_reentry_days", 0) or 0)
+        if min_reentry <= 0:
+            return False, None, None
+        if ticker in (getattr(ctx, "holdings", None) or {}):
+            return False, None, None
+        pos = (self._positions_cache or {}).get(ticker, {}) or {}
+        try:
+            held_qty = float(pos.get("qty", 0) or 0.0)
+        except (TypeError, ValueError):
+            held_qty = 0.0
+        if held_qty > 0:
+            return False, None, None
+        trip = (getattr(self, "_trip_states", None) or {}).get(ticker)
+        return reentry_blocked(
+            ticker, self._bar_date(ctx),
+            min_reentry_days=min_reentry,
+            state_last_sell=self._last_sell_dates_str.get(ticker),
+            replay_last_exit=getattr(trip, "last_exit", None),
+        )
+
     def _lookup_ext_sell_fills(self, ctx, disappeared: list[str]) -> dict[str, dict]:  # noqa: ANN001
         from adapters.runner_ext_sell import lookup_ext_sell_fills  # noqa: PLC0415
         return lookup_ext_sell_fills(self._broker, ctx, disappeared)
@@ -1287,6 +1344,27 @@ class RunnerAdapter:
             sell_qty = float(execution["filled_qty"] or sell_qty)
             price = float(execution["filled_avg_price"] or ctx.prices.get(ticker, 0.0))
             is_partial = bool(execution["partial"] or sell_qty < qty - 1e-9)
+            # RenQuant#618 class B (2026-08-29): key "full exit" on the
+            # REALIZED broker quantity, not on intent. `is_partial` above
+            # compares the fill against the start-of-bar qty; when the
+            # broker is flat after the fill the position is gone whatever
+            # the intent was, so the entry state must be cleared and the
+            # wash-sale clock stamped — otherwise a later BUY reads as a
+            # TOPUP of a position that no longer exists.
+            if is_partial and hasattr(broker, "get_position"):
+                try:
+                    _held_after = float(broker.get_position(ticker))
+                except Exception as _gp_exc:
+                    _held_after = float("nan")
+                    log.info("ENTRY-DATE-CLEAR %s: broker.get_position failed "
+                             "after fill (%s) — keeping intent-based partial",
+                             ticker, type(_gp_exc).__name__)
+                if _math.isfinite(_held_after) and _held_after <= 1e-9:
+                    log.info("ENTRY-DATE-CLEAR %s: broker qty 0 after fill of "
+                             "%s (intent qty=%s) — treating as full exit; "
+                             "entry_dates/entry_signals/position_hwm cleared",
+                             ticker, fmt_qty(sell_qty), fmt_qty(qty))
+                    is_partial = False
 
             # Use HoldingState.entry_price as the running avg-cost fallback.
             hs = (ctx.holdings or {}).get(ticker)
@@ -1493,6 +1571,32 @@ class RunnerAdapter:
                 ticker = order["ticker"]
                 shares = order["shares"]
                 price  = order["price"]
+                # RenQuant#618 class B (2026-08-29): `min_reentry_days` was
+                # enforced ONLY by the QP wash mask (kernel/portfolio_qp/
+                # tasks.py::_compute_qp_wash_mask, churn leg). The non-QP
+                # SizeAndEmit SELECT path and the rotation buy leg apply
+                # only the §1091 wash-sale check, which skips gains — VLO
+                # was `SELECT [slot 1]` 7h after its exit filled for a
+                # gain. Enforce the SAME rule (0 <= days_since < N) here,
+                # on every BUY that is a fresh entry (not held at bar
+                # start), from the persisted `last_sell_dates` ledger and
+                # the fill replay's last flat point — never from today.
+                _reentry_blocked, _days_since, _last_exit = self._reentry_cooldown(
+                    ctx, ticker,
+                )
+                if _reentry_blocked:
+                    log.info(
+                        "ANTI-CHURN %s: BUY skipped — last full exit %s is %dd "
+                        "ago < min_reentry_days=%d (same rule as "
+                        "ComputeWashSaleMaskTask churn leg; RQ#618 class B)",
+                        ticker, _last_exit.isoformat() if _last_exit else "?",
+                        _days_since if _days_since is not None else -1,
+                        int(self._config.get("min_reentry_days", 0) or 0),
+                    )
+                    ctx.orders_skipped.append({
+                        **order, "skip_reason": "min_reentry_days",
+                    })
+                    continue
                 # S-FRAC stage 0 fail-closed entry (§2.2.2 + §2.2.3). Two
                 # invariants, checked BEFORE any broker interaction:
                 #   1. gate enabled-but-unsatisfied ⇒ NO buy is emitted at
@@ -1607,7 +1711,23 @@ class RunnerAdapter:
                 # entry_signals, sell_streaks, and last_sell_dates so the
                 # original cost-basis tenure / wash-sale state stays intact.
                 # HWM ratchets with current price (whichever is higher).
-                is_topup = ticker in self._entry_dates
+                # RenQuant#618 class B (2026-08-29): a name is a top-up
+                # only if it was HELD at bar start. A stale entry_dates
+                # entry for a flat name (previous trip; the SELL filled
+                # after the last GC) must not turn a fresh entry into a
+                # TOPUP that keeps the previous trip's date.
+                _held_at_start = (
+                    ticker in (getattr(ctx, "holdings", None) or {})
+                    or _held_qty(ticker) > 0
+                )
+                is_topup = ticker in self._entry_dates and _held_at_start
+                if ticker in self._entry_dates and not is_topup:
+                    log.info("ENTRY-DATE-CLEAR %s: stale entry state %s from a "
+                             "previous trip (not held at bar start) — fresh entry",
+                             ticker, self._entry_dates.get(ticker))
+                    self._entry_dates.pop(ticker, None)
+                    self._entry_signals.pop(ticker, None)
+                    self._position_hwm.pop(ticker, None)
                 action_tag = "TOPUP" if is_topup else "BUY"
                 # fmt_qty: '5' for whole shares (byte-identical to the old
                 # %d), full-precision float for a fractional fill (the old

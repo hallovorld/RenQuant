@@ -121,13 +121,17 @@ class TestEntryDatesPersistenceFallback:
         underlying contract (entry_dates is mutated in the missing path)
         via two now-stable substrings instead.
         """
-        # Branch entry: the conditional that detects a missing ticker.
-        assert "if ticker not in entry_dates:" in SOURCE, (
-            "entry_dates missing-ticker branch must exist"
+        # RenQuant#618 class B (2026-08-29): the missing / stale / previous-
+        # trip decision is the pure `resolve_entry_date` table; the runner
+        # writes its result back unconditionally.
+        assert "resolve_entry_date(" in SOURCE, (
+            "entry_dates decision table must be consulted for every held name"
         )
-        # Effect: SOMETHING is written to entry_dates[ticker] inside that
-        # branch (broker-fill seed OR sentinel). Both call sites in the
-        # post-fix code use the literal `entry_dates[ticker] = `.
+        assert "entry_dates[ticker] = _new_entry" in SOURCE, (
+            "resolve_entry_date result must be written back into entry_dates"
+        )
+        # Effect: SOMETHING is written to entry_dates[ticker] (broker-fill
+        # seed OR sentinel OR backfill/reseed) — persisted, not returned.
         assert SOURCE.count("entry_dates[ticker] =") >= 2, (
             "entry_dates fallback for legacy positions must be persisted "
             "into the dict (broker-fill OR sentinel branch), not just "
