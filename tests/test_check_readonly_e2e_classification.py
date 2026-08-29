@@ -14,7 +14,9 @@ Contract under test (script header):
       `STRUCTURAL_BLOCK — engineering condition` alert;
   0 = committed decision (unchanged);
   1 = crash / no-decision WITHOUT the structural markers (unchanged);
-  2 = the shadow config itself is unreadable (setup).
+  2 = the shadow config itself is unreadable, OR the pinned pipeline's
+      artifact resolver cannot be imported / raises (setup; never green,
+      no funnel — there is no local fallback resolver).
 """
 from __future__ import annotations
 
@@ -55,20 +57,30 @@ LOAD_FAILED_LINE = (
 STUB_RESOLVER = '''
 import os
 from pathlib import Path
-def locate_artifact(ref, *, strategy_dir, repo_root=None):
-    Path(os.environ["FAKE_RESOLVER_SENTINEL"]).write_text(str(ref))
+def _candidates(ref, strategy_dir, repo_root):
     p = Path(ref)
     if p.is_absolute():
-        return p
+        return [(p, "absolute")]
     root = repo_root if repo_root is not None else Path(strategy_dir).parent.parent
-    for cand in (Path(strategy_dir) / p, root / p):
+    return [(Path(strategy_dir) / p, "strategy_dir"), (root / p, "repo_root")]
+def locate_artifact(ref, *, strategy_dir, repo_root=None):
+    Path(os.environ["FAKE_RESOLVER_SENTINEL"]).write_text(str(ref))
+    cands = _candidates(ref, strategy_dir, repo_root)
+    for cand, _src in cands:
         if cand.exists():
             return cand
-    return Path(strategy_dir) / p
+    return cands[0][0]
 '''
 BROKEN_RESOLVER = 'raise ImportError("stub: pinned resolver unavailable")\n'
-PINNED_RESOLVER_LINE = "preflight resolver: pinned renquant_pipeline.kernel.artifact_resolver.locate_artifact"
-FALLBACK_RESOLVER_LINE = "preflight resolver: FALLBACK two-candidate check (strategy_dir then repo_root) — pinned resolver import failed"
+RAISING_RESOLVER = '''
+import os
+from pathlib import Path
+def locate_artifact(ref, *, strategy_dir, repo_root=None):
+    Path(os.environ["FAKE_RESOLVER_SENTINEL"]).write_text(str(ref))
+    raise RuntimeError("stub: resolver exploded on " + str(ref))
+'''
+RESOLVER_MODULE = "renquant_pipeline.kernel.artifact_resolver"
+PINNED_RESOLVER_LINE = f"preflight resolver: pinned {RESOLVER_MODULE}.locate_artifact"
 
 STUB_MAIN = '''
 import json, os, sys
@@ -165,8 +177,14 @@ def harness(tmp_path: Path) -> Harness:
 
 @pytest.fixture
 def harness_no_resolver(tmp_path: Path) -> Harness:
-    """Pinned resolver import FAILS → the script must fall back and say so."""
+    """Pinned resolver import FAILS → setup error, never green."""
     return Harness(tmp_path, resolver=BROKEN_RESOLVER)
+
+
+@pytest.fixture
+def harness_raising_resolver(tmp_path: Path) -> Harness:
+    """Pinned resolver imports but RAISES on call → setup error, never green."""
+    return Harness(tmp_path, resolver=RAISING_RESOLVER)
 
 
 # ── 3: dead leg ──────────────────────────────────────────────────────────────
@@ -208,26 +226,34 @@ def test_primary_artifact_only_at_repo_root_resolves_via_pinned_resolver(harness
     assert harness.runner_invoked
 
 
-def test_resolver_import_failure_falls_back_and_says_so(harness_no_resolver):
+@pytest.mark.parametrize("artifact_present", [True, False], ids=["file-present", "file-absent"])
+def test_resolver_import_failure_exits_2_never_green(harness_no_resolver, artifact_present):
+    """No local fallback: even with the file on disk the verify must not go
+    green on a verdict the pinned loader did not produce."""
     h = harness_no_resolver
     h.write_config(_panel_scoring())
-    h.create_artifact(under_repo_root=True)
+    if artifact_present:
+        h.create_artifact()
     res = h.run(lines=[DECISION_LINE], rc=0)
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert FALLBACK_RESOLVER_LINE in res.stdout
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert f"SETUP: cannot import the pinned resolver {RESOLVER_MODULE}" in res.stdout
     assert "stub: pinned resolver unavailable" in res.stdout
-    assert PINNED_RESOLVER_LINE not in res.stdout
+    assert "DEAD_LEG" not in res.stdout
+    assert "READONLY_E2E: OK" not in res.stdout
     assert not h.resolver_invoked
-    assert h.runner_invoked
+    assert not h.runner_invoked
 
 
-def test_resolver_import_failure_still_reports_missing_as_3(harness_no_resolver):
-    h = harness_no_resolver
+def test_resolver_call_failure_exits_2_with_error_text(harness_raising_resolver):
+    h = harness_raising_resolver
     h.write_config(_panel_scoring())
+    h.create_artifact()
     res = h.run(lines=[DECISION_LINE], rc=0)
-    assert res.returncode == 3, res.stdout + res.stderr
-    assert FALLBACK_RESOLVER_LINE in res.stdout
-    assert str(h.strategy_dir / ARTIFACT_REF) in res.stdout
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert f"SETUP: pinned resolver {RESOLVER_MODULE}.locate_artifact raised" in res.stdout
+    assert f"stub: resolver exploded on {ARTIFACT_REF}" in res.stdout
+    assert h.resolver_invoked, "the pinned resolver was the one consulted"
+    assert "DEAD_LEG" not in res.stdout
     assert not h.runner_invoked
 
 

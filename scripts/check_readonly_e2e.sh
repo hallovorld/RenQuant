@@ -18,7 +18,10 @@
 # `make doctor` deep check. Exit codes:
 #   0 = clean decision produced
 #   1 = crash / timeout / no-decision (would-not-trade) / isolation breach
-#   2 = setup error (repo, subrepo env, or the shadow config itself unreadable)
+#   2 = setup error: repo, subrepo env, the shadow config unreadable, OR the
+#       pinned pipeline's artifact resolver cannot be imported / raises — in
+#       the assembled runtime that is an integrity failure, never a reason to
+#       guess at resolution with a local re-implementation. Funnel NOT run.
 #   3 = DEAD LEG (orch#1066): a panel-scoring artifact the shadow config
 #       references is missing on disk — resolved the way the PINNED loader
 #       resolves it (kernel.artifact_resolver.locate_artifact: absolute →
@@ -101,37 +104,42 @@ if ps.get("enabled") is False:
 # blend components already used (job_panel_scoring._locate_config_artifact,
 # blend_scorer._resolve_component_path). The pinned pipeline is on this
 # script's PYTHONPATH (subrepo_env), so import ITS resolver and use ITS
-# answer; only if that import fails fall back to the two-candidate check —
-# and say so, because a fallback verdict is a re-implementation, not the
-# loader's.
+# answer. There is deliberately NO fallback: a second copy of the precedence
+# here could pass preflight with semantics the pinned loader no longer has
+# (review round 3, RenQuant#616). If the resolver cannot be imported, or
+# raises, the assembled runtime is broken — setup error, exit 2, no funnel.
+RESOLVER_MODULE = "renquant_pipeline.kernel.artifact_resolver"
 try:
-    import renquant_pipeline.kernel.artifact_resolver as _resolver
+    import importlib
+    _resolver = importlib.import_module(RESOLVER_MODULE)
     _locate = _resolver.locate_artifact
-    RESOLVER = ("pinned renquant_pipeline.kernel.artifact_resolver.locate_artifact "
-                f"({_resolver.__file__})")
-
-    def locate(ref):
-        return _locate(ref, strategy_dir=strategy_dir)
-except Exception as exc:  # noqa: BLE001 — import failure of any kind
-    RESOLVER = ("FALLBACK two-candidate check (strategy_dir then repo_root) — "
-                f"pinned resolver import failed: {exc!r}")
-
-    def locate(ref):
-        p = Path(str(ref))
-        if p.is_absolute():
-            return p
-        for cand in (strategy_dir / p, strategy_dir.parent.parent / p):
-            if cand.exists():
-                return cand
-        return strategy_dir / p
-print(f"[readonly-e2e] preflight resolver: {RESOLVER}")
+except Exception as exc:  # noqa: BLE001 — any import failure is a setup failure
+    print(f"SETUP: cannot import the pinned resolver {RESOLVER_MODULE} "
+          f"(PYTHONPATH={sys.path[1:4]}...): {exc!r}")
+    raise SystemExit(2)
+print(f"[readonly-e2e] preflight resolver: pinned {RESOLVER_MODULE}.locate_artifact "
+      f"({_resolver.__file__})")
 
 
-def candidates(ref):
-    # for the MESSAGE only (where a missing ref was looked for); the verdict
-    # above comes from the resolver.
-    p = Path(str(ref))
-    return [p] if p.is_absolute() else [strategy_dir / p, strategy_dir.parent.parent / p]
+def locate(ref):
+    try:
+        return Path(_locate(ref, strategy_dir=strategy_dir))
+    except Exception as exc:  # noqa: BLE001 — the loader's resolver must not raise here
+        print(f"SETUP: pinned resolver {RESOLVER_MODULE}.locate_artifact raised for "
+              f"{ref!r} (strategy_dir={strategy_dir}): {exc!r}")
+        raise SystemExit(2)
+
+
+def looked_in(ref):
+    # Diagnostics only, and still the resolver's own list (its private
+    # _candidates), never a local restatement; absent → just the answer.
+    cands = getattr(_resolver, "_candidates", None)
+    if not callable(cands):
+        return []
+    try:
+        return [str(c) for c, _src in cands(ref, strategy_dir, None)]
+    except Exception:  # noqa: BLE001 — diagnostics must not change the verdict
+        return []
 
 
 legs = []  # (config key, ref)
@@ -147,7 +155,7 @@ if gc.get("enabled") and gc.get("artifact_path"):
     legs.append(("ranking.panel_scoring.global_calibration.artifact_path",
                  gc["artifact_path"]))
 
-resolved = [(key, ref, Path(locate(ref))) for key, ref in legs]
+resolved = [(key, ref, locate(ref)) for key, ref in legs]
 missing = [(key, ref, found) for key, ref, found in resolved if not found.is_file()]
 if not missing:
     for key, ref, found in resolved:
@@ -156,9 +164,10 @@ if not missing:
           f"{cfg_path.name} resolve to existing files")
     raise SystemExit(0)
 for key, ref, found in missing:
-    print(f"READONLY_E2E: DEAD_LEG — {key} = {ref!r} is MISSING; resolver returned "
-          f"{found} (not a file); looked in "
-          + ", ".join(str(c) for c in candidates(ref)))
+    where = looked_in(ref)
+    print(f"READONLY_E2E: DEAD_LEG — {key} = {ref!r} is MISSING; pinned resolver "
+          f"returned {found} (not a file)"
+          + (f"; it looked in {', '.join(where)}" if where else ""))
 print(f"READONLY_E2E: DEAD_LEG — DEAD_LEG detected before the funnel in {cfg_path}; "
       "attribute by comparing against the previous pinned assembly "
       "(scripts/promote_pin.py keeps the backup lock) — see orch#1066")

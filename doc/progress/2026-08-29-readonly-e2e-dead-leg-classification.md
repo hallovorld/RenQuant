@@ -74,10 +74,11 @@ required; the operator attributes against the backup lock).
   `enabled` — with the PINNED pipeline's own
   `renquant_pipeline.kernel.artifact_resolver.locate_artifact` (round 2;
   absolute → strategy_dir → repo_root), imported from the script's PYTHONPATH.
-  If that import fails, a two-candidate fallback is used and the resolver
-  line says `FALLBACK … pinned resolver import failed: <exc>`. The resolver
-  in use is always printed (`[readonly-e2e] preflight resolver: …`), and on
-  success every ref's resolved path is printed.
+  There is NO local fallback (round 3): if that import fails, or the
+  resolver raises, the preflight exits 2 naming the module and the exception
+  and the funnel is not run. The resolver in use is always printed
+  (`[readonly-e2e] preflight resolver: …`), and on success every ref's
+  resolved path is printed.
   Absolute refs are taken as-is; `panel_scoring.enabled: false` skips the
   check. Any ref whose resolved path is not a file → key + ref + the
   resolver's answer + both locations looked in are printed, then the
@@ -105,7 +106,7 @@ required; the operator attributes against the backup lock).
 |------|---------|
 | 0 | clean decision produced (unchanged) |
 | 1 | crash / timeout / no committed decision / isolation breach — WITHOUT the structural markers (unchanged) |
-| 2 | setup error: repo, subrepo env, or the shadow config itself unreadable |
+| 2 | setup error: repo, subrepo env, the shadow config unreadable, OR the pinned pipeline's artifact resolver cannot be imported / raises (never green, funnel not run) |
 | 3 | dead leg: a referenced panel-scoring artifact is missing on disk in the CURRENT pinned assembly; funnel NOT run; says nothing about when it went missing |
 | 4 | structural block: funnel ran; log carries `panel_scorer_load_failed` or the STRUCTURAL_BLOCK engineering-condition alert — a structural engineering failure in the shadow scorer chain, not a decision outcome; says nothing about when it started |
 
@@ -129,7 +130,7 @@ pin; same exit 3 there = pre-existing, exit 0 there = the bump.
   dead). Whether it was dead before the last bump is exactly what this script
   does not claim; orch#1066's own reading (artifacts dir unchanged since
   Aug 6) is the operator's evidence, not the verifier's.
-* `tests/test_check_readonly_e2e_classification.py` — 18 passed (round 2)
+* `tests/test_check_readonly_e2e_classification.py` — 19 passed (round 3)
   (`.venv/bin/python -m pytest -q -o addopts='' tests/test_check_readonly_e2e_classification.py`)
   [VERIFIED]. Drives the script as a subprocess against a throwaway repo dir
   with a stub `renquant_orchestrator` on the script's own PYTHONPATH; covers:
@@ -137,9 +138,11 @@ pin; same exit 3 there = pre-existing, exit 0 there = the bump.
   asserts "pre-existing" / "not a pin-bump regression" are ABSENT), funnel not
   invoked, pinned-resolver line printed and the stub resolver's sentinel
   touched; primary present only at repo root → 0 via the pinned resolver
-  (round 2 — was 3 under the old loader); pinned resolver import broken →
-  FALLBACK line printed with the exception, verdicts unchanged (repo-root-only
-  → 0, missing → 3); blend component present only at repo root → passes;
+  (round 2 — was 3 under the old loader); pinned resolver import broken → 2
+  naming the module and the exception, no funnel, never green, with the file
+  present AND absent (round 3); resolver imports but raises → 2 with the
+  error text, sentinel proves it was consulted; blend component present only
+  at repo root → passes;
   missing blend component → 3; global_calibration enabled+missing → 3,
   enabled+repo-root-only → 0, disabled → ignored; markers →
   4 (three variants, marker line echoed, neutral wording asserted); markers +
@@ -178,9 +181,8 @@ script's own PYTHONPATH (already there via `scripts/subrepo_env.sh`), calls
 `locate_artifact(ref, strategy_dir=<repo>/backtesting/renquant_104)` exactly
 as `_locate_config_artifact` does (no explicit `repo_root`, so the root is
 `strategy_dir/../..`), and treats "resolved path is not a file" as the dead
-leg. Only if that import fails does it fall back to the two-candidate check,
-and the printed resolver line says so with the exception. Import cost
-measured at 0.01 s.
+leg. (Round 2 kept a two-candidate fallback for import failure; round 3
+removed it — see below.) Import cost measured at 0.01 s.
 
 **Evidence, live tree (read-only; isolated shadow state; the designed
 verify, `RENQUANT_E2E_TIMEOUT_SEC=900`) [VERIFIED]:**
@@ -212,6 +214,36 @@ prod db/state isolation assertion passed (no ISOLATION BREACH line).
 fails at `RunnerAdapter.commit` with `decision_horizon_gaps=5`. That needs its
 own tracked issue (pipeline persistence / shadow-lane decision rows), and it
 is what currently keeps the gold-standard verify red — not the artifact.
+
+## Round 3: no fallback resolver (Codex review, RenQuant#616)
+
+The round-2 preflight kept a two-candidate fallback for the case where
+`renquant_pipeline.kernel.artifact_resolver` could not be imported. Review:
+that fallback reintroduces the very contract duplication the PR removes — a
+local copy of the precedence can pass preflight with semantics the pinned
+loader no longer guarantees. In the assembled runtime the pinned pipeline is
+on the script's PYTHONPATH by construction (`scripts/subrepo_env.sh`), so a
+failed import is a setup/integrity failure, not a condition to work around.
+
+Changes in `scripts/check_readonly_e2e.sh`:
+
+* The fallback is gone. Import failure → `SETUP: cannot import the pinned
+  resolver renquant_pipeline.kernel.artifact_resolver (...): <exception>` →
+  exit **2**, funnel not run.
+* A call failure (`locate_artifact` raising) → `SETUP: pinned resolver
+  ....locate_artifact raised for <ref> (strategy_dir=...): <exception>` →
+  exit **2**, funnel not run.
+* Exit **3** only when the pinned resolver SUCCEEDS and its returned path is
+  not a file. The diagnostics line keeps key + ref + the resolver's answer,
+  and lists the locations looked in using the resolver's OWN candidate list
+  (`_candidates`) when present — never a local restatement.
+
+Tests (19 passed): broken import ⇒ 2 naming the module, no funnel, never
+green — parametrised over file present / absent; resolver raising ⇒ 2 with
+the error text and the sentinel proving it was consulted; resolver ok + file
+present ⇒ 0; resolver ok + file absent ⇒ 3. `bash -n` clean. The live verify
+was not re-run (round 2 already measured the commit-stage failure, now
+tracked as orch#1082 / pipeline#302).
 
 ## Not done here (deliberately)
 

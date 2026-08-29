@@ -9,8 +9,11 @@ name: readonly-e2e-classification
 # attribution-neutral (the tests assert that) because the preflight only
 # inspects the current pinned assembly, never the previous pin.
 # tests/test_check_readonly_e2e_classification.py drives the script as a
-# subprocess against a throwaway repo + a stub runner; nothing from the
-# pipeline is imported, so a bare runner with pytest is enough. A workflow
+# subprocess against a throwaway repo, a stub runner and a stub PINNED
+# resolver (renquant_pipeline.kernel.artifact_resolver on the script's own
+# PYTHONPATH); the real pipeline is never imported, so a bare runner with
+# pytest is enough. The script has NO local fallback resolver — an import or
+# call failure is exit 2 (setup), never green — and the tests pin that. A workflow
 # that names the file explicitly is what stops it from being a green check
 # that covered nothing (RenQuant 2026-08-20 lesson).
 
