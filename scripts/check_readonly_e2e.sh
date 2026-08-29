@@ -20,14 +20,20 @@
 #   1 = crash / timeout / no-decision (would-not-trade) / isolation breach
 #   2 = setup error (repo, subrepo env, or the shadow config itself unreadable)
 #   3 = DEAD LEG (orch#1066): a panel-scoring artifact the shadow config
-#       references is missing BEFORE the funnel runs — pre-existing, not a
-#       pin-bump regression. The funnel is NOT run.
+#       references is missing on disk, detected BEFORE the funnel runs; the
+#       funnel is NOT run. This code says NOTHING about WHEN the leg died —
+#       the preflight inspects only the current pinned assembly. Attribute
+#       (pre-existing vs introduced by the bump) by comparing against the
+#       previous pinned assembly (scripts/promote_pin.py keeps the backup
+#       lock) before treating a red verify either way.
 #   4 = STRUCTURAL BLOCK: the funnel ran but its log carries
 #       `panel_scorer_load_failed` or the FunnelIntegrityAlert
-#       `STRUCTURAL_BLOCK — engineering condition` marker — an engineering
-#       fault in the shadow scorer chain, not a decision outcome. Replaces the
-#       generic 1 ONLY when the run would otherwise have failed (rc≠0 or no
-#       committed decision); a committed decision still exits 0 (with a WARN).
+#       `STRUCTURAL_BLOCK — engineering condition` marker — a structural
+#       engineering failure in the shadow scorer chain, not a decision
+#       outcome; whether it predates the bump is not established here.
+#       Replaces the generic 1 ONLY when the run would otherwise have failed
+#       (rc≠0 or no committed decision); a committed decision still exits 0
+#       (with a WARN).
 set -uo pipefail
 
 REPO_DIR="${RENQUANT_REPO_DIR:-/Users/renhao/git/github/RenQuant}"
@@ -49,10 +55,13 @@ export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orches
 # (0) DEAD-LEG PREFLIGHT (orch#1066). The funnel below loads the shadow
 # config's panel-scoring artifacts and, if one is missing, fail-closes with
 # `panel_scorer_load_failed` → every buy candidate cleared → STRUCTURAL_BLOCK
-# → this verify used to exit the generic 1, which reads as "the pin bump broke
-# something" even when the breakage predates the bump (measured 2026-08-25).
-# So resolve those refs FIRST, exactly the way the pipeline does, and name the
-# missing path with a distinct exit code before spending a funnel run on it.
+# → this verify used to exit the generic 1, indistinguishable from a crash
+# (measured 2026-08-25). So resolve those refs FIRST, exactly the way the
+# pipeline does, and name the missing path with a distinct exit code before
+# spending a funnel run on it. The preflight sees ONLY the current pinned
+# assembly, so it cannot and does not say whether the leg was already dead
+# before a bump — that attribution is the operator's, against the previous
+# pin.
 #
 # Which config document: mirrors the runner selection — live-bridge (the
 # default RQ_DAILY_RUNNER=multirepo) routes renquant_104 config reads to the
@@ -123,8 +132,9 @@ if not missing:
 for key, ref, cands in missing:
     print(f"READONLY_E2E: DEAD_LEG — {key} = {ref!r} is MISSING; tried "
           + ", ".join(str(c) for c in cands))
-print(f"READONLY_E2E: DEAD_LEG — pre-existing dead leg in {cfg_path} — "
-      "not a pin-bump regression; see orch#1066")
+print(f"READONLY_E2E: DEAD_LEG — DEAD_LEG detected before the funnel in {cfg_path}; "
+      "attribute by comparing against the previous pinned assembly "
+      "(scripts/promote_pin.py keeps the backup lock) — see orch#1066")
 print("READONLY_E2E: DEAD_LEG — funnel NOT run (exit 3); fixing the config is a "
       "separate reviewed decision (orch#1066 options a/b)")
 raise SystemExit(3)
@@ -179,12 +189,13 @@ fi
 # "STRUCTURAL_BLOCK — engineering condition suppressed buy capability".
 # Either one means the run did not fail on a DECISION — it failed on the
 # scorer chain — so a would-be exit 1 becomes exit 4 and the marker line is
-# printed. Crash/timeout/no-decision WITHOUT these markers stays exit 1.
+# printed. Crash/timeout/no-decision WITHOUT these markers stays exit 1. The
+# classification is about WHAT failed, not WHEN it started failing.
 STRUCTURAL_LINE="$(grep -m1 -F -e 'panel_scorer_load_failed' -e 'STRUCTURAL_BLOCK — engineering condition' "$LOG" 2>/dev/null)"
 fail() {  # $1 = the generic failure text
     if [ -n "$STRUCTURAL_LINE" ]; then
         echo "READONLY_E2E: STRUCTURAL — $1"
-        echo "READONLY_E2E: STRUCTURAL — structural block — engineering fault in the shadow scorer chain, not a decision outcome (exit 4); marker: $STRUCTURAL_LINE"
+        echo "READONLY_E2E: STRUCTURAL — structural engineering failure in the shadow scorer chain (buy capability suppressed by an engineering condition, not a decision outcome; whether it predates the bump is not established here) (exit 4); marker: $STRUCTURAL_LINE"
         exit 4
     fi
     echo "READONLY_E2E: FAIL — $1"

@@ -8,8 +8,8 @@ needs and exits with a chosen code; the real pipeline is never imported.
 
 Contract under test (script header):
   3 = a panel-scoring artifact the shadow config references is missing
-      (named path + "pre-existing dead leg ... not a pin-bump regression"),
-      and the funnel is NOT run;
+      (named path + attribution-NEUTRAL wording that points the operator at
+      the previous pinned assembly), and the funnel is NOT run;
   4 = the funnel ran and its log carries `panel_scorer_load_failed` or the
       `STRUCTURAL_BLOCK — engineering condition` alert;
   0 = committed decision (unchanged);
@@ -137,8 +137,12 @@ def test_missing_primary_artifact_exits_3_names_path_and_skips_funnel(harness):
     expected_path = str(harness.strategy_dir / ARTIFACT_REF)
     assert expected_path in res.stdout
     assert "ranking.panel_scoring.artifact_path (kind=hf_patchtst)" in res.stdout
-    assert (f"pre-existing dead leg in {cfg} — not a pin-bump regression; "
-            "see orch#1066") in res.stdout
+    assert (f"DEAD_LEG detected before the funnel in {cfg}; attribute by "
+            "comparing against the previous pinned assembly "
+            "(scripts/promote_pin.py keeps the backup lock) — see orch#1066") in res.stdout
+    # the script must NOT assert the leg's age — it never inspects the previous pin
+    assert "pre-existing" not in res.stdout
+    assert "not a pin-bump regression" not in res.stdout
     assert not harness.runner_invoked, "the funnel must not run on a dead leg"
 
 
@@ -225,7 +229,9 @@ def test_structural_markers_exit_4_and_print_marker_line(harness, lines, rc, mar
     res = harness.run(lines=lines, rc=rc)
     assert res.returncode == 4, res.stdout + res.stderr
     assert harness.runner_invoked
-    assert "engineering fault in the shadow scorer chain, not a decision outcome" in res.stdout
+    assert "structural engineering failure in the shadow scorer chain" in res.stdout
+    assert "not a decision outcome" in res.stdout
+    assert "whether it predates the bump is not established here" in res.stdout
     # the matching log line is echoed verbatim
     first_marker_line = next(l for l in lines if marker in l)
     assert first_marker_line in res.stdout
