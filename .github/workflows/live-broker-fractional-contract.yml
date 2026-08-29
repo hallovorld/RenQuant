@@ -1,0 +1,39 @@
+name: live-broker-fractional-contract
+
+# The fractional capability gate (adapters/commit_contract.py) probes the LIVE
+# broker object for `is_fractionable` + a no-submit classifier. This workflow
+# pins that the REAL live.alpaca_broker.AlpacaBroker satisfies leg (a) — a
+# structural test that no other workflow collects (every umbrella workflow
+# names its test files explicitly; an unnamed new file is a green check that
+# covered nothing). No network, no credentials: the alpaca SDK is imported
+# lazily inside methods and the tests stub the asset lookup.
+
+on:
+  pull_request:
+    paths:
+      - "live/**"
+      - "backtesting/renquant_104/adapters/commit_contract.py"
+      - "tests/test_live_broker_fractional_contract.py"
+      - ".github/workflows/live-broker-fractional-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "live/**"
+      - "backtesting/renquant_104/adapters/commit_contract.py"
+      - "tests/test_live_broker_fractional_contract.py"
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install test tools
+        run: python3 -m pip install pytest
+      - name: Live broker satisfies fractional gate leg (a) (must run, not skip)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_live_broker_fractional_contract.py -v
