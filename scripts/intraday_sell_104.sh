@@ -123,8 +123,12 @@ fi
 # in this block by design; `set -e` is not in effect (see `set -uo pipefail`).
 # Exit codes (orchestrator contract): 0 SEEDED/EXISTS; 1 usage; 2 an existing
 # file is CORRUPT (left untouched — operator decision); 3 pipeline module not
-# importable. A pinned orchestrator that predates the seeder (< orch#1078)
-# exits 0 WITHOUT a verdict line — flagged as a WARNING, not silently green.
+# importable. The pinned orchestrator (subrepos.lock.json, advanced in the
+# same PR as this block) implements `seed`; an orchestrator that predates
+# the seeder (< orch#1078) would exit 0 WITHOUT a verdict line — that is
+# runtime-assembly drift below the lock and is flagged as a WARNING, never
+# silently green (tests/test_software_stops_neutral_root.py pins the pinned
+# module's SEEDED/EXISTS verdicts at the assembly level).
 SEED_MODULE="renquant_orchestrator.software_stops_registry_contract"
 SEED_OUT=$("$PYTHON" -m "$SEED_MODULE" seed --broker alpaca 2>&1)
 SEED_RC=$?
@@ -132,7 +136,7 @@ if [ "$SEED_RC" -eq 0 ]; then
     if printf '%s\n' "$SEED_OUT" | grep -qE '^(SEEDED|EXISTS): '; then
         echo "software-stops registry seed OK: $(printf '%s\n' "$SEED_OUT" | grep -E '^(SEEDED|EXISTS): ')"
     else
-        echo "WARNING: software-stops registry seed exited 0 WITHOUT a SEEDED/EXISTS verdict (pinned orchestrator predates the seeder, orch#1078?) — registry NOT confirmed locatable; continuing with the sell pass. Output: ${SEED_OUT:-<none>}"
+        echo "WARNING: software-stops registry seed exited 0 WITHOUT a SEEDED/EXISTS verdict (runtime assembly drifted below the lock? the pinned orchestrator implements seed since orch#1078) — registry NOT confirmed locatable; continuing with the sell pass. Output: ${SEED_OUT:-<none>}"
     fi
 else
     echo "ERROR: software-stops registry seed FAILED (exit $SEED_RC) — continuing with the sell pass (the seed is bootstrap plumbing and never blocks the exit path). Output: ${SEED_OUT:-<none>}"

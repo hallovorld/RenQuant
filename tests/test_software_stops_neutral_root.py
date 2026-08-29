@@ -1,33 +1,43 @@
 """Software-stop registry at the NEUTRAL root — the two umbrella follow-ups
-of the orchestrator bootstrap step (orch#1078).
+of the orchestrator bootstrap step (orch#1078), plus the pin that makes the
+wrapper's seed command real (Codex review on RenQuant#613).
 
-1. ``adapters/software_stops_wiring.py`` + ``RunnerAdapter.__init__``: the
-   registry is built with ``SoftwareStopRegistry.from_config(..., repo_root=
-   <neutral root>)`` where the neutral root is the orchestrator LOCATION
-   contract's ``software_stops_registry_root(runtime_state_root())``
-   (``~/.renquant/runtime/software-stops``, override
-   ``RENQUANT_RUNTIME_STATE_ROOT``) — the ``--data-root`` the liveness pager
-   and the orchestrator seeder resolve against. Never the process cwd.
-   * flag off  -> ``_software_stops is None`` and ``from_config`` was still
-     invoked with the neutral-root kwarg (the flag gate is from_config's
-     own; it returns before touching ``repo_root`` — proved with a
-     ``repo_root`` that explodes on use);
-   * flag on   -> the registry path EQUALS the orchestrator's
-     ``seeded_registry_path(<root>, broker)`` (import parity against the real
-     sibling when importable; skipped WITH the reason otherwise) and a seed
-     written by the orchestrator is read back by the runner's registry;
-   * contract not importable -> ``None`` + one ERROR line, and
-     ``from_config`` is NOT called (no cwd fallback), flag on or off.
+1. ``adapters/software_stops_wiring.py`` + ``RunnerAdapter.__init__``:
+   * ``execution.software_stops.enabled`` absent/false -> ``None``
+     IMMEDIATELY, read the pipeline's own way (a verbatim mirror of
+     ``from_config``'s gate, parity-pinned against the real ``from_config``):
+     no orchestrator import, no neutral-root resolution, no log line, no
+     disk access — the pre-change inert path, preserved literally (the
+     contract module is monkeypatched to RAISE on import and nothing is
+     logged);
+   * enabled -> the registry is built with ``SoftwareStopRegistry.from_config
+     (..., repo_root=<neutral root>)`` where the neutral root is the
+     orchestrator LOCATION contract's ``software_stops_registry_root
+     (runtime_state_root())`` (``~/.renquant/runtime/software-stops``,
+     override ``RENQUANT_RUNTIME_STATE_ROOT``) — the ``--data-root`` the
+     liveness pager and the orchestrator seeder resolve against. The
+     registry path EQUALS the orchestrator's ``seeded_registry_path(<root>,
+     broker)`` (import parity against the real sibling when importable;
+     skipped WITH the reason otherwise) and a seed written by the
+     orchestrator is read back by the runner's registry;
+   * enabled + contract not importable -> ``None`` + one ERROR line, and
+     ``from_config`` is NOT called (no cwd fallback).
 2. ``scripts/intraday_sell_104.sh``: the seeder runs unconditionally
    BEFORE the runner, with the same ``--broker`` the runner receives, and
    never ``exit``s on its own failure (the sell loop is the live book's exit
-   path). Structural pins (the pattern of this repo's other wrapper tests)
-   plus the extracted block executed under bash with stub outcomes.
+   path). Structural pins plus the extracted block executed under bash with
+   stub outcomes.
+3. ASSEMBLY-LEVEL regression: the orchestrator module at the PINNED runtime
+   path (``<RENQUANT_SUBREPO_ROOT>/renquant-orchestrator/src``, the path the
+   wrapper puts on PYTHONPATH) implements the ``seed`` contract the wrapper
+   invokes — a subprocess ``seed --broker alpaca --data-root <tmp>`` prints
+   ``SEEDED:`` then ``EXISTS:`` and exits 0. A pinned module without the
+   CLI (exit 0, no verdict — the pre-#1078 revision) FAILS this test.
 
 Runs in the lean ``live-broker-fractional-contract`` CI job (pytest only):
 the wiring module imports nothing heavy, the pipeline / orchestrator siblings
-are stubbed when absent, and the one test that needs the full strategy deps
-(``RunnerAdapter.__init__`` end-to-end) skips there and runs locally.
+are stubbed when absent, and the tests that need the full strategy deps or
+the runtime assembly skip there WITH a reason and run locally.
 """
 from __future__ import annotations
 
@@ -66,6 +76,13 @@ RUNNER_CALL = '"$PYTHON" "${RUNNER_ARGS[@]}" --strategy renquant_104 --broker al
 
 # ── sibling resolution (the _order_math_owner / test_live_multirepo pattern) ─
 
+def _lock_entry(name: str) -> dict | None:
+    lock = REPO_ROOT / "subrepos.lock.json"
+    if not lock.exists():
+        return None
+    return next((e for e in json.loads(lock.read_text())["subrepos"] if e["name"] == name), None)
+
+
 def _sibling_src(name: str) -> Path | None:
     """``<RENQUANT_SUBREPO_ROOT>/<name>/src`` first (the runtime assembly the
     wrappers export), then ``subrepos.lock.json`` ``local_path``."""
@@ -74,16 +91,11 @@ def _sibling_src(name: str) -> Path | None:
         cand = Path(env_root) / name / "src"
         if cand.is_dir():
             return cand
-    lock = REPO_ROOT / "subrepos.lock.json"
-    if lock.exists():
-        entry = next(
-            (e for e in json.loads(lock.read_text())["subrepos"] if e["name"] == name),
-            None,
-        )
-        if entry:
-            cand = Path(entry["local_path"]) / "src"
-            if cand.is_dir():
-                return cand
+    entry = _lock_entry(name)
+    if entry:
+        cand = Path(entry["local_path"]) / "src"
+        if cand.is_dir():
+            return cand
     return None
 
 
@@ -106,7 +118,7 @@ def _real_module(modname: str, sibling: str, *needs: str):
     if missing:
         return None, (
             f"{modname} at {getattr(mod, '__file__', '?')} lacks {missing} "
-            "(pinned checkout predates the seeder, orch#1078)"
+            "(checkout predates the seeder, orch#1078)"
         )
     return mod, ""
 
@@ -212,7 +224,113 @@ def _cfg(enabled: bool | None) -> dict:
     return {"execution": {"software_stops": {"enabled": enabled}}}
 
 
-# ── 1. the wiring: neutral root, flag-off inert, fail-closed ────────────────
+# Every config shape the gate must treat as OFF (falsy the pipeline's way).
+OFF_CONFIGS = [
+    None, {}, {"execution": None}, {"execution": {}},
+    {"execution": {"software_stops": None}}, {"execution": {"software_stops": {}}},
+    _cfg(False), _cfg(None),
+    {"execution": {"software_stops": {"enabled": 0}}},
+    {"execution": {"software_stops": {"enabled": ""}}},
+]
+ON_CONFIGS = [_cfg(True), {"execution": {"software_stops": {"enabled": 1}}},
+              {"execution": {"software_stops": {"enabled": "yes"}}}]
+
+
+# ── 1a. the enabled gate: pipeline-owned semantics, read first ───────────────
+
+class TestEnabledGate:
+    @pytest.mark.parametrize("cfg", OFF_CONFIGS)
+    def test_off_shapes(self, cfg):
+        assert wiring.software_stops_enabled(cfg) is False
+
+    @pytest.mark.parametrize("cfg", ON_CONFIGS)
+    def test_on_shapes(self, cfg):
+        assert wiring.software_stops_enabled(cfg) is True
+
+    def test_parity_with_the_real_pipeline_gate(self, tmp_path):
+        """The mirror agrees with ``from_config`` on every shape above: OFF
+        shapes -> ``from_config`` returns None with a repo_root that raises
+        if touched; ON shapes -> a registry under a tmp root (no file
+        written — the registry is created on first write)."""
+        mod = _require_real(PIPELINE, "renquant-pipeline", "SoftwareStopRegistry")
+
+        class Explodes:
+            def __fspath__(self):
+                raise AssertionError("repo_root was touched on the flag-off path")
+
+            def __str__(self):
+                raise AssertionError("repo_root was stringified on the flag-off path")
+
+        for cfg in OFF_CONFIGS:
+            assert wiring.software_stops_enabled(cfg) is False
+            assert mod.SoftwareStopRegistry.from_config(
+                cfg, broker_name="paper", repo_root=Explodes(),
+            ) is None
+        for cfg in ON_CONFIGS:
+            assert wiring.software_stops_enabled(cfg) is True
+            reg = mod.SoftwareStopRegistry.from_config(cfg, broker_name="paper", repo_root=tmp_path)
+            assert reg is not None
+            assert Path(reg.path) == tmp_path / "data" / "rq105" / "software_stops.paper.json"
+        assert list(tmp_path.iterdir()) == []
+
+    def test_gate_is_read_before_any_import_in_source(self):
+        body = WIRING_SRC[WIRING_SRC.index("def build_software_stop_registry"):]
+        code = re.sub(r'"""[\s\S]*?"""', "", body)  # drop the docstring
+        gate = code.index("if not software_stops_enabled(config):")
+        pre = code[:gate]
+        assert "import" not in pre and "software_stops_neutral_root()" not in pre
+        assert "log." not in pre and "from_config" not in pre
+        assert code.index("return None") > gate
+        assert code.index("from renquant_pipeline.software_stops import") > gate
+        assert code.index("software_stops_neutral_root()") > gate
+        assert code.index("repo_root=root") > gate
+        # the mirror reads exactly the pipeline's key path
+        assert ('((config or {}).get("execution") or {}).get("software_stops") or {}'
+                in WIRING_SRC)
+        assert 'ss_cfg.get("enabled", False)' in WIRING_SRC
+
+
+# ── 1b. flag off: the pre-change inert path, literally preserved ────────────
+
+class TestFlagOffByteInert:
+    @pytest.mark.parametrize("cfg", OFF_CONFIGS)
+    def test_none_without_contract_import_root_log_or_disk(
+        self, monkeypatch, neutral_root, pipeline_stops, caplog, cfg,
+    ):
+        """Disabled/absent -> None with the orchestrator contract UNIMPORTABLE
+        (its import would raise), the pipeline constructor never called, no
+        log record of any level, nothing under the neutral root or the cwd."""
+        monkeypatch.setitem(sys.modules, CONTRACT, None)  # import -> ImportError
+        _mod, recorder, _real = pipeline_stops
+        with caplog.at_level(logging.DEBUG, logger="adapters.runner"):
+            assert wiring.build_software_stop_registry(cfg, "paper") is None
+        assert recorder.calls == []
+        assert caplog.records == []
+        assert not neutral_root.exists()
+        assert list(Path.cwd().iterdir()) == []
+
+    def test_none_even_when_the_pipeline_is_unimportable(
+        self, monkeypatch, neutral_root, caplog,
+    ):
+        """Disabled -> the pipeline module is not imported either (the old
+        path imported it; the gate now precedes every import)."""
+        monkeypatch.setitem(sys.modules, PIPELINE, None)
+        monkeypatch.setitem(sys.modules, CONTRACT, None)
+        with caplog.at_level(logging.DEBUG, logger="adapters.runner"):
+            assert wiring.build_software_stop_registry(_cfg(False), "paper") is None
+        assert caplog.records == []
+
+    def test_runner_source_delegates_and_has_no_bare_from_config(self):
+        assert "build_software_stop_registry(" in RUNNER_SRC
+        assert "SoftwareStopRegistry.from_config(" not in RUNNER_SRC, (
+            "runner.py must not construct the registry itself (the neutral-root "
+            "wiring is the single construction site)"
+        )
+        assert "repo_root=root" in WIRING_SRC
+        assert "software_stops_registry_root(runtime_state_root())" in WIRING_SRC
+
+
+# ── 1c. flag on: neutral root parity + fail-closed ──────────────────────────
 
 class TestNeutralRootResolution:
     def test_root_is_the_contracts_composition_under_the_env_override(
@@ -236,51 +354,19 @@ class TestNeutralRootResolution:
         assert CONTRACT in msg and "REFUSING" in msg and "cwd" in msg
 
 
-class TestFlagOffByteInert:
-    @pytest.mark.parametrize("enabled", [None, False])
-    def test_registry_none_and_from_config_got_the_neutral_root(
-        self, monkeypatch, neutral_root, pipeline_stops, enabled,
+class TestFlagOnNeutralRootParity:
+    def test_from_config_receives_the_neutral_root(
+        self, monkeypatch, neutral_root, pipeline_stops,
     ):
         _contract_for(monkeypatch, neutral_root)
         _mod, recorder, _real = pipeline_stops
-        reg = wiring.build_software_stop_registry(_cfg(enabled), "paper")
-        assert reg is None
+        reg = wiring.build_software_stop_registry(_cfg(True), "paper")
+        assert reg is not None
         assert recorder.calls == [
             {"broker_name": "paper", "repo_root": neutral_root / "software-stops"},
         ]
-        # byte-inert: nothing written under the neutral root or the cwd
-        assert not neutral_root.exists()
-        assert list(Path.cwd().iterdir()) == []
+        assert list(Path.cwd().iterdir()) == []  # registry is created on first write
 
-    def test_from_config_returns_none_before_touching_repo_root(self, neutral_root):
-        """The pipeline's own gate: on enabled absent/false ``from_config``
-        returns None BEFORE ``repo_root`` is composed — proved with a
-        ``repo_root`` object that raises the moment it is used as a path."""
-        mod = _require_real(PIPELINE, "renquant-pipeline", "SoftwareStopRegistry")
-
-        class Explodes:
-            def __fspath__(self):
-                raise AssertionError("repo_root was touched on the flag-off path")
-
-            def __str__(self):
-                raise AssertionError("repo_root was stringified on the flag-off path")
-
-        for cfg in (_cfg(None), _cfg(False), {}, None):
-            assert mod.SoftwareStopRegistry.from_config(
-                cfg, broker_name="paper", repo_root=Explodes(),
-            ) is None
-
-    def test_runner_source_delegates_and_has_no_bare_from_config(self):
-        assert "build_software_stop_registry(" in RUNNER_SRC
-        assert "SoftwareStopRegistry.from_config(" not in RUNNER_SRC, (
-            "runner.py must not construct the registry itself (the neutral-root "
-            "wiring is the single construction site)"
-        )
-        assert "repo_root=root" in WIRING_SRC
-        assert "software_stops_registry_root(runtime_state_root())" in WIRING_SRC
-
-
-class TestFlagOnNeutralRootParity:
     def test_registry_path_equals_orchestrator_seeded_path(
         self, monkeypatch, neutral_root, pipeline_stops,
     ):
@@ -341,17 +427,17 @@ class TestFlagOnNeutralRootParity:
 
 
 class TestContractImportFailureFailsClosed:
-    @pytest.mark.parametrize("enabled", [None, False, True])
-    def test_none_error_logged_and_from_config_never_called(
-        self, monkeypatch, neutral_root, pipeline_stops, caplog, enabled,
+    @pytest.mark.parametrize("cfg", ON_CONFIGS)
+    def test_enabled_none_error_logged_and_from_config_never_called(
+        self, monkeypatch, neutral_root, pipeline_stops, caplog, cfg,
     ):
-        """Contract module unimportable -> registry None, ONE ERROR line, and
-        the pipeline constructor is NOT invoked — no silent cwd fallback,
-        whatever the flag says."""
+        """Enabled + contract module unimportable -> registry None, ONE ERROR
+        line, and the pipeline constructor is NOT invoked — no silent cwd
+        fallback."""
         monkeypatch.setitem(sys.modules, CONTRACT, None)
         _mod, recorder, _real = pipeline_stops
         with caplog.at_level(logging.ERROR, logger="adapters.runner"):
-            reg = wiring.build_software_stop_registry(_cfg(enabled), "paper")
+            reg = wiring.build_software_stop_registry(cfg, "paper")
         assert reg is None
         assert recorder.calls == []
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
@@ -377,28 +463,45 @@ class TestRunnerAdapterWiring:
     no DB, no artifacts). Needs the strategy deps -> skips in the lean CI job,
     runs in the full local suite."""
 
-    def test_init_flag_off_none_with_neutral_root_kwarg(
-        self, monkeypatch, neutral_root, pipeline_stops, tmp_path,
-    ):
+    @staticmethod
+    def _runner_adapter():
         pytest.importorskip("pandas")
         pytest.importorskip("numpy")
         try:
             from adapters.runner import RunnerAdapter  # noqa: PLC0415
         except Exception as exc:  # noqa: BLE001 — lean CI: strategy deps absent
             pytest.skip(f"adapters.runner not importable here: {exc}")
+        return RunnerAdapter
+
+    def test_init_flag_off_none_without_contract_or_log(
+        self, monkeypatch, neutral_root, pipeline_stops, tmp_path, caplog,
+    ):
+        RunnerAdapter = self._runner_adapter()
+        monkeypatch.setitem(sys.modules, CONTRACT, None)  # would raise if imported
+        _mod, recorder, _real = pipeline_stops
+        with caplog.at_level(logging.DEBUG, logger="adapters.runner"):
+            adapter = RunnerAdapter(
+                _cfg(False), models={}, broker=SimpleNamespace(broker_name="paper"),
+                strategy_dir=tmp_path / "strategy", preflight=True,
+                preflight_guard=SimpleNamespace(commit_entered=False),
+            )
+        assert adapter._software_stops is None
+        assert recorder.calls == []
+        assert [r for r in caplog.records if "software-stop" in r.getMessage()] == []
+        assert not neutral_root.exists()
+
+    def test_init_flag_on_passes_the_neutral_root(
+        self, monkeypatch, neutral_root, pipeline_stops, tmp_path,
+    ):
+        RunnerAdapter = self._runner_adapter()
         _contract_for(monkeypatch, neutral_root)
         _mod, recorder, _real = pipeline_stops
-
-        class Guard:
-            def __init__(self):
-                self.commit_entered = False
-
         adapter = RunnerAdapter(
-            _cfg(False), models={}, broker=SimpleNamespace(broker_name="paper"),
+            _cfg(True), models={}, broker=SimpleNamespace(broker_name="paper"),
             strategy_dir=tmp_path / "strategy", preflight=True,
-            preflight_guard=Guard(),
+            preflight_guard=SimpleNamespace(commit_entered=False),
         )
-        assert adapter._software_stops is None
+        assert adapter._software_stops is not None
         assert recorder.calls == [
             {"broker_name": "paper", "repo_root": neutral_root / "software-stops"},
         ]
@@ -406,13 +509,8 @@ class TestRunnerAdapterWiring:
     def test_init_contract_missing_leaves_layer_unarmed(
         self, monkeypatch, neutral_root, pipeline_stops, tmp_path, caplog,
     ):
-        pytest.importorskip("pandas")
-        pytest.importorskip("numpy")
-        try:
-            from adapters.runner import RunnerAdapter  # noqa: PLC0415
-            from adapters.commit_contract import software_stops_armed  # noqa: PLC0415
-        except Exception as exc:  # noqa: BLE001
-            pytest.skip(f"adapters.runner not importable here: {exc}")
+        RunnerAdapter = self._runner_adapter()
+        from adapters.commit_contract import software_stops_armed  # noqa: PLC0415
         monkeypatch.setitem(sys.modules, CONTRACT, None)
         _mod, recorder, _real = pipeline_stops
         with caplog.at_level(logging.ERROR, logger="adapters.runner"):
@@ -435,6 +533,13 @@ def _seed_block(src: str) -> str:
     start = src.index("SEED_MODULE=")
     end = src.index("\nfi\n", start) + len("\nfi\n")
     return src[start:end]
+
+
+def _bash() -> str:
+    for cand in ("/bin/bash", "/usr/bin/bash", "/opt/homebrew/bin/bash"):
+        if Path(cand).exists():
+            return cand
+    pytest.skip("bash not available")
 
 
 class TestIntradaySellWrapperSeedsBeforeRunner:
@@ -528,8 +633,105 @@ class TestIntradaySellWrapperSeedsBeforeRunner:
         assert ("NOTIFY[RenQuant 104 software-stops SEED FAILED]" in out) is notified, out
 
 
-def _bash() -> str:
-    for cand in ("/bin/bash", "/usr/bin/bash", "/opt/homebrew/bin/bash"):
-        if Path(cand).exists():
-            return cand
-    pytest.skip("bash not available")
+# ── 3. ASSEMBLY-LEVEL: the PINNED runtime module implements `seed` ──────────
+
+def _runtime_assembly_root() -> Path | None:
+    """The runtime assembly root the wrappers export: ``RENQUANT_SUBREPO_ROOT``,
+    else the repo's ``.subrepo_assembly/current.env`` export, else
+    ``<repo>/.subrepo_runtime/repos`` (scripts/subrepo_env.sh resolution)."""
+    env_root = os.environ.get("RENQUANT_SUBREPO_ROOT")
+    if env_root:
+        return Path(env_root)
+    current = REPO_ROOT / ".subrepo_assembly" / "current.env"
+    if current.exists():
+        for line in current.read_text().splitlines():
+            m = re.match(r"\s*export\s+RENQUANT_SUBREPO_ROOT=['\"]?([^'\"]+)['\"]?\s*$", line)
+            if m:
+                return Path(m.group(1))
+    default = REPO_ROOT / ".subrepo_runtime" / "repos"
+    return default if default.is_dir() else None
+
+
+def _pinned_orchestrator_src() -> Path:
+    root = _runtime_assembly_root()
+    if root is None:
+        pytest.skip("runtime assembly absent (no RENQUANT_SUBREPO_ROOT, "
+                    ".subrepo_assembly/current.env or .subrepo_runtime/repos)")
+    src = root / "renquant-orchestrator" / "src"
+    if not (src / "renquant_orchestrator" / "software_stops_registry_contract.py").exists():
+        pytest.skip(f"pinned orchestrator not present at {src}")
+    return src
+
+
+class TestPinnedRuntimeAssemblySeeder:
+    """The wrapper invokes ``python -m … seed --broker alpaca`` on the pinned
+    PYTHONPATH. This proves the PINNED module implements that contract: a
+    revision without the CLI (exit 0, no verdict — pre orch#1078) FAILS."""
+
+    def test_runtime_checkout_matches_the_lock(self):
+        src = _pinned_orchestrator_src()
+        entry = _lock_entry("renquant-orchestrator")
+        assert entry and entry.get("commit"), "subrepos.lock.json lacks the orchestrator pin"
+        res = subprocess.run(["git", "-C", str(src.parent), "rev-parse", "HEAD"],
+                             capture_output=True, text=True)
+        if res.returncode != 0:
+            pytest.skip(f"cannot read the runtime checkout's HEAD: {res.stderr.strip()}")
+        assert res.stdout.strip() == entry["commit"], (
+            "runtime assembly drifted from subrepos.lock.json — the seed contract "
+            "below is proven against the wrong revision"
+        )
+
+    def test_pinned_module_seeds_then_reports_exists(self, tmp_path):
+        src = _pinned_orchestrator_src()
+        pipeline_src = _sibling_src("renquant-pipeline")
+        if pipeline_src is None:
+            pytest.skip("pinned renquant-pipeline not resolvable (the seeder imports its schema)")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([str(src), str(pipeline_src)])
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  # never write into the pinned checkout
+        env["RENQUANT_NO_NOTIFY"] = "1"
+        data_root = tmp_path / "software-stops"
+        cmd = [sys.executable, "-B", "-m", "renquant_orchestrator.software_stops_registry_contract",
+               "seed", "--broker", "alpaca", "--data-root", str(data_root)]
+
+        first = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(tmp_path))
+        assert first.returncode == 0, first.stderr
+        assert re.search(r"^SEEDED: ", first.stdout, re.M), (
+            "pinned orchestrator exited 0 WITHOUT a SEEDED verdict — it does not "
+            f"implement the seed contract the wrapper invokes. stdout={first.stdout!r} "
+            f"stderr={first.stderr!r}"
+        )
+        expected = data_root / "data" / "rq105" / "software_stops.alpaca.json"
+        assert expected.exists()
+        snap = json.loads(expected.read_text())
+        assert snap["stops"] == {} and snap["last_evaluated_at"] is None
+
+        before = expected.read_bytes()
+        second = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(tmp_path))
+        assert second.returncode == 0, second.stderr
+        assert re.search(r"^EXISTS: ", second.stdout, re.M), second.stdout
+        assert expected.read_bytes() == before  # idempotent, never overwrites
+        assert list(tmp_path.iterdir()) == [data_root]  # nothing under the cwd
+
+    def test_pre_seeder_revision_would_fail(self, tmp_path):
+        """Negative control: a module with the LOCATION functions but no CLI
+        (the shape of the pre-#1078 pin) exits 0 without a verdict — and
+        the assertion above catches exactly that."""
+        fake = tmp_path / "fake" / "renquant_orchestrator"
+        fake.mkdir(parents=True)
+        (fake / "__init__.py").write_text("")
+        (fake / "software_stops_registry_contract.py").write_text(
+            "from pathlib import Path\n"
+            "def runtime_state_root(override=None):\n    return Path('~/.renquant/runtime').expanduser()\n"
+            "def software_stops_registry_root(root):\n    return root / 'software-stops'\n"
+        )
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(tmp_path / "fake")
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        res = subprocess.run(
+            [sys.executable, "-B", "-m", "renquant_orchestrator.software_stops_registry_contract",
+             "seed", "--broker", "alpaca", "--data-root", str(tmp_path / "root")],
+            capture_output=True, text=True, env=env, cwd=str(tmp_path),
+        )
+        assert res.returncode == 0 and res.stdout == ""
+        assert re.search(r"^SEEDED: ", res.stdout, re.M) is None
