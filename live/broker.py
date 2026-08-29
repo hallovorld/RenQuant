@@ -1,6 +1,8 @@
 """Broker abstraction for live trading."""
 
 from abc import ABC, abstractmethod
+from decimal import ROUND_DOWN, Decimal
+import math
 from typing import Any
 
 # ── No-submit status vocabulary (S-FRAC leg (a) of the capability gate) ──────
@@ -57,6 +59,168 @@ def is_no_submit_status(status: Any) -> bool:
     whitespace-insensitive membership in :data:`NO_SUBMIT_STATUSES`.
     """
     return str(status or "").strip().lower() in NO_SUBMIT_STATUSES
+
+
+# ── Whole-share snap / fail-closed fractional discipline (S-FRAC step 2) ─────
+#
+# The live order path used to build every request with ``qty=int(quantity)``:
+# a non-integral intent was SILENTLY truncated (0.435578 → 0 shares, 7.5 → 7).
+# This block ports the SEMANTICS of the owner's discipline
+# (renquant-execution pin 91c7bf88, ``broker.py`` ``is_whole_share`` /
+# ``validate_fractional_order`` and ``alpaca_broker.py::place_order``):
+#
+#   * an eps-integral quantity (within ``QTY_INTEGRAL_EPS`` of an integer)
+#     is a WHOLE-SHARE order and is snapped to that integer — the ONE
+#     sanctioned whole-share branch (same rule as the commit contract's
+#     ``normalize_fill_qty`` and ``supports_broker_side_stops``);
+#   * anything else is a FRACTIONAL intent and is NEVER truncated: it is
+#     either submitted exactly (on the broker's 9dp grid, rounded DOWN so
+#     the submitted qty never exceeds the intent) or REFUSED with
+#     :class:`FractionalOrderRefused` — an explicit no-submit outcome;
+#   * BEFORE that split, every quantity must be finite and strictly
+#     positive (:func:`validate_order_quantity`), and a whole-share snap
+#     must be > 0 — otherwise :class:`InvalidOrderQuantity`, raised before
+#     any I/O. ``is_whole_share`` itself stays the owner's pure eps-integral
+#     predicate (0 IS integral); the zero/negative refusal is the caller's.
+#
+# The constants are replicated verbatim (the repos cannot import each other;
+# ``tests/test_live_broker_no_silent_truncation.py`` pins them against the
+# owner when the sibling checkout is present). Alpaca facts pinned by the
+# S-FRAC v2 design inventory (§4, verified 2026-07-02): fractional qty is
+# accepted only for ``fractionable=True`` assets, on MARKET orders with
+# time-in-force DAY (no GTC on any fractional order), up to 9 decimal
+# places, minimum notional $1.
+QTY_INTEGRAL_EPS = 1e-9
+MAX_ORDER_DECIMAL_PLACES = 9
+MIN_FRACTIONAL_NOTIONAL_USD = 1.0
+FRACTIONAL_ORDER_TYPE = "market"
+FRACTIONAL_TIME_IN_FORCE = "day"
+
+# No-submit statuses a refusal carries (members of NO_SUBMIT_STATUSES).
+NON_FRACTIONABLE_STATUS = "rejected_non_fractionable"
+FRACTIONABLE_LOOKUP_FAILED_STATUS = "rejected_fractionable_lookup_failed"
+BELOW_MIN_NOTIONAL_STATUS = "rejected_below_min_notional"
+INVALID_FRACTIONAL_ORDER_STATUS = "rejected_invalid_fractional_order"
+
+
+def is_whole_share(quantity: Any) -> bool:
+    """True iff ``quantity`` is a finite, eps-integral (whole-share) amount.
+
+    Non-numeric / non-finite input answers False (it is not a whole-share
+    quantity), leaving the fractional preflight to refuse it explicitly.
+    """
+    try:
+        q = float(quantity)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(q) and abs(q - round(q)) <= QTY_INTEGRAL_EPS
+
+
+def snap_qty_to_broker_grid(quantity: float) -> float:
+    """Round ``quantity`` DOWN (toward zero) onto the broker's 9dp grid.
+
+    Never rounds up past the intent: a submitted fractional qty is at most
+    what the pipeline asked for. ``repr`` (shortest round-trip) feeds the
+    Decimal so 0.435578 stays 0.435578 rather than its binary expansion.
+    """
+    q = float(quantity)
+    if not math.isfinite(q):
+        raise ValueError(f"cannot snap non-finite quantity {quantity!r}")
+    grid = Decimal(1).scaleb(-MAX_ORDER_DECIMAL_PLACES)
+    return float(Decimal(repr(q)).quantize(grid, rounding=ROUND_DOWN))
+
+
+class InvalidOrderQuantity(ValueError):
+    """The requested order quantity is not a finite, strictly positive number
+    — or a whole-share intent snaps to zero (e.g. ``5e-10`` is eps-integral to
+    ZERO). Refused BEFORE ANY I/O: no price read, no asset lookup, no account
+    read, no breaker slot, no submission. Applies to every quantity, integral
+    or not, and runs ahead of the whole-share / fractional split.
+
+    Subclasses ``ValueError`` so the runner's existing ``except Exception``
+    order handlers absorb it exactly like :class:`FractionalOrderRefused`
+    (BUY → ``ctx.orders_skipped`` ``broker_error:InvalidOrderQuantity``;
+    SELL → ``ctx.exits_failed``; z9_stops → warning, no stop).
+    """
+
+    def __init__(self, symbol: str, quantity: Any, reason: str) -> None:
+        self.symbol = symbol
+        self.quantity = quantity
+        self.reason = reason
+        super().__init__(
+            f"invalid order quantity (no submit) for {symbol} "
+            f"qty={quantity!r}: {reason}"
+        )
+
+
+def validate_order_quantity(symbol: str, quantity: Any) -> float:
+    """Return ``float(quantity)`` iff it is finite and strictly positive.
+
+    Raises :class:`InvalidOrderQuantity` otherwise (non-numeric, NaN, ±inf,
+    zero, negative) — and ALSO for a positive value that is eps-integral to
+    ZERO (``5e-10``: ``is_whole_share`` is True and the whole-share snap
+    would be ``qty=0``). Pure — no I/O — so callers run it before their
+    first read.
+    """
+    try:
+        q = float(quantity)
+    except (TypeError, ValueError):
+        raise InvalidOrderQuantity(
+            symbol, quantity, f"quantity is not numeric: {quantity!r}",
+        ) from None
+    if not math.isfinite(q):
+        raise InvalidOrderQuantity(
+            symbol, quantity, f"quantity must be finite, got {quantity!r}",
+        )
+    if q <= 0.0:
+        raise InvalidOrderQuantity(
+            symbol, quantity, f"quantity must be strictly positive, got {quantity!r}",
+        )
+    if is_whole_share(q) and round(q) <= 0:
+        raise InvalidOrderQuantity(
+            symbol, quantity,
+            f"whole-share quantity {quantity!r} snaps to zero — qty=0 is never submitted",
+        )
+    return q
+
+
+class FractionalOrderRefused(ValueError):
+    """A NON-integral order intent was refused before the account read, the
+    breaker admit and the order submission (a price read and the asset
+    lookup — metadata I/O — may already have happened).
+
+    Raised by the live broker's order paths instead of truncating. Carries
+    the ``symbol``, the requested ``quantity``, a human ``reason`` and a
+    ``status`` from the no-submit vocabulary (so
+    ``is_no_submit_status(exc.status)`` is True). It subclasses
+    ``ValueError`` so the runner's existing ``except Exception`` order
+    handlers (adapters/runner.py BUY → ``ctx.orders_skipped`` with
+    ``skip_reason="broker_error:FractionalOrderRefused"``; SELL →
+    ``ctx.exits_failed``; z9_stops → warning + no stop recorded) absorb it
+    as a no-submit outcome and the run continues.
+
+    Deliberately an exception, NOT a no-submit result dict: the runner's
+    ``broker_order_execution`` classifies any status outside its terminal
+    reject set as PENDING, so a returned ``rejected_*`` dict would be
+    recorded as an open order that never existed.
+    """
+
+    def __init__(
+        self,
+        symbol: str,
+        quantity: Any,
+        reason: str,
+        *,
+        status: str = INVALID_FRACTIONAL_ORDER_STATUS,
+    ) -> None:
+        self.symbol = symbol
+        self.quantity = quantity
+        self.reason = reason
+        self.status = status
+        super().__init__(
+            f"fractional order refused (no submit) for {symbol} "
+            f"qty={quantity!r}: {reason} [status={status}]"
+        )
 
 
 class BaseBroker(ABC):
