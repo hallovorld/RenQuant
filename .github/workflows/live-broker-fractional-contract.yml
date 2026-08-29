@@ -28,6 +28,14 @@ name: live-broker-fractional-contract
 # end-to-end cases and the assembly-level pinned-seeder cases (they need the
 # strategy deps / the runtime assembly) skip here WITH a reason and run in the
 # full local suite beside the pinned checkouts.
+#
+# Step 4 (RenQuant#618 class C) adds tests/test_fill_replay_rq618.py plus the
+# two runner_tax_lots suites: the live fill replay never drops a price-less
+# fill (a price-less SELL reduces lots; a price-less BUY is applied with a
+# flagged basis; counts surface in the LIVE-TAX-LOTS lines) and
+# get_filled_orders' pagination never duplicates the boundary order (cursor
+# = oldest − 1µs AND id dedupe). kernel.exits is self-contained and the SDK
+# request/enum modules are stubbed, so every case runs here.
 
 on:
   pull_request:
@@ -40,6 +48,11 @@ on:
       - "tests/test_live_broker_fractional_contract.py"
       - "tests/test_live_broker_no_silent_truncation.py"
       - "tests/test_software_stops_neutral_root.py"
+      - "backtesting/renquant_104/adapters/runner_tax_lots.py"
+      - "backtesting/renquant_104/kernel/exits.py"
+      - "tests/test_fill_replay_rq618.py"
+      - "tests/test_runner_tax_lots.py"
+      - "tests/test_runner_tax_lots_invariants.py"
       - ".github/workflows/live-broker-fractional-contract.yml"
   push:
     branches: [main]
@@ -52,6 +65,11 @@ on:
       - "tests/test_live_broker_fractional_contract.py"
       - "tests/test_live_broker_no_silent_truncation.py"
       - "tests/test_software_stops_neutral_root.py"
+      - "backtesting/renquant_104/adapters/runner_tax_lots.py"
+      - "backtesting/renquant_104/kernel/exits.py"
+      - "tests/test_fill_replay_rq618.py"
+      - "tests/test_runner_tax_lots.py"
+      - "tests/test_runner_tax_lots_invariants.py"
 
 jobs:
   contract:
@@ -76,3 +94,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pytest -q -o addopts='' tests/test_software_stops_neutral_root.py -v
+      - name: Fill replay never drops price-less fills; pagination boundary never duplicated (step 4, RQ#618 class C)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' \
+            tests/test_fill_replay_rq618.py \
+            tests/test_runner_tax_lots.py \
+            tests/test_runner_tax_lots_invariants.py -v

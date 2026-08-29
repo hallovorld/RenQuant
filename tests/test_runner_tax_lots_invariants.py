@@ -22,8 +22,13 @@ Invariants pinned:
   blended — only the legacy weighted-avg entry is).
 - determinism: the result is invariant under input fill ORDER (the function
   re-sorts by filled_at); only chronology matters.
-- robustness: malformed fills (qty<=0, price<=0, missing/!ISO date, unknown
-  action, missing symbol, non-dict) are ignored — same result as without.
+- robustness: malformed fills (qty<=0, missing/!ISO date, unknown action,
+  missing symbol, non-dict) are ignored — same result as without.
+- price-less fills (RQ#618 class C, 2026-08-29): a fill with qty>0 and NO
+  fill price is APPLIED, not ignored — a price-less SELL reduces lots and a
+  price-less BUY appends a flagged lot — so conservation holds over the
+  full history including them (the old `continue` left every price-less
+  SELL un-applied → reconstructed qty > broker qty every run).
 - sell_event_price: prefers the broker fill price, falls back, never returns
   a non-finite or non-positive number.
 """
@@ -149,8 +154,6 @@ class TestReconstructInvariants:
         junk = [
             {"symbol": "AAPL", "action": "BUY", "qty": 0, "avg_price": 10,
              "filled_at": _ts(10_000)},                      # qty <= 0
-            {"symbol": "AAPL", "action": "BUY", "qty": 5, "avg_price": 0,
-             "filled_at": _ts(10_001)},                      # price <= 0
             {"symbol": "AAPL", "action": "BUY", "qty": 5, "avg_price": 10,
              "filled_at": None},                             # no date
             {"symbol": "AAPL", "action": "BUY", "qty": 5, "avg_price": 10,
@@ -170,6 +173,59 @@ class TestReconstructInvariants:
             got = _norm(reconstruct_live_tax_lots_from_fills(polluted))
             assert got == ref, "malformed fills changed the reconstruction"
 
+    def test_price_missing_fills_are_applied_not_ignored(self):
+        """RQ#618 class C: strip the price from a random subset of fills of a
+        valid history — conservation must STILL hold (a price-less SELL
+        reduces lots; a price-less BUY appends a flagged lot), and the
+        replay counts exactly the fills it degraded."""
+        rng = random.Random(SEED + 6)
+        for _ in range(N // 4):
+            fills, net, _ = _gen_valid(rng)
+            stripped = []
+            n_sell = n_buy = 0
+            for f in fills:
+                f = dict(f)
+                if rng.random() < 0.3:
+                    f["avg_price"] = rng.choice([None, 0, "", float("nan")])
+                    if f["action"] == "SELL":
+                        n_sell += 1
+                    else:
+                        n_buy += 1
+                stripped.append(f)
+            result = reconstruct_live_tax_lots_from_fills(stripped)
+            for tkr in TICKERS:
+                got = sum(L.shares for L in result.get(tkr, []))
+                assert math.isclose(got, net[tkr], abs_tol=1e-6), (tkr, got, net[tkr])
+            assert result.stats["price_missing_sell"] == n_sell
+            assert result.stats["price_missing_buy"] == n_buy
+            assert result.stats["dropped_unparseable"] == 0
+            flagged = [L for lots in result.values() for L in lots
+                       if getattr(L, "price_missing", False)]
+            # every surviving flagged lot came from a price-less BUY
+            assert len(flagged) <= n_buy
+
+    def test_full_exit_then_reentry_conserves(self):
+        """RQ#618: `_gen_valid` never sells the FULL position, which is
+        exactly the history that used to resurrect the sold lot (the legacy
+        `total_shares()` fallback). Pin conservation over full round trips."""
+        rng = random.Random(SEED + 7)
+        for _ in range(N // 4):
+            fills, held = [], 0.0
+            i = 0
+            for _trip in range(rng.randint(1, 5)):
+                q = float(rng.randint(1, 50))
+                fills.append({"symbol": "AAPL", "action": "BUY", "qty": q,
+                              "avg_price": float(rng.randint(1, 500)),
+                              "filled_at": _ts(i)}); i += 1
+                held += q
+                if rng.random() < 0.7:  # full exit
+                    fills.append({"symbol": "AAPL", "action": "SELL", "qty": held,
+                                  "avg_price": float(rng.randint(1, 500)),
+                                  "filled_at": _ts(i)}); i += 1
+                    held = 0.0
+            got = sum(L.shares for L in reconstruct_live_tax_lots_from_fills(fills).get("AAPL", []))
+            assert math.isclose(got, held, abs_tol=1e-6), (fills, got, held)
+
     def test_empty_and_none(self):
         assert reconstruct_live_tax_lots_from_fills(None) == {}
         assert reconstruct_live_tax_lots_from_fills([]) == {}
@@ -177,7 +233,10 @@ class TestReconstructInvariants:
     def test_sell_without_prior_buy_is_noop(self):
         fills = [{"symbol": "AAPL", "action": "SELL", "qty": 5, "avg_price": 10,
                   "filled_at": _ts(0)}]
-        assert reconstruct_live_tax_lots_from_fills(fills) == {}
+        result = reconstruct_live_tax_lots_from_fills(fills)
+        assert result == {}
+        # RQ#618 class C: the drop is counted, never silent.
+        assert result.stats["dropped_sell_without_lots"] == 1
 
     def test_oversell_drops_ticker_no_negative(self):
         # Adversarial: sell more than held mid-history. The excess is clamped
