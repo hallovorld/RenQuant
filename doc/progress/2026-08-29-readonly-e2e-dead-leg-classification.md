@@ -12,7 +12,7 @@ attribution-neutral and points the operator at the previous pinned assembly
 (`scripts/promote_pin.py` keeps a timestamped backup of `subrepos.lock.json`,
 `backup_lock` / `latest_backup` / `revert`). Exit 0 / 1 / 2 keep their meaning
 for every other outcome. Pure code: no config changed, no flag flipped.
-Measured on the live tree today: exit 3 [VERIFIED, see Evidence]. The config
+First measured on the live tree: exit 3 (round 1). **Round 2 (below):** after renquant-pipeline#301 was pinned (a7fb14ef) the primary loader itself falls back to the repo root, so the preflight now imports and uses the PINNED resolver instead of restating precedence; the live tree today passes the preflight and the scorer load, and the verify exits **1** on a later `RunnerAdapter.commit` decision-trace-integrity error [VERIFIED, see Evidence] — a separate finding, correctly NOT classified as 3 or 4. The config
 fix itself (remove/replace the dead leg, or restore the artifact) is a
 SEPARATE reviewed config decision — orch#1066 options a/b — and is NOT made
 here.
@@ -41,16 +41,17 @@ required; the operator attributes against the backup lock).
    artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt`
    with `kind: hf_patchtst` (pinned assembly
    `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json`).
-3. The primary loader joins a relative ref onto `config["_strategy_dir"]` and
-   nothing else — `renquant_pipeline/kernel/panel_pipeline/job_panel_scoring.py:915-928`
-   (`LoadScorerTask._resolve_artifact_path`), called at `:1045`; `_strategy_dir`
-   is `<repo>/backtesting/renquant_104` (`live/runner.py:498`). There is NO
-   repo-root fallback on this path (only blend components go through
-   `kernel.artifact_resolver.resolve_artifact`, which tries strategy_dir then
-   repo_root — `blend_scorer.py:324-332`, `artifact_resolver.py:56-59`).
+3. At the time of the incident the primary loader joined a relative ref onto
+   `config["_strategy_dir"]` and nothing else (pre-#301
+   `job_panel_scoring.py` `LoadScorerTask._resolve_artifact_path`);
+   `_strategy_dir` is `<repo>/backtesting/renquant_104` (`live/runner.py:498`).
+   Only blend components went through `kernel.artifact_resolver`
+   (strategy_dir then repo_root — `blend_scorer.py:324-332`,
+   `artifact_resolver.py:56-59`).
    `RenQuant/backtesting/renquant_104/artifacts/patchtst_shadow/` does not
-   exist; a copy under `RenQuant/artifacts/patchtst_shadow/...` does, and is
-   never consulted by this loader.
+   exist; a copy under `RenQuant/artifacts/patchtst_shadow/...` does, and was
+   never consulted by that loader. **renquant-pipeline#301 (pinned a7fb14ef)
+   changed this** — see round 2.
 4. `HFPatchTSTPanelScorer.load(p)` raises → `_fail_closed_panel_scoring(ctx,
    "panel_scorer_load_failed")` (`job_panel_scoring.py:1118-1124`) → every
    candidate blocked with reason `panel_scorer_load_failed:...`
@@ -68,15 +69,19 @@ required; the operator attributes against the backup lock).
   resolved, a python step reads the shadow config the runner will use
   (multirepo default: `$SUBREPO_ROOT/renquant-strategy-104/configs/strategy_config.shadow.json`;
   `RQ_DAILY_RUNNER=umbrella`: `backtesting/renquant_104/strategy_config.shadow.json`)
-  and resolves each panel-scoring artifact ref the way the pipeline does:
-  - `ranking.panel_scoring.artifact_path` → `_strategy_dir/ref` only;
-  - `ranking.panel_scoring.components[i].artifact_path` → `_strategy_dir/ref`,
-    then `repo_root/ref` (resolver order);
-  - `ranking.panel_scoring.global_calibration.artifact_path` when
-    `enabled` → `_strategy_dir/ref` only (`LoadGlobalCalibrationTask`).
+  and resolves each panel-scoring artifact ref — `ranking.panel_scoring.artifact_path`,
+  `components[i].artifact_path`, and `global_calibration.artifact_path` when
+  `enabled` — with the PINNED pipeline's own
+  `renquant_pipeline.kernel.artifact_resolver.locate_artifact` (round 2;
+  absolute → strategy_dir → repo_root), imported from the script's PYTHONPATH.
+  If that import fails, a two-candidate fallback is used and the resolver
+  line says `FALLBACK … pinned resolver import failed: <exc>`. The resolver
+  in use is always printed (`[readonly-e2e] preflight resolver: …`), and on
+  success every ref's resolved path is printed.
   Absolute refs are taken as-is; `panel_scoring.enabled: false` skips the
-  check. Any missing file → each missing key + ref + every path tried is
-  printed, then the neutral line
+  check. Any ref whose resolved path is not a file → key + ref + the
+  resolver's answer + both locations looked in are printed, then the
+  neutral line
   `DEAD_LEG detected before the funnel in <config>; attribute by comparing
   against the previous pinned assembly (scripts/promote_pin.py keeps the
   backup lock) — see orch#1066`, and the script exits 3 WITHOUT running the
@@ -112,8 +117,8 @@ pin; same exit 3 there = pre-existing, exit 0 there = the bump.
 
 ## Evidence
 
-* Live tree, today (read-only; the preflight exits before any runner is
-  spawned) [VERIFIED]:
+* Live tree, round 1 (pre-#301 pin; read-only; the preflight exited before
+  any runner was spawned) [VERIFIED then; superseded by round 2 below]:
   ```
   READONLY_E2E: DEAD_LEG — ranking.panel_scoring.artifact_path (kind=hf_patchtst) = 'artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt' is MISSING; tried /Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt
   READONLY_E2E: DEAD_LEG — DEAD_LEG detected before the funnel in /Users/renhao/git/github/RenQuant/.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json; attribute by comparing against the previous pinned assembly (scripts/promote_pin.py keeps the backup lock) — see orch#1066
@@ -124,15 +129,19 @@ pin; same exit 3 there = pre-existing, exit 0 there = the bump.
   dead). Whether it was dead before the last bump is exactly what this script
   does not claim; orch#1066's own reading (artifacts dir unchanged since
   Aug 6) is the operator's evidence, not the verifier's.
-* `tests/test_check_readonly_e2e_classification.py` — 15 passed
+* `tests/test_check_readonly_e2e_classification.py` — 18 passed (round 2)
   (`.venv/bin/python -m pytest -q -o addopts='' tests/test_check_readonly_e2e_classification.py`)
   [VERIFIED]. Drives the script as a subprocess against a throwaway repo dir
   with a stub `renquant_orchestrator` on the script's own PYTHONPATH; covers:
-  missing primary → 3 with the named path and the neutral line (and asserts
-  "pre-existing" / "not a pin-bump regression" are ABSENT), funnel not
-  invoked; primary present only at repo root → still 3 (loader fidelity);
-  blend component present only at repo root → passes (resolver fidelity);
-  missing blend component → 3; enabled/disabled global_calibration; markers →
+  missing primary → 3 with both locations named and the neutral line (and
+  asserts "pre-existing" / "not a pin-bump regression" are ABSENT), funnel not
+  invoked, pinned-resolver line printed and the stub resolver's sentinel
+  touched; primary present only at repo root → 0 via the pinned resolver
+  (round 2 — was 3 under the old loader); pinned resolver import broken →
+  FALLBACK line printed with the exception, verdicts unchanged (repo-root-only
+  → 0, missing → 3); blend component present only at repo root → passes;
+  missing blend component → 3; global_calibration enabled+missing → 3,
+  enabled+repo-root-only → 0, disabled → ignored; markers →
   4 (three variants, marker line echoed, neutral wording asserted); markers +
   committed decision → 0 with WARN; clean → 0 with the real CLI shape
   asserted; crash → 1; silent → 1; unreadable config → 2;
@@ -144,6 +153,66 @@ pin; same exit 3 there = pre-existing, exit 0 there = the bump.
   the test file explicitly; path filters on the script, `subrepo_env.sh`, the
   test and the workflow.
 
+## Round 2: mirror the pinned resolver (renquant-pipeline#301)
+
+**What changed upstream.** renquant-pipeline#301 (MERGED; pinned at
+`a7fb14ef` in the live tree's `.subrepo_runtime`) makes the PRIMARY scorer,
+the blend anchor and global calibration resolve `artifact_path` through
+`kernel.artifact_resolver.locate_artifact` — the precedence blend components
+already used: absolute → strategy_dir → repo_root (= strategy_dir/../..).
+Pinned `job_panel_scoring.py`: helper `_locate_config_artifact` at `:909-933`,
+callers `:950` (primary `_resolve_artifact_path`), `:966` (blend anchor),
+`:3204` (global calibration); `artifact_resolver.py:85-98` `locate_artifact`
+(never raises; a miss returns the strategy_dir candidate).
+
+**Why the round-1 preflight became wrong.** It mirrored the OLD loader
+(strategy_dir-only for the primary leg and global calibration). Under the new
+pin the loader finds `RenQuant/artifacts/patchtst_shadow/.../hf_patchtst_all_seed44_model.pt`
+at the repo root, but the preflight still reported exit 3 naming only the
+strategy-dir path — a FALSE dead leg that would have blocked a verify the
+funnel would have passed.
+
+**Fix.** The preflight no longer restates precedence. It imports
+`renquant_pipeline.kernel.artifact_resolver` from the pinned pipeline on the
+script's own PYTHONPATH (already there via `scripts/subrepo_env.sh`), calls
+`locate_artifact(ref, strategy_dir=<repo>/backtesting/renquant_104)` exactly
+as `_locate_config_artifact` does (no explicit `repo_root`, so the root is
+`strategy_dir/../..`), and treats "resolved path is not a file" as the dead
+leg. Only if that import fails does it fall back to the two-candidate check,
+and the printed resolver line says so with the exception. Import cost
+measured at 0.01 s.
+
+**Evidence, live tree (read-only; isolated shadow state; the designed
+verify, `RENQUANT_E2E_TIMEOUT_SEC=900`) [VERIFIED]:**
+
+```
+[readonly-e2e] preflight resolver: pinned renquant_pipeline.kernel.artifact_resolver.locate_artifact (/Users/renhao/git/github/RenQuant/.subrepo_runtime/repos/renquant-pipeline/src/renquant_pipeline/kernel/artifact_resolver.py)
+[readonly-e2e] preflight: ranking.panel_scoring.artifact_path (kind=hf_patchtst) -> /Users/renhao/git/github/RenQuant/artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt
+[readonly-e2e] preflight: ranking.panel_scoring.global_calibration.artifact_path -> /Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json
+[readonly-e2e] preflight: 2 panel-scoring artifact ref(s) in strategy_config.shadow.json resolve to existing files
+...
+READONLY_E2E: FAIL — runner rc=1
+VERIFY_EXIT=1
+```
+
+The funnel ran: log line 227 `LoadScorerTask: loaded hf_patchtst artifact
+(features=172, requires_history=True)` — the leg that was dead in round 1
+now loads; line 316 `gate_verdicts: wrote 1 row(s)`; then lines 319-344 a
+`Traceback` ending in `RuntimeError: RunnerAdapter.commit: decision trace
+integrity failed for run_id=2026-08-29-live-a64257a6` with
+`"decision_horizon_gaps": 5` (everything else 0; pinned
+`renquant_pipeline/kernel/persistence.py:2689`
+`validate_decision_trace_integrity`). No `panel_scorer_load_failed`, no
+`STRUCTURAL_BLOCK` in the log, so the classification is the generic **exit
+1** — correct: this is neither a dead leg nor a scorer-chain structural
+block; it is a commit-time trace-integrity failure on the shadow lane. The
+prod db/state isolation assertion passed (no ISOLATION BREACH line).
+
+**New finding, NOT addressed here:** the readonly verify on the live tree
+fails at `RunnerAdapter.commit` with `decision_horizon_gaps=5`. That needs its
+own tracked issue (pipeline persistence / shadow-lane decision rows), and it
+is what currently keeps the gold-standard verify red — not the artifact.
+
 ## Not done here (deliberately)
 
 * No edit to `strategy_config.shadow.json`: whether the `hf_patchtst` leg is
@@ -152,4 +221,6 @@ pin; same exit 3 there = pre-existing, exit 0 there = the bump.
   on the live tree.
 * No automatic previous-pin comparison in the verifier (review round 1: not
   required; attribution stays with the operator and the backup lock).
+* No fix for the `decision_horizon_gaps=5` commit failure surfaced in round
+  2 — separate issue.
 * No change to which config the readonly lane auto-selects.

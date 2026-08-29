@@ -20,7 +20,9 @@
 #   1 = crash / timeout / no-decision (would-not-trade) / isolation breach
 #   2 = setup error (repo, subrepo env, or the shadow config itself unreadable)
 #   3 = DEAD LEG (orch#1066): a panel-scoring artifact the shadow config
-#       references is missing on disk, detected BEFORE the funnel runs; the
+#       references is missing on disk — resolved the way the PINNED loader
+#       resolves it (kernel.artifact_resolver.locate_artifact: absolute →
+#       strategy_dir → repo_root) — detected BEFORE the funnel runs; the
 #       funnel is NOT run. This code says NOTHING about WHEN the leg died —
 #       the preflight inspects only the current pinned assembly. Attribute
 #       (pre-existing vs introduced by the bump) by comparing against the
@@ -67,19 +69,20 @@ export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-orches
 # default RQ_DAILY_RUNNER=multirepo) routes renquant_104 config reads to the
 # PINNED strategy subrepo (renquant_orchestrator/live_bridge.py
 # _with_pinned_strategy_config); the umbrella runner reads the strategy dir.
-# Artifact refs resolve against the strategy dir in BOTH modes
-# (live/runner.py sets config["_strategy_dir"] = backtesting/renquant_104).
+# Artifact refs resolve the same way in BOTH modes: config["_strategy_dir"]
+# = backtesting/renquant_104 (live/runner.py), then the repo root — the
+# precedence is the pinned pipeline's, imported below, not restated here.
 STRATEGY_DIR="$REPO_DIR/backtesting/renquant_104"
 if [ "${RQ_DAILY_RUNNER:-multirepo}" = "umbrella" ]; then
     SHADOW_CONFIG="$STRATEGY_DIR/$SHADOW_CONFIG_NAME"
 else
     SHADOW_CONFIG="$SUBREPO_ROOT/renquant-strategy-104/configs/$SHADOW_CONFIG_NAME"
 fi
-"$PYTHON" - "$SHADOW_CONFIG" "$STRATEGY_DIR" "$REPO_DIR" <<'PY'
+"$PYTHON" - "$SHADOW_CONFIG" "$STRATEGY_DIR" <<'PY'
 import json, sys
 from pathlib import Path
 
-cfg_path, strategy_dir, repo_root = (Path(a) for a in sys.argv[1:4])
+cfg_path, strategy_dir = (Path(a) for a in sys.argv[1:3])
 try:
     cfg = json.loads(cfg_path.read_text())
 except (OSError, ValueError) as exc:
@@ -91,47 +94,71 @@ if ps.get("enabled") is False:
     print(f"[readonly-e2e] preflight: panel_scoring disabled in {cfg_path}; no scorer artifact to check")
     raise SystemExit(0)
 
+# Mirror the PINNED loader, do not re-implement it. renquant-pipeline#301:
+# the primary scorer, the blend anchor and global calibration resolve
+# `artifact_path` through kernel.artifact_resolver.locate_artifact
+# (absolute → strategy_dir → repo_root = strategy_dir/../..), the precedence
+# blend components already used (job_panel_scoring._locate_config_artifact,
+# blend_scorer._resolve_component_path). The pinned pipeline is on this
+# script's PYTHONPATH (subrepo_env), so import ITS resolver and use ITS
+# answer; only if that import fails fall back to the two-candidate check —
+# and say so, because a fallback verdict is a re-implementation, not the
+# loader's.
+try:
+    import renquant_pipeline.kernel.artifact_resolver as _resolver
+    _locate = _resolver.locate_artifact
+    RESOLVER = ("pinned renquant_pipeline.kernel.artifact_resolver.locate_artifact "
+                f"({_resolver.__file__})")
 
-def strategy_only(ref):
-    # LoadScorerTask._resolve_artifact_path / LoadGlobalCalibrationTask:
-    # a relative ref is joined onto config["_strategy_dir"] and NOTHING else
-    # (no repo-root fallback) — renquant_pipeline/kernel/panel_pipeline/
-    # job_panel_scoring.py.
+    def locate(ref):
+        return _locate(ref, strategy_dir=strategy_dir)
+except Exception as exc:  # noqa: BLE001 — import failure of any kind
+    RESOLVER = ("FALLBACK two-candidate check (strategy_dir then repo_root) — "
+                f"pinned resolver import failed: {exc!r}")
+
+    def locate(ref):
+        p = Path(str(ref))
+        if p.is_absolute():
+            return p
+        for cand in (strategy_dir / p, strategy_dir.parent.parent / p):
+            if cand.exists():
+                return cand
+        return strategy_dir / p
+print(f"[readonly-e2e] preflight resolver: {RESOLVER}")
+
+
+def candidates(ref):
+    # for the MESSAGE only (where a missing ref was looked for); the verdict
+    # above comes from the resolver.
     p = Path(str(ref))
-    return [p] if p.is_absolute() else [strategy_dir / p]
+    return [p] if p.is_absolute() else [strategy_dir / p, strategy_dir.parent.parent / p]
 
 
-def resolver(ref):
-    # blend components go through kernel.artifact_resolver.resolve_artifact:
-    # absolute → strategy_dir/ref → repo_root/ref (renquant_pipeline/kernel/
-    # panel_pipeline/blend_scorer.py _resolve_component_path).
-    p = Path(str(ref))
-    return [p] if p.is_absolute() else [strategy_dir / p, repo_root / p]
-
-
-legs = []  # (config key, ref, candidate paths in resolution order)
+legs = []  # (config key, ref)
 if ps.get("artifact_path"):
     legs.append((f"ranking.panel_scoring.artifact_path (kind={ps.get('kind', 'xgb')})",
-                 ps["artifact_path"], strategy_only(ps["artifact_path"])))
+                 ps["artifact_path"]))
 for i, comp in enumerate(ps.get("components") or []):
     if isinstance(comp, dict) and comp.get("artifact_path"):
         legs.append((f"ranking.panel_scoring.components[{i}].artifact_path "
-                     f"(kind={comp.get('kind', 'panel')})",
-                     comp["artifact_path"], resolver(comp["artifact_path"])))
+                     f"(kind={comp.get('kind', 'panel')})", comp["artifact_path"]))
 gc = ps.get("global_calibration") or {}
 if gc.get("enabled") and gc.get("artifact_path"):
     legs.append(("ranking.panel_scoring.global_calibration.artifact_path",
-                 gc["artifact_path"], strategy_only(gc["artifact_path"])))
+                 gc["artifact_path"]))
 
-missing = [(key, ref, cands) for key, ref, cands in legs
-           if not any(c.is_file() for c in cands)]
+resolved = [(key, ref, Path(locate(ref))) for key, ref in legs]
+missing = [(key, ref, found) for key, ref, found in resolved if not found.is_file()]
 if not missing:
+    for key, ref, found in resolved:
+        print(f"[readonly-e2e] preflight: {key} -> {found}")
     print(f"[readonly-e2e] preflight: {len(legs)} panel-scoring artifact ref(s) in "
           f"{cfg_path.name} resolve to existing files")
     raise SystemExit(0)
-for key, ref, cands in missing:
-    print(f"READONLY_E2E: DEAD_LEG — {key} = {ref!r} is MISSING; tried "
-          + ", ".join(str(c) for c in cands))
+for key, ref, found in missing:
+    print(f"READONLY_E2E: DEAD_LEG — {key} = {ref!r} is MISSING; resolver returned "
+          f"{found} (not a file); looked in "
+          + ", ".join(str(c) for c in candidates(ref)))
 print(f"READONLY_E2E: DEAD_LEG — DEAD_LEG detected before the funnel in {cfg_path}; "
       "attribute by comparing against the previous pinned assembly "
       "(scripts/promote_pin.py keeps the backup lock) — see orch#1066")
