@@ -1,6 +1,62 @@
 """Broker abstraction for live trading."""
 
 from abc import ABC, abstractmethod
+from typing import Any
+
+# ── No-submit status vocabulary (S-FRAC leg (a) of the capability gate) ──────
+#
+# The umbrella commit path's ``fractional_capability_gate``
+# (backtesting/renquant_104/adapters/commit_contract.py) probes the broker
+# object for a no-submit classifier (``classify_broker_result`` or
+# ``is_no_submit_status``) before it will ever emit a fractional BUY. The
+# vocabulary is OWNED by renquant-execution (``renquant_execution.broker``,
+# ``NO_SUBMIT_STATUSES`` + ``is_no_submit_status``): a "no-submit" result is
+# an order the adapter deliberately never sent (non-fractionable asset,
+# failed asset lookup, precision/notional floor, ...) — NOT a broker
+# rejection and NOT a pending order.
+#
+# Import the owner's copy when the pinned renquant-execution checkout is on
+# PYTHONPATH (the live run has it — ``adapters/runner_execmath.py`` already
+# imports ``renquant_execution.order_math`` the same guarded way). When it is
+# absent (a bare umbrella venv, an older pin), FALL BACK to the local
+# frozenset below, which is a verbatim copy of the owner vocabulary at
+# renquant-execution 91c7bf88 (subrepos.lock.json pin). The umbrella must
+# never crash on import because a sibling checkout is missing, and the
+# fallback is pinned equal to the owner by
+# tests/test_live_broker_fractional_contract.py so any drift trips a test
+# rather than silently diverging.
+_FALLBACK_NO_SUBMIT_STATUSES: frozenset[str] = frozenset({
+    "rejected_non_fractionable",
+    "rejected_fractionable_lookup_failed",
+    "rejected_precision_exceeds_9dp",
+    "rejected_below_min_notional",
+    "rejected_invalid_fractional_order",
+    "rejected_invalid_crypto_order",
+    "rejected_crypto_no_short",
+    "rejected_below_min_order_size",
+    "rejected_crypto_spec_lookup_failed",
+    # Legacy floor-to-zero status, kept recognized for back-compat audit replay.
+    "skipped_non_fractionable_dust",
+})
+
+try:
+    from renquant_execution.broker import (  # type: ignore[import-not-found]
+        NO_SUBMIT_STATUSES as NO_SUBMIT_STATUSES,
+    )
+    NO_SUBMIT_VOCABULARY_SOURCE = "renquant_execution"
+except Exception:  # noqa: BLE001 — absent / older pin / broken sibling: fall back
+    NO_SUBMIT_STATUSES = _FALLBACK_NO_SUBMIT_STATUSES
+    NO_SUBMIT_VOCABULARY_SOURCE = "local_fallback"
+
+
+def is_no_submit_status(status: Any) -> bool:
+    """Whether ``status`` denotes a result that never reached the broker.
+
+    Same normalisation as the owner (``renquant_execution.broker
+    .is_no_submit_status``): ``None``/empty → False; case- and
+    whitespace-insensitive membership in :data:`NO_SUBMIT_STATUSES`.
+    """
+    return str(status or "").strip().lower() in NO_SUBMIT_STATUSES
 
 
 class BaseBroker(ABC):
@@ -124,3 +180,26 @@ class BaseBroker(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement cancel_order."
         )
+
+    # ── Fractional capability contract (S-FRAC gate leg (a)) ─────────────────
+    # ``fractional_capability_gate`` (adapters/commit_contract.py) requires,
+    # with ``execution.fractional_shares.enabled`` ON, a callable
+    # ``is_fractionable`` AND a callable no-submit classifier on the broker
+    # object. The classifier is pure vocabulary, so it lives here on the base
+    # (mirrors renquant_execution.broker.BaseBroker.is_no_submit_status).
+    #
+    # ``is_fractionable`` is DELIBERATELY NOT defaulted on the base: the gate
+    # treats its presence as "this broker can answer per-asset
+    # fractionability", so a base default (any callable) would make every
+    # broker — paper, read-only wrapper, fakes — pass the structural probe
+    # and turn the gate fail-open. Only brokers with a real asset lookup
+    # define it (live/alpaca_broker.py).
+
+    @staticmethod
+    def is_no_submit_status(status: Any) -> bool:
+        """Instance-callable no-submit classifier (capability-gate probe).
+
+        Delegates to the module-level vocabulary so every adapter answers
+        the same way.
+        """
+        return is_no_submit_status(status)
