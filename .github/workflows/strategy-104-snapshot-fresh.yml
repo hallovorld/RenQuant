@@ -68,6 +68,7 @@ jobs:
             tests/test_weekly_wf_promote_rfc210_fallback.py \
             tests/test_manual_promote_snapshot_backstop.py \
             tests/test_daily_104_shadow_notify.py \
+            tests/test_buy_blocked_reason.py \
             tests/test_promote_shadow_patchtst.py \
             tests/test_promote_shadow_patchtst_snapshot_backstop.py
 
