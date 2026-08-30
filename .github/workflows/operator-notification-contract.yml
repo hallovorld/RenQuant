@@ -111,4 +111,5 @@ jobs:
             tests/test_no_trade_reason_rotation_economic.py \
             tests/test_prefilter_is_not_a_rotation.py \
             tests/test_no_trade_priority.py \
-            tests/test_broker_readonly_tag.py
+            tests/test_broker_readonly_tag.py \
+            tests/test_tournament_verdict.py

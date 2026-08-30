@@ -1096,6 +1096,13 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     operation — no order placed, no exit executed, no failed exit, no
     unmanaged broker position to surface. Kept LOUD for trades + any
     failure mode the operator should see.
+
+    Shadow / readonly lanes (label starts with "[READONLY]") are LOG-ONLY
+    by default — see `_shadow_ntfy_enabled`. The title and body are still
+    composed exactly as before (the daily log keeps the SHADOW-DECISION /
+    SHADOW-ACTION line that check_readonly_e2e.sh counts), but nothing is
+    pushed to the operator's phone unless RENQUANT_SHADOW_NTFY=1. Live
+    lanes are untouched by that switch.
     """
     import os  # noqa: PLC0415
     # IMPORTANT: read the BROKER-CONFIRMED order list (orders_placed),
@@ -1533,6 +1540,22 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         )
         cooldown = int(os.environ.get("RENQUANT_DECISION_NTFY_COOLDOWN_SECONDS", "1800"))
         force = False
+    if is_shadow and not _shadow_ntfy_enabled():
+        # 2026-08-30: 22 of the 64 ntfy messages the fleet sent in 08-23..08-30
+        # were "[READONLY][<lane>]RENQUANT-104 [full] SHADOW-ACTION: FAILED-EXIT
+        # VLO …" — a shadow lane reporting its own intent, and "FAILED-EXIT"
+        # only because the readonly broker sees the LIVE run's pending SELL.
+        # `force=True` on the actionable path then bypassed dedupe, so every
+        # lane paged the operator every cycle with a fact about nothing real.
+        # The composition above is unchanged and the line below carries the
+        # full title + body into the lane's own log (which is where the
+        # readonly-e2e classifier and any human forensics read it from); the
+        # push is what's withheld. RENQUANT_SHADOW_NTFY=1 restores it.
+        log.info(
+            "ntfy log-only (shadow lane; set RENQUANT_SHADOW_NTFY=1 to push): "
+            "%s | %s", title, body,
+        )
+        return
     _post_ntfy_with_retries(
         url,
         title=title,
@@ -1543,6 +1566,17 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         cooldown_seconds=cooldown,
         force=force,
     )
+
+
+def _shadow_ntfy_enabled() -> bool:
+    """Whether readonly/shadow lanes may PUSH to ntfy (default: no, log-only).
+
+    Only the literal "1" enables — the same convention as RENQUANT_NO_NOTIFY.
+    Unset, empty, "0", "false" all mean log-only. This switch never touches a
+    live lane: `_notify_decision` consults it only when `is_shadow` is true.
+    """
+    import os  # noqa: PLC0415
+    return os.environ.get("RENQUANT_SHADOW_NTFY", "") == "1"
 
 
 def run_once_multi(

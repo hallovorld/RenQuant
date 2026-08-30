@@ -243,7 +243,10 @@ class TestNtfyTitleBlendLane:
             regime_state=SimpleNamespace(in_transition=False),
             skip_buys=False, buy_blocked=False, counters={}, ranked=[],
         )
-        with patch("urllib.request.urlopen") as m:
+        # 2026-08-30: shadow lanes are log-only by default; the composition
+        # under test is what RENQUANT_SHADOW_NTFY=1 pushes verbatim.
+        with patch.dict("os.environ", {"RENQUANT_SHADOW_NTFY": "1"}), \
+                patch("urllib.request.urlopen") as m:
             _notify_decision(
                 "[READONLY][RC]RENQUANT-104", "full", ctx,
             )
