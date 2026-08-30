@@ -276,6 +276,14 @@ fi
 # freshness (rewritten this invocation) vs pre-existing orphan dirs.
 echo "--- Retraining per-ticker tournament (train_104.py --skip-panel --force) ---"
 LAUNCH_EPOCH=$(date +%s)
+# 2026-08-30: train_104.py writes a per-run rejection RECEIPT here, bound to
+# this RUN_ID (scripts/tournament_verdict.py). The final ntfy below reads the
+# rejection count from it — never from a log grep, never assumed 0 — so
+# "CERTIFIED" can no longer read as "all candidates accepted" when it was
+# "certified coverage, 2 candidates rejected" (APP, SPY on 2026-08-30).
+REJECTIONS_FILE="$LOG_DIR/$DATE.tournament_rejections.json"
+export RENQUANT_TOURNAMENT_REJECTIONS_OUT="$REJECTIONS_FILE"
+export RENQUANT_TOURNAMENT_RUN_ID="$RUN_ID"
 if "$PYTHON" scripts/train_104.py --skip-panel --force --trigger weekly_tournament_cadence; then
     RC=0
 else
@@ -323,8 +331,22 @@ if "$PYTHON" scripts/tournament_retrain_marker.py \
         --completed-at "$COMPLETED_AT" \
         --date "$DATE"; then
     echo "=== weekly_tournament_retrain PASSED at $(date) — completion CERTIFIED, marker stamped ==="
-    notify "RenQuant 104 TOURNAMENT-RETRAIN ✓" \
-        "Weekly per-ticker tournament retrain CERTIFIED (see $MARKER). Universe admission refreshed. Log: $LOG"
+    # Certification is about coverage/freshness/exit code, NOT acceptance. The
+    # verdict composer names the rejected candidates (⚠ title when N > 0) and
+    # reports UNKNOWN (⚠) when the receipt is missing or bound to another run.
+    if VERDICT="$("$PYTHON" scripts/tournament_verdict.py \
+            --receipt "$REJECTIONS_FILE" \
+            --run-id "$RUN_ID" \
+            --marker "$MARKER" \
+            --log "$LOG")"; then
+        VERDICT_TITLE="${VERDICT%%$'\n'*}"
+        VERDICT_BODY="${VERDICT#*$'\n'}"
+    else
+        VERDICT_TITLE="RenQuant 104 TOURNAMENT-RETRAIN ⚠"
+        VERDICT_BODY="Weekly per-ticker tournament retrain CERTIFIED (see $MARKER) but the verdict composer failed — rejection count UNKNOWN. Log: $LOG"
+    fi
+    echo "verdict: $VERDICT_TITLE | $VERDICT_BODY"
+    notify "$VERDICT_TITLE" "$VERDICT_BODY"
 else
     MRC=$?
     echo "=== weekly_tournament_retrain FAILED at $(date) — completion NOT certified (train rc=$RC, marker rc=$MRC) ==="

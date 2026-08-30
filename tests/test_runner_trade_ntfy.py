@@ -244,7 +244,8 @@ class TestAlwaysFiresOnCycle:
         notify = self._import()
         exit_sig = SimpleNamespace(ticker="FTNT", exit_type="qp_sell")
         ctx = _stub_ctx(exits=[exit_sig])
-        with patch("urllib.request.urlopen") as m:
+        with patch.dict("os.environ", {"RENQUANT_SHADOW_NTFY": "1"}), \
+                patch("urllib.request.urlopen") as m:
             notify("[READONLY]RENQUANT-104", "full", ctx)
         req = m.call_args[0][0]
         body = req.data.decode()
@@ -1031,7 +1032,8 @@ class TestTitlePrefixDisambiguation:
     def test_readonly_prefix_triggers_shadow_broker_behavior(self):
         notify = self._import()
         ctx = _stub_ctx()
-        with patch("urllib.request.urlopen") as m:
+        with patch.dict("os.environ", {"RENQUANT_SHADOW_NTFY": "1"}), \
+                patch("urllib.request.urlopen") as m:
             notify("[READONLY]RENQUANT-104", "full", ctx)
         req = m.call_args[0][0]
         # is_shadow=True (readonly broker) still tags SHADOW-DECISION /
@@ -1060,7 +1062,8 @@ class TestTitlePrefixDisambiguation:
         "[SHADOW]" token any more."""
         notify = self._import()
         ctx = _stub_ctx(_shadow_summary=[_shadow_summary_entry()])
-        with patch("urllib.request.urlopen") as m:
+        with patch.dict("os.environ", {"RENQUANT_SHADOW_NTFY": "1"}), \
+                patch("urllib.request.urlopen") as m:
             notify("[READONLY]RENQUANT-104", "full", ctx)
         req = m.call_args[0][0]
         title = req.headers.get("Title")
@@ -1181,7 +1184,8 @@ class TestOperatorCanActuallyReadIt:
     def test_shadow_marker_is_the_first_token_of_the_body(self):
         notify = self._import()
         ctx = _stub_ctx(orders_placed=[{"ticker": "NVDA", "shares": 5, "price": 217.56}])
-        with patch("urllib.request.urlopen") as m:
+        with patch.dict("os.environ", {"RENQUANT_SHADOW_NTFY": "1"}), \
+                patch("urllib.request.urlopen") as m:
             notify("[READONLY][ALPACA_SHADOW_VOL_WINDOW]RENQUANT-104", "full", ctx)
         body = m.call_args[0][0].data.decode()
         assert body.startswith("SHADOW — not real"), body[:120]
@@ -1192,6 +1196,116 @@ class TestOperatorCanActuallyReadIt:
         with patch("urllib.request.urlopen") as m:
             notify("RENQUANT-104", "full", ctx)
         assert "SHADOW" not in m.call_args[0][0].data.decode()
+
+
+class TestShadowLanesAreLogOnly:
+    """Readonly/shadow lanes compose the alert but do NOT push it (2026-08-30).
+
+    Inventory 08-23..08-30 [VERIFIED read-only pass over logs/alerts]: 64 ntfy
+    messages, 22 of them "[READONLY][<lane>]RENQUANT-104 [full] SHADOW-ACTION:
+    FAILED-EXIT VLO …" — six shadow lanes each reporting that the LIVE run's
+    pending SELL made THEIR hypothetical exit fail. Pure noise, and `force=True`
+    on the actionable path meant dedupe never applied. The fix lives in the
+    single send site of `_notify_decision`; the composition and the live path
+    are untouched, which the tests below pin from both sides.
+    """
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def _noise_ctx(self):
+        # The shape of the 22 messages ("SHADOW-ACTION: FAILED-EXIT VLO …"):
+        # a shadow lane that placed its own hypothetical BUY and whose sell of
+        # VLO "failed" because the LIVE book already has a pending SELL VLO.
+        # SHADOW-ACTION needs a trade/pending; the failed exit alone would tag
+        # SHADOW-DECISION — both are gated identically below.
+        return _stub_ctx(
+            orders_placed=[{"ticker": "NVDA", "shares": 5, "price": 217.56}],
+            exits_placed=[], exits_pending=[],
+            exits_failed=[{"ticker": "VLO", "exit_type": "qp_sell",
+                           "error": "pending SELL VLO already open (live book)"}],
+        )
+
+    def test_readonly_variant_makes_no_http_call_by_default(self, monkeypatch, caplog):
+        monkeypatch.delenv("RENQUANT_SHADOW_NTFY", raising=False)
+        notify = self._import()
+        with patch("urllib.request.urlopen") as m, \
+                patch("live.alerts.subprocess.run") as curl, \
+                caplog.at_level("INFO", logger="live.runner"):
+            notify("[READONLY][V]RENQUANT-104", "full", self._noise_ctx())
+        m.assert_not_called()
+        curl.assert_not_called()
+        # The composed alert still reaches the lane's log, title + body, so the
+        # readonly-e2e classifier and a human reading the log lose nothing.
+        line = next(r.getMessage() for r in caplog.records if "log-only" in r.getMessage())
+        assert "[READONLY][V]RENQUANT-104 [full] SHADOW-ACTION: FAILED-EXIT VLO, BUY NVDA x5" in line
+        assert "SHADOW — not real" in line
+        assert "RENQUANT_SHADOW_NTFY=1" in line
+
+    @pytest.mark.parametrize("value", ["0", "", "false", "yes"])
+    def test_only_the_literal_one_enables_the_push(self, monkeypatch, value):
+        monkeypatch.setenv("RENQUANT_SHADOW_NTFY", value)
+        notify = self._import()
+        with patch("urllib.request.urlopen") as m:
+            notify("[READONLY][RC]RENQUANT-104", "full", _stub_ctx())
+        m.assert_not_called()
+
+    def test_env_override_pushes_the_unchanged_shadow_alert(self, monkeypatch):
+        monkeypatch.setenv("RENQUANT_SHADOW_NTFY", "1")
+        notify = self._import()
+        with patch("urllib.request.urlopen") as m:
+            notify("[READONLY][V]RENQUANT-104", "full", self._noise_ctx())
+        m.assert_called_once()
+        req = m.call_args[0][0]
+        assert req.headers.get("Title") == (
+            "[READONLY][V]RENQUANT-104 [full] SHADOW-ACTION: FAILED-EXIT VLO, BUY NVDA x5"
+        )
+        assert req.headers.get("Priority") == "default"
+        assert req.data.decode().startswith("SHADOW — not real")
+
+    def test_shadow_gate_is_after_composition_not_before(self):
+        """The log-only return sits at the SEND site, below the title/body/
+        priority/taxonomy composition — so nothing upstream of the push can
+        drift for shadow lanes without the composition tests seeing it."""
+        src = (REPO_ROOT / "live" / "runner.py").read_text()
+        i_title = src.find('title    = f"{label} [{run_mode}] {tag}"')
+        i_gate = src.find("if is_shadow and not _shadow_ntfy_enabled():")
+        i_send = src.find("_post_ntfy_with_retries(\n        url,", i_gate)
+        assert 0 < i_title < i_gate < i_send
+
+    def test_live_variant_sends_exactly_once_with_the_same_payload_either_way(self, monkeypatch):
+        """The live path must be byte-identical with the switch unset AND set:
+        RENQUANT_SHADOW_NTFY is consulted only when is_shadow is true."""
+        notify = self._import()
+        seen = []
+        for value in (None, "1", "0"):
+            if value is None:
+                monkeypatch.delenv("RENQUANT_SHADOW_NTFY", raising=False)
+            else:
+                monkeypatch.setenv("RENQUANT_SHADOW_NTFY", value)
+            with patch("urllib.request.urlopen") as m:
+                notify("RENQUANT-104", "full", self._noise_ctx())
+            m.assert_called_once()
+            req = m.call_args[0][0]
+            seen.append((req.headers.get("Title"), req.headers.get("Priority"), req.data))
+        assert len(set(seen)) == 1, seen
+        title, priority, body = seen[0]
+        assert title == "RENQUANT-104 [full] TRADE: FAILED-EXIT VLO, BUY NVDA x5"
+        assert priority == "urgent"
+        assert "SHADOW" not in body.decode()
+
+    def test_live_pending_buy_still_pushes(self, monkeypatch):
+        monkeypatch.delenv("RENQUANT_SHADOW_NTFY", raising=False)
+        notify = self._import()
+        ctx = _stub_ctx(orders_pending=[{"ticker": "NVDA", "shares": 5,
+                                         "status": "accepted", "order_id": "abc"}])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        m.assert_called_once()
+        req = m.call_args[0][0]
+        assert req.headers.get("Title").startswith("RENQUANT-104 [full] PENDING")
+        assert req.headers.get("Priority") == "high"
 
 
 class TestTheCONTRACTWorkflowActuallyRunsTheseTests:

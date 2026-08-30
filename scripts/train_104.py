@@ -139,6 +139,45 @@ def _notify_tournament_rejections(rejected: dict[str, str]) -> None:
         pass
 
 
+def _write_tournament_rejection_receipt(
+    rejected: dict[str, str],
+    *,
+    trigger: str,
+    train_run_id: str | None,
+    tournament_ran: bool,
+) -> Path | None:
+    """Write $RENQUANT_TOURNAMENT_REJECTIONS_OUT (bound to
+    $RENQUANT_TOURNAMENT_RUN_ID) via scripts/tournament_verdict.py.
+
+    No-op when the env var is unset (ad-hoc / non-wrapper invocations) or when
+    the BaselineTournamentJob did not run (--skip-baseline): a receipt that
+    says "0 rejections" for a tournament that never ran would be a lie.
+    """
+    out = _os.environ.get("RENQUANT_TOURNAMENT_REJECTIONS_OUT")
+    if not out or not tournament_ran:
+        return None
+    try:
+        import importlib.util  # noqa: PLC0415
+        mod_path = Path(__file__).resolve().parent / "tournament_verdict.py"
+        spec = importlib.util.spec_from_file_location("tournament_verdict", mod_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        path = mod.write_rejection_receipt(
+            out,
+            run_id=_os.environ.get("RENQUANT_TOURNAMENT_RUN_ID"),
+            trigger=trigger,
+            rejected=rejected,
+            train_run_id=train_run_id,
+        )
+        log.info("tournament rejection receipt written: %s (n_rejected=%d)",
+                 path, len(rejected))
+        return path
+    except Exception as exc:  # noqa: BLE001
+        log.error("tournament rejection receipt NOT written (%s): %s", out, exc)
+        return None
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--strategy",          default="renquant_104")
@@ -380,6 +419,16 @@ def main() -> None:
             log.warning("TOURNAMENT ACCEPTANCE REJECT: %s — %s "
                         "(previous model kept)", _ticker, _reason)
         _notify_tournament_rejections(baseline_rejected)
+    # 2026-08-30: the weekly wrapper's final verdict reads the count from a
+    # run-bound RECEIPT (scripts/tournament_verdict.py), not from this log.
+    # Written whenever the tournament actually ran — zero rejections included,
+    # so "0" and "no receipt" stay distinguishable. Best-effort: a receipt
+    # failure must not fail training; the wrapper then reports UNKNOWN (⚠).
+    _write_tournament_rejection_receipt(
+        baseline_rejected, trigger=args.trigger,
+        train_run_id=config.get("_train_run_id"),
+        tournament_ran=not args.skip_baseline,
+    )
 
     if acceptance_enabled:
         from kernel.model_acceptance import (  # noqa: PLC0415
