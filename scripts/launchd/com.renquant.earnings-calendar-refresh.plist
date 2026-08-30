@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Earnings-calendar refresh — Mon-Fri 05:40 PT + Sat 04:40 PT.
+
+  2026-08-30 fix: the calendar producer was never scheduled; the prod
+  artifact froze at 2026-04-24 (last date 2026-07-24) and the
+  pre/post-earnings buffer silently could not fire for any later print.
+  Session-morning slot 05:40 = before the 06:00 earnings-surprise
+  refresh (which selects on this calendar) and the 06:05 dawn
+  preflight; Sat 04:40 = weekly anchor, clear of weekly-fundamental-
+  refresh (04:00) and daily-analyst-ratings (04:20).
+
+  Install (operator batch — same batch as the ops/launchd_manifest.json
+  entry in the orchestrator repo):
+    cp scripts/launchd/com.renquant.earnings-calendar-refresh.plist \
+       ~/Library/LaunchAgents/
+    launchctl load \
+       ~/Library/LaunchAgents/com.renquant.earnings-calendar-refresh.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.earnings-calendar-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/refresh_earnings_calendar.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>4</integer><key>Minute</key><integer>40</integer></dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/earnings_calendar_refresh/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/earnings_calendar_refresh/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

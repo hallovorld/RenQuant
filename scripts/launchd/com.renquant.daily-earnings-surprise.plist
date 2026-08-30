@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily earnings-surprise (PEAD/SUE) refresh — Mon-Fri 06:00 PT.
+
+  2026-08-30 fix: surprises were refreshed only by
+  weekly-fundamental-refresh (Sat 04:00), so PEAD/SUE stayed
+  median-imputed for up to a week after a print while the panel saw the
+  price gap. This job refreshes ONLY tickers with a print in the last 7
+  days (selection from the prod earnings calendar, refreshed at 05:40
+  by com.renquant.earnings-calendar-refresh), so features are populated
+  for the same day's session. Weekly full refresh stays as-is.
+
+  Install (operator batch — same batch as the ops/launchd_manifest.json
+  entry in the orchestrator repo):
+    cp scripts/launchd/com.renquant.daily-earnings-surprise.plist \
+       ~/Library/LaunchAgents/
+    launchctl load \
+       ~/Library/LaunchAgents/com.renquant.daily-earnings-surprise.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.daily-earnings-surprise</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/daily_earnings_surprise_refresh.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/daily_earnings_surprise/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/daily_earnings_surprise/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
