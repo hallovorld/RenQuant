@@ -100,3 +100,72 @@ def test_preflight_passes_when_trade_and_sanity_regime_evidence_pass(tmp_path) -
 
     assert res.severity == "hard"
     assert res.ok is True
+
+
+# ── 2026-08-30: a relaxed P-REGIME-IC is never printed as a bare ✓ ─────────
+
+def _relaxed_config() -> dict:
+    cfg = _config(require_sanity=True)
+    cfg["wf_gate"] = {"sanity_regime_ic_required": False}
+    return cfg
+
+
+def _served_shape_artifact(strategy_dir: Path) -> None:
+    """The served 2026-08-02 artifact's regime evidence, shape-for-shape."""
+    p = strategy_dir / "artifacts" / "prod" / "panel-ltr.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "kind": "panel_ltr_xgboost",
+        "feature_cols": ["f1"],
+        "metadata": {"wf_gate_metadata": {
+            "sanity_regime_ic": {
+                "passed": False,
+                "reason": "regime sanity IC failed: BULL_CALM,BULL_VOLATILE,CHOPPY",
+            },
+            "trade_monotonicity": {
+                "passed": False,
+                "pooled": {"n": 117, "spearman": 0.03911372202282383},
+                "regimes": [
+                    {"regime": "BULL_CALM", "eligible": True, "passed": False,
+                     "spearman": 0.0023365233812373976},
+                    {"regime": "BULL_VOLATILE", "eligible": False, "passed": False,
+                     "spearman": 0.2727},
+                ],
+            },
+        }},
+    }))
+
+
+def test_relaxed_regime_ic_pass_leads_with_the_relaxed_state(tmp_path) -> None:
+    _served_shape_artifact(tmp_path)
+
+    res = _check_regime_layered_ic(_relaxed_config(), tmp_path)
+
+    assert res.ok is True and res.severity == "hard"
+    assert res.message.startswith("RELAXED: ")
+    assert "sanity IC failed (regime sanity IC failed: BULL_CALM,BULL_VOLATILE,CHOPPY)" in res.message
+    assert "stamp failed BULL_CALM ρ=0.002" in res.message
+    assert "sanity_regime_ic_required=false" in res.message
+    assert "NOT proven for eligible regimes ['BULL_CALM']" in res.message
+    assert "monotonicity passed" not in res.message
+    assert res.details["sanity_regime_ic_relaxed"] is True
+    assert res.details["trade_monotonicity_relaxed"] is True
+
+
+def test_strict_config_still_blocks_the_same_artifact(tmp_path) -> None:
+    _served_shape_artifact(tmp_path)
+
+    res = _check_regime_layered_ic(_config(require_sanity=True), tmp_path)
+
+    assert res.ok is False and res.severity == "hard"
+    assert "RELAXED" not in res.message
+
+
+def test_genuine_pass_keeps_the_plain_pass_text(tmp_path) -> None:
+    _artifact(tmp_path, sanity={"passed": True})
+
+    res = _check_regime_layered_ic(_relaxed_config(), tmp_path)
+
+    assert res.ok is True
+    assert res.message.startswith("regime-layered IC/monotonicity passed for eligible regimes ['BULL_CALM']")
+    assert "RELAXED" not in res.message

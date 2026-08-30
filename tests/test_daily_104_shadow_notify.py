@@ -51,13 +51,18 @@ def test_news_sentiment_refresh_is_timeout_bounded():
     assert "sentiment refresh timed out" in script
 
 
-def test_buy_blocked_wrapper_alert_has_cooldown():
-    """Repeated expected buy-side gate blocks should not page every rerun."""
+def test_buy_blocked_wrapper_alert_pages_once_per_session_date():
+    """Repeated expected buy-side gate blocks should not page every rerun —
+    but the guard is the session DATE, not a 6 h window (2026-08-30: the old
+    cooldown let a 13:55 block re-page at 06:30 and swallow the rest of the
+    day). The alert itself is composed by scripts/buy_blocked_reason.py
+    (tests/test_buy_blocked_reason.py covers content + headers)."""
     script = DAILY_104.read_text()
 
     assert "BUY_BLOCKED_ALERT_STAMP" in script
-    assert "RENQUANT_BUY_BLOCKED_ALERT_COOLDOWN_SEC" in script
-    assert "BUY-BLOCKED ntfy suppressed by cooldown" in script
+    assert "RENQUANT_BUY_BLOCKED_ALERT_COOLDOWN_SEC" not in script
+    assert "BUY-BLOCKED ntfy suppressed: already alerted for session date" in script
+    assert 'echo "$DATE" > "$BUY_BLOCKED_ALERT_STAMP"' in script
     assert "P-RUN-ID" in script
     assert "P-CORR-METADATA" in script
     assert "P-META-LABEL" in script

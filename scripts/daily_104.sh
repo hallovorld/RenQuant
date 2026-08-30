@@ -449,6 +449,10 @@ else
             BUY_BLOCKED_BY_PREFLIGHT=1
             echo "Full live trader blocked by buy-side preflight gate — rerunning sell-only so exits/risk controls still execute."
         fi
+        # The full-run log is deleted after the sell-only rerun; keep the
+        # preflight's own P-WF-GATE / P-REGIME-IC lines so the BUY-BLOCKED
+        # alert can quote the verdict the run actually acted on.
+        BUY_BLOCKED_PREFLIGHT_LINES=$(grep -E "✗ P-|P-WF-GATE|P-REGIME-IC" "$FULL_RUN_LOG" 2>/dev/null | tail -6 || true)
         SELL_ONLY_LOG=$(mktemp "/tmp/renquant_104_daily_sell_only.XXXXXX")
         if "$PYTHON" "${RUNNER_ARGS[@]}" --strategy renquant_104 --broker alpaca --once --sell-only > "$SELL_ONLY_LOG" 2>&1; then
             cat "$SELL_ONLY_LOG"
@@ -487,18 +491,48 @@ try:
 except Exception:
     print('')
 " 2>/dev/null || echo "")
+    # 2026-08-30: a buy-blocked book is an URGENT operator event, and the alert
+    # must say WHY — which artifact, how old, what the gate stamp says, what the
+    # RFC #210 license decided, that exits still run, and what unblocks buys.
+    # scripts/buy_blocked_reason.py composes that (read-only on the artifact)
+    # and posts through renquant_common.notify.send with Priority: urgent +
+    # Tags: rotating_light,rq104. If the sender is unreachable (rc=3) or the
+    # POST failed (rc=4) the wrapper falls back to curl WITH the same headers —
+    # never to the bare default-priority line that hid the 2026-08-31 block.
+    # The stamp is keyed by session DATE: once per session, not a 6 h window
+    # (the old cooldown let a 13:55 block re-page at 06:30 and swallow the
+    # rest of the day).
     BUY_BLOCKED_ALERT_STAMP="$LOG_DIR/.buy_blocked_alert_stamp"
-    BUY_BLOCKED_COOLDOWN_SEC="${RENQUANT_BUY_BLOCKED_ALERT_COOLDOWN_SEC:-21600}"
-    NOW_SEC=$(date +%s)
-    LAST_SEC=0
+    BUY_BLOCKED_LAST_DATE=""
     if [ -f "$BUY_BLOCKED_ALERT_STAMP" ]; then
-        LAST_SEC=$(cat "$BUY_BLOCKED_ALERT_STAMP" 2>/dev/null || echo 0)
+        BUY_BLOCKED_LAST_DATE=$(cat "$BUY_BLOCKED_ALERT_STAMP" 2>/dev/null || echo "")
     fi
-    if [ $((NOW_SEC - LAST_SEC)) -ge "$BUY_BLOCKED_COOLDOWN_SEC" ]; then
-        notify "RenQuant 104 BUY-BLOCKED" "Full run blocked new buys; sell-only fallback completed.${HOLDINGS:+ | $HOLDINGS}"
-        echo "$NOW_SEC" > "$BUY_BLOCKED_ALERT_STAMP"
+    if [ "$BUY_BLOCKED_LAST_DATE" != "$DATE" ]; then
+        BUY_BLOCKED_TITLE="RenQuant 104 BUY-BLOCKED (sell-only fallback)"
+        # stdout = the composed body (re-sendable); stderr = sender diagnostics.
+        BUY_BLOCKED_BODY_FILE=$(mktemp "/tmp/renquant_104_buy_blocked.XXXXXX")
+        "$PYTHON" "$REPO_DIR/scripts/buy_blocked_reason.py" \
+            --strategy-config "$PROD_STRATEGY_CONFIG" \
+            --strategy-dir "$REPO_DIR/backtesting/renquant_104" \
+            --preflight-lines "${BUY_BLOCKED_PREFLIGHT_LINES:-}" \
+            --today "$DATE" --holdings "${HOLDINGS:-}" --log-path "$LOG" \
+            --send > "$BUY_BLOCKED_BODY_FILE" 2> "$BUY_BLOCKED_BODY_FILE.err"
+        BUY_BLOCKED_SEND_RC=$?
+        echo "BUY-BLOCKED alert ($BUY_BLOCKED_TITLE; Priority: urgent; Tags: rotating_light,rq104):"
+        cat "$BUY_BLOCKED_BODY_FILE" "$BUY_BLOCKED_BODY_FILE.err"
+        if [ "$BUY_BLOCKED_SEND_RC" -ne 0 ]; then
+            echo "BUY-BLOCKED python sender rc=$BUY_BLOCKED_SEND_RC — falling back to curl with urgent headers."
+            BUY_BLOCKED_BODY=$(cat "$BUY_BLOCKED_BODY_FILE" 2>/dev/null)
+            [ -n "$BUY_BLOCKED_BODY" ] || BUY_BLOCKED_BODY="Full run blocked new buys; sell-only fallback completed. Reason helper failed (rc=$BUY_BLOCKED_SEND_RC); see $LOG"
+            if [ "${RENQUANT_NO_NOTIFY:-0}" != "1" ]; then
+                curl -s -H "Title: $BUY_BLOCKED_TITLE" -H "Priority: urgent" -H "Tags: rotating_light,rq104" \
+                    -d "$BUY_BLOCKED_BODY" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
+            fi
+        fi
+        rm -f "$BUY_BLOCKED_BODY_FILE" "$BUY_BLOCKED_BODY_FILE.err"
+        echo "$DATE" > "$BUY_BLOCKED_ALERT_STAMP"
     else
-        echo "BUY-BLOCKED ntfy suppressed by cooldown (${BUY_BLOCKED_COOLDOWN_SEC}s)."
+        echo "BUY-BLOCKED ntfy suppressed: already alerted for session date $DATE."
     fi
 else
     echo "Wrapper success ntfy suppressed; live.runner already posted the cycle decision."
