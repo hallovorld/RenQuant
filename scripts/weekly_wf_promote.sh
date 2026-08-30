@@ -401,7 +401,10 @@ echo "Staging calibrator: $STAGING_CAL"
 # bridge; a single stale name blocks the whole retrain at the 0.0 freshness
 # tolerance). IAC: bars ceased 2026-05-12 (2026-07-17 anomaly-retrain
 # failure); REMOVE from this default once the inventory prunes it.
-RETRAIN_EXCLUDE_TICKERS="${RENQUANT_RETRAIN_EXCLUDE_TICKERS:-IAC}"
+# AVB: delisted 2026-08-17 (Equity Residential merger; SEC 8-K/Form 25), last
+# bar 2026-08-24, vetoed the 2026-08-30 promote — INTERIM until the reviewed
+# exclusion registry (renquant-orchestrator#1096) is pinned, then drop both.
+RETRAIN_EXCLUDE_TICKERS="${RENQUANT_RETRAIN_EXCLUDE_TICKERS:-IAC,AVB}"
 # Off-schedule MANUAL runs during market hours (2026-08-04 incident): the
 # wall-clock-derived expected session is only the PREVIOUS day after close,
 # so a mid-session run sees today's partial bars as "future" and the
