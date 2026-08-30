@@ -1,4 +1,4 @@
-# Earnings calendar refreshed on schedule with a staleness rail; earnings-surprise incremental daily refresh after prints   (PR #TBD)
+# Earnings calendar refreshed on schedule with a staleness rail; earnings-surprise incremental daily refresh after prints   (PR #627)
 
 STATUS:    delivered (code + jobs authored and tested; the two plists are
            NOT installed by this PR — installation is an operator landing
@@ -102,7 +102,7 @@ TESTS:     tests/test_earnings_calendar_rail.py — 26 passed under
            lesson).
 
 NEXT:      operator landing batch (ask-first, not performed here):
-           1. merge this PR + the orchestrator manifest PR (cross-linked);
+           1. merge this PR + the orchestrator manifest PR renquant-orchestrator#1102;
            2. deploy to the live tree (git pull on
               /Users/renhao/git/github/RenQuant per L6 authorization);
            3. install:
