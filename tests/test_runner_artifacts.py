@@ -44,3 +44,46 @@ class TestLoadContextArtifacts:
                                   "correlation_artifact": "prod/none.json",
                                   "earnings_artifact": "prod/earnings-calendar.json"}})
         assert earnings == {"MU": ["2026-07-01"]}
+
+
+class TestEarningsCalendarRail:
+    """2026-08-30: a stale calendar must be LOUD (log.error) but fail SOFT
+    — the run continues and the loaded dict is returned unchanged."""
+
+    def _cfg(self):
+        return {"regime": {"gmm_artifact": "prod/none.json",
+                           "correlation_artifact": "prod/none.json",
+                           "earnings_artifact": "prod/earnings-calendar.json"}}
+
+    def test_stale_calendar_logs_rail_error_and_still_returns(self, tmp_path, caplog):
+        import logging
+        ad = tmp_path / "artifacts" / "prod"
+        ad.mkdir(parents=True)
+        # The actual defect shape: frozen months in the past.
+        (ad / "earnings-calendar.json").write_text(
+            json.dumps({"PANW": ["2026-07-24"]}))
+        with caplog.at_level(logging.ERROR, logger="adapters.runner"):
+            _, _, earnings = load_context_artifacts(tmp_path, self._cfg())
+        assert earnings == {"PANW": ["2026-07-24"]}   # fail SOFT
+        assert any("EARNINGS-CALENDAR RAIL" in r.message for r in caplog.records)
+
+    def test_missing_calendar_logs_rail_error(self, tmp_path, caplog):
+        import logging
+        (tmp_path / "artifacts" / "prod").mkdir(parents=True)
+        with caplog.at_level(logging.ERROR, logger="adapters.runner"):
+            _, _, earnings = load_context_artifacts(tmp_path, self._cfg())
+        assert earnings is None
+        assert any("EARNINGS-CALENDAR RAIL" in r.message for r in caplog.records)
+
+    def test_fresh_calendar_is_silent(self, tmp_path, caplog):
+        import logging
+        ad = tmp_path / "artifacts" / "prod"
+        ad.mkdir(parents=True)
+        # Far-future horizon: fresh regardless of the wall clock.
+        (ad / "earnings-calendar.json").write_text(
+            json.dumps({"NVDA": ["2199-01-01"]}))
+        with caplog.at_level(logging.ERROR, logger="adapters.runner"):
+            _, _, earnings = load_context_artifacts(tmp_path, self._cfg())
+        assert earnings == {"NVDA": ["2199-01-01"]}
+        assert not any("EARNINGS-CALENDAR RAIL" in r.message
+                       for r in caplog.records)

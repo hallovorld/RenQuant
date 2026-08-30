@@ -211,7 +211,16 @@ class ValidateEarningsTask(Task):
         cal: dict = {}
         if cal_p.exists():
             try:
-                cal = json.loads(cal_p.read_text()).get("earnings", {})
+                raw = json.loads(cal_p.read_text())
+                # 2026-08-30 fix: the artifact's ACTUAL schema is the flat
+                # {ticker: ["YYYY-MM-DD", ...]} written by
+                # scripts/fetch_earnings_calendar.py. The old .get("earnings")
+                # read a wrapper key that no producer ever wrote, so this
+                # task was a silent no-op. Accept both shapes.
+                if isinstance(raw, dict):
+                    cal = raw.get("earnings", raw)
+                if not isinstance(cal, dict):
+                    cal = {}
             except Exception:  # noqa: BLE001
                 cal = {}
         for o in ctx.orders:
@@ -219,8 +228,11 @@ class ValidateEarningsTask(Task):
                 continue
             evs = cal.get(o.ticker) or []
             for ev in evs:
+                # Entries are ISO date strings (flat schema) or legacy
+                # {"date": ...} dicts — parse either.
+                ev_raw = ev.get("date", "") if isinstance(ev, dict) else ev
                 try:
-                    ed = _dt.date.fromisoformat(str(ev.get("date", ""))[:10])
+                    ed = _dt.date.fromisoformat(str(ev_raw)[:10])
                 except Exception:
                     continue
                 if abs((ed - ctx.today).days) <= ctx.earnings_buffer_days:

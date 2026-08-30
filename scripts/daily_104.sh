@@ -292,6 +292,24 @@ if [ -f "$REPO_DIR/scripts/system_doctor.py" ]; then
     echo "$DOCTOR_OUT" | tail -3
 fi
 
+# ── Step 0c: earnings-calendar staleness rail (2026-08-30, fail SOFT) ─────────
+# The pre/post-earnings buffer reads artifacts/prod/earnings-calendar.json.
+# A stale calendar is indistinguishable from "no earnings soon" to
+# is_earnings_blocked — the Apr-24-frozen artifact silently disabled the
+# buffer for every Aug/Sep 2026 print (HPE bought 08-27 into an early-Sep
+# print). com.renquant.earnings-calendar-refresh now refreshes it every
+# session morning; this rail makes any regression LOUD (ntfy) without
+# blocking the run.
+EARN_CAL="$REPO_DIR/backtesting/renquant_104/artifacts/prod/earnings-calendar.json"
+EARN_RAIL_OUT=$("$PYTHON" "$REPO_DIR/scripts/earnings_calendar_rail.py" check \
+    --calendar "$EARN_CAL" --min-horizon-days 5 2>&1)
+EARN_RAIL_RC=$?
+echo "$EARN_RAIL_OUT"
+if [ "$EARN_RAIL_RC" -ne 0 ]; then
+    notify "RenQuant 104 EARNINGS-CAL ⚠" \
+        "earnings buffer effectively DISABLED (rail rc=$EARN_RAIL_RC): ${EARN_RAIL_OUT:0:180} — check com.renquant.earnings-calendar-refresh"
+fi
+
 # Step 1: SMOKE TEST — pipeline heartbeat (replaces daily retrain).
 # 2026-05-09 audit FIX-C: retrain moved to weekly_wf_promote.sh.
 # Daily smoke test verifies the model artifact loads + scores correctly

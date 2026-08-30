@@ -1,0 +1,64 @@
+name: earnings-freshness-contract
+
+# 2026-08-30 data-audit fix: the earnings calendar froze at Apr-24 and
+# silently disabled the pre/post-earnings buffer; PEAD/SUE surprises
+# were weekly-only. This workflow pins the staleness-rail + incremental-
+# selection contract those fixes introduced. It runs EXACTLY the test
+# file for that contract — named explicitly because no umbrella workflow
+# runs tests/ wholesale, and a test file no workflow names never runs in
+# CI (the 2026-08-20 "green check that covered nothing" lesson).
+#
+# tests/test_earnings_calendar_rail.py is stdlib+pytest only by design
+# (yfinance is lazily imported by the fetcher), so this job needs no
+# scientific stack. The heavier fail-soft integration tests live in
+# tests/test_runner_artifacts.py (local full suite — imports the
+# renquant_pipeline-backed kernel).
+
+on:
+  pull_request:
+    paths:
+      - backtesting/renquant_104/adapters/earnings_freshness.py
+      - backtesting/renquant_104/adapters/runner_artifacts.py
+      - scripts/earnings_calendar_rail.py
+      - scripts/fetch_earnings_calendar.py
+      - scripts/refresh_earnings_calendar.sh
+      - scripts/daily_earnings_surprise_refresh.sh
+      - tests/test_earnings_calendar_rail.py
+      - .github/workflows/earnings-freshness-contract.yml
+  push:
+    branches:
+      - main
+    paths:
+      - backtesting/renquant_104/adapters/earnings_freshness.py
+      - scripts/earnings_calendar_rail.py
+      - scripts/fetch_earnings_calendar.py
+      - tests/test_earnings_calendar_rail.py
+      - .github/workflows/earnings-freshness-contract.yml
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out umbrella
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: python3 -m pip install pytest
+
+      - name: Run the earnings-freshness contract tests
+        run: |
+          python3 -m pytest -q -o addopts='' tests/test_earnings_calendar_rail.py -v
+
+      - name: Shell syntax check the scheduled wrappers
+        run: |
+          bash -n scripts/refresh_earnings_calendar.sh
+          bash -n scripts/daily_earnings_surprise_refresh.sh
+          bash -n scripts/daily_104.sh

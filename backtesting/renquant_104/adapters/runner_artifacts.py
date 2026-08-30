@@ -61,4 +61,20 @@ def load_context_artifacts(strategy_dir, config: dict) -> tuple[Any, Any, Any]:
         log.warning("earnings artifact %s malformed (%s) — treating as missing", earn_path, exc)
         earnings = None
 
+    # ── 2026-08-30 earnings-calendar staleness rail (fail SOFT, loud) ──
+    # A stale calendar is indistinguishable from "no earnings soon" to
+    # is_earnings_blocked — the Apr-24-frozen prod artifact silently
+    # disabled the pre/post-earnings buffer for every Aug/Sep 2026 print
+    # (HPE bought 2026-08-27 into an early-Sep print). Log an ERROR here
+    # (the daily wrapper additionally ntfy-alarms via
+    # scripts/earnings_calendar_rail.py) but NEVER abort the run: the
+    # rail is a loud preflight, not a new kill switch.
+    from adapters.earnings_freshness import assess_earnings_calendar_freshness  # noqa: PLC0415
+    verdict = assess_earnings_calendar_freshness(earnings)
+    if verdict["status"] != "ok":
+        log.error(
+            "EARNINGS-CALENDAR RAIL [%s]: %s (artifact=%s)",
+            verdict["status"].upper(), verdict["message"], earn_path,
+        )
+
     return gmm, corr, earnings
