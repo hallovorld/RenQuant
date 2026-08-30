@@ -100,26 +100,37 @@ class TestP0_6_CalibratorMethodDefault:
             f"live calibration_method = {method}; must be 'platt'"
 
 
-class TestP0_9_BugDSettledCash:
-    """Live broker.get_cash() must use non_marginable_buying_power (cash + T+N),
-    not account.cash (settled only). Pre-fix: live under-trades vs sim post-sell."""
+class TestP0_9_BugD_BuyingPowerModeHonoured:
+    """P0-9 (2026-05-20) hard-wired live get_cash() to
+    non_marginable_buying_power so live would not under-trade vs sim
+    post-sell. SUPERSEDED 2026-08-30 (fix/size-on-settled-cash): on a
+    margin account that figure spends UNSETTLED proceeds and put the book
+    1.11x on margin (08-27 HPE / 08-28 WELL+NET). The contract is now: the
+    mode is READ from ``execution.buying_power_mode``; default = settled
+    cash floored at 0; nmbp honoured only when configured. Behavioural
+    pins live in tests/test_buy_sizing_settled_cash.py; these two keep the
+    P0-9 intent (nmbp still AVAILABLE, never silently dropped)."""
 
-    def test_get_cash_uses_non_marginable_buying_power(self):
-        src = (REPO / "live/alpaca_broker.py").read_text()
-        # The get_cash method must reference non_marginable_buying_power
-        m = re.search(r"def get_cash[^}]*?(?=def |\Z)", src, re.DOTALL)
-        assert m is not None
-        body = m.group(0)
-        assert "non_marginable_buying_power" in body, \
-            "get_cash must use non_marginable_buying_power (BUG D fix)"
+    @staticmethod
+    def _broker(**fields):
+        from live.alpaca_broker import AlpacaBroker
+        b = AlpacaBroker(api_key="k", secret_key="s", paper=True)
+        b._trading_client = SimpleNamespace(
+            get_account=lambda: SimpleNamespace(**fields),
+        )
+        return b
 
-    def test_get_cash_falls_back_when_field_missing(self):
-        src = (REPO / "live/alpaca_broker.py").read_text()
-        m = re.search(r"def get_cash[^}]*?(?=def |\Z)", src, re.DOTALL)
-        body = m.group(0)
-        # Fallback path for older alpaca-py without the field
-        assert "account.cash" in body, \
-            "get_cash must fall back to account.cash if non_marginable_buying_power missing"
+    def test_default_get_cash_is_settled_cash(self):
+        b = self._broker(cash="33.00", non_marginable_buying_power="1034.00")
+        assert b.get_cash() == 33.0
+
+    def test_nmbp_still_available_when_configured(self):
+        b = self._broker(cash="33.00", non_marginable_buying_power="1034.00")
+        assert b.get_buying_power_snapshot("non_marginable_buying_power")["sizing_cash"] == 1034.0
+
+    def test_nmbp_missing_falls_back_to_settled_cash(self):
+        b = self._broker(cash="33.00")
+        assert b.get_buying_power_snapshot("non_marginable_buying_power")["sizing_cash"] == 33.0
 
 
 class TestP0_10_LiveAccountAssertion:

@@ -120,3 +120,40 @@ def test_transition_window_short_circuits():
     ctx = _ctx(qp_infeasible=1)
     ctx.regime_state = types.SimpleNamespace(in_transition=True)
     assert _no_trade_reason(ctx) == "transition_window"
+
+
+# ── fix/size-on-settled-cash (2026-08-30): a $0 buy budget with a named ──────
+# cause is the binding constraint for every candidate and is surfaced by name
+# ahead of the counter rollups (after bear_only / transition_window).
+
+def test_no_settled_cash_beats_counter_rollups():
+    ctx = _ctx(risk_gate_vol_dropped=10, qp_infeasible=1, qp_zero_shares=4)
+    ctx.buy_sizing_cash = {"mode": "settled_cash", "sizing_cash": 0.0,
+                           "sizing_reason": "no_settled_cash"}
+    assert _no_trade_reason(ctx) == "no_settled_cash"
+
+
+def test_positive_budget_does_not_change_the_rollup():
+    ctx = _ctx(risk_gate_vol_dropped=10, qp_infeasible=1)
+    ctx.buy_sizing_cash = {"mode": "settled_cash", "sizing_cash": 33.0,
+                           "sizing_reason": None}
+    assert _no_trade_reason(ctx) == "qp_infeasible(1)"
+
+
+def test_missing_buy_sizing_attribute_is_neutral():
+    ctx = _ctx(qp_infeasible=1)
+    assert _no_trade_reason(ctx) == "qp_infeasible(1)"
+
+
+def test_cash_read_failure_is_named_too():
+    ctx = _ctx(qp_infeasible=1)
+    ctx.buy_sizing_cash = {"mode": "unavailable", "sizing_cash": 0.0,
+                           "sizing_reason": "cash_read_failed"}
+    assert _no_trade_reason(ctx) == "cash_read_failed"
+
+
+def test_transition_window_still_outranks_no_settled_cash():
+    ctx = _ctx()
+    ctx.regime_state = types.SimpleNamespace(in_transition=True)
+    ctx.buy_sizing_cash = {"sizing_reason": "no_settled_cash"}
+    assert _no_trade_reason(ctx) == "transition_window"

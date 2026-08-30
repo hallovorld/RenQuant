@@ -223,6 +223,152 @@ class FractionalOrderRefused(ValueError):
         )
 
 
+
+# ── Buy-sizing buying-power mode (RenQuant fix/size-on-settled-cash, 2026-08-30)
+#
+# What number the runner may SIZE NEW BUYS against. Vocabulary shared with the
+# sim path (``adapters/sim_order_helpers.py`` / ``adapters/lean_account.py``
+# read the same ``execution.buying_power_mode`` key with the same
+# ``settled_cash`` / ``non_marginable_buying_power`` canonical names and the
+# same aliases), so ONE config key drives sim and live alike.
+#
+#   settled_cash                 Alpaca ``account.cash`` — settled funds only.
+#                                DEFAULT when the key is absent. Never spends
+#                                T+1 pending sell proceeds, never margin.
+#   non_marginable_buying_power  Alpaca ``account.non_marginable_buying_power``
+#                                — cash + unsettled sell proceeds, no 2x/4x
+#                                margin. On a MARGIN account this lets a buy
+#                                clear against proceeds that have not settled,
+#                                which the broker fronts as a margin debit
+#                                until settlement (the 08-27/08-28 HPE / WELL
+#                                buys against settled cash of $33 / −$1,140).
+#   buying_power                 Alpaca ``account.buying_power`` — the 2x/4x
+#                                margin figure. Explicit opt-in only; the sim
+#                                has no margin model (its normalisers reject
+#                                the value), so setting it breaks sim/live
+#                                parity by construction. Logged as a WARNING
+#                                on every read.
+#
+# Sizing cash is FLOORED AT ZERO: a negative settled balance (the account is
+# on margin) sizes to $0 and the run records ``no_settled_cash`` — no buys.
+# Exits are never sized here and are never blocked by this.
+BUYING_POWER_MODE_SETTLED = "settled_cash"
+BUYING_POWER_MODE_NMBP = "non_marginable_buying_power"
+BUYING_POWER_MODE_MARGIN = "buying_power"
+DEFAULT_BUYING_POWER_MODE = BUYING_POWER_MODE_SETTLED
+BUYING_POWER_MODES: tuple[str, ...] = (
+    BUYING_POWER_MODE_SETTLED,
+    BUYING_POWER_MODE_NMBP,
+    BUYING_POWER_MODE_MARGIN,
+)
+BUYING_POWER_MODE_ALIASES: dict[str, str] = {
+    BUYING_POWER_MODE_SETTLED: BUYING_POWER_MODE_SETTLED,
+    "settled": BUYING_POWER_MODE_SETTLED,
+    "cash": BUYING_POWER_MODE_SETTLED,
+    BUYING_POWER_MODE_NMBP: BUYING_POWER_MODE_NMBP,
+    "cash_plus_unsettled": BUYING_POWER_MODE_NMBP,
+    "unsettled": BUYING_POWER_MODE_NMBP,
+    BUYING_POWER_MODE_MARGIN: BUYING_POWER_MODE_MARGIN,
+    "margin": BUYING_POWER_MODE_MARGIN,
+}
+#: ``sizing_reason`` when the mode's balance is <= 0 (or unreadable) and the
+#: buy budget is therefore $0 for the bar.
+NO_SETTLED_CASH_REASON = "no_settled_cash"
+NO_BUYING_POWER_REASON = "no_buying_power"
+UNREADABLE_CASH_REASON = "cash_unreadable"
+
+
+def normalize_buying_power_mode(raw: Any) -> str:
+    """Canonical ``execution.buying_power_mode``; absent/empty → settled cash.
+
+    Raises ``ValueError`` on an unrecognised value so a typo in a deployed
+    config FAIL-CLOSES (the runner's cash read wraps this and sizes to $0)
+    instead of silently picking a mode.
+    """
+    if raw is None:
+        return DEFAULT_BUYING_POWER_MODE
+    mode = str(raw).strip().lower()
+    if not mode:
+        return DEFAULT_BUYING_POWER_MODE
+    if mode not in BUYING_POWER_MODE_ALIASES:
+        raise ValueError(
+            "execution.buying_power_mode must be one of "
+            f"{sorted(BUYING_POWER_MODE_ALIASES)}; got {raw!r}"
+        )
+    return BUYING_POWER_MODE_ALIASES[mode]
+
+
+def _finite_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def resolve_sizing_cash(
+    mode: str,
+    *,
+    settled_cash: Any,
+    non_marginable_buying_power: Any = None,
+    buying_power: Any = None,
+) -> dict[str, Any]:
+    """Pure: pick the balance ``mode`` names, floor it at zero, name the reason.
+
+    Returns the buying-power snapshot dict the runner logs and records::
+
+        mode, settled_cash, non_marginable_buying_power, buying_power,
+        sizing_cash, sizing_source, sizing_reason
+
+    ``sizing_source`` says WHICH field produced ``sizing_cash``. When the
+    requested field is unavailable the function degrades CONSERVATIVELY —
+    to settled cash (never to a larger figure) — and says so in the source.
+    ``sizing_reason`` is ``None`` when there is a positive budget, otherwise
+    ``no_settled_cash`` (settled mode), ``no_buying_power`` (the other
+    modes) or ``cash_unreadable`` (nothing parseable at all).
+    """
+    mode = normalize_buying_power_mode(mode)
+    settled = _finite_or_none(settled_cash)
+    nmbp = _finite_or_none(non_marginable_buying_power)
+    margin_bp = _finite_or_none(buying_power)
+
+    if mode == BUYING_POWER_MODE_SETTLED:
+        chosen, source = settled, "account.cash"
+    elif mode == BUYING_POWER_MODE_NMBP:
+        if nmbp is not None:
+            chosen, source = nmbp, "account.non_marginable_buying_power"
+        else:
+            chosen, source = settled, "account.cash (non_marginable_buying_power unavailable)"
+    else:  # BUYING_POWER_MODE_MARGIN
+        if margin_bp is not None:
+            chosen, source = margin_bp, "account.buying_power"
+        elif nmbp is not None:
+            chosen, source = nmbp, "account.non_marginable_buying_power (buying_power unavailable)"
+        else:
+            chosen, source = settled, "account.cash (buying_power unavailable)"
+
+    if chosen is None:
+        sizing, reason = 0.0, UNREADABLE_CASH_REASON
+    elif chosen <= 0.0:
+        sizing = 0.0
+        reason = (NO_SETTLED_CASH_REASON if mode == BUYING_POWER_MODE_SETTLED
+                  else NO_BUYING_POWER_REASON)
+    else:
+        sizing, reason = chosen, None
+
+    return {
+        "mode": mode,
+        "settled_cash": settled,
+        "non_marginable_buying_power": nmbp,
+        "buying_power": margin_bp,
+        "sizing_cash": float(sizing),
+        "sizing_source": source,
+        "sizing_reason": reason,
+    }
+
+
 class BaseBroker(ABC):
     """Interface for order execution backends."""
 
@@ -256,6 +402,21 @@ class BaseBroker(ABC):
     def get_cash(self) -> float:
         """Return available cash.  Defaults to account value; override for accuracy."""
         return self.get_account_value()
+
+    def get_buying_power_snapshot(self, mode: str | None = None) -> dict[str, Any]:
+        """Balances the runner may size NEW BUYS against, per ``mode``.
+
+        See :func:`resolve_sizing_cash` for the dict contract. The base
+        implementation knows only ``get_cash()`` and treats it as SETTLED
+        cash — the conservative reading for a broker that exposes no
+        unsettled / margin figures (PaperBroker, IBKR). Brokers that do
+        expose them (AlpacaBroker) override this to read the account once
+        and fill in every field. ``mode`` absent → settled cash.
+        """
+        return resolve_sizing_cash(
+            normalize_buying_power_mode(mode),
+            settled_cash=self.get_cash(),
+        )
 
     def get_all_positions(self) -> list[dict]:
         """Return all open positions as a list of dicts with keys:

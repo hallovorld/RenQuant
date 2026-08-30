@@ -1004,6 +1004,15 @@ def _no_trade_reason(ctx) -> str:
     rs = getattr(ctx, "regime_state", None)
     if rs is not None and getattr(rs, "in_transition", False):
         return "transition_window"
+    # fix/size-on-settled-cash (2026-08-30): a $0 buy budget with a named
+    # cause (``no_settled_cash`` — the account is on margin / has no settled
+    # funds; ``no_buying_power``; ``cash_unreadable``; ``cash_read_failed``)
+    # is the binding constraint for EVERY candidate, whatever the downstream
+    # gates counted. Surface it by name ahead of the counter rollups so the
+    # operator reads the account-state fact, not "qp_zero_shares(n)".
+    buy_sizing = getattr(ctx, "buy_sizing_cash", None)
+    if isinstance(buy_sizing, dict) and buy_sizing.get("sizing_reason"):
+        return str(buy_sizing["sizing_reason"])
     counters = getattr(ctx, "counters", {}) or {}
     specific_blocks = (
         # Earliest-stage fail-closed (no scorer / no calibration)

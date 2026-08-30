@@ -81,7 +81,9 @@ from adapters.runner_execmath import (  # noqa: F401,E402
     effective_live_holdings_after_orders,
     live_post_execution_snapshot,
     normalize_order_status,
+    resolve_buy_sizing_cash,
     same_bar_sell_credit,
+    unsettled_proceeds_spendable,
 )
 
 # ── L6 score-drift audit sidecar — commit() entry point ─────────────────
@@ -384,17 +386,32 @@ class RunnerAdapter:
         # liquid and could over-allocate. Fail-SAFE: fall back to ZERO
         # cash (the safest assumption — no fresh buys this bar) and log
         # loud so operator knows broker is partially down.
+        # 2026-08-30 fix/size-on-settled-cash: the number is no longer the
+        # broker's hard-wired get_cash() (= non_marginable_buying_power,
+        # which on a margin account spends unsettled proceeds — the
+        # 08-27/08-28 HPE/WELL buys against negative settled cash). It is
+        # the balance ``execution.buying_power_mode`` names — default
+        # settled cash, floored at 0 — and both numbers + the mode are
+        # logged every run (adapters/runner_execmath.resolve_buy_sizing_cash).
+        # An unrecognised mode or a failed read takes the same fail-SAFE.
         try:
-            cash = broker.get_cash()
+            buy_sizing = resolve_buy_sizing_cash(broker, self._config)
+            cash = float(buy_sizing["sizing_cash"])
         except Exception as _cash_exc:
             log.error(
-                "runner: broker.get_cash() failed (%s: %s) — "
+                "runner: broker.get_cash() / buy-sizing cash read failed (%s: %s) — "
                 "fail-SAFE setting cash=0 for this bar to prevent "
                 "over-allocation. Pre-fix this defaulted to account_value "
                 "(= total NAV) which silently allowed Kelly oversizing.",
                 type(_cash_exc).__name__, _cash_exc,
             )
             cash = 0.0
+            buy_sizing = {
+                "mode": "unavailable",
+                "sizing_cash": 0.0,
+                "sizing_reason": "cash_read_failed",
+                "sizing_source": f"{type(_cash_exc).__name__}: {_cash_exc}",
+            }
 
         # Stale-HWM guard (see `resolve_hwm` docstring above). Snaps when
         # stored HWM is wildly above current equity, preserves normal
@@ -870,6 +887,11 @@ class RunnerAdapter:
         ctx.run_id = f"{today.isoformat()}-live-{uuid.uuid4().hex[:8]}"
         ctx.supports_short_open = False
         ctx._run_type = "live"  # noqa: SLF001
+        # Recorded on the context so commit() (same-bar sell credit, the
+        # $0-budget skip reason) and the operator no-trade rollup
+        # (live/runner._no_trade_reason) read the SAME resolution the
+        # sizing tasks were given — not a second broker read.
+        ctx.buy_sizing_cash = dict(buy_sizing)
 
         # Bug 11 fix (2026-04-24): Rotation V4 (thesis_symmetric scoring
         # mode) needs ctx._db to look up candidate scores on each held's
@@ -1508,6 +1530,19 @@ class RunnerAdapter:
         if not math.isfinite(buy_cash_remaining):
             buy_cash_remaining = 0.0
         sell_credit = same_bar_sell_credit(ctx)
+        buy_sizing = getattr(ctx, "buy_sizing_cash", None) or {}
+        buy_sizing_mode = buy_sizing.get("mode") if isinstance(buy_sizing, dict) else None
+        if sell_credit > 0 and not unsettled_proceeds_spendable(buy_sizing_mode):
+            # Same-bar exit proceeds settle T+1. Only a mode that counts
+            # unsettled proceeds by definition may spend them; settled-cash
+            # sizing (the default) must not, or the buy is on margin again.
+            log.info(
+                "LIVE-SAME-BAR-SELL-CREDIT: $%.2f of broker-confirmed exit "
+                "proceeds NOT credited to the buy budget — "
+                "buying_power_mode=%s sizes buys on settled cash only",
+                sell_credit, buy_sizing_mode,
+            )
+            sell_credit = 0.0
         if sell_credit > 0:
             buy_cash_remaining += sell_credit
             log.info(
@@ -1543,6 +1578,31 @@ class RunnerAdapter:
             # ⇒ every BUY fail-closes below regardless, so the value is
             # outcome-neutral there; False keeps it conservative.
             frac_cash_cap = bool(frac_gate["enabled"] and frac_gate["ok"])
+            # $0 buy budget with a NAMED cause (no_settled_cash: the account
+            # is on margin / has no settled funds; no_buying_power;
+            # cash_unreadable; cash_read_failed): every BUY intent that
+            # still reached commit is skipped under that name, so the run
+            # record says WHY rather than "cash_budget_exhausted".
+            buy_budget_reason = (
+                buy_sizing.get("sizing_reason") if isinstance(buy_sizing, dict) else None
+            )
+            if buy_cash_remaining <= 0.0 and buy_budget_reason:
+                for order_intent in deduped_orders:
+                    ticker = (
+                        order_intent.get("ticker")
+                        if isinstance(order_intent, dict) else
+                        getattr(order_intent, "ticker", "?")
+                    )
+                    log.info(
+                        "BUY skipped: %s — buy budget is $0 (%s)",
+                        ticker, buy_budget_reason,
+                    )
+                    if isinstance(order_intent, dict):
+                        ctx.orders_skipped.append({
+                            **order_intent,
+                            "skip_reason": buy_budget_reason,
+                        })
+                deduped_orders = []
             for order_intent in deduped_orders:
                 order, budget_reason = cap_buy_order_to_cash(
                     order_intent, buy_cash_remaining,
