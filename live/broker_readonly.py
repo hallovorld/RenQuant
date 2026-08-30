@@ -154,6 +154,12 @@ class ReadOnlyBrokerWrapper(BaseBroker):
     def get_cash(self) -> float:
         return self._u.get_cash()
 
+    def get_buying_power_snapshot(self, mode: str | None = None) -> dict[str, Any]:
+        # Explicit forward (not left to __getattr__): the shadow lanes must
+        # size on exactly the balance the underlying live broker reports
+        # for the configured mode — same settled-cash default, same floor.
+        return self._u.get_buying_power_snapshot(mode)
+
     def get_all_positions(self) -> list[dict]:
         return self._u.get_all_positions()
 

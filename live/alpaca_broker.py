@@ -26,10 +26,13 @@ from .broker import (
     INVALID_FRACTIONAL_ORDER_STATUS,
     MIN_FRACTIONAL_NOTIONAL_USD,
     NON_FRACTIONABLE_STATUS,
+    BUYING_POWER_MODE_MARGIN,
     BaseBroker,
     FractionalOrderRefused,
     InvalidOrderQuantity,
     is_whole_share,
+    normalize_buying_power_mode,
+    resolve_sizing_cash,
     snap_qty_to_broker_grid,
     validate_order_quantity,
 )
@@ -84,8 +87,16 @@ class AlpacaBroker(BaseBroker):
         paper: bool = True,
         env_prefix: str = "ALPACA",
         label: str | None = None,
+        buying_power_mode: str | None = None,
     ):
         self._env_prefix = env_prefix
+        # What ``get_cash()`` returns when no caller names a mode (see
+        # live/broker.py, "Buy-sizing buying-power mode"). Absent → settled
+        # cash. The runner passes ``execution.buying_power_mode`` explicitly
+        # on every read via ``get_buying_power_snapshot(mode)``; this default
+        # only governs bare ``get_cash()`` callers (post-execution snapshot,
+        # orchestrator native snapshots).
+        self._buying_power_mode = normalize_buying_power_mode(buying_power_mode)
         self._api_key = api_key or os.environ.get(f"{env_prefix}_API_KEY", "")
         self._secret_key = secret_key or os.environ.get(f"{env_prefix}_SECRET_KEY", "")
         self._paper = paper
@@ -250,37 +261,79 @@ class AlpacaBroker(BaseBroker):
             account = self._trading_client.get_account()
         return float(account.equity)
 
-    def get_cash(self) -> float:
-        """Return available cash for new orders.
+    @property
+    def buying_power_mode(self) -> str:
+        return self._buying_power_mode
 
-        P0-9 (BUG D, audit 2026-05-20) — fixed 2026-05-20.
-        Pre-fix: returned `account.cash` (SETTLED ONLY) — excludes T+N
-        pending sell proceeds that Alpaca's margin account treats as
-        immediately spendable buying power. Result: live under-stated
-        cash post-sell vs sim path (which includes pending settlement
-        via `sim.py:_t2_queue.pending_total()`).
+    @staticmethod
+    def _account_balances(account: Any) -> dict[str, Any]:
+        """The three Alpaca balance fields, raw (parsed downstream).
 
-        Post-fix: returns `account.non_marginable_buying_power` which is
-        Alpaca's "cash + unsettled sell proceeds, no 2x/4x margin" field.
-        Matches sim's T+N-aware accounting. For non-margin (cash) accounts this equals
-        `cash`. For margin accounts it's `cash + pending`.
-
-        We deliberately do NOT use `account.buying_power` (the 2× / 4× margin
-        amount) — that would over-state available cash and break the
-        non-margin policy.
+        ``account.cash`` is SETTLED cash and goes NEGATIVE when the account
+        is on margin; ``non_marginable_buying_power`` adds unsettled sell
+        proceeds; ``buying_power`` is the 2x/4x margin figure. Missing
+        attributes (older alpaca-py) read as ``None`` — never as 0 — so the
+        resolver can say the field was unavailable rather than empty.
         """
+        return {
+            "settled_cash": getattr(account, "cash", None),
+            "non_marginable_buying_power": getattr(
+                account, "non_marginable_buying_power", None,
+            ),
+            "buying_power": getattr(account, "buying_power", None),
+        }
+
+    def get_buying_power_snapshot(self, mode: str | None = None) -> dict[str, Any]:
+        """One account read → the balance ``mode`` names, floored at zero.
+
+        ``mode`` absent → the broker's constructor mode (default settled
+        cash). Contract: :func:`live.broker.resolve_sizing_cash`. The
+        ``buying_power`` (margin) mode is an explicit operator opt-in and is
+        logged as a WARNING on every read; a requested field that the SDK
+        does not expose degrades to settled cash (never to a larger figure).
+        """
+        mode = normalize_buying_power_mode(
+            self._buying_power_mode if mode is None else mode,
+        )
         account = self._trading_client.get_account()
-        # Field availability check (older alpaca-py may lack it)
-        nmbp = getattr(account, 'non_marginable_buying_power', None)
-        if nmbp is not None:
-            try:
-                return float(nmbp)
-            except (TypeError, ValueError):
-                pass
-        # Fallback to settled cash (legacy behavior; logged as warning)
-        log.warning("alpaca account.non_marginable_buying_power unavailable; "
-                    "falling back to settled cash (pending settlement NOT counted)")
-        return float(account.cash)
+        balances = self._account_balances(account)
+        snapshot = resolve_sizing_cash(mode, **balances)
+        if mode == BUYING_POWER_MODE_MARGIN:
+            log.warning(
+                "alpaca get_buying_power_snapshot: mode=buying_power sizes buys "
+                "on the MARGIN buying-power figure ($%s) — explicit opt-in; "
+                "settled cash is $%s",
+                balances["buying_power"], balances["settled_cash"],
+            )
+        elif "unavailable" in str(snapshot["sizing_source"]):
+            log.warning(
+                "alpaca get_buying_power_snapshot: %s — sizing on %s",
+                snapshot["sizing_source"], snapshot["sizing_cash"],
+            )
+        return snapshot
+
+    def get_cash(self) -> float:
+        """Cash the runner may size NEW BUYS against, in the broker's mode.
+
+        History. P0-9 (BUG D, 2026-05-20) made this return
+        ``account.non_marginable_buying_power`` (settled cash + unsettled
+        T+N sell proceeds) unconditionally, to match the sim's T+N-aware
+        accounting. On a MARGIN account that figure lets a buy clear
+        against proceeds that have not settled — the broker fronts the
+        difference as a margin debit. 2026-08-27 HPE ($1,034) was bought
+        with settled cash of $33; 2026-08-28 WELL ($1,904) + NET with
+        settled cash of −$1,140, leaving the book 1.11x on margin.
+
+        2026-08-30 (fix/size-on-settled-cash): the mode is READ, not
+        hard-wired. Default (constructor ``buying_power_mode`` absent) is
+        ``settled_cash`` = ``account.cash`` floored at 0 — never unsettled
+        proceeds, never margin. ``non_marginable_buying_power`` and
+        ``buying_power`` are honoured only when explicitly configured. The
+        runner passes ``execution.buying_power_mode`` through
+        :meth:`get_buying_power_snapshot`; this bare accessor serves the
+        remaining diagnostic callers.
+        """
+        return float(self.get_buying_power_snapshot()["sizing_cash"])
 
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:
         from alpaca.trading.requests import MarketOrderRequest

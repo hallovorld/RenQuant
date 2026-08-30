@@ -36,10 +36,21 @@ name: live-broker-fractional-contract
 # get_filled_orders' pagination never duplicates the boundary order (cursor
 # = oldest − 1µs AND id dedupe). kernel.exits is self-contained and the SDK
 # request/enum modules are stubbed, so every case runs here.
+#
+# Step 5 (fix/size-on-settled-cash, 2026-08-30) adds
+# tests/test_buy_sizing_settled_cash.py: buys are sized on SETTLED cash by
+# default (account.cash floored at 0 — never unsettled proceeds, never
+# margin); execution.buying_power_mode is READ and honoured (settled_cash |
+# non_marginable_buying_power | buying_power); the runner logs cash/nmbp/mode
+# every read; same-bar sell proceeds are not credited under settled sizing;
+# the vocabulary equals the sim's. live.broker / live.alpaca_broker /
+# adapters.runner_execmath import nothing heavy, so every case runs here.
 
 on:
   pull_request:
     paths:
+      - "backtesting/renquant_104/adapters/runner_execmath.py"
+      - "tests/test_buy_sizing_settled_cash.py"
       - "live/**"
       - "backtesting/renquant_104/adapters/commit_contract.py"
       - "backtesting/renquant_104/adapters/runner.py"
@@ -57,6 +68,8 @@ on:
   push:
     branches: [main]
     paths:
+      - "backtesting/renquant_104/adapters/runner_execmath.py"
+      - "tests/test_buy_sizing_settled_cash.py"
       - "live/**"
       - "backtesting/renquant_104/adapters/commit_contract.py"
       - "backtesting/renquant_104/adapters/runner.py"
@@ -101,3 +114,7 @@ jobs:
             tests/test_fill_replay_rq618.py \
             tests/test_runner_tax_lots.py \
             tests/test_runner_tax_lots_invariants.py -v
+      - name: Buys are sized on settled cash; buying_power_mode honoured (step 5)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' tests/test_buy_sizing_settled_cash.py -v
