@@ -15,40 +15,39 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: f35cb860531788d15e8fb6d2aa8840d9af9fb763f57f81147b01ed297ef00a1c (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: 0558d81d119bd98f6c60431b8e0f1885d8e5e5d571eec6cec2598ab6ba804a94 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
 | | |
 |---|---|
 | Pinned config root | `.subrepo_runtime/repos/renquant-strategy-104/configs` |
-| strategy-104 runtime checkout commit | d3c8026a8ac222c4b92b5070a906445ce0153ff6 |
+| strategy-104 runtime checkout commit | unknown (field absent) |
 | subrepos.lock.json strategy-104 pin | d3c8026a8ac222c4b92b5070a906445ce0153ff6 |
 
 ### Source warnings
 
-- **SCORER PROVENANCE UNRESOLVED: shadow scorer momentum_residual_v0_shadow artifact 'artifacts/momentum/momentum_artifact_ledger.jsonl' did not resolve to a metadata-bearing file under the canonical resolver — no digest; the candidate pin does not provably restore a traceable scorer**
-- **SCORER PROVENANCE UNRESOLVED: shadow scorer momentum_fast_v1_shadow artifact 'artifacts/momentum_fast/momentum_artifact_ledger.jsonl' did not resolve to a metadata-bearing file under the canonical resolver — no digest; the candidate pin does not provably restore a traceable scorer**
-- **UMBRELLA WORKING-COPY DRIFT: backtesting/renquant_104/strategy_config.json declares kind='hf_patchtst' but the pinned config declares kind='blend' — the pinned config is what the daily run consumes; the working copy is stale**
+- **pinned active config unreadable or missing: .subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json**
+- **pinned shadow config unreadable or missing: .subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json**
 
 ## Active scorer
 
 | | |
 |---|---|
-| Scorer kind | `blend` |
-| Artifact | `artifacts/prod/panel-ltr.alpha158_fund.json` |
-| Artifact metadata file fingerprint | sha256:6461b827ab2339a8 |
-| trained_date | 2026-08-02 |
+| Scorer kind | unknown (field absent) |
+| Artifact | unknown (field absent) |
+| Artifact metadata file fingerprint | unknown (file missing) |
+| trained_date | unknown (field absent) |
 | Binding data cutoff | unknown (field absent) |
 | label_observation_cutoff | unknown (field absent) |
-| lookahead_days | 60 |
-| label_col | fwd_60d_excess |
-| Feature count | 172 |
-| train_run_id | b43751be |
-| oos_mean_ic (stamped) | +0.0448 |
+| lookahead_days | unknown (field absent) |
+| label_col | unknown (field absent) |
+| Feature count | unknown (field absent) |
+| train_run_id | unknown (field absent) |
+| oos_mean_ic (stamped) | unknown (field absent) |
 | promotion_status | unknown (field absent) |
-| config_fingerprint | sha256:f8fb2259b2bf1537 |
-| WF gate (stamped) | passed=false; run_at=2026-08-02T17:22:10.666342; sanity_eval_end=2026-05-05 |
+| config_fingerprint | unknown (field absent) |
+| WF gate (stamped) | unknown (field absent) |
 
 ## Active calibrator
 
@@ -56,91 +55,37 @@ Source fingerprint: f35cb860531788d15e8fb6d2aa8840d9af9fb763f57f81147b01ed297ef0
 
 | | |
 |---|---|
-| Artifact | `artifacts/prod/panel-rank-calibration.json` |
-| Artifact file fingerprint | sha256:bce257d19a3ddb54 |
-| kind | global_panel_calibration |
-| trained_date | 2026-08-02 |
-| Method | platt |
-| pool_ic (stamped) | +0.1192 |
-| lookahead_days | 60 |
-| Bound scorer content fingerprint | sha256:d7bddf2a0f4dfd4704c771e60e5205bc0e3720bcf6b549ce1f753910d99eca18 |
+| Artifact | unknown (field absent) |
+| Artifact file fingerprint | unknown (file missing) |
+| kind | unknown (field absent) |
+| trained_date | unknown (field absent) |
+| Method | unknown (field absent) |
+| pool_ic (stamped) | unknown (field absent) |
+| lookahead_days | unknown (field absent) |
+| Bound scorer content fingerprint | unknown (field absent) |
 | Fit data window | unknown (field absent) |
 
 ## In-run shadow scorers (readonly, same run)
 
-| | |
-|---|---|
-| Name | `topdecile_clf_blend_leg` |
-| Scorer kind | `xgb` |
-| Artifact | `artifacts/shadow/panel-clf.top-decile.fwd60.json` |
-| Artifact metadata file fingerprint | sha256:1e644354e0981f47 |
-| trained_date | 2026-07-28 |
-| Binding data cutoff | effective_train_cutoff_date=2026-04-28 |
-| label_observation_cutoff | unknown (field absent) |
-| lookahead_days | 60 |
-| label_col | fwd_60d_excess |
-| Feature count | 172 |
-| train_run_id | unknown (field absent) |
-| oos_mean_ic (stamped) | unknown (field absent) |
-| promotion_status | unknown (field absent) |
-| config_fingerprint | sha256:1d8f167fed18cd8cb1e0760251fdd5398724e630462d92b41561d2e19973e41b |
-| WF gate (stamped) | unknown (field absent) |
-
-| | |
-|---|---|
-| Name | `momentum_residual_v0_shadow` |
-| Scorer kind | `momentum_residual` |
-| Artifact | `artifacts/momentum/momentum_artifact_ledger.jsonl` |
-| Artifact metadata file fingerprint | sha256:6d6d96b89a84b704 |
-| trained_date | unknown (field absent) |
-| Binding data cutoff | unknown (field absent) |
-| label_observation_cutoff | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
-| label_col | unknown (field absent) |
-| Feature count | unknown (field absent) |
-| train_run_id | unknown (field absent) |
-| oos_mean_ic (stamped) | unknown (field absent) |
-| promotion_status | unknown (field absent) |
-| config_fingerprint | unknown (field absent) |
-| WF gate (stamped) | unknown (field absent) |
-| Metadata | unknown (metadata file missing or unreadable) |
-
-| | |
-|---|---|
-| Name | `momentum_fast_v1_shadow` |
-| Scorer kind | `momentum_residual` |
-| Artifact | `artifacts/momentum_fast/momentum_artifact_ledger.jsonl` |
-| Artifact metadata file fingerprint | sha256:59e850a979a5aac3 |
-| trained_date | unknown (field absent) |
-| Binding data cutoff | unknown (field absent) |
-| label_observation_cutoff | unknown (field absent) |
-| lookahead_days | unknown (field absent) |
-| label_col | unknown (field absent) |
-| Feature count | unknown (field absent) |
-| train_run_id | unknown (field absent) |
-| oos_mean_ic (stamped) | unknown (field absent) |
-| promotion_status | unknown (field absent) |
-| config_fingerprint | unknown (field absent) |
-| WF gate (stamped) | unknown (field absent) |
-| Metadata | unknown (metadata file missing or unreadable) |
+(none configured)
 
 ## Shadow e2e config (strategy_config.shadow.json)
 
 | | |
 |---|---|
-| Scorer kind | `hf_patchtst` |
-| Artifact | `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt` |
-| Artifact metadata file fingerprint | sha256:447b7efa5fa3f64f |
-| trained_date | 2026-05-22 |
-| Binding data cutoff | effective_selection_cutoff_date=2026-02-10 |
+| Scorer kind | unknown (field absent) |
+| Artifact | unknown (field absent) |
+| Artifact metadata file fingerprint | unknown (file missing) |
+| trained_date | unknown (field absent) |
+| Binding data cutoff | unknown (field absent) |
 | label_observation_cutoff | unknown (field absent) |
-| lookahead_days | 60 |
+| lookahead_days | unknown (field absent) |
 | label_col | unknown (field absent) |
-| Feature count | 172 |
+| Feature count | unknown (field absent) |
 | train_run_id | unknown (field absent) |
 | oos_mean_ic (stamped) | unknown (field absent) |
 | promotion_status | unknown (field absent) |
-| config_fingerprint | sha256:f8fb2259b2bf1537 |
+| config_fingerprint | unknown (field absent) |
 | WF gate (stamped) | unknown (field absent) |
 
 ### Shadow e2e calibrator
@@ -149,40 +94,31 @@ Source fingerprint: f35cb860531788d15e8fb6d2aa8840d9af9fb763f57f81147b01ed297ef0
 
 | | |
 |---|---|
-| Artifact | `artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json` |
-| Artifact file fingerprint | sha256:bc3b8a8f803e4685 |
-| kind | global_panel_calibration |
-| trained_date | 2026-06-01 |
-| Method | platt |
-| pool_ic (stamped) | +0.1309 |
-| lookahead_days | 60 |
-| Bound scorer content fingerprint | sha256:07046963994dbb8da29bfc66f99d21399e39d6d2dbd842c180299bce67c07571 |
-| Fit data window | 2023-01-03 → 2024-04-09 |
+| Artifact | unknown (field absent) |
+| Artifact file fingerprint | unknown (file missing) |
+| kind | unknown (field absent) |
+| trained_date | unknown (field absent) |
+| Method | unknown (field absent) |
+| pool_ic (stamped) | unknown (field absent) |
+| lookahead_days | unknown (field absent) |
+| Bound scorer content fingerprint | unknown (field absent) |
+| Fit data window | unknown (field absent) |
 
 ## Key policy knobs (active pinned config)
 
 | | |
 |---|---|
-| Watchlist size | 145 tickers |
-| Conviction gate μ floor | enabled=false; mu_floor=+0.0300; demean_cross_sectional=false |
+| Watchlist size | 0 tickers |
+| Conviction gate μ floor | enabled=unknown (field absent); mu_floor=unknown (field absent); demean_cross_sectional=unknown (field absent) |
 | signal_gate_prefer_calibrated_mu | unknown (field absent) |
-| Buy floor | mode=unknown (field absent); min=+0.2000 |
-| panel_buy_top_n | 3 |
-| Rotation | min_expected_advantage_pct=+0.0600; target_horizon_days=60 |
-| Kelly sizing | enabled=false; fractional=+0.3000; max_concentration=+0.3000; min_edge=0; use_calibrator_mu=true |
-| Position caps | max_concurrent_positions=10; max_position_pct=+0.1500; max_positions_per_sector=6 |
-| model_staleness_days | 60 |
-| QP | risk_aversion=3; turnover_max=+0.2000; no_trade_band_cap=+0.0500; mu_horizon_days=60; admission_min_rank_score=unknown (field absent) |
-| WF gate relaxations (lock-declared) | benchmark_required=false; regime_required=false; sanity_regime_ic_required=false |
-
-### Per-regime caps
-
-| Regime | max_position_pct | qp_turnover_max | cash_reserve_pct | stop_loss_pct |
-|---|---|---|---|---|
-| BEAR | 0 | unknown (field absent) | 1 | +0.0500 |
-| BULL_CALM | +0.3000 | +0.1500 | 0 | +0.1500 |
-| BULL_VOLATILE | +0.2000 | unknown (field absent) | +0.2000 | +0.0500 |
-| CHOPPY | +0.1500 | unknown (field absent) | +0.3000 | +0.0800 |
+| Buy floor | mode=unknown (field absent); min=unknown (field absent) |
+| panel_buy_top_n | unknown (field absent) |
+| Rotation | min_expected_advantage_pct=unknown (field absent); target_horizon_days=unknown (field absent) |
+| Kelly sizing | enabled=unknown (field absent); fractional=unknown (field absent); max_concentration=unknown (field absent); min_edge=unknown (field absent); use_calibrator_mu=unknown (field absent) |
+| Position caps | max_concurrent_positions=unknown (field absent); max_position_pct=unknown (field absent); max_positions_per_sector=unknown (field absent) |
+| model_staleness_days | unknown (field absent) |
+| QP | risk_aversion=unknown (field absent); turnover_max=unknown (field absent); no_trade_band_cap=unknown (field absent); mu_horizon_days=unknown (field absent); admission_min_rank_score=unknown (field absent) |
+| WF gate relaxations (lock-declared) | benchmark_required=unknown (field absent); regime_required=unknown (field absent); sanity_regime_ic_required=unknown (field absent) |
 
 ## Subrepo pins (subrepos.lock.json)
 
@@ -195,42 +131,28 @@ Source fingerprint: f35cb860531788d15e8fb6d2aa8840d9af9fb763f57f81147b01ed297ef0
 | renquant-execution | main | `91c7bf8873fd` | bootstrapped |
 | renquant-model | main | `bd0fa488d216` | active |
 | renquant-orchestrator | main | `64238032744f` | active |
-| renquant-pipeline | main | `afb73626192f` | bootstrapped |
+| renquant-pipeline | main | `b1905d5b3a55` | bootstrapped |
 | renquant-strategy-104 | main | `d3c8026a8ac2` | bootstrapped |
 
 ## Source fingerprints
 
-- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — sha256:78e0d727ab3facd5
-- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — sha256:ae2cd4431755c3b9
-- `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
-- `backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl` — sha256:6d6d96b89a84b704
-- `backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl` — sha256:59e850a979a5aac3
-- `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:6461b827ab2339a8
-- `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
-- `subrepos.lock.json` — sha256:fb7f718901710815
+- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json` — unknown (file missing)
+- `.subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json` — unknown (file missing)
+- `subrepos.lock.json` — sha256:66ccd65cbbf10c9b
 
 <!-- snapshot-machine-block
 {
- "active_artifact": "artifacts/prod/panel-ltr.alpha158_fund.json",
- "active_kind": "blend",
- "in_run_shadow_kinds": [
-  "xgb",
-  "momentum_residual",
-  "momentum_residual"
- ],
+ "active_artifact": null,
+ "active_kind": null,
+ "in_run_shadow_kinds": [],
  "lock_strategy_104_pin": "d3c8026a8ac222c4b92b5070a906445ce0153ff6",
  "schema_version": 2,
- "shadow_e2e_kind": "hf_patchtst",
+ "shadow_e2e_kind": null,
  "sources_sha256": {
-  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": "sha256:78e0d727ab3facd5",
-  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": "sha256:ae2cd4431755c3b9",
-  "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
-  "backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl": "sha256:6d6d96b89a84b704",
-  "backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl": "sha256:59e850a979a5aac3",
-  "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:6461b827ab2339a8",
-  "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
-  "subrepos.lock.json": "sha256:fb7f718901710815"
+  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.json": null,
+  ".subrepo_runtime/repos/renquant-strategy-104/configs/strategy_config.shadow.json": null,
+  "subrepos.lock.json": "sha256:66ccd65cbbf10c9b"
  },
- "strategy_104_pin": "d3c8026a8ac222c4b92b5070a906445ce0153ff6"
+ "strategy_104_pin": null
 }
 -->
