@@ -34,7 +34,7 @@
       "local_path": "/Users/renhao/git/github/renquant-model",
       "remote": "https://github.com/hallovorld/renquant-model",
       "branch": "main",
-      "commit": "36085810fffe",
+      "commit": "36085810fffe209e54a09ea30400bfde1fe2692e",
       "test_command": "make test",
       "status": "active"
     },
@@ -64,7 +64,7 @@
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
-      "commit": "d845da9e59b7",
+      "commit": "d845da9e59b76d72fb5811131b328204cda5ced8",
       "test_command": "make test",
       "status": "bootstrapped"
     },
@@ -94,7 +94,7 @@
       "local_path": "/Users/renhao/git/github/renquant-orchestrator",
       "remote": "https://github.com/hallovorld/renquant-orchestrator",
       "branch": "main",
-      "commit": "f89f1519a996",
+      "commit": "f89f1519a996f6ff4a2d3aa404180dcb82840887",
       "test_command": "make test",
       "status": "active"
     }
