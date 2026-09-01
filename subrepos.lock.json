@@ -64,7 +64,7 @@
       "local_path": "/Users/renhao/git/github/renquant-backtesting",
       "remote": "https://github.com/hallovorld/renquant-backtesting",
       "branch": "main",
-      "commit": "d845da9e59b76d72fb5811131b328204cda5ced8",
+      "commit": "d081670c5f0742d9ab0b797a1cb82a69800cdeb9",
       "test_command": "make test",
       "status": "bootstrapped"
     },
