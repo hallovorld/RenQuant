@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: 06a53b16d81e571432eeb226132e14cbe68f633c6b9acda51602ea80d2cf1e74 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: fadc8f8130756da6e87026abc5e28c8c0ebbe8f9295781f4ff82e09286a7253b (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
@@ -192,7 +192,7 @@ Source fingerprint: 06a53b16d81e571432eeb226132e14cbe68f633c6b9acda51602ea80d2cf
 | renquant-common | main | `ef7726dd6c90` | bootstrapped |
 | renquant-execution | main | `91c7bf8873fd` | bootstrapped |
 | renquant-model | main | `36085810fffe` | active |
-| renquant-orchestrator | main | `c3f9d7096b62` | active |
+| renquant-orchestrator | main | `0474af18edf9` | active |
 | renquant-pipeline | main | `faf1416a342b` | bootstrapped |
 | renquant-strategy-104 | main | `799821245b0e` | bootstrapped |
 
@@ -205,7 +205,7 @@ Source fingerprint: 06a53b16d81e571432eeb226132e14cbe68f633c6b9acda51602ea80d2cf
 - `backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl` — sha256:618fa993fa65f840
 - `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:f1b1c1322e3b66f7
 - `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
-- `subrepos.lock.json` — sha256:4a687ac1d0a52d29
+- `subrepos.lock.json` — sha256:305eb3162df0addc
 
 <!-- snapshot-machine-block
 {
@@ -227,7 +227,7 @@ Source fingerprint: 06a53b16d81e571432eeb226132e14cbe68f633c6b9acda51602ea80d2cf
   "backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl": "sha256:618fa993fa65f840",
   "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:f1b1c1322e3b66f7",
   "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
-  "subrepos.lock.json": "sha256:4a687ac1d0a52d29"
+  "subrepos.lock.json": "sha256:305eb3162df0addc"
  },
  "strategy_104_pin": "799821245b0e17ac84f5b969c368034a4d1ccf32"
 }
