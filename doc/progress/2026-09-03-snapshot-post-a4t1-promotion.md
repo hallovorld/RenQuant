@@ -1,4 +1,4 @@
-# Regenerate the strategy-104 snapshot after the A4-T1 promotion   (PR TBD)
+# Regenerate the strategy-104 snapshot after the A4-T1 promotion   (PR #633)
 
 STATUS:    delivered — snapshot-only follow-up to RenQuant#632.
 WHAT:      `doc/arch/strategy-104-snapshot.md` re-rendered from the live tree
