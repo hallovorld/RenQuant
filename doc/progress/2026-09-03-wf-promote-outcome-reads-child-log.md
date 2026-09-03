@@ -1,4 +1,4 @@
-# WF-promote outcome classification reads the child's own log   (PR TBD)
+# WF-promote outcome classification reads the child's own log   (PR #634)
 
 STATUS:    delivered — ops-truth fix (G-D) for the two wrappers that classify
            what `weekly_wf_promote.sh` did.
