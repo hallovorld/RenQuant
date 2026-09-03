@@ -84,7 +84,14 @@ def check_pin_runtime_drift(lock: dict, runtime_root: Path) -> list[dict]:
     return out
 
 
-def check_promote_backups(lock_path: Path, warn_above: int = 3) -> list[dict]:
+#: The reviewed retention policy (renquant-orchestrator retention_policy.py, lock
+#: backups keep=5) deliberately RETAINS the five newest promote backups; the
+#: doctor alarms only above what the policy keeps, otherwise `prune-artifacts
+#: --execute` leaves a permanently RED check (2026-09-03: 5 left, threshold 3).
+PROMOTE_BACKUPS_KEEP = 5
+
+
+def check_promote_backups(lock_path: Path, warn_above: int = PROMOTE_BACKUPS_KEEP) -> list[dict]:
     baks = sorted(lock_path.parent.glob(lock_path.name + ".promote-bak.*"))
     return [{"check": "promote_backups", "ok": len(baks) <= warn_above,
              "detail": f"{len(baks)} stale backup(s)" + (f" (>{warn_above}, prune)" if len(baks) > warn_above else "")}]

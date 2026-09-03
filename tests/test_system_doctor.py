@@ -252,3 +252,21 @@ def test_check_bundle_subprocess_failure_is_red_not_skip(tmp_path, monkeypatch):
     result = sd.check_bundle()
     assert not result["ok"]
     assert not result.get("skip")
+
+
+def test_promote_backups_alarms_only_above_the_retention_policy_keep(tmp_path):
+    """The reviewed retention policy keeps the 5 newest lock backups; the doctor
+    must not stay RED on exactly what `prune-artifacts --execute` leaves behind
+    (2026-09-03: 5 left, old threshold 3 => permanent RED)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "system_doctor", str(__import__("pathlib").Path(__file__).resolve().parents[1] / "scripts" / "system_doctor.py"))
+    sd = importlib.util.module_from_spec(spec); spec.loader.exec_module(sd)
+    lock = tmp_path / "subrepos.lock.json"; lock.write_text("{}")
+    assert sd.PROMOTE_BACKUPS_KEEP == 5
+    for i in range(5):
+        (tmp_path / f"subrepos.lock.json.promote-bak.2026090{i}T000000").write_text("{}")
+    assert sd.check_promote_backups(lock)[0]["ok"] is True
+    (tmp_path / "subrepos.lock.json.promote-bak.20260908T000000").write_text("{}")
+    res = sd.check_promote_backups(lock)[0]
+    assert res["ok"] is False and "(>5, prune)" in res["detail"]
