@@ -225,7 +225,7 @@ if ! GBDT_PROD_CONFIG="$(_find_gbdt_config)"; then
         "WF gate cannot run: no pinned kind-matched prod reference for the xgb candidate (prod is a blend). See orch#799. Production unchanged; RFC#210 freshness governance unaffected."
     exit 2
 fi
-export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution renquant-orchestrator):${PYTHONPATH:-}"
 
 run_wf_gate() {
     if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
@@ -353,11 +353,21 @@ if [ "${1:-}" = "--promote-staged" ]; then
         echo "promote-staged REFUSED: freshness_fallback not importable under the pinned runtime"
         exit 1
     fi
-    PS_VERDICT="$LOG_DIR/${PS_RUN_ID}.promote_staged.fallback_verdict.json"
-    if ! "$PYTHON" -m renquant_backtesting.wf_gate.freshness_fallback \
-        --prod "$ACTIVE_ART" --staging "$STAGING_ART" --stamp > "$PS_VERDICT" 2>&1; then
-        echo "promote-staged: RFC#210 verdict REFUSE — production unchanged. See $PS_VERDICT"
-        sed -n '1,40p' "$PS_VERDICT" || true
+    # RFC#210 A4-T1 (orch#1110 / bt#128): the ONLY path that consumes the
+    # candidate exception is the orchestrator's identify -> atomic consume ->
+    # stamp wrapper. The direct `freshness_fallback --stamp` CLI now exits 1
+    # for the candidate (it has no ledger), so it must not be called here.
+    # The wrapper tees its JSON verdict to $LOG_DIR/<RUN_ID>.a4t1_promote.json
+    # and exits 0 iff PROMOTED; anything else leaves production unchanged.
+    A4T1_WRAPPER="$SUBREPO_ROOT/repos/renquant-orchestrator/ops/renquant104/a4t1_promote_staged.sh"
+    if [ ! -x "$A4T1_WRAPPER" ]; then
+        echo "promote-staged REFUSED: a4t1 wrapper missing or not executable under the pinned runtime: $A4T1_WRAPPER"
+        exit 1
+    fi
+    PS_VERDICT="$LOG_DIR/${PS_RUN_ID}.a4t1_promote.json"
+    if ! PYTHON="$PYTHON" LOG_DIR="$LOG_DIR" "$A4T1_WRAPPER" "$PS_RUN_ID" "$ACTIVE_ART" "$STAGING_ART"; then
+        echo "promote-staged: RFC#210 A4-T1 verdict REFUSED — production unchanged. See $PS_VERDICT"
+        sed -n '1,40p' "$PS_VERDICT" 2>/dev/null || true
         exit 1
     fi
     if ! "$PYTHON" scripts/fallback_pair_promote.py \
