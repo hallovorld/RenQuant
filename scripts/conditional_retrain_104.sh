@@ -135,8 +135,19 @@ notify "RenQuant 104 WF promote fired" "Trigger: $TRIGGER"
 # establish must NEVER read as success. If the markers are ever renamed, this
 # reports UNVERIFIED and the operator finds out, instead of inheriting a
 # permanent false OK.
+#
+# WHERE THE MARKERS ARE (2026-09-03, RenQuant#634). The child redirects its own
+# stdout/stderr into logs/weekly_wf_promote/<date>.log before it prints anything
+# that matters, so a tee of its stdout was never the evidence (today's 13:10
+# chain refused correctly — "prod FRESH … exit 0" — and this wrapper said
+# UNVERIFIED). This wrapper now OWNS the redirect: RQ_WEEKLY_PROMOTE_STDOUT=1
+# makes the child leave its output on stdout; the tee below appends it to the
+# same dated log (unchanged daily record) and keeps the private copy that only
+# THIS child wrote — attributable evidence, no shared-log line arithmetic.
+CHILD_LOG="$(wf_promote_child_log_path "$REPO_DIR")"
+mkdir -p "$(dirname "$CHILD_LOG")"
 CHAIN_OUT=$(mktemp "${TMPDIR:-/tmp}/rq104_wf_chain.XXXXXX")
-RENQUANT_WEEKLY_TRIGGER="$TRIGGER" bash scripts/weekly_wf_promote.sh 2>&1 | tee "$CHAIN_OUT"
+RENQUANT_WEEKLY_TRIGGER="$TRIGGER" RQ_WEEKLY_PROMOTE_STDOUT=1 bash scripts/weekly_wf_promote.sh 2>&1 | tee -a "$CHILD_LOG" > "$CHAIN_OUT"
 CHAIN_RC=${PIPESTATUS[0]}
 CHAIN_OUTCOME="$(classify_wf_promote_outcome "$CHAIN_OUT" "$CHAIN_RC")"
 CHAIN_WHY="$(describe_wf_promote_outcome "$CHAIN_OUT")"

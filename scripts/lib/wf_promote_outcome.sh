@@ -60,3 +60,20 @@ describe_wf_promote_outcome() {
     [ -r "$out" ] || return 0
     grep -oE "=== weekly_wf_promote (PASSED|FALLBACK-PROMOTED)[^=]*|Reject disposition: [^.]*|RFC#210 fallback verdict: [A-Z]+|VERDICT: FAIL" "$out" | head -1
 }
+
+# ── The evidence file (2026-09-03, RenQuant#634) ──────────────────────────────
+# weekly_wf_promote.sh `exec >> "$LOG_DIR/$DATE.log" 2>&1`s (its line ~250)
+# BEFORE it prints any terminal marker, so a wrapper that classifies the tee'd
+# stdout classifies an (almost) EMPTY file: every clean run since 2026-08-21
+# read UNVERIFIED and every alarm exit FAILED without the markers ever being
+# consulted — the guard validated the wrong object. A line-count boundary on
+# the shared dated log is not a run boundary either (a concurrent invocation
+# can append its own markers after the mark). So the WRAPPER owns the
+# redirect: it launches the child with RQ_WEEKLY_PROMOTE_STDOUT=1, tees the
+# child's stdout+stderr into the dated log below (same daily record as today)
+# and keeps a private copy that only that child wrote — the evidence file.
+#: The child's dated log for today, under <repo_dir> (mirrors weekly_wf_promote.sh LOG_DIR/DATE).
+wf_promote_child_log_path() {
+    local repo_dir="$1"
+    printf '%s\n' "$repo_dir/logs/weekly_wf_promote/$(date +%Y-%m-%d).log"
+}
