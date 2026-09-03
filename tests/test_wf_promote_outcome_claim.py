@@ -78,6 +78,37 @@ exit 0
 """
 
 
+# ── stubs that behave like the REAL child: `exec >>` its dated log FIRST ──────
+# weekly_wf_promote.sh redirects its own stdout/stderr into
+# logs/weekly_wf_promote/<date>.log before printing any terminal marker, so a
+# wrapper reading only the tee'd stdout sees nothing. These stubs reproduce
+# that; the stubs above (markers on stdout) are the shape the 08-21 fix was
+# tested against and the shape production never had.
+
+def _redirected(body_after_redirect: str) -> str:
+    return (
+        "#!/bin/bash\n"
+        "REPO_DIR=\"${RQ_WEEKLY_PROMOTE_REPO_DIR:-$PWD}\"\n"
+        "mkdir -p \"$REPO_DIR/logs/weekly_wf_promote\"\n"
+        "exec >> \"$REPO_DIR/logs/weekly_wf_promote/$(date +%Y-%m-%d).log\" 2>&1\n"
+        "echo \"=== weekly_wf_promote started at $(date) ===\"\n"
+        + body_after_redirect
+    )
+
+
+REDIRECTED_REFUSAL_OUTPUT = _redirected(
+    "echo \"RFC#210 fallback verdict: REFUSE — production unchanged.\"\n"
+    "echo \"Reject disposition: prod FRESH (trained 2026-08-31, 3d <= 28d SLA) — governance nominal, calm notify, exit 0.\"\n"
+    "exit 0\n")
+REDIRECTED_FALLBACK_PROMOTED_OUTPUT = _redirected(
+    "echo \"=== weekly_wf_promote FALLBACK-PROMOTED (rfc210) at $(date) — summary ===\"\n"
+    "exit 0\n")
+REDIRECTED_ALARM_OUTPUT = _redirected(
+    "echo \"Reject disposition: ALARM|refused on 'quality_floor', not prod_stale — alarm notify, exit 1.\"\n"
+    "exit 1\n")
+PRIOR_RUN_PROMOTED_LINE = "=== weekly_wf_promote FALLBACK-PROMOTED (rfc210) at 09:09 — an earlier run today ===\n"
+
+
 # ── conditional_retrain_104.sh ────────────────────────────────────────────────
 
 def _run_conditional(tmp_path, child_body):
@@ -192,3 +223,73 @@ class TestTheTwoWrappersShareOneDefinition:
             assert "weekly_wf_promote (PASSED|FALLBACK-PROMOTED)" not in src, (
                 f"{name} re-states the marker pattern instead of using the helper"
             )
+
+
+class TestConditionalRetrainReadsTheChildsOwnLog:
+    """2026-09-03: the 13:10 VIX chain refused correctly ('prod FRESH … exit 0')
+    and the wrapper still reported OUTCOME UNVERIFIED (rc 2) — the classifier
+    was reading the tee'd stdout, which the child had already redirected away
+    from. The evidence is the segment of the child's dated log written by
+    THIS run."""
+
+    def test_a_redirected_refusal_is_NOTHING_PROMOTED(self, tmp_path):
+        rc, log, notes = _run_conditional(tmp_path, REDIRECTED_REFUSAL_OUTPUT)
+        assert rc == 0, log[-800:]
+        assert "RAN, NOTHING PROMOTED" in log, log[-800:]
+        assert "UNVERIFIED" not in log
+        assert "no change" in notes, notes
+        # describe_wf_promote_outcome quotes the FIRST recognisable phrase of the
+        # run — the verdict line precedes the disposition line in the real log.
+        assert "fallback verdict: REFUSE" in notes or "Reject disposition" in notes, notes
+
+    def test_a_redirected_promotion_is_PROMOTED(self, tmp_path):
+        rc, log, notes = _run_conditional(tmp_path, REDIRECTED_FALLBACK_PROMOTED_OUTPUT)
+        assert rc == 0
+        assert "UNVERIFIED" not in log
+        assert "PROMOTED" in notes and "no change" not in notes, notes
+
+    def test_an_earlier_promotion_in_todays_log_does_not_leak_into_this_run(self, tmp_path):
+        """The dated log accumulates every run of the day; an operator
+        --promote-staged in the morning must not make the afternoon's refusal
+        read as PROMOTED."""
+        repo = build_repo(tmp_path, REDIRECTED_REFUSAL_OUTPUT, scripts=["conditional_retrain_104.sh"])
+        child_log = repo / "logs" / "weekly_wf_promote" / f"{_today()}.log"
+        child_log.parent.mkdir(parents=True, exist_ok=True)
+        child_log.write_text(PRIOR_RUN_PROMOTED_LINE)
+        notes = tmp_path / "notify.log"
+        rc, log, notes_text = run(repo, "conditional_retrain_104.sh", {
+            "RQ_CONDITIONAL_REPO_DIR": str(repo),
+            "RQ_CONDITIONAL_NOTIFY_LOG": str(notes),
+        })
+        assert rc == 0
+        assert "RAN, NOTHING PROMOTED" in log, log[-800:]
+        assert "no change" in notes_text, notes_text
+        assert "WF promote: PROMOTED" not in notes_text and "chain complete" not in log
+
+    def test_a_redirected_alarm_exit_still_FAILS(self, tmp_path):
+        rc, log, notes = _run_conditional(tmp_path, REDIRECTED_ALARM_OUTPUT)
+        assert rc == 1
+        assert "FAILED" in log and "ERROR" in notes, notes
+
+    def test_no_child_log_at_all_stays_UNVERIFIED(self, tmp_path):
+        """A child that never wrote its dated log and printed nothing useful:
+        the polarity the 08-21 fix established must survive the new evidence
+        path — never success."""
+        rc, log, notes = _run_conditional(tmp_path, SILENT_ZERO_OUTPUT)
+        assert rc == 2 and "UNVERIFIED" in notes, notes
+
+
+def _today() -> str:
+    import datetime as _dt
+    return _dt.date.today().isoformat()
+
+
+class TestRetrainPanelReadsTheChildsOwnLog:
+    def test_a_redirected_refusal_is_NOTHING_PROMOTED(self, tmp_path):
+        rc, log, _ = _run_panel(tmp_path, REDIRECTED_REFUSAL_OUTPUT)
+        assert rc == 0, log[-800:]
+        assert "NOTHING PROMOTED" in log and "UNVERIFIED" not in log, log[-800:]
+    # NOTE: no "earlier promotion in today's log" case here — retrain_panel.sh
+    # already no-ops when the child's dated log exists ("weekly_wf_promote already
+    # ran today"), so the segmentation can only be exercised through the
+    # conditional wrapper (TestConditionalRetrainReadsTheChildsOwnLog).

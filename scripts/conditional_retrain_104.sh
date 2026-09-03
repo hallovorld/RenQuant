@@ -135,9 +135,18 @@ notify "RenQuant 104 WF promote fired" "Trigger: $TRIGGER"
 # establish must NEVER read as success. If the markers are ever renamed, this
 # reports UNVERIFIED and the operator finds out, instead of inheriting a
 # permanent false OK.
+#
+# WHERE THE MARKERS ARE (2026-09-03). The child redirects its own stdout/stderr
+# into logs/weekly_wf_promote/<date>.log before it prints anything that matters,
+# so the tee below is not the evidence — the segment of that dated log written
+# by THIS run is (see wf_promote_outcome.sh). Today's 13:10 chain refused
+# correctly ("prod FRESH … exit 0") and this wrapper still said UNVERIFIED.
+CHILD_LOG="$(wf_promote_child_log_path "$REPO_DIR")"
+CHILD_LOG_MARK="$(wf_promote_child_log_mark "$CHILD_LOG")"
 CHAIN_OUT=$(mktemp "${TMPDIR:-/tmp}/rq104_wf_chain.XXXXXX")
 RENQUANT_WEEKLY_TRIGGER="$TRIGGER" bash scripts/weekly_wf_promote.sh 2>&1 | tee "$CHAIN_OUT"
 CHAIN_RC=${PIPESTATUS[0]}
+append_wf_promote_child_log_segment "$CHAIN_OUT" "$CHILD_LOG" "$CHILD_LOG_MARK"
 CHAIN_OUTCOME="$(classify_wf_promote_outcome "$CHAIN_OUT" "$CHAIN_RC")"
 CHAIN_WHY="$(describe_wf_promote_outcome "$CHAIN_OUT")"
 rm -f "$CHAIN_OUT"
