@@ -225,7 +225,7 @@ if ! GBDT_PROD_CONFIG="$(_find_gbdt_config)"; then
         "WF gate cannot run: no pinned kind-matched prod reference for the xgb candidate (prod is a blend). See orch#799. Production unchanged; RFC#210 freshness governance unaffected."
     exit 2
 fi
-export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution):${PYTHONPATH:-}"
+export PYTHONPATH="$(renquant_subrepo_pythonpath "$SUBREPO_ROOT" renquant-backtesting renquant-pipeline renquant-common renquant-base-data renquant-artifacts renquant-model renquant-strategy-104 renquant-execution renquant-orchestrator):${PYTHONPATH:-}"
 
 run_wf_gate() {
     if [ "$WF_GATE_RUNNER" = "umbrella" ]; then
@@ -356,9 +356,34 @@ if [ "${1:-}" = "--promote-staged" ]; then
     PS_VERDICT="$LOG_DIR/${PS_RUN_ID}.promote_staged.fallback_verdict.json"
     if ! "$PYTHON" -m renquant_backtesting.wf_gate.freshness_fallback \
         --prod "$ACTIVE_ART" --staging "$STAGING_ART" --stamp > "$PS_VERDICT" 2>&1; then
-        echo "promote-staged: RFC#210 verdict REFUSE — production unchanged. See $PS_VERDICT"
-        sed -n '1,40p' "$PS_VERDICT" || true
-        exit 1
+        # RFC#210 A4-T1 (renquant-backtesting#128 / renquant-orchestrator#1110):
+        # the direct CLI refuses to stamp the ONE authorized candidate exception
+        # (it has no ledger) and says so in its verdict. That refusal — and only
+        # that refusal — routes to the orchestrator's identify -> validate against
+        # the committed authorization record -> atomic O_EXCL consume -> stamp
+        # wrapper, the ONLY path that consumes the exception. Every other REFUSE
+        # (quality floor, prod not stale, substance failures, ...) stays a REFUSE:
+        # ordinary staged candidates keep the ONE standing mechanism above.
+        if grep -q '"stamp_refused": "a4t1_candidate_requires_orchestrator_consumption"' "$PS_VERDICT"; then
+            # $SUBREPO_ROOT is the directory that CONTAINS the pinned checkouts
+            # (.subrepo_runtime/repos), so the repo name follows it directly.
+            A4T1_WRAPPER="$SUBREPO_ROOT/renquant-orchestrator/ops/renquant104/a4t1_promote_staged.sh"
+            A4T1_VERDICT="$LOG_DIR/${PS_RUN_ID}.a4t1_promote.json"
+            if [ ! -x "$A4T1_WRAPPER" ]; then
+                echo "promote-staged REFUSED: candidate exception needs the a4t1 wrapper, missing or not executable under the pinned runtime: $A4T1_WRAPPER"
+                exit 1
+            fi
+            echo "promote-staged: direct CLI refused the A4-T1 candidate exception (no ledger) — routing to the orchestrator wrapper"
+            if ! PYTHON="$PYTHON" LOG_DIR="$LOG_DIR" "$A4T1_WRAPPER" "$PS_RUN_ID" "$ACTIVE_ART" "$STAGING_ART"; then
+                echo "promote-staged: RFC#210 A4-T1 verdict REFUSED — production unchanged. See $A4T1_VERDICT"
+                sed -n '1,40p' "$A4T1_VERDICT" 2>/dev/null || true
+                exit 1
+            fi
+        else
+            echo "promote-staged: RFC#210 verdict REFUSE — production unchanged. See $PS_VERDICT"
+            sed -n '1,40p' "$PS_VERDICT" || true
+            exit 1
+        fi
     fi
     if ! "$PYTHON" scripts/fallback_pair_promote.py \
         "$STAGING_ART" "$ACTIVE_ART" "$STAGING_CAL" "$ACTIVE_CAL"

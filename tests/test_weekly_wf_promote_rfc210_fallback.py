@@ -552,6 +552,35 @@ def test_promote_staged_mode_reuses_the_one_mechanism():
     assert "freshness-fail-on-stale" not in mode
 
 
+def test_promote_staged_routes_only_the_a4t1_refusal_to_the_orchestrator_wrapper():
+    """RFC#210 A4-T1 (renquant-backtesting#128 / renquant-orchestrator#1110):
+    the direct fallback CLI refuses to stamp the ONE authorized candidate
+    exception (it has no ledger) and names that refusal in its verdict. The
+    operator mode keeps the ONE standing mechanism first, and routes ONLY that
+    named refusal to the orchestrator wrapper (identify -> committed record ->
+    atomic consume -> stamp). Every other REFUSE stays a REFUSE, and the
+    wrapper is looked up under the PINNED runtime, never a dev checkout."""
+    src = SCRIPT.read_text()
+    idx = src.index('if [ "${1:-}" = "--promote-staged" ]; then')
+    mode = src[idx:src.index("\nfi\n", idx)]
+    stamp_call = mode.index("--prod \"$ACTIVE_ART\" --staging \"$STAGING_ART\" --stamp")
+    refusal = mode.index('"stamp_refused": "a4t1_candidate_requires_orchestrator_consumption"')
+    wrapper = mode.index("$SUBREPO_ROOT/renquant-orchestrator/ops/renquant104/a4t1_promote_staged.sh")
+    pair = mode.index("scripts/fallback_pair_promote.py")
+    assert stamp_call < refusal < wrapper < pair          # CLI first; wrapper only on the named refusal; then the shared swap
+    # $SUBREPO_ROOT already IS .subrepo_runtime/repos (renquant_subrepo_root, subrepo_env.sh):
+    # the repo name follows it directly — never "$SUBREPO_ROOT/repos/..." (codex #632 HIGH).
+    assert "$SUBREPO_ROOT/repos/" not in mode
+    assert "renquant-orchestrator-run/ops/renquant104/a4t1" not in mode   # the wrapper is never taken from the -run dev checkout
+    assert mode.count("a4t1_promote_staged.sh") == 1
+    # the wrapper runs under the SAME python and logs next to the other verdicts
+    assert 'PYTHON="$PYTHON" LOG_DIR="$LOG_DIR" "$A4T1_WRAPPER" "$PS_RUN_ID" "$ACTIVE_ART" "$STAGING_ART"' in mode
+    # the pinned PYTHONPATH must resolve renquant_orchestrator for the wrapper
+    pp = src[src.index('export PYTHONPATH="$(renquant_subrepo_pythonpath'):]
+    pp = pp[:pp.index("\n")]
+    assert "renquant-backtesting" in pp and "renquant-orchestrator" in pp
+
+
 def test_pair_promote_is_one_shared_implementation():
     """Both the scheduled Step 4b path and the operator mode call the ONE
     extracted script; the inline heredoc is gone (no twin swap dances)."""
