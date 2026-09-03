@@ -71,9 +71,12 @@ def test_live_checkout_branch_flags_non_main_when_active(tmp_path):
 def test_promote_backups_warns_when_piled_up(tmp_path):
     lock = tmp_path / "subrepos.lock.json"; lock.write_text("{}")
     assert sd.check_promote_backups(lock)[0]["ok"]                 # none
-    for i in range(5):
-        (tmp_path / f"subrepos.lock.json.promote-bak.2026010{i}").write_text("{}")
-    assert not sd.check_promote_backups(lock)[0]["ok"]             # >3 → RED
+    # up to the retention policy's keep count is the steady state, not a pile
+    for i in range(sd.PROMOTE_BACKUPS_KEEP):
+        (tmp_path / f"subrepos.lock.json.promote-bak.2026080{i}T000000").write_text("{}")
+    assert sd.check_promote_backups(lock)[0]["ok"]                 # == keep → OK
+    (tmp_path / "subrepos.lock.json.promote-bak.20260809T000000").write_text("{}")
+    assert not sd.check_promote_backups(lock)[0]["ok"]             # > keep → RED
 
 
 def _git(repo, *a):
