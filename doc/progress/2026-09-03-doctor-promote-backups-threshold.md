@@ -1,4 +1,4 @@
-# DOCTOR promote_backups alarms only above the retention policy's keep count   (PR TBD)
+# DOCTOR promote_backups alarms only above the retention policy's keep count   (PR #637)
 
 STATUS:    delivered — ops-truth fix (G-F AC4), one constant + one test.
 WHAT:      `scripts/system_doctor.py` `check_promote_backups` default threshold
