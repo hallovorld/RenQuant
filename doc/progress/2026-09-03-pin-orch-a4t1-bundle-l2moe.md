@@ -1,4 +1,4 @@
-# Pin advance: renquant-orchestrator c3f9d709 -> 0474af18edf9a1190193d0a213de41dad7491178 (A4-T1 bundle checker + L2 MoE mixture book)   (PR TBD)
+# Pin advance: renquant-orchestrator c3f9d709 -> 0474af18edf9a1190193d0a213de41dad7491178 (A4-T1 bundle checker + L2 MoE mixture book)   (PR #636)
 
 STATUS:    delivered — pin advance + snapshot, no code change in this repo.
 WHAT:      `subrepos.lock.json`: renquant-orchestrator c3f9d709 → 0474af18edf9a1190193d0a213de41dad7491178,
