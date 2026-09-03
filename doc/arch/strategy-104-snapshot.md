@@ -15,7 +15,7 @@ that narrative, with its own dating and provenance, belongs in
 doc/arch/strategy-104.md instead. Fields the sources do not stamp are
 rendered as explicit unknowns, never invented.
 
-Source fingerprint: 17365aa88f1e73e1604218baf8e81156c00528abb9da9f5864ecb6540a4e2196 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
+Source fingerprint: 498ae8fb8f479ab7fc37e3f227d716b5af7d8e58e7fef306dc337280485b3b76 (sha256 over the sorted per-file source hashes below — deterministic; changes iff pinned/artifact CONTENT changes, never on a bare regeneration. EXCLUDES the pooled calibrators: they are re-fit per promote (mutable live state) and are recorded below as runtime observations, NOT folded into this candidate-interface fingerprint)
 
 ## Provenance
 
@@ -36,18 +36,18 @@ Source fingerprint: 17365aa88f1e73e1604218baf8e81156c00528abb9da9f5864ecb6540a4e
 |---|---|
 | Scorer kind | `blend` |
 | Artifact | `artifacts/prod/panel-ltr.alpha158_fund.json` |
-| Artifact metadata file fingerprint | sha256:6461b827ab2339a8 |
-| trained_date | 2026-08-02 |
-| Binding data cutoff | unknown (field absent) |
+| Artifact metadata file fingerprint | sha256:f1b1c1322e3b66f7 |
+| trained_date | 2026-08-31 |
+| Binding data cutoff | effective_train_cutoff_date=2026-06-03 |
 | label_observation_cutoff | unknown (field absent) |
 | lookahead_days | 60 |
 | label_col | fwd_60d_excess |
 | Feature count | 172 |
-| train_run_id | b43751be |
-| oos_mean_ic (stamped) | +0.0448 |
+| train_run_id | 8b9b8093 |
+| oos_mean_ic (stamped) | +0.0534 |
 | promotion_status | unknown (field absent) |
 | config_fingerprint | sha256:f8fb2259b2bf1537 |
-| WF gate (stamped) | passed=false; run_at=2026-08-02T17:22:10.666342; sanity_eval_end=2026-05-05 |
+| WF gate (stamped) | passed=false; run_at=2026-08-31T14:26:19.641333; sanity_eval_end=2026-06-03 |
 
 ## Active calibrator
 
@@ -56,13 +56,13 @@ Source fingerprint: 17365aa88f1e73e1604218baf8e81156c00528abb9da9f5864ecb6540a4e
 | | |
 |---|---|
 | Artifact | `artifacts/prod/panel-rank-calibration.json` |
-| Artifact file fingerprint | sha256:bce257d19a3ddb54 |
+| Artifact file fingerprint | sha256:43e859b4ef5f7641 |
 | kind | global_panel_calibration |
-| trained_date | 2026-08-02 |
+| trained_date | 2026-08-31 |
 | Method | platt |
-| pool_ic (stamped) | +0.1192 |
+| pool_ic (stamped) | +0.1250 |
 | lookahead_days | 60 |
-| Bound scorer content fingerprint | sha256:d7bddf2a0f4dfd4704c771e60e5205bc0e3720bcf6b549ce1f753910d99eca18 |
+| Bound scorer content fingerprint | sha256:2d5a0288545c8a48c1aa34c83b951ad0af5591defb938783a0862a7eab25ca54 |
 | Fit data window | unknown (field absent) |
 
 ## In-run shadow scorers (readonly, same run)
@@ -203,7 +203,7 @@ Source fingerprint: 17365aa88f1e73e1604218baf8e81156c00528abb9da9f5864ecb6540a4e
 - `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json` — sha256:447b7efa5fa3f64f
 - `backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl` — sha256:9aa2d8c9571bad95
 - `backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl` — sha256:618fa993fa65f840
-- `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:6461b827ab2339a8
+- `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json` — sha256:f1b1c1322e3b66f7
 - `backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json` — sha256:1e644354e0981f47
 - `subrepos.lock.json` — sha256:c8e3a38a687d4b51
 
@@ -225,7 +225,7 @@ Source fingerprint: 17365aa88f1e73e1604218baf8e81156c00528abb9da9f5864ecb6540a4e
   "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt.metadata.json": "sha256:447b7efa5fa3f64f",
   "backtesting/renquant_104/artifacts/momentum/momentum_artifact_ledger.jsonl": "sha256:9aa2d8c9571bad95",
   "backtesting/renquant_104/artifacts/momentum_fast/momentum_artifact_ledger.jsonl": "sha256:618fa993fa65f840",
-  "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:6461b827ab2339a8",
+  "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json": "sha256:f1b1c1322e3b66f7",
   "backtesting/renquant_104/artifacts/shadow/panel-clf.top-decile.fwd60.json": "sha256:1e644354e0981f47",
   "subrepos.lock.json": "sha256:c8e3a38a687d4b51"
  },
