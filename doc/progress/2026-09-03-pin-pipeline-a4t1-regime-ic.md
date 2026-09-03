@@ -1,4 +1,4 @@
-# Pin advance: renquant-pipeline b1905d5b -> faf1416a (P-REGIME-IC honours the RFC#210 A4-T1 license)   (PR TBD)
+# Pin advance: renquant-pipeline b1905d5b -> faf1416a (P-REGIME-IC honours the RFC#210 A4-T1 license)   (PR #635)
 
 STATUS:    delivered — pin advance + snapshot, no code change in this repo.
 WHAT:      `subrepos.lock.json`: renquant-pipeline b1905d5b → faf1416a342b5ba8ca0967756b61ee98b9fbfe12
