@@ -82,15 +82,15 @@ echo "No retrain_panel wrapper ntfy will be emitted; weekly_wf_promote owns aler
 #
 # This wrapper still emits NO ntfy by design — weekly_wf_promote owns alerts.
 # Only the log line is corrected.
-# The child redirects into its own dated log before printing any marker; the
-# evidence is the segment of that log written by this run (wf_promote_outcome.sh,
-# 2026-09-03), not the tee below.
+# The child redirects into its own dated log before printing any marker, so
+# this wrapper owns the redirect (RQ_WEEKLY_PROMOTE_STDOUT=1): the tee appends
+# the child's output to the same dated log and keeps the private copy that only
+# this child wrote — the evidence (wf_promote_outcome.sh, 2026-09-03, #634).
 RP_CHILD_LOG="$(wf_promote_child_log_path "$REPO_DIR")"
-RP_CHILD_LOG_MARK="$(wf_promote_child_log_mark "$RP_CHILD_LOG")"
+mkdir -p "$(dirname "$RP_CHILD_LOG")"
 RP_OUT=$(mktemp "${TMPDIR:-/tmp}/retrain_panel_chain.XXXXXX")
-bash scripts/weekly_wf_promote.sh 2>&1 | tee "$RP_OUT"
+RQ_WEEKLY_PROMOTE_STDOUT=1 bash scripts/weekly_wf_promote.sh 2>&1 | tee -a "$RP_CHILD_LOG" > "$RP_OUT"
 RP_RC=${PIPESTATUS[0]}
-append_wf_promote_child_log_segment "$RP_OUT" "$RP_CHILD_LOG" "$RP_CHILD_LOG_MARK"
 RP_OUTCOME="$(classify_wf_promote_outcome "$RP_OUT" "$RP_RC")"
 RP_WHY="$(describe_wf_promote_outcome "$RP_OUT")"
 rm -f "$RP_OUT"

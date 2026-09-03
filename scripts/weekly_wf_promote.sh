@@ -247,7 +247,18 @@ PY
     return 1
 }
 
-exec >> "$LOG" 2>&1
+# EVIDENCE SEAM (2026-09-03, RenQuant#634). A wrapper that must classify THIS
+# invocation's outcome (conditional_retrain_104.sh, retrain_panel.sh) sets
+# RQ_WEEKLY_PROMOTE_STDOUT=1 and owns the redirect itself: it tees this
+# script's stdout+stderr into the SAME dated log (so the daily record and the
+# run-health scan see exactly what they see today) and keeps a private copy
+# that only this child wrote. A line-count boundary on the shared dated log is
+# NOT a run boundary — a concurrent manual/scheduled invocation can append its
+# own markers after a wrapper's mark (codex, #634 r1). Unset (launchd, manual)
+# => byte-identical to before: everything goes to the dated log.
+if [ "${RQ_WEEKLY_PROMOTE_STDOUT:-0}" != "1" ]; then
+    exec >> "$LOG" 2>&1
+fi
 echo "=== weekly_wf_promote started at $(date) ==="
 
 # Lock — prevent concurrent runs (a 90-min job can stack if the user

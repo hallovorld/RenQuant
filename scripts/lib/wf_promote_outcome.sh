@@ -61,34 +61,19 @@ describe_wf_promote_outcome() {
     grep -oE "=== weekly_wf_promote (PASSED|FALLBACK-PROMOTED)[^=]*|Reject disposition: [^.]*|RFC#210 fallback verdict: [A-Z]+|VERDICT: FAIL" "$out" | head -1
 }
 
-# ── The evidence file (2026-09-03) ───────────────────────────────────────────
+# ── The evidence file (2026-09-03, RenQuant#634) ──────────────────────────────
 # weekly_wf_promote.sh `exec >> "$LOG_DIR/$DATE.log" 2>&1`s (its line ~250)
 # BEFORE it prints any terminal marker, so a wrapper that classifies the tee'd
 # stdout classifies an (almost) EMPTY file: every clean run since 2026-08-21
-# read UNVERIFIED and every alarm exit read FAILED without the markers ever
-# being consulted — the guard validated the wrong object. The markers live in
-# the child's own dated log. That log accumulates every run of the day (an
-# operator --promote-staged the same morning leaves a FALLBACK-PROMOTED line in
-# it), so THIS run's evidence is the segment written after the wrapper
-# launched the child: record the line count before, take the tail after.
+# read UNVERIFIED and every alarm exit FAILED without the markers ever being
+# consulted — the guard validated the wrong object. A line-count boundary on
+# the shared dated log is not a run boundary either (a concurrent invocation
+# can append its own markers after the mark). So the WRAPPER owns the
+# redirect: it launches the child with RQ_WEEKLY_PROMOTE_STDOUT=1, tees the
+# child's stdout+stderr into the dated log below (same daily record as today)
+# and keeps a private copy that only that child wrote — the evidence file.
 #: The child's dated log for today, under <repo_dir> (mirrors weekly_wf_promote.sh LOG_DIR/DATE).
 wf_promote_child_log_path() {
     local repo_dir="$1"
     printf '%s\n' "$repo_dir/logs/weekly_wf_promote/$(date +%Y-%m-%d).log"
-}
-
-#: Line count of a file, 0 when absent — the pre-launch mark.
-wf_promote_child_log_mark() {
-    local child_log="$1"
-    if [ -f "$child_log" ]; then wc -l < "$child_log" | tr -d ' '; else echo 0; fi
-}
-
-# append_wf_promote_child_log_segment <evidence_file> <child_log> <mark>
-# Appends the child log's lines after <mark> to <evidence_file>; no-op when the
-# child log does not exist (the classifier then sees only the tee'd stdout and
-# reports UNVERIFIED — never success).
-append_wf_promote_child_log_segment() {
-    local out="$1" child_log="$2" mark="${3:-0}"
-    [ -f "$child_log" ] || return 0
-    tail -n +"$((mark + 1))" "$child_log" >> "$out"
 }
