@@ -1,4 +1,4 @@
-# Untrack the live-mutated momentum shadow ledgers   (PR TBD)
+# Untrack the live-mutated momentum shadow ledgers   (PR #638)
 
 STATUS:    delivered — repo bookkeeping only; the live tree's files are not touched.
 WHAT:      `git rm --cached` of `backtesting/renquant_104/artifacts/momentum/`
