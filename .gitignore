@@ -122,7 +122,7 @@ backtesting/*/artifacts/prod/bundles/
 backtesting/*/artifacts/prod/ACTIVE
 backtesting/*/artifacts/prod/ACTIVE.tmp
 
-# 2026-09-03 (RenQuant#TBD): the SERVED flat pair is live-mutated run-surface state, not
+# 2026-09-03 (RenQuant#642): the SERVED flat pair is live-mutated run-surface state, not
 # repo content. weekly_wf_promote.sh / fallback_pair_promote.py / manual_promote.sh /
 # monthly_calibrator_refresh.sh os.replace() these two files on every promotion, so a
 # git-tracked copy is permanently "modified" and a live-tree pull can reset or refuse

@@ -1,4 +1,4 @@
-# Untrack the live-mutated served pair (panel-ltr + rank calibrator)   (PR #TBD)
+# Untrack the live-mutated served pair (panel-ltr + rank calibrator)   (PR #642)
 
 STATUS:    delivered — repo-hygiene fix in the 2026-08-31 clobber class
            (RenQuant#638's sibling); operator-authorized 2026-09-03.
