@@ -1,4 +1,4 @@
-# WF gate dark since 2026-09-01: stamp digests on the manifest the gate actually resolves   (PR #TBD)
+# WF gate dark since 2026-09-01: stamp digests on the manifest the gate actually resolves   (PR #639)
 
 STATUS:    delivered — the weekly promote gate's WF simulation has crashed on
            every retrain since 2026-09-01; this PR restores it and pins the
