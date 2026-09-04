@@ -1,4 +1,4 @@
-# A crashed WF simulation is not a reject: prove execution before the fallback   (PR #TBD)
+# A crashed WF simulation is not a reject: prove execution before the fallback   (PR #641)
 
 STATUS:    delivered — ops-truth fix (G-D) in the weekly promote script's
            reject branch; companion to RenQuant#639 (which repairs the
