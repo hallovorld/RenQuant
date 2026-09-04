@@ -51,8 +51,14 @@ NEXT:      after merge + live ff-only, the 13:10 PT retrain on the first day
            BEFORE #639 lands would page WEEKLY-FAIL (WF simulation crashed)
            — the correct signal for the state the system is in; after #639
            lands the check passes and the ordinary reject/promote flow
-           resumes. Follow-up in renquant-backtesting: `freshness_fallback.
-           decide()` should itself refuse a candidate whose
-           `wf_gate_metadata.cuts` did not all execute (belt and braces —
-           today only this wrapper stands between a crashed candidate and
-           fallback promotion).
+           resumes. CORRECTION to the WHY paragraph's "had the served model
+           been stale" sentence: renquant-backtesting's
+           `classify_gate_failures` already names a `"sim cuts failed"`
+           `wf_reason` as the non-infra class `wf_sim_execution`, and
+           `decide()` check 5 refuses any substance class (fail-closed) — so
+           the fallback would have REFUSED a crashed candidate on
+           `failure_classes`, not promoted it [VERIFIED — read
+           `freshness_fallback.py` lines 358–371 and 562–578 at origin/main
+           31b6d6e4, 2026-09-03 evening]. The hole this PR closes is the
+           umbrella's CALM classification of that refusal, not a promotion
+           path; no backtesting follow-up is needed.
