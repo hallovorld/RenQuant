@@ -121,3 +121,12 @@ backtesting/*/models/.staging/
 backtesting/*/artifacts/prod/bundles/
 backtesting/*/artifacts/prod/ACTIVE
 backtesting/*/artifacts/prod/ACTIVE.tmp
+
+# 2026-09-03 (RenQuant#638): live-mutated momentum shadow artifacts are NOT repo
+# content. The Saturday momentum-train-weekly job APPENDS to these ledgers on the
+# live tree; a git-tracked copy was reset to its committed 1-row version by the
+# 2026-08-31 07:17 live-tree pull and four refit rows were wiped (the daily
+# scorer-identity CRITICAL + momentum_residual DEGRADED pages). Untracked, like
+# momentum_fast already was. Enforced by tests/test_live_momentum_ledgers_untracked.py.
+backtesting/*/artifacts/momentum/
+backtesting/*/artifacts/momentum_fast/
