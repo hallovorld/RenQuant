@@ -46,10 +46,13 @@ jobs:
       - name: Wrappers must report what actually happened (hermetic)
         run: |
           set -euo pipefail
-          python3 -m pytest -q -o addopts='' tests/test_wf_promote_outcome_claim.py
+          python3 -m pytest -q -o addopts='' tests/test_wf_promote_outcome_claim.py \
+            tests/test_wf_gate_sim_ran.py
       - name: The shared classifier and both wrappers must parse
         run: |
           set -euo pipefail
           bash -n scripts/lib/wf_promote_outcome.sh
+          bash -n scripts/weekly_wf_promote.sh
+          python3 -m py_compile scripts/wf_gate_sim_ran.py
           bash -n scripts/conditional_retrain_104.sh
           bash -n scripts/retrain_panel.sh
