@@ -23,6 +23,14 @@ EVIDENCE:  artifact:      live `backtesting/renquant_104/artifacts/momentum/mome
            existing data: `logs/rq104/scorer_identity_2026-09-01..03.log` CRITICAL lines; untracked momentum_fast ledger rows 0..5 cutoffs 08-06..08-29 [VERIFIED]
            best-known?:   n/a
            scope:         "stop tracking two live ledgers and their artifact dirs; recovery of the wiped rows is a separate, receipted operation"
+LANDING:   a fast-forward that carries an index deletion REMOVES the working-tree
+           copy when it matches the last committed content — and the live ledger
+           does (that is the incident). So the live landing is: copy
+           `artifacts/momentum/momentum_artifact_ledger.jsonl` and
+           `artifacts/momentum/2026-08-02/momentum_residual_v0.json` aside →
+           `git pull --ff-only` → copy them back (now ignored) → verify sha256
+           equals the pre-pull copy → `git status` shows them as ignored, not
+           deleted. Recorded in the deploy note.
 NEXT:      (1) rebuild the wiped rows from the surviving dated artifact dirs with the
            trainer's ledger writer + a shadow_receipt so the identity monitor
            legitimizes the change (own PR / recorded operation); (2) decision for
