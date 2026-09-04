@@ -1,4 +1,4 @@
-# Training universe: add CRWV, RKLB, SPCX so the served watchlist is trainable   (PR #TBD)
+# Training universe: add CRWV, RKLB, SPCX so the served watchlist is trainable   (PR #640)
 
 STATUS:    delivered — config-only change to the umbrella's TRAINING
            watchlist; operator-authorized 2026-09-03.
