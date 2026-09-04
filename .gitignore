@@ -121,3 +121,19 @@ backtesting/*/models/.staging/
 backtesting/*/artifacts/prod/bundles/
 backtesting/*/artifacts/prod/ACTIVE
 backtesting/*/artifacts/prod/ACTIVE.tmp
+
+# 2026-09-03 (RenQuant#TBD): the SERVED flat pair is live-mutated run-surface state, not
+# repo content. weekly_wf_promote.sh / fallback_pair_promote.py / manual_promote.sh /
+# monthly_calibrator_refresh.sh os.replace() these two files on every promotion, so a
+# git-tracked copy is permanently "modified" and a live-tree pull can reset or refuse
+# on it (the 2026-08-31 momentum-ledger clobber, RenQuant#638, is the same class).
+# The files stay on disk at the same path; CI proves config<->path SHAPE via the
+# declaration in deploy/live_mutated_prod_artifacts.json. Enforced by
+# tests/test_live_prod_pair_untracked.py.
+backtesting/*/artifacts/prod/panel-ltr.alpha158_fund.json
+backtesting/*/artifacts/prod/panel-ltr.alpha158_fund.*.json
+backtesting/*/artifacts/prod/panel-rank-calibration.json
+backtesting/*/artifacts/prod/panel-rank-calibration.json.*
+backtesting/*/artifacts/prod/panel-rank-calibration.weekly_*.json
+backtesting/*/artifacts/prod/panel-rank-calibration.monthly_rollback_*.json
+backtesting/*/artifacts/prod/_rejected_calibrators/

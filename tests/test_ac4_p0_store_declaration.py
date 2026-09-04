@@ -74,11 +74,27 @@ def test_declaration_is_wellformed_and_points_at_the_pair_directory() -> None:
 
     prod = REPO / store_root
     assert prod.is_dir()
+    # 2026-09-03: the flat pair is live-mutated run-surface state and no
+    # longer git-tracked (deploy/live_mutated_prod_artifacts.json). On the
+    # serving machine it is present at exactly this path; in a fresh checkout
+    # it is absent BY DESIGN and must be DECLARED there instead. P0's
+    # invariant — serving stays on the flat pair, at this directory — is
+    # pinned either way; what changed is who owns the bytes (the promote
+    # jobs, not git).
+    declared = {
+        Path(a["path"]).name
+        for a in json.loads(
+            (REPO / "deploy" / "live_mutated_prod_artifacts.json").read_text(encoding="utf-8")
+        )["artifacts"]
+    }
     for member in FLAT_PAIR:  # the flat pair stays authoritative in P0
-        assert (prod / member).is_file(), (
-            f"flat pair member {member} missing from {prod} — P0 must not "
-            "move or remove the served flat files"
-        )
+        if (prod / member).exists():
+            assert (prod / member).is_file(), f"flat pair member {member} is not a file"
+        else:
+            assert member in declared, (
+                f"flat pair member {member} missing from {prod} and not declared "
+                "live-mutated — P0 must not move or remove the served flat files"
+            )
 
 
 def test_store_paths_are_gitignored_never_indexed() -> None:
