@@ -602,6 +602,38 @@ def _check_ledger_pointer(
 # ── extraction (per profile shape) ───────────────────────────────────────────
 
 
+#: Deployment declaration of served artifacts that live jobs rewrite in place
+#: and that are therefore NOT git-tracked (2026-09-03; the momentum ledgers'
+#: class, RenQuant#638). Relative to ``data_root`` (the umbrella checkout).
+LIVE_MUTATED_DECLARATION_REL = "deploy/live_mutated_prod_artifacts.json"
+
+
+def live_mutated_declared(data_root: Path, strategy_dir: Path) -> set[str]:
+    """Normalized strategy-relative paths declared live-mutated for THIS
+    strategy dir; empty when the declaration is absent or malformed (a
+    malformed declaration waives nothing — fail closed toward the standing
+    'does not resolve' failure)."""
+    try:
+        payload = json.loads(
+            (Path(data_root) / LIVE_MUTATED_DECLARATION_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return set()
+    declared_dir = str(payload.get("strategy_dir") or "")
+    try:
+        same_dir = (Path(data_root) / declared_dir).resolve() == Path(strategy_dir).resolve()
+    except OSError:
+        same_dir = False
+    if not declared_dir or not same_dir:
+        return set()
+    out: set[str] = set()
+    for entry in payload.get("artifacts") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str) and entry["path"]:
+            out.add(Path(entry["path"]).as_posix())
+    return out
+
+
 def _expected(entry: dict) -> dict:
     """Optional config-pinned expected identity for a profile entry (#211)."""
     return {
@@ -789,6 +821,25 @@ def _check_one(
     # (1) canonical resolution + immutable content_sha256.
     ident = contract.resolve_identity(raw, strategy_dir, data_root)
     if not getattr(ident, "resolved", False):
+        # 2026-09-03: the served flat pair is live-mutated run-surface state
+        # and no longer git-tracked (deploy/live_mutated_prod_artifacts.json,
+        # the momentum-ledger waiver's class). In a fresh checkout / hosted
+        # CI it is ABSENT BY DESIGN; the gate then proves config<->path
+        # SHAPE only. On the serving machine the path resolves and every
+        # identity check below runs in full. Only DECLARED paths get this;
+        # an undeclared absent artifact is still the failure it always was.
+        if Path(raw).as_posix() in live_mutated_declared(data_root, strategy_dir):
+            return PathCheck(
+                config_name, field, kind, raw, "", True, "",
+                (
+                    f"INFO: live-mutated served artifact absent on THIS machine — "
+                    f"declared in {LIVE_MUTATED_DECLARATION_REL} (untracked; "
+                    f"rewritten in place by the promote jobs). On the serving "
+                    f"machine it resolves and identity + provenance are checked "
+                    f"in full; a wrongly-missing file there fails at load and "
+                    f"pages the sentinel."
+                ),
+            )
         return PathCheck(
             config_name, field, kind, raw,
             str(getattr(ident, "resolved_path", "") or ""), False,
