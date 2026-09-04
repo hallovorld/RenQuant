@@ -1,0 +1,59 @@
+name: wf-manifest-digest-contract
+
+# The manifest the weekly promote gate resolves must carry per-entry digests
+# that match the COMMITTED corpus bytes.
+#
+# `backtesting/renquant_104/kernel/manifest_uri_resolver.py` closed its digest
+# compatibility window on 2026-09-01. `scripts/stamp_wf_manifest_digests.py`
+# (2026-07-18) stamped two manifests the gate no longer used; the one
+# `scripts/weekly_wf_promote.sh` names (`WF_MANIFEST=`) was 0/43 stamped, so
+# from 2026-09-01 every retrain's WF simulation died in
+# `WalkForwardModelLoader.model_as_of` and the gate reported "3/3 sim cuts
+# failed execution" as an ordinary reject for three days.
+#
+# `tests/test_stamp_wf_manifest_digests.py` (07-18) was named by NO workflow —
+# a test file no job runs is a document. This workflow runs both digest test
+# files whenever the manifests, the corpus, the resolver, the stamper, or the
+# promote script change. stdlib + pytest only (the resolver imports nothing
+# else); nothing here touches the network or any pinned checkout.
+
+on:
+  pull_request:
+    paths:
+      - backtesting/renquant_104/artifacts/sim/walkforward_manifest*.json
+      - backtesting/renquant_104/artifacts/sim/walkforward_calibrators/**
+      - backtesting/renquant_104/artifacts/walkforward_gbdt_prod_recipe_v2/**
+      - backtesting/renquant_104/kernel/manifest_uri_resolver.py
+      - backtesting/renquant_104/kernel/walk_forward/loader.py
+      - scripts/stamp_wf_manifest_digests.py
+      - scripts/weekly_wf_promote.sh
+      - tests/test_stamp_wf_manifest_digests.py
+      - tests/test_wf_gate_manifest_digests_prod_recipe_v2.py
+      - .github/workflows/wf-manifest-digest-contract.yml
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  wf-manifest-digests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test tools
+        run: python3 -m pip install pytest
+      - name: The promote gate's manifest resolves under post-window enforcement
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -o addopts='' \
+            tests/test_wf_gate_manifest_digests_prod_recipe_v2.py \
+            tests/test_stamp_wf_manifest_digests.py
+      - name: Stamper self-check against the committed corpus
+        run: |
+          set -euo pipefail
+          python3 scripts/stamp_wf_manifest_digests.py --check \
+            --manifest backtesting/renquant_104/artifacts/sim/walkforward_manifest_gbdt_prod_recipe_v2.calibrated.json
+          python3 scripts/stamp_wf_manifest_digests.py --check \
+            --manifest backtesting/renquant_104/artifacts/sim/walkforward_manifest_v2_20260602.json
