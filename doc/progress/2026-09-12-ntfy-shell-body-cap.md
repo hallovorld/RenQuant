@@ -1,4 +1,4 @@
-# The shell ntfy sender is capped too — no alert arrives as an attachment   (PR #TBD)
+# The shell ntfy sender is capped too — no alert arrives as an attachment   (PR #643)
 
 STATUS:    delivered — the shell twin of renquant-common#44.
 WHAT:      `scripts/notify.sh::rq_notify` now caps the POSTed body at
