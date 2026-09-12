@@ -17,6 +17,11 @@
 #   * RENQUANT_NO_NOTIFY truthy (1/true/yes/on, case-insensitive) suppresses
 #     the send, ALWAYS.
 #   * curl --max-time 5 (standardized timeout).
+#   * Body capped at RQ_NTFY_MAX_BODY_BYTES (default 3800) UTF-8 BYTES with a
+#     marker naming the dropped count. ntfy.sh converts any body over its
+#     4096-byte message-size-limit into a .txt ATTACHMENT, so the phone shows a
+#     file icon instead of the alert; measured 2026-09-12 (rq104 DEGRADED body
+#     4,617 bytes on 09-11). Mirrors renquant_common.notify.MAX_BODY_BYTES.
 #   * Never fails the caller: always returns 0, all curl errors swallowed.
 
 rq_notify() {
@@ -31,6 +36,19 @@ rq_notify() {
             return 0
             ;;
     esac
+
+    # Cap the body in BYTES (head -c), never characters, so the limit holds for
+    # Chinese/emoji bodies too; the cut may land mid-codepoint, which ntfy and
+    # the phone render as one replacement glyph — acceptable next to the marker.
+    _rqn_limit="${RQ_NTFY_MAX_BODY_BYTES:-3800}"
+    _rqn_bytes="$(printf '%s' "${_rqn_body}" | LC_ALL=C wc -c | tr -d ' ')"
+    if [ "${_rqn_bytes}" -gt "${_rqn_limit}" ] 2>/dev/null; then
+        _rqn_keep=$(( _rqn_limit - 80 ))
+        _rqn_dropped=$(( _rqn_bytes - _rqn_keep ))
+        _rqn_body="$(printf '%s' "${_rqn_body}" | head -c "${_rqn_keep}")
+… [truncated ${_rqn_dropped} bytes — full text is in the sender's log]"
+        echo "[ntfy body capped] ${_rqn_title}: ${_rqn_bytes} -> ${_rqn_limit} bytes" >&2
+    fi
 
     _rqn_topic="${NTFY_TOPIC:-}"
     if [ -z "${_rqn_topic}" ]; then
