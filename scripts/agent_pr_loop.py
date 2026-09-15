@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -51,7 +52,23 @@ NON_RETRYABLE_MARKERS = (
     "monthly spend limit",
     "/usage-credits",
     "usage limit reached",
+    # codex CLI, verbatim 2026-09-15: "ERROR: You've hit your usage limit.
+    # Upgrade to Plus to continue using Codex (...), or try again at Oct 3rd,
+    # 2026 4:00 PM." -- 2,583 identical cycles between 09-03 and 09-15 never
+    # matched "usage limit reached", so the loop raised and re-spawned every
+    # 300s instead of recording the block.
+    "hit your usage limit",
     "insufficient credit",
+)
+
+# A structured tracing line from a library inside the CLI ("2026-09-15T22:05:44Z
+# ERROR codex_models_manager::cache: failed to load models cache ..."). Such a
+# line is emitted BEFORE the CLI's own verdict and is not the cause of a nonzero
+# exit; on 2026-09-15 it was reported as the cause for 12 days while the real
+# one ("ERROR: You've hit your usage limit") sat further down the same stream.
+_TRACING_LOG_LINE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+"
+    r"(?:ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b"
 )
 
 
@@ -63,11 +80,27 @@ def _exec_failure_cause(exec_result: dict[str, Any]) -> str:
     from a crash. CLIs like `claude` print the actionable message on stdout
     with an empty stderr, so stdout is consulted first.
     """
+    lines: list[str] = []
     for stream in ("stdout_full", "stdout", "stderr"):
         text = (exec_result.get(stream) or "").strip()
         if text:
-            return text.splitlines()[0].strip()[:200]
-    return ""
+            lines.extend(ln.strip() for ln in text.splitlines() if ln.strip())
+    if not lines:
+        return ""
+    # 1. A line carrying a non-retryable marker IS the cause wherever it sits;
+    #    the block/retry decision downstream keys on exactly this text.
+    for ln in lines:
+        if _is_non_retryable(ln):
+            return ln[:200]
+    # 2. The CLI's own verdict ("ERROR: ...") beats a library's tracing log.
+    for ln in lines:
+        if ln.startswith("ERROR:"):
+            return ln[:200]
+    # 3. Otherwise the first line that is not a structured tracing-log line.
+    for ln in lines:
+        if not _TRACING_LOG_LINE.match(ln):
+            return ln[:200]
+    return lines[0][:200]
 
 
 def _is_non_retryable(cause: str) -> bool:

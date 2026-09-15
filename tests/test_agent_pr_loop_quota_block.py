@@ -31,6 +31,33 @@ SPEND_LIMIT_STDOUT = (
 )
 
 
+# Verbatim `steps[codex-review].result.exec.stderr` from
+# logs/agent_pr_loop/status.json, finished_at 2026-09-15T22:05:46Z. The first
+# line is a library tracing log (non-fatal: codex re-fetches and rewrites the
+# cache on every run); the cause of rc=1 is the "ERROR:" line at the end.
+CODEX_USAGE_LIMIT_STDERR = (
+    "2026-09-15T22:05:44.850664Z ERROR codex_models_manager::cache: failed to "
+    "load models cache: missing field `base_instructions` at line 88 column 5\n"
+    "OpenAI Codex v0.142.5\n"
+    "--------\n"
+    "workdir: /Users/renhao/git/github/RenQuant\n"
+    "model: gpt-5.5\n"
+    "provider: openai\n"
+    "approval: never\n"
+    "sandbox: danger-full-access\n"
+    "reasoning effort: high\n"
+    "reasoning summaries: none\n"
+    "session id: 01a0a71a-c6e7-78f0-8ae7-79a2fd54b85c\n"
+    "--------\n"
+    "user\n"
+    "You are running unattended on the operator machine.\n"
+    "ERROR: You've hit your usage limit. Upgrade to Plus to continue using Codex "
+    "(https://chatgpt.com/explore/plus), or try again at Oct 3rd, 2026 4:00 PM.\n"
+    "ERROR: You've hit your usage limit. Upgrade to Plus to continue using Codex "
+    "(https://chatgpt.com/explore/plus), or try again at Oct 3rd, 2026 4:00 PM.\n"
+)
+
+
 def _load_module():
     spec = importlib.util.spec_from_file_location("agent_pr_loop_quota_test", SCRIPT)
     assert spec is not None and spec.loader is not None
@@ -270,3 +297,93 @@ def test_expired_block_is_not_reported_as_active(mod, monkeypatch):
     # The record itself survives on disk -- history is not destroyed, only the
     # ACTIVE view is filtered.
     assert "claude" in json.loads(mod.QUOTA_BLOCK_PATH.read_text())
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-15: the codex shape. 2,583 cycles between 09-03 and 09-15 logged
+# "codex review failed: ... failed to load models cache ..." -- a library
+# tracing line that codex prints and then recovers from -- while the real
+# cause ("ERROR: You've hit your usage limit ... try again at Oct 3rd") sat
+# further down the same stderr. The cause text also never matched a
+# non-retryable marker, so the loop raised and re-spawned codex every 300s.
+# ---------------------------------------------------------------------------
+
+def test_codex_usage_limit_cause_is_the_error_line_not_the_tracing_log(mod):
+    cause = mod._exec_failure_cause(
+        {"rc": 1, "stdout": "", "stdout_full": "", "stderr": CODEX_USAGE_LIMIT_STDERR}
+    )
+    assert "hit your usage limit" in cause, cause
+    assert "models cache" not in cause, cause
+
+
+def test_codex_usage_limit_is_non_retryable(mod):
+    assert mod._is_non_retryable(
+        "ERROR: You've hit your usage limit. Upgrade to Plus to continue using "
+        "Codex (https://chatgpt.com/explore/plus), or try again at Oct 3rd, 2026 4:00 PM."
+    )
+
+
+def test_a_tracing_log_line_is_skipped_when_nothing_else_names_the_cause(mod):
+    stderr = (
+        "2026-09-15T22:05:44.850664Z ERROR codex_models_manager::cache: failed to "
+        "load models cache: missing field `base_instructions` at line 88 column 5\n"
+        "Traceback (most recent call last):\n"
+        "  File \"x.py\", line 1, in <module>\n"
+        "RuntimeError: boom\n"
+    )
+    cause = mod._exec_failure_cause({"rc": 1, "stdout": "", "stdout_full": "", "stderr": stderr})
+    assert cause.startswith("Traceback"), cause
+    # ... and a crash stays RETRYABLE: the default direction must not drift.
+    assert not mod._is_non_retryable(cause)
+
+
+def test_the_first_line_still_wins_when_it_is_the_only_line(mod):
+    """A CLI whose whole output is one tracing line still reports that line
+    rather than nothing -- an empty cause is the 2026-08-11 defect."""
+    stderr = "2026-09-15T22:05:44Z ERROR something::x: the only line\n"
+    cause = mod._exec_failure_cause({"rc": 1, "stdout": "", "stdout_full": "", "stderr": stderr})
+    assert "the only line" in cause
+
+
+def test_codex_usage_limit_is_contained_like_the_claude_spend_cap(mod, monkeypatch):
+    """main()-level: the codex cap must degrade the cycle, not abort it, and
+    the recorded cause must be the usage-limit line (what the operator reads in
+    status.json and in the DEGRADED page), never the tracing log."""
+    seen = {"spawned": [], "merges": [], "status": []}
+
+    def _orch(args):
+        return {"cmd": args, "rc": 0, "stdout": "{}", "stdout_full": "{}", "stderr": ""}
+
+    def _orch_json(args):
+        as_agent = args[args.index("--as") + 1] if "--as" in args else ""
+        workflow = args[args.index("--workflow") + 1] if "--workflow" in args else ""
+        n = 2 if (as_agent == "codex" and workflow == "review") else 0
+        return {"repos": [{"plan": {"queue": [{}] * n}}]}
+
+    def _run(cmd, **kw):
+        seen["spawned"].append(cmd[0])
+        if cmd[0] == "codex":
+            return {"cmd": cmd, "rc": 1, "stdout": "", "stdout_full": "",
+                    "stderr": CODEX_USAGE_LIMIT_STDERR}
+        return {"cmd": cmd, "rc": 0, "stdout": "", "stdout_full": "", "stderr": ""}
+
+    monkeypatch.setattr(mod, "_require_local_clis", lambda: None)
+    monkeypatch.setattr(mod, "_bootstrap_short_term_state", lambda: {"skipped": True})
+    monkeypatch.setattr(mod, "_orch", _orch)
+    monkeypatch.setattr(mod, "_orch_json", _orch_json)
+    monkeypatch.setattr(mod, "_run", _run)
+    monkeypatch.setattr(mod, "_run_merge",
+                        lambda agent: seen["merges"].append(agent) or {"total_merged": 0})
+    monkeypatch.setattr(mod, "_agent_gh_env", lambda agent: {})
+    monkeypatch.setattr(mod, "build_agent_prompt", lambda agent, wf: "prompt")
+    monkeypatch.setattr(mod, "_write_status", lambda p: seen["status"].append(dict(p)))
+    monkeypatch.delenv("RQ_ROADMAP_DRIVER", raising=False)
+
+    rc = mod.main()
+    status = seen["status"][-1]
+    assert rc == 0
+    assert status.get("degraded") == ["codex"]
+    assert "hit your usage limit" in status["quota_blocked"]["codex"]["cause"]
+    assert "models cache" not in status["quota_blocked"]["codex"]["cause"]
+    assert seen["merges"] == ["codex", "claude"], "merge stages must still run"
+    assert "error" not in status
