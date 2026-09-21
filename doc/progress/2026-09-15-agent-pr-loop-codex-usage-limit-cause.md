@@ -1,5 +1,27 @@
 # 2026-09-15 — agent-pr-loop: the codex usage limit was reported as a models-cache error for 12 days
 
+STATUS:   delivered, awaiting review — zero reviews at head.
+WHAT:     `_exec_failure_cause` in scripts/agent_pr_loop.py now scans every
+          stdout/stderr line for a non-retryable marker first, else the
+          first `ERROR:`-prefixed line, else the first non-tracing-log line,
+          instead of blindly returning the subprocess's first output line (a
+          codex models-cache tracing log). `NON_RETRYABLE_MARKERS` gains
+          "hit your usage limit" (codex's actual wording).
+WHY/DIR:  root-cause fix, not a symptom patch — the wrong cause matched no
+          non-retryable marker, so `main()` raised on every codex-review
+          step and re-spawned codex every 300s for 12 days straight,
+          suppressing the claude-review step and both merge stages every
+          cycle.
+EVIDENCE: see §4(b) below.
+  artifact:      scripts/agent_pr_loop.py + tests/test_agent_pr_loop_quota_block.py (4 new cases; 36 passed across both loop test files on this branch).
+  prod or exp:   exp — script fix; effective on the next launchd cycle after merge, no data/config regen.
+  existing data: logs/agent_pr_loop/status.json (finished_at 2026-09-15T22:05:46Z) steps[codex-review].result.exec.rc=1, stderr = verbatim usage-limit line; agent_quota_block.json = {} (no block ever recorded).
+  best-known?:   yes — anti-vacuity: the 4 new tests fail against origin/main's unpatched script (4 failed, 1 passed) and pass on this branch.
+  scope:         scripts/agent_pr_loop.py only; no data/config/state touched.
+NEXT:     merge after review; loop self-heals (re-probes hourly, runs claude
+          review + both merge stages every cycle) once codex quota resets
+          2026-10-03 16:00 PT per codex's own message.
+
 ## Conclusion
 
 `scripts/agent_pr_loop.py` reported the wrong cause for every codex failure
