@@ -121,3 +121,61 @@ def test_never_fails_caller_when_curl_is_broken(shell, tmp_path):
     proc = _run(shell, 'rq_notify "Ti" "bo"; echo "rc=$?"', env=env)
     assert proc.returncode == 0, proc.stderr
     assert "rc=0" in proc.stdout
+
+
+# ── body cap: ntfy converts >4096-byte bodies into ATTACHMENTS ─────────────
+# Measured 2026-09-12: the rq104 DEGRADED body on 09-11 was 4,617 bytes and
+# arrived on the phone as a .txt attachment. rq_notify now caps at
+# RQ_NTFY_MAX_BODY_BYTES (default 3800) BYTES, mirroring
+# renquant_common.notify.MAX_BODY_BYTES, in every shell that sources it.
+
+def _sent_body(log: Path) -> bytes:
+    """The argv element that followed -d in the recorded curl call."""
+    lines = log.read_bytes().split(b"\n")
+    i = lines.index(b"-d")
+    # the body may itself contain newlines: everything after -d up to the URL
+    body: list[bytes] = []
+    for part in lines[i + 1:]:
+        if part.startswith(b"https://ntfy.sh/"):
+            break
+        body.append(part)
+    return b"\n".join(body)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("shell", SHELLS)
+def test_body_over_the_cap_is_sent_under_ntfys_attachment_limit(shell, curl_stub, tmp_path):
+    bin_dir, log = curl_stub
+    body = "x" * 6000
+    r = _run(shell, f'rq_notify "t" "{body}"', env=_base_env(bin_dir, tmp_path))
+    assert r.returncode == 0
+    sent = _sent_body(log)
+    assert len(sent) <= 3800 < 4096, len(sent)
+    assert sent.endswith("bytes — full text is in the sender's log]".encode("utf-8"))
+    assert "[ntfy body capped] t: 6000 -> 3800 bytes" in r.stderr
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("shell", SHELLS)
+def test_body_under_the_cap_is_byte_identical(shell, curl_stub, tmp_path):
+    bin_dir, log = curl_stub
+    _run(shell, 'rq_notify "t" "short alert, two words"', env=_base_env(bin_dir, tmp_path))
+    assert _sent_body(log) == b"short alert, two words"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("shell", SHELLS)
+def test_cap_counts_bytes_not_characters(shell, curl_stub, tmp_path):
+    bin_dir, log = curl_stub
+    body = "告警" * 3000                       # 6,000 chars but 18,000 bytes
+    _run(shell, f'rq_notify "t" "{body}"', env=_base_env(bin_dir, tmp_path))
+    assert len(_sent_body(log)) <= 3800
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("shell", SHELLS)
+def test_cap_is_overridable_by_env(shell, curl_stub, tmp_path):
+    bin_dir, log = curl_stub
+    env = dict(_base_env(bin_dir, tmp_path), RQ_NTFY_MAX_BODY_BYTES="500")
+    _run(shell, f'rq_notify "t" "{"y" * 2000}"', env=env)
+    assert len(_sent_body(log)) <= 500
