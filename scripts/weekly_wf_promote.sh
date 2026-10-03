@@ -515,6 +515,23 @@ if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \
     --strict \
     --jobs 3; then
     echo "WF gate REJECTED staged model — consulting the RFC#210 freshness fallback (backtesting#101/#102)."
+    # ── Step 4a: did the gate actually SIMULATE the candidate? ────────────
+    # 2026-09-01..03: all three WF cuts died inside the sim
+    # (ManifestUriResolutionError — digest compatibility window closed on an
+    # unstamped manifest), run_wf_gate stamped "3/3 sim cuts failed execution"
+    # with cuts[*].returncode=1 and exited non-zero, and this branch treated
+    # it as an ordinary reject: the fallback (which never looks at the cuts)
+    # refused on prod-fresh and the run reported "Reject disposition: prod
+    # FRESH — governance nominal, calm notify, exit 0" for three days. A
+    # crashed simulation is not a verdict. Prove execution from the stamped
+    # cuts BEFORE consulting the fallback; a candidate whose simulation did
+    # not run is neither reported calm nor eligible for fallback promotion.
+    if ! "$PYTHON" scripts/wf_gate_sim_ran.py "$STAGING_ART"; then
+        echo "WF gate did NOT evaluate the staged model — the simulation crashed, so no verdict exists to fall back from. Production unchanged; alarm notify, exit 1."
+        notify "RenQuant 104 WEEKLY-FAIL (WF simulation crashed)" \
+            "The walk-forward gate did not run its cuts on the staged model (see wf_gate_metadata.cuts[*].returncode / error_tail in $STAGING_ART). This is an infrastructure failure, not a reject. Production unchanged. Check $LOG."
+        exit 1
+    fi
     # ── Step 4b: RFC#210 freshness fallback (operator P0, 2026-08-03) ─────
     # The gate criterion is UNTOUCHED. When the gate rejects AND the served
     # model is >28d stale AND the candidate is recent with a non-negative
