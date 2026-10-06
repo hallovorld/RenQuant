@@ -1,0 +1,24 @@
+{
+  "_comment": "Served artifacts that live jobs REWRITE IN PLACE on the operator tree and that are therefore NOT git-tracked (2026-09-03, RenQuant#642; same class as the momentum ledgers, RenQuant#638). They exist on disk at these paths on the serving machine and are absent in a fresh checkout / hosted CI. scripts/check_config_artifact_paths.py reads this file: a config field that points at one of these paths and does not resolve is reported as INFO (declared live-mutated), not as a failure — on the serving machine the path resolves and the full identity checks run. Adding a path here is a reviewed deployment change: it says 'CI proves config<->path SHAPE for this artifact, presence + identity are proven only on the serving machine (load-time verification + the shadow-scorer sentinel)'.",
+  "schema_version": 1,
+  "strategy_dir": "backtesting/renquant_104",
+  "artifacts": [
+    {
+      "path": "artifacts/prod/panel-ltr.alpha158_fund.json",
+      "role": "served primary panel scorer (ACTIVE_ART)",
+      "writers": [
+        "scripts/weekly_wf_promote.sh (Step 5 promote / Step 4b fallback pair promote via scripts/fallback_pair_promote.py)",
+        "scripts/manual_promote.sh (kernel.model_acceptance.promote)"
+      ]
+    },
+    {
+      "path": "artifacts/prod/panel-rank-calibration.json",
+      "role": "served global rank calibrator (ACTIVE_CAL)",
+      "writers": [
+        "scripts/weekly_wf_promote.sh (pair promote with the scorer)",
+        "scripts/monthly_calibrator_refresh.sh (monthly_calibrator_atomic_swap.py publish)",
+        "scripts/fit_calibrator_alpha158_fund.py (default --out)"
+      ]
+    }
+  ]
+}

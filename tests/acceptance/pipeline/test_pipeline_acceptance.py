@@ -14,6 +14,7 @@ User mandate (2026-05-04).
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -80,6 +81,19 @@ class TestArtifactSetCompleteness:
         has_panel_ltr = any(
             p.startswith("panel-ltr") and p.endswith(".json") for p in present
         )
+        if not has_panel_ltr:
+            # 2026-09-03: the served pair is live-mutated and untracked
+            # (deploy/live_mutated_prod_artifacts.json) — a fresh checkout
+            # has the directory (other tracked artifacts) but not the pair.
+            declaration = REPO / "deploy" / "live_mutated_prod_artifacts.json"
+            if declaration.exists() and any(
+                Path(a["path"]).name.startswith("panel-ltr")
+                for a in json.loads(declaration.read_text(encoding="utf-8"))["artifacts"]
+            ):
+                pytest.skip(
+                    "served panel-ltr is declared live-mutated (untracked) and is "
+                    "absent in this checkout — present only on the serving machine"
+                )
         assert has_panel_ltr, (
             f"No panel-ltr*.json found in artifacts/prod/ ({sorted(present)}). "
             f"Run scripts/holdout_backtest.py or daily_104.sh to populate."

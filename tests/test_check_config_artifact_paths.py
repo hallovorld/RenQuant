@@ -409,6 +409,80 @@ def test_unresolved_path_fails(tmp_path: Path) -> None:
     assert "does not resolve" in fail.reason
 
 
+# ── 2026-09-03: declared live-mutated served pair (untracked) ────────────────
+
+
+def _declare_live_mutated(data_root: Path, paths: list[str], *, strategy_dir="backtesting/renquant_104",
+                          schema_version: int = 1) -> None:
+    _write_json(data_root / "deploy" / "live_mutated_prod_artifacts.json", {
+        "schema_version": schema_version, "strategy_dir": strategy_dir,
+        "artifacts": [{"path": p, "writers": ["test"]} for p in paths],
+    })
+
+
+def _run_with_pair_absent(tmp_path: Path):
+    strategy_dir, data_root = _make_tree(tmp_path)
+    for name in ("panel-ltr.alpha158_fund.json", "panel-rank-calibration.json"):
+        (strategy_dir / "artifacts" / "prod" / name).unlink()   # fresh checkout: pair absent
+    config = _base_config(_good_shadow(data_root))
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+    return mod.check_config(config_path, "strategy_config", strategy_dir, data_root, _fake_contract())
+
+
+def test_declared_live_mutated_pair_absent_passes_with_info(tmp_path: Path) -> None:
+    """Hosted CI has no live tree: the untracked served pair is absent BY
+    DESIGN and, being declared, reports INFO — every field that points at
+    it (primary, panel_ltr, calibrator), while the shadow still runs full."""
+    _declare_live_mutated(tmp_path, ["artifacts/prod/panel-ltr.alpha158_fund.json",
+                                     "artifacts/prod/panel-rank-calibration.json"])
+    results = _run_with_pair_absent(tmp_path)
+    pair = [r for r in results if r.kind in ("primary", "calibrator")]
+    assert len(pair) == 3 and all(r.ok for r in pair), [(r.field, r.reason) for r in pair]
+    assert all("INFO: live-mutated served artifact absent" in r.detail for r in pair)
+    shadow = next(r for r in results if r.kind == "shadow")
+    assert shadow.ok and "INFO: live-mutated" not in shadow.detail
+
+
+def test_undeclared_absent_pair_still_fails(tmp_path: Path) -> None:
+    results = _run_with_pair_absent(tmp_path)
+    pair = [r for r in results if r.kind in ("primary", "calibrator")]
+    assert pair and all((not r.ok) and "does not resolve" in r.reason for r in pair)
+
+
+def test_declaration_waives_only_the_declared_path(tmp_path: Path) -> None:
+    _declare_live_mutated(tmp_path, ["artifacts/prod/panel-ltr.alpha158_fund.json"])
+    results = _run_with_pair_absent(tmp_path)
+    cal = next(r for r in results if r.kind == "calibrator")
+    assert not cal.ok and "does not resolve" in cal.reason
+    assert all(r.ok for r in results if r.kind == "primary")
+
+
+def test_declaration_for_another_strategy_dir_or_schema_waives_nothing(tmp_path: Path) -> None:
+    pair = ["artifacts/prod/panel-ltr.alpha158_fund.json", "artifacts/prod/panel-rank-calibration.json"]
+    other_dir = tmp_path / "other_dir"
+    _declare_live_mutated(other_dir, pair, strategy_dir="backtesting/other_strategy")
+    assert all(not r.ok for r in _run_with_pair_absent(other_dir) if r.kind in ("primary", "calibrator"))
+    other_schema = tmp_path / "other_schema"
+    _declare_live_mutated(other_schema, pair, schema_version=2)
+    assert all(not r.ok for r in _run_with_pair_absent(other_schema) if r.kind in ("primary", "calibrator"))
+
+
+def test_declared_pair_present_is_checked_in_full(tmp_path: Path) -> None:
+    """On the serving machine the declaration changes nothing: a present
+    pair goes through identity + provenance exactly as before (here the
+    fixture scorer lacks nothing, so it passes WITHOUT the INFO detail)."""
+    _declare_live_mutated(tmp_path, ["artifacts/prod/panel-ltr.alpha158_fund.json",
+                                     "artifacts/prod/panel-rank-calibration.json"])
+    strategy_dir, data_root = _make_tree(tmp_path)
+    config = _base_config(_good_shadow(data_root))
+    config_path = tmp_path / "configs" / "strategy_config.json"
+    _write_json(config_path, config)
+    results = mod.check_config(config_path, "strategy_config", strategy_dir, data_root, _fake_contract())
+    pair = [r for r in results if r.kind in ("primary", "calibrator")]
+    assert pair and all(r.ok and "INFO: live-mutated" not in r.detail for r in pair)
+
+
 # ── point 2: registry-driven, multi-shape ────────────────────────────────────
 
 
