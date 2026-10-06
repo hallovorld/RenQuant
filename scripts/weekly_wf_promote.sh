@@ -506,6 +506,33 @@ if ! "$PYTHON" scripts/stamp_walkforward_fingerprints.py \
     exit 1
 fi
 
+# ── Step 3.5b: Stamp content digests onto the WF manifest ─────────────────
+# 2026-09-01: kernel/manifest_uri_resolver.py closed its digest compatibility
+# window, so every manifest entry the gate resolves must carry artifact_sha256
+# (+ calibrator_sha256). The fingerprint stamp above REWRITES the per-cut
+# artifact and calibrator bytes on first contact, so the digests can only be
+# taken AFTER it, from the bytes that are actually on disk — which is why the
+# committed manifest cannot carry them (RenQuant#639 was rejected for
+# committing those regenerated corpus bytes). Stamp here, every run: a
+# first pass adds the 86 digests, a repeat pass is a byte-for-byte no-op, and
+# an artifact whose bytes changed under an existing stamp is a loud refusal
+# (not a silent re-stamp) — the manifest/corpus pair must then be
+# regenerated deliberately. Verified 2026-10-05: stamping the unstamped
+# committed manifest against the live corpus reproduces the 2026-09-13
+# containment copy byte-for-byte.
+# stamp_walkforward_fingerprints.py resolves a relative manifest against the
+# strategy dir; stamp_wf_manifest_digests.py takes the path literally, so hand
+# it the strategy-dir path explicitly.
+WF_MANIFEST_ABS="$REPO_DIR/backtesting/renquant_104/$WF_MANIFEST"
+echo "--- Step 3.5b: Stamp WF manifest content digests ($WF_MANIFEST_ABS) ---"
+if ! "$PYTHON" scripts/stamp_wf_manifest_digests.py --manifest "$WF_MANIFEST_ABS" \
+   || ! "$PYTHON" scripts/stamp_wf_manifest_digests.py --manifest "$WF_MANIFEST_ABS" --check; then
+    echo "WF manifest digest stamping FAILED — the gate would resolve unstamped entries; production unchanged."
+    notify "RenQuant 104 WEEKLY-FAIL" \
+        "WF manifest digest stamping failed (manifest/corpus bytes disagree or unresolvable). Production unchanged. Check $LOG."
+    exit 1
+fi
+
 # ── Step 4: Run WF gate (3-cut WF + §5.2 sanity battery) ──────────────────
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
 if ! RENQUANT_STRATEGY_CONFIG="$GBDT_PROD_CONFIG" run_wf_gate \

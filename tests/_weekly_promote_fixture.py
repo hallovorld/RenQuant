@@ -169,6 +169,10 @@ def build_fixture_repo(root: Path) -> object:
                        f"#!{py}\nimport sys\nsys.exit(0)\n")
     _write_executable(root / "scripts" / "stamp_walkforward_fingerprints.py",
                        f"#!{py}\nimport sys\nsys.exit(0)\n")
+    # Step 3.5b (digest stamp + --check) — the real script is covered by
+    # tests/test_stamp_wf_manifest_digests.py; here it only has to succeed.
+    _write_executable(root / "scripts" / "stamp_wf_manifest_digests.py",
+                       f"#!{py}\nimport sys\nsys.exit(0)\n")
     _write_executable(root / "scripts" / "run_wf_gate.py",
                        f"#!{py}\nimport sys\nsys.exit(0)\n")
 
