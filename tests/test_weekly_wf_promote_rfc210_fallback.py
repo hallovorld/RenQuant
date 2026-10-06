@@ -153,9 +153,32 @@ def _write_freshness_fallback_shim(
         _MODEL_ACCEPTANCE_SHIM, encoding="utf-8")
 
 
-def _force_wf_gate_reject(root: Path) -> None:
+def _force_wf_gate_reject(root: Path, *, cut_returncode: int = 0) -> None:
+    """Stub `run_wf_gate.py` that REJECTS (exit 1) and, like the real gate,
+    stamps `metadata.wf_gate_metadata` on the `--artifact` it was given:
+    `passed=False` plus three cuts carrying `cut_returncode`. The default 0
+    is an EXECUTED reject (the shape every fallback test models);
+    `cut_returncode=1` is the 2026-09-01..03 shape — the simulation crashed
+    — which Step 4a must refuse to treat as a verdict."""
     path = root / "scripts" / "run_wf_gate.py"
-    path.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(1)\n", encoding="utf-8")
+    path.write_text(f"""#!{sys.executable}
+import json, sys
+args = sys.argv[1:]
+artifact = args[args.index("--artifact") + 1] if "--artifact" in args else None
+if artifact:
+    payload = json.load(open(artifact))
+    gate = payload.setdefault("metadata", {{}}).setdefault("wf_gate_metadata", {{}})
+    gate["passed"] = False
+    gate["wf_reason"] = ("3/3 sim cuts failed execution" if {cut_returncode!r} != 0
+                         else "FAIL: test-forced reject")
+    gate["cuts"] = [
+        {{"start": s, "end": e, "returncode": {cut_returncode!r}, "sharpe": None, "apy": None}}
+        for s, e in (("2024-01-02", "2024-12-31"), ("2024-07-01", "2025-06-30"),
+                     ("2025-01-02", "2025-12-31"))
+    ]
+    json.dump(payload, open(artifact, "w"))
+sys.exit(1)
+""", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
@@ -362,6 +385,65 @@ def test_refuse_verdict_leaves_active_artifacts_unchanged(tmp_path):
     assert "WEEKLY-REJECT" in notifications, notifications
     assert result.returncode == 1, log_tail[-3000:]
     assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_crashed_simulation_alarms_before_the_fallback_is_consulted(tmp_path):
+    """2026-09-01..03: the gate's three cuts died inside the sim
+    (`cuts[*].returncode = 1`, "3/3 sim cuts failed execution"), the
+    wrapper took the ordinary reject branch, the fallback refused on
+    prod-fresh, and the run reported "governance nominal, calm notify,
+    exit 0" for three days. Step 4a: a crashed simulation is not a verdict —
+    alarm WEEKLY-FAIL, exit 1, and never consult the fallback (here armed to
+    PROMOTE, so consulting it would be visible as a swapped artifact)."""
+    root = tmp_path / "repo"
+    mod = fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root, cut_returncode=1)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir)   # would FALLBACK_PROMOTE if asked
+
+    active_artifact = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                        / fixture.ACTIVE_ARTIFACT_NAME)
+    active_cal = (root / mod.STRATEGY_DIR_REL / "artifacts" / "prod"
+                  / fixture.ACTIVE_CALIBRATOR_NAME)
+    before_artifact = active_artifact.read_text(encoding="utf-8")
+    before_cal = active_cal.read_text(encoding="utf-8")
+
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    result = _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    notifications = notify_log.read_text(encoding="utf-8") if notify_log.exists() else ""
+
+    assert "WF-SIM-DID-NOT-RUN|3/3 cuts did not execute" in log_tail, log_tail[-3000:]
+    assert "the simulation crashed, so no verdict exists to fall back from" in log_tail
+    assert "RFC#210 fallback verdict" not in log_tail, "the fallback must not be consulted"
+    assert "Reject disposition" not in log_tail, "a crash is not a reject disposition"
+    assert "WEEKLY-FAIL (WF simulation crashed)" in notifications, notifications
+    assert "WEEKLY-REJECT" not in notifications, notifications
+    assert active_artifact.read_text(encoding="utf-8") == before_artifact
+    assert active_cal.read_text(encoding="utf-8") == before_cal
+    assert result.returncode == 1, log_tail[-3000:]
+    assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_executed_reject_passes_step_4a_and_reaches_the_fallback(tmp_path):
+    """Positive control for Step 4a: an executed reject (rc 0 on every cut)
+    is a verdict and the run proceeds to the fallback exactly as before."""
+    root = tmp_path / "repo"
+    fixture.build_fixture_repo(root)
+    _force_wf_gate_reject(root, cut_returncode=0)
+    pythonpath_dir = tmp_path / "pythonpath_shim"
+    _write_freshness_fallback_shim(pythonpath_dir, refuse=True)
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "weekly.lock"
+    _run(root, notify_log, lock_file, pythonpath_dir)
+    log_tail = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (root / "logs" / "weekly_wf_promote").glob("*.log"))
+    assert "WF-SIM-RAN|all 3 cuts executed (returncode 0)" in log_tail, log_tail[-3000:]
+    assert "RFC#210 fallback verdict: REFUSE" in log_tail, log_tail[-3000:]
 
 
 def test_malformed_missing_promotion_basis_refuses_swap(tmp_path):

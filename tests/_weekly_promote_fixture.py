@@ -31,6 +31,7 @@ RENDERER_SRC = REPO_ROOT / "scripts" / "render_strategy_104_snapshot.py"
 PROMOTE_PIN_SRC = REPO_ROOT / "scripts" / "promote_pin.py"
 PAIR_PROMOTE_SRC = REPO_ROOT / "scripts" / "fallback_pair_promote.py"
 REJECT_DISPOSITION_SRC = REPO_ROOT / "scripts" / "reject_notify_disposition.py"
+SIM_RAN_SRC = REPO_ROOT / "scripts" / "wf_gate_sim_ran.py"
 
 # The exact active-artifact/calibrator filenames weekly_wf_promote.sh and
 # manual_promote.sh hardcode (ART_DIR/ACTIVE_ART/ACTIVE_CAL) — the fixture's
@@ -149,6 +150,9 @@ def build_fixture_repo(root: Path) -> object:
     (root / "scripts" / "fallback_pair_promote.py").write_bytes(PAIR_PROMOTE_SRC.read_bytes())
     (root / "scripts" / "reject_notify_disposition.py").write_bytes(
         REJECT_DISPOSITION_SRC.read_bytes())
+    # Step 4a's execution proof (a crashed WF simulation is not a reject):
+    # a genuine copy, so the harness exercises the real helper.
+    (root / "scripts" / "wf_gate_sim_ran.py").write_bytes(SIM_RAN_SRC.read_bytes())
 
     # Render the INITIAL fresh snapshot so a run against this fixture with
     # no further mutation is genuinely "fresh" (mirrors production: a
@@ -164,6 +168,10 @@ def build_fixture_repo(root: Path) -> object:
     _write_executable(root / "scripts" / "build_dashboard.py",
                        f"#!{py}\nimport sys\nsys.exit(0)\n")
     _write_executable(root / "scripts" / "stamp_walkforward_fingerprints.py",
+                       f"#!{py}\nimport sys\nsys.exit(0)\n")
+    # Step 3.5b (digest stamp + --check) — the real script is covered by
+    # tests/test_stamp_wf_manifest_digests.py; here it only has to succeed.
+    _write_executable(root / "scripts" / "stamp_wf_manifest_digests.py",
                        f"#!{py}\nimport sys\nsys.exit(0)\n")
     _write_executable(root / "scripts" / "run_wf_gate.py",
                        f"#!{py}\nimport sys\nsys.exit(0)\n")
