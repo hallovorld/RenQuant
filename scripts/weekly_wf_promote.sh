@@ -470,8 +470,23 @@ if ! bash scripts/daily_retrain_alpha158_fund.sh \
     --no-drop-sentiment \
     --exclude-tickers "$RETRAIN_EXCLUDE_TICKERS" \
     ${RETRAIN_PIN_ARGS[@]+"${RETRAIN_PIN_ARGS[@]}"}; then
-    echo "Training FAILED — production artifact unchanged."
-    notify "RenQuant 104 WEEKLY-FAIL" "Training failed; production model unchanged. Check $LOG"
+    # 2026-11-14: daily_retrain_alpha158_fund.sh `exec`s its stdout/stderr into
+    # ITS OWN log, so this log said only "Training FAILED" while the real
+    # cause (1/292 tickers stale after a yfinance timeout storm) sat in a
+    # different file nobody was pointed to. Surface the cause HERE and in the
+    # page. Newest retrain log, because the wrapper dates it by its own clock.
+    RETRAIN_LOG_FILE="$(/bin/ls -t "$REPO_DIR"/logs/daily_retrain_alpha158_fund/*.log 2>/dev/null | head -1)"
+    RETRAIN_CAUSE=""
+    if [ -n "$RETRAIN_LOG_FILE" ]; then
+        RETRAIN_CAUSE="$(grep -E '^[A-Za-z_.]*(Error|Exception):' "$RETRAIN_LOG_FILE" | tail -1 | cut -c1-300)"
+        [ -n "$RETRAIN_CAUSE" ] || RETRAIN_CAUSE="$(grep -v '^[[:space:]]*$' "$RETRAIN_LOG_FILE" | tail -3 | tr '\n' ' ' | cut -c1-300)"
+        echo "--- retrain log tail ($RETRAIN_LOG_FILE) ---"
+        grep -v '^[[:space:]]*$' "$RETRAIN_LOG_FILE" | tail -15 | cut -c1-400
+    else
+        RETRAIN_CAUSE="no retrain log found under logs/daily_retrain_alpha158_fund/"
+    fi
+    echo "Training FAILED — production artifact unchanged. Cause: $RETRAIN_CAUSE"
+    notify "RenQuant 104 WEEKLY-FAIL" "Training failed; production model unchanged. Cause: $RETRAIN_CAUSE | log: ${RETRAIN_LOG_FILE:-none} | weekly: $LOG"
     exit 1
 fi
 if [ ! -f "$STAGING_ART" ] || [ ! -f "$STAGING_CAL" ]; then

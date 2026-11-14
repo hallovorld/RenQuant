@@ -801,3 +801,33 @@ def test_stale_prod_refusal_keeps_alarm_and_exit_one(tmp_path):
     assert "candidate_stale" in notifications, notifications
     assert result.returncode == 1
     assert not lock_file.exists(), "lock file must be released on exit"
+
+
+def test_training_failure_cause_reaches_the_weekly_log_and_the_page(tmp_path):
+    """2026-11-14: the retrain wrapper writes to its OWN log, so the weekly log
+    said only 'Training FAILED'. The real exception must be surfaced in both the
+    weekly log and the WEEKLY-FAIL page."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    fixture.build_fixture_repo(root)
+    py = sys.executable
+    failing = root / "scripts" / "daily_retrain_alpha158_fund.sh"
+    failing.write_text(f"""#!/bin/bash
+LOGD="$(cd "$(dirname "$0")/.." && pwd)/logs/daily_retrain_alpha158_fund"
+mkdir -p "$LOGD"
+{{ echo "fetch noise"; echo "Traceback (most recent call last):";
+  echo "RuntimeError: 1/292 panel tickers stale (MSFT last 2026-11-11)"; }} >> "$LOGD/2026-11-14.log"
+exit 1
+""")
+    failing.chmod(failing.stat().st_mode | stat.S_IXUSR)
+    notify_log = tmp_path / "notify.log"
+    lock_file = tmp_path / "lock"
+    pythonpath_dir = tmp_path / "pp"
+    pythonpath_dir.mkdir()
+    out = _run(root, notify_log, lock_file, pythonpath_dir)
+    assert out.returncode == 1
+    weekly_logs = "".join(f.read_text() for f in (root / "logs").rglob("*.log")
+                          if "daily_retrain" not in str(f))
+    assert "Cause: RuntimeError: 1/292 panel tickers stale" in out.stdout + out.stderr + weekly_logs
+    page = notify_log.read_text()
+    assert "WEEKLY-FAIL" in page and "1/292 panel tickers stale" in page
